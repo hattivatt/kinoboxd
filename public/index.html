@@ -23,6 +23,43 @@
       </div>
     </section>
 
+    <!-- ───────────────────────── login ───────────────────────── -->
+    <section class="view view-center" data-view="login" hidden>
+      <div class="login-shell">
+        <div class="login-card">
+          <div class="kicker login-kicker">закрытая статистика</div>
+          <div class="login-brand" aria-label="kinoboxd">kino<span class="accent">boxd</span></div>
+          <p class="login-sub">Введите пароль, чтобы открыть свою киностатистику.</p>
+
+          <form class="login-form" id="login-form" novalidate>
+            <label class="login-label" for="login-password">Пароль</label>
+            <input
+              class="login-input"
+              id="login-password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              spellcheck="false"
+              placeholder="••••••••"
+              aria-describedby="login-error"
+            >
+            <div class="login-error" id="login-error" role="alert" hidden></div>
+            <button type="submit" class="btn btn-primary login-submit" id="login-submit">
+              <span class="spinner spinner-sm" id="login-spinner" hidden aria-hidden="true"></span>
+              <span id="login-submit-label">Войти</span>
+            </button>
+          </form>
+
+          <p class="login-note">Доступ по паролю. Если вы забыли его — обратитесь к тому, кто запускает kinoboxd.</p>
+        </div>
+        <div class="hero-notes login-notes">
+          <span><i class="mini-dot green"></i>оценки и дневник</span>
+          <span><i class="mini-dot orange"></i>TMDB-карточки</span>
+          <span><i class="mini-dot blue"></i>актёры и съёмочная группа</span>
+        </div>
+      </div>
+    </section>
+
     <!-- ───────────────────────── upload ───────────────────────── -->
     <section class="view view-center" data-view="upload" hidden>
       <div class="upload-shell">
@@ -204,6 +241,12 @@
               </svg>
               <span>Заменить выгрузку</span>
             </button>
+            <button type="button" class="btn btn-ghost btn-logout" id="logout-btn" hidden title="Выйти из аккаунта" aria-label="Выйти">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h9"/>
+              </svg>
+              <span>Выйти</span>
+            </button>
           </div>
         </div>
       </header>
@@ -313,6 +356,19 @@
             <div class="persons-more" id="persons-more"></div>
           </section>
         </div>
+
+        <footer class="dash-footer">
+          <p class="dash-footer-line">
+            Информация о фильмах, актёрах и постерах —
+            <a href="https://www.themoviedb.org/" target="_blank" rel="noopener">TMDB</a>.
+          </p>
+          <p class="dash-footer-line">
+            This product uses the
+            <a href="https://www.themoviedb.org/documentation/api" target="_blank" rel="noopener">TMDB API</a>
+            but is not endorsed or certified by
+            <a href="https://www.themoviedb.org/" target="_blank" rel="noopener">TMDB</a>.
+          </p>
+        </footer>
       </div>
     </section>
   </main>

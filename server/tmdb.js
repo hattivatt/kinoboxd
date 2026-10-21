@@ -766,10 +766,91 @@ async function fetchTvData(tmdbId) {
   return normalizeTvPayload(details, credits);
 }
 
+/* ------------------------------------------------------------------ */
+/* Catalog search (manual matching UI)                                 */
+/* ------------------------------------------------------------------ */
+
+function mapSearchItem(kind, item) {
+  if (!item || item.id == null) return null;
+  const rawDate = kind === 'tv' ? item.first_air_date : item.release_date;
+  let year = null;
+  if (rawDate && /^\d{4}/.test(String(rawDate))) {
+    const parsed = parseInt(String(rawDate).slice(0, 4), 10);
+    if (Number.isFinite(parsed)) year = parsed;
+  }
+  const title =
+    kind === 'tv'
+      ? item.name || item.original_name || ''
+      : item.title || item.original_title || '';
+  const vote = Number(item.vote_average);
+  return {
+    id: item.id,
+    kind,
+    title,
+    year,
+    posterPath: item.poster_path || null,
+    voteAverage: Number.isFinite(vote) ? vote : null,
+  };
+}
+
+/**
+ * Search TMDB for the manual-match UI.
+ *
+ * `kind` is "movie", "tv" or undefined/"all" (both searches in parallel).
+ * Results are deduplicated by (kind, id) and sorted by vote_average desc.
+ * TMDB is queried with language=ru-RU so the title shown to the user matches
+ * the localized details pages.
+ */
+async function searchCatalog(query, kind) {
+  const q = String(query == null ? '' : query).trim();
+  if (!q) return { results: [] };
+
+  const kinds =
+    kind === 'movie' || kind === 'tv' ? [kind] : ['movie', 'tv'];
+
+  const batches = await Promise.all(
+    kinds.map(async (mediaKind) => {
+      const data = await tmdbGet(
+        mediaKind === 'tv' ? '/search/tv' : '/search/movie',
+        {
+          query: q,
+          language: 'ru-RU',
+          include_adult: 'false',
+        }
+      );
+      const results = (data && data.results) || [];
+      return results
+        .map((item) => mapSearchItem(mediaKind, item))
+        .filter(Boolean);
+    })
+  );
+
+  const seen = new Set();
+  const results = [];
+  for (const item of batches.flat()) {
+    const key = `${item.kind}:${item.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push(item);
+  }
+
+  results.sort((a, b) => {
+    const voteA = a.voteAverage == null ? -1 : a.voteAverage;
+    const voteB = b.voteAverage == null ? -1 : b.voteAverage;
+    if (voteB !== voteA) return voteB - voteA;
+    const yearA = a.year == null ? 0 : a.year;
+    const yearB = b.year == null ? 0 : b.year;
+    return yearB - yearA;
+  });
+
+  return { results };
+}
+
 module.exports = {
   tmdbGet,
   searchMovie,
   searchTv,
+  searchCatalog,
   fetchMovieData,
   fetchTvData,
   releaseYear,

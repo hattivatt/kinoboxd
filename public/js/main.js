@@ -2,13 +2,15 @@
 
 import {
   uploadZip, startEnrich, getEnrichStatus, getStats,
-  startKinopoiskImport, getKinopoiskStatus,
+  startKinopoiskImport, getKinopoiskStatus, getAuthSession,
 } from './api.js';
 import {
   initUpload, setUploadBusy, showUploadPreview, showUploadError, clearUploadError,
   resetUpload, setHasSession, setSource, showKpError, setImportBusy,
 } from './upload.js';
 import { renderDashboard } from './widgets.js';
+import { initAuth, setAuthUi, prepareLogin } from './auth.js';
+import { closeAllModals } from './modal.js';
 import { $, clear, toast, errorBox, shortErrorMessage, toNum, fmtInt } from './ui.js';
 
 const SESSION_KEY = 'kinoboxd.session.v1';
@@ -34,6 +36,8 @@ const state = {
   pollMode: null,
   idlePolls: 0,
   statusMisses: 0,
+  authRequired: false,
+  authed: true,
 };
 
 const views = new Map(
@@ -142,12 +146,20 @@ function bootError(error) {
 
 async function boot() {
   showView('boot');
-  setBootMode('loading', 'Проверяем прошлую выгрузку…');
+  setBootMode('loading', 'Проверяем доступ…');
   const host = $('boot-error');
   if (host) {
     clear(host);
     host.hidden = true;
   }
+
+  await checkAuth();
+  if (state.authRequired && !state.authed) {
+    showLoginScreen();
+    return;
+  }
+
+  setBootMode('loading', 'Проверяем прошлую выгрузку…');
 
   const saved = readSession();
   if (!saved) {
@@ -171,6 +183,7 @@ async function boot() {
     const stats = await getStats(state.uploadId);
     applyStats(stats);
   } catch (error) {
+    if (error && error.status === 401) return; // login view already opened by the auth event
     if (error && error.status === 400) {
       if (state.importSource === 'kinopoisk') {
         // The import is still running on the server — resume its two-stage progress.
@@ -202,6 +215,71 @@ async function boot() {
       return;
     }
     bootError(error);
+  }
+}
+
+async function checkAuth() {
+  try {
+    const session = await getAuthSession();
+    if (session && typeof session === 'object') {
+      state.authRequired = Boolean(session.authRequired);
+      // When auth is disabled we are always "logged in".
+      state.authed = state.authRequired ? Boolean(session.authed) : true;
+    } else {
+      state.authRequired = false;
+      state.authed = true;
+    }
+  } catch {
+    // Old backend (404) or a transient network error: don't block the app.
+    // Any protected request will dispatch auth-required and show login.
+    state.authRequired = false;
+    state.authed = true;
+  }
+  setAuthUi({ authRequired: state.authRequired });
+}
+
+function showLoginScreen({ resetInput = false } = {}) {
+  stopPolling();
+  prepareLogin({ resetInput });
+  showView('login');
+}
+
+function handleLoggedOut() {
+  state.authed = false;
+  closeAllModals();
+  showLoginScreen({ resetInput: true });
+}
+
+function handleAuthRequired() {
+  state.authRequired = true;
+  state.authed = false;
+  setAuthUi({ authRequired: true });
+  closeAllModals();
+  if (state.view === 'login') return;
+  showLoginScreen();
+}
+
+/* =========================================================
+   stats refresh (used after a manual TMDB match)
+   ========================================================= */
+
+const dashboardHooks = {
+  getUploadId: () => state.uploadId,
+  refreshStats: () => refreshStats(),
+};
+
+async function refreshStats() {
+  if (!state.uploadId) return null;
+  try {
+    const stats = await getStats(state.uploadId);
+    state.stats = stats;
+    state.dashboardReady = true;
+    renderDashboard(stats, dashboardHooks);
+    return stats;
+  } catch (error) {
+    if (error && error.status === 401) return null; // auth-required flow takes over
+    toast('Фильм сматчен, но статистику обновить не удалось — обнови страницу.', 'error', { duration: 7000 });
+    return null;
   }
 }
 
@@ -270,7 +348,7 @@ function applyStats(stats) {
   setHasSession(Boolean(state.uploadId));
   showView('dashboard');
   try {
-    renderDashboard(stats);
+    renderDashboard(stats, dashboardHooks);
   } catch (error) {
     console.error('[kinoboxd] dashboard render failed', error);
     toast('Не удалось отрисовать часть статистики. Попробуй обновить страницу.', 'error', { duration: 8000 });
@@ -946,6 +1024,9 @@ async function finishStats(attempt = 0) {
    ========================================================= */
 
 function bindUi() {
+  initAuth({ onSuccess: boot, onLoggedOut: handleLoggedOut });
+  window.addEventListener('kinoboxd:auth-required', handleAuthRequired);
+
   initUpload({
     onFile: handleFile,
     onEnrich: handleStartEnrich,

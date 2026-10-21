@@ -16,28 +16,31 @@ async function resolveFilm(film) {
   const kind = film.kind === 'tv' ? 'tv' : 'movie';
   const indexKey = cache.makeKindKey(film.title, film.year, kind);
 
-  const fetchDetails = async (tmdbId) => {
+  const fetchDetails = async (tmdbId, mediaKind) => {
     const data =
-      kind === 'tv'
+      mediaKind === 'tv'
         ? await tmdb.fetchTvData(tmdbId)
         : await tmdb.fetchMovieData(tmdbId);
     await cache.saveDetails(tmdbId, data);
     return data;
   };
 
-  const cachedValue = cache.getIndexValue(indexKey);
-  if (cachedValue === false) {
-    return { tmdbId: null, cached: true };
+  const cachedEntry = cache.getIndexEntry(indexKey);
+  if (cachedEntry === false) {
+    return { tmdbId: null, kind, cached: true };
   }
-  if (cachedValue !== undefined) {
-    if (cache.hasDetails(cachedValue, kind)) {
-      return { tmdbId: cachedValue, cached: true };
+  if (cachedEntry !== undefined) {
+    // Manual matches store { id, kind }: trust their kind over the one
+    // implied by the upload (e.g. a Letterboxd "movie" that is a TV show).
+    const entryKind = cachedEntry.kind || kind;
+    if (cache.hasDetails(cachedEntry.id, entryKind)) {
+      return { tmdbId: cachedEntry.id, kind: entryKind, cached: true };
     }
-    if (!cache.hasDetails(cachedValue)) {
+    if (!cache.hasDetails(cachedEntry.id)) {
       // We know the id, but a previous run was interrupted before details
       // and credits were stored: finish the job without searching again.
-      await fetchDetails(cachedValue);
-      return { tmdbId: cachedValue, cached: false };
+      await fetchDetails(cachedEntry.id, entryKind);
+      return { tmdbId: cachedEntry.id, kind: entryKind, cached: false };
     }
     // Details exist for the other media kind (stale index entry): fall
     // through and search again instead of fetching the wrong endpoint.
@@ -46,7 +49,7 @@ async function resolveFilm(film) {
   // Several uploads may contain the same title/year; share one lookup.
   if (inflight.has(indexKey)) {
     const shared = await inflight.get(indexKey);
-    return { tmdbId: shared, cached: true };
+    return { tmdbId: shared, kind, cached: true };
   }
 
   const promise = (async () => {
@@ -65,14 +68,14 @@ async function resolveFilm(film) {
     // same film under a different localized title): do not re-fetch or
     // overwrite its details.
     if (cache.hasDetails(found.id, kind)) return found.id;
-    await fetchDetails(found.id);
+    await fetchDetails(found.id, kind);
     return found.id;
   })();
 
   inflight.set(indexKey, promise);
   try {
     const tmdbId = await promise;
-    return { tmdbId, cached: false };
+    return { tmdbId, kind, cached: false };
   } finally {
     inflight.delete(indexKey);
   }
@@ -156,6 +159,7 @@ async function runJob(job, films) {
         job.films.set(film.slug, {
           tmdbId: result.tmdbId,
           matched: result.tmdbId != null,
+          kind: result.kind || null,
         });
         if (result.tmdbId != null) job.matched++;
         else job.failed++;

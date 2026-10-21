@@ -16,7 +16,10 @@ const {
 const enrich = require('./enrich');
 const kp = require('./kp');
 const config = require('./config');
-const { buildStats } = require('./stats');
+const cache = require('./cache');
+const tmdb = require('./tmdb');
+const auth = require('./auth');
+const { buildStats, listUnmatched } = require('./stats');
 
 // Fail fast, before the HTTP server starts, if TMDB credentials are missing.
 // Missing config is an expected condition: print one clean line and exit 1
@@ -45,6 +48,13 @@ app.disable('x-powered-by');
 // single biggest transfer win. Also compresses static JS/CSS.
 app.use(compression());
 app.use(express.json({ limit: '1mb' }));
+
+// Password protection (KINOBOXD_PASSWORD). When the env var is missing the
+// whole API stays open. /api/auth/* is always reachable; everything else
+// under /api is gated. Static files are deliberately not protected.
+app.use(auth.attachCookies);
+app.use('/api/auth', auth.router);
+app.use('/api', auth.requireAuth);
 
 /* ------------------------------------------------------------------ */
 /* API                                                                 */
@@ -200,6 +210,173 @@ app.get('/api/stats', (req, res, next) => {
       });
     }
     res.status(200).json(stats);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/tmdb/search', async (req, res, next) => {
+  try {
+    const q = req.query.q;
+    if (!q || typeof q !== 'string' || !q.trim()) {
+      throw new HttpError(
+        400,
+        'Query parameter "q" is required.',
+        'query_required'
+      );
+    }
+    const kindRaw = req.query.kind;
+    let kind;
+    if (kindRaw === undefined || kindRaw === '' || kindRaw === 'all') {
+      kind = undefined;
+    } else if (kindRaw === 'movie' || kindRaw === 'tv') {
+      kind = kindRaw;
+    } else {
+      throw new HttpError(
+        400,
+        'Query parameter "kind" must be "movie", "tv" or "all".',
+        'invalid_kind'
+      );
+    }
+
+    const payload = await tmdb.searchCatalog(q, kind);
+    res.status(200).json(payload);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Attach a TMDB id chosen by the user to a previously unmatched film.
+ *
+ * Idempotent: repeating the exact same match returns 200 with
+ * `alreadyMatched: true`; matching a film that is already matched to a
+ * different TMDB entry returns 409.
+ */
+app.post('/api/match', async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const uploadId = body.uploadId;
+    const slug = body.slug;
+    const kind = body.kind;
+    const tmdbId = Number(body.tmdbId);
+
+    if (!uploadId || typeof uploadId !== 'string') {
+      throw new HttpError(400, 'Body must contain "uploadId".', 'upload_id_required');
+    }
+    const upload = getUpload(uploadId);
+    if (!upload) {
+      throw new HttpError(404, 'Unknown uploadId. Upload the ZIP again.', 'unknown_upload');
+    }
+    if (!slug || typeof slug !== 'string') {
+      throw new HttpError(400, 'Body must contain "slug".', 'slug_required');
+    }
+    if (kind !== 'movie' && kind !== 'tv') {
+      throw new HttpError(
+        400,
+        'Body field "kind" must be "movie" or "tv".',
+        'invalid_kind'
+      );
+    }
+    if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
+      throw new HttpError(
+        400,
+        'Body field "tmdbId" must be a positive integer.',
+        'invalid_tmdb_id'
+      );
+    }
+
+    const job = enrich.getJob(uploadId);
+    if (!job || !job.done) {
+      throw new HttpError(
+        400,
+        'Enrichment is not finished yet. Poll /api/enrich/status.',
+        'enrichment_not_finished'
+      );
+    }
+
+    const film = upload.films.find((f) => f.slug === slug) || null;
+    if (!film) {
+      throw new HttpError(404, 'Unknown film slug for this upload.', 'unknown_film');
+    }
+
+    const filmKind = film.kind === 'tv' ? 'tv' : 'movie';
+    const existing = job.films.get(slug);
+    const existingKind = existing && existing.kind ? existing.kind : filmKind;
+    if (
+      existing &&
+      existing.tmdbId === tmdbId &&
+      existingKind === kind &&
+      cache.hasDetails(tmdbId, kind)
+    ) {
+      return res.status(200).json({
+        ok: true,
+        alreadyMatched: true,
+        slug,
+        tmdbId,
+        kind,
+      });
+    }
+
+    const unmatched = listUnmatched(upload) || [];
+    if (!unmatched.some((entry) => entry.slug === slug)) {
+      if (existing && existing.tmdbId != null) {
+        throw new HttpError(
+          409,
+          'This film is already matched to another TMDB entry.',
+          'already_matched'
+        );
+      }
+      throw new HttpError(
+        404,
+        'This film is not in the unmatched list.',
+        'not_unmatched'
+      );
+    }
+
+    // 1. Details/credits: reuse the cache whenever possible.
+    if (!cache.hasDetails(tmdbId, kind)) {
+      const data =
+        kind === 'tv' ? await tmdb.fetchTvData(tmdbId) : await tmdb.fetchMovieData(tmdbId);
+      await cache.saveDetails(tmdbId, data);
+    }
+
+    // 2. Index key: exactly the key enrich used for this upload entry
+    //    ("normalized title|year", "tv|"-prefixed for TV entries). The value
+    //    becomes an object so the media kind of a manual match survives.
+    const indexKey = cache.makeKindKey(film.title, film.year, filmKind);
+    cache.setIndexValue(indexKey, { id: tmdbId, kind });
+    cache.flushIndex();
+
+    // 3. Mark the job entry; buildStats() is computed on demand, so the next
+    //    /api/stats request already reflects the match.
+    job.films.set(slug, { tmdbId, matched: true, kind, manual: true });
+    let matched = 0;
+    for (const entry of job.films.values()) {
+      if (entry.matched) matched++;
+    }
+    job.matched = matched;
+    job.failed = Math.max(0, job.total - matched);
+
+    // Keep the KinoPoisk movie/TV counters consistent when a manual match
+    // changes the media kind. Letterboxd summaries have no such counters.
+    if (
+      filmKind !== kind &&
+      upload.summary &&
+      Number.isFinite(upload.summary.movieCount) &&
+      Number.isFinite(upload.summary.tvCount)
+    ) {
+      if (kind === 'tv') {
+        upload.summary.movieCount = Math.max(0, upload.summary.movieCount - 1);
+        upload.summary.tvCount += 1;
+      } else {
+        upload.summary.tvCount = Math.max(0, upload.summary.tvCount - 1);
+        upload.summary.movieCount += 1;
+      }
+    }
+
+    console.log(`[match] ${uploadId} ${slug} -> ${kind}:${tmdbId} (${film.title})`);
+    res.status(200).json({ ok: true, slug, tmdbId, kind });
   } catch (err) {
     next(err);
   }

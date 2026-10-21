@@ -58,6 +58,7 @@
 # kinoboxd — Letterboxd / KinoPoisk statistics backend.
 #   PORT              HTTP port (default 3000)
 #   TMDB_API_TOKEN    TMDB read access token v4 (alias: TMDB_READ_ACCESS_TOKEN)
+#   KINOBOXD_PASSWORD optional API password; auth is disabled when unset
 #   KINOBOXD_STATE_DIR  writable runtime dir (default: $XDG_STATE_HOME/kinoboxd)
 set -eu
 
@@ -123,6 +124,7 @@ WRAPPER
           test -x ${self.packages.${pkgs.stdenv.hostPlatform.system}.kinoboxd}/bin/kinoboxd
           test -f ${self.packages.${pkgs.stdenv.hostPlatform.system}.kinoboxd}/share/kinoboxd/public/index.html
           test -f ${self.packages.${pkgs.stdenv.hostPlatform.system}.kinoboxd}/share/kinoboxd/server/index.js
+          test -f ${self.packages.${pkgs.stdenv.hostPlatform.system}.kinoboxd}/share/kinoboxd/server/auth.js
           test -d ${self.packages.${pkgs.stdenv.hostPlatform.system}.kinoboxd}/share/kinoboxd/node_modules/express
           touch $out
         '';

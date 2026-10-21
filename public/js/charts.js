@@ -2,6 +2,7 @@
 
 import {
   clear, el, fmtInt, fmtPercent, monthName, monthShort, showTooltip, moveTooltip, hideTooltip, toNum,
+  plural,
 } from './ui.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -360,8 +361,12 @@ export function renderTimeline(host, timeline) {
  * Every year between the first and the last gets a column, so gaps are
  * drawn as zero-height bars and the x axis stays linear. Same visual
  * language as the monthly timeline; widgets.js re-renders on resize.
+ *
+ * @param {HTMLElement} host
+ * @param {Array<{year:number,count:number}>} years
+ * @param {{onYearClick?: (year:number)=>void}} [opts]
  */
-export function renderYearBars(host, years) {
+export function renderYearBars(host, years, { onYearClick } = {}) {
   const counts = new Map();
   for (const item of Array.isArray(years) ? years : []) {
     const year = Math.round(toNum(item && item.year));
@@ -448,6 +453,7 @@ export function renderYearBars(host, years) {
       height: plotH,
       class: 'tl-hit',
     });
+    hit.setAttribute('data-year', String(item.year));
 
     hit.addEventListener('pointerenter', (event) => {
       bar.classList.add('is-hot');
@@ -462,6 +468,23 @@ export function renderYearBars(host, years) {
       bar.classList.remove('is-hot');
       hideTooltip();
     });
+
+    if (item.count > 0 && typeof onYearClick === 'function') {
+      hit.classList.add('is-clickable');
+      hit.setAttribute('role', 'button');
+      hit.setAttribute('tabindex', '0');
+      hit.setAttribute('aria-label', `${item.year}: ${fmtInt(item.count)} ${plural(item.count, ['фильм', 'фильма', 'фильмов'])} — открыть список`);
+      const activate = () => {
+        hideTooltip();
+        onYearClick(item.year);
+      };
+      hit.addEventListener('click', activate);
+      hit.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        activate();
+      });
+    }
     svg.append(hit);
   });
 

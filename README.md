@@ -39,6 +39,33 @@ server also accepts a one-line `config/tmdb-token` file, which is
 intentionally not committed. If neither is present, startup fails with
 `TMDB-токен не найден: задай TMDB_API_TOKEN (read access token v4) в окружении`.
 
+### Переменные окружения
+
+| Переменная | Назначение |
+| --- | --- |
+| `PORT` | HTTP-порт (по умолчанию `3000`) |
+| `TMDB_API_TOKEN` | TMDB read access token v4 (алиас: `TMDB_READ_ACCESS_TOKEN`; локально также `config/tmdb-token`) |
+| `KINOBOXD_PASSWORD` | Пароль для доступа к API. Если не задан/пустой — авторизация выключена, API открыто (дефолт для локальной разработки) |
+| `KINOBOXD_STATE_DIR` | Каталог состояния в Nix-сборке (по умолчанию `$XDG_STATE_HOME/kinoboxd`) |
+
+### Пароль (опционально)
+
+Если задан `KINOBOXD_PASSWORD`, все маршруты `/api/*`, кроме `/api/auth/*`,
+требуют сессионную cookie. Сессии хранятся в памяти: перезапуск сервера
+(в том числе после смены пароля) разлогинивает всех.
+
+```bash
+KINOBOXD_PASSWORD=secret PORT=3000 npm start
+
+curl -c jar -X POST localhost:3000/api/auth/login \
+  -H 'Content-Type: application/json' -d '{"password":"secret"}'
+curl -b jar localhost:3000/api/stats?uploadId=...
+```
+
+`GET /api/auth/session` → `{ authRequired, authed }`, доступен всегда.
+Статика (`public/`) намеренно не защищается: фронтенд сам решает, что
+показывать, а данные всё равно приходят только через API.
+
 Frontend static files live in `app/public` (`index.html` is served for all
 non-API routes).
 
@@ -54,7 +81,19 @@ non-API routes).
 | POST | `/api/enrich` | `{ "uploadId": "..." }`, starts background enrichment |
 | GET | `/api/enrich/status?uploadId=...` | `{ total, matched, failed, done }` |
 | GET | `/api/stats?uploadId=...` | full statistics payload (400 until enrichment is done) |
+| GET | `/api/tmdb/search?q=...&kind=movie\|tv\|all` | TMDB search for manual matching, `{ results: [{ id, kind, title, year, posterPath, voteAverage }] }` |
+| POST | `/api/match` | `{ uploadId, slug, tmdbId, kind }` — attach a TMDB entry to an unmatched film; repeat of the same match is idempotent (`alreadyMatched`), a different rematch returns 409 |
+| POST | `/api/auth/login` | `{ password }` → session cookie (only when `KINOBOXD_PASSWORD` is set) |
+| POST | `/api/auth/logout` | drop the session and clear the cookie |
+| GET | `/api/auth/session` | `{ authRequired, authed }` |
 | GET | `/api/health` | liveness probe |
+
+`/api/stats` also returns `summary.unmatchedCount` and a top-level
+`unmatched: [{ slug, title, year }]` list — the films TMDB could not match
+(or whose details are missing). `/api/match` accepts a `slug` from that list
+and either `kind` (`movie`/`tv`), which is how a Letterboxd "film" that is
+really a series (e.g. WandaVision) gets matched as TV. The cached index value
+becomes `{ id, kind }`, and enrichment/stats honour that kind on the next run.
 
 CSV files are located by basename anywhere inside the ZIP, so nested folders
 work. `diary.csv` / `watched.csv` / `ratings.csv` are parsed with a proper
@@ -62,9 +101,9 @@ quoted-CSV parser.
 
 ## Cache
 
-* `cache/index.json` — `"normalized title|year"` → TMDB id or `false`
+* `cache/index.json` — `"normalized title|year"` → TMDB id, `false`
   (definitively not found, e.g. TV series that TMDB `/search/movie` can't
-  return).
+  return), or `{ id, kind }` for a manual match.
 * `cache/details/{tmdbId}.json` — `{ details, credits }`.
 
 The cache is global and persisted before/after restart. A second upload with

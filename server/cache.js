@@ -49,14 +49,41 @@ try {
   }
 }
 
-// Keep lookups O(1) even when the JSON contains the same key twice and be
-// resilient against values that are not numbers/false.
-function getIndexValue(key) {
-  if (!Object.prototype.hasOwnProperty.call(index, key)) return undefined;
-  const value = index[key];
+/**
+ * Parse one index value. Returns:
+ *   undefined                    -> key absent / unusable value
+ *   false                        -> definitively unmatched
+ *   { id, kind: 'movie'|'tv'|null }
+ *
+ * Historically values are bare TMDB ids; a manual match stores
+ * `{ id, kind }` so a TV series can be attached to a Letterboxd entry that
+ * was originally searched as a movie.
+ */
+function parseIndexEntry(value) {
   if (value === false) return false;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return { id: value, kind: null };
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const id = Number(value.id);
+    if (Number.isFinite(id) && id > 0) {
+      const kind = value.kind === 'tv' ? 'tv' : value.kind === 'movie' ? 'movie' : null;
+      return { id, kind };
+    }
+  }
   return undefined;
+}
+
+function getIndexEntry(key) {
+  if (!Object.prototype.hasOwnProperty.call(index, key)) return undefined;
+  return parseIndexEntry(index[key]);
+}
+
+// Backwards-compatible accessor: id, false or undefined.
+function getIndexValue(key) {
+  const entry = getIndexEntry(key);
+  if (entry === undefined || entry === false) return entry;
+  return entry.id;
 }
 
 function hasKey(key) {
@@ -209,18 +236,20 @@ async function saveDetails(id, data) {
 function isFilmCached(title, year, kind) {
   const key = makeKindKey(title, year, kind);
   if (!hasKey(key)) return false;
-  const value = getIndexValue(key);
-  if (value === false) return true;
-  if (value === undefined) return false;
-  return hasDetails(value, kind);
+  const entry = getIndexEntry(key);
+  if (entry === false) return true;
+  if (entry === undefined) return false;
+  // A manual match may point at the other media kind.
+  return hasDetails(entry.id, entry.kind || kind);
 }
 
 function cacheStats() {
   let ids = 0;
   let misses = 0;
   for (const value of Object.values(index)) {
-    if (value === false) misses++;
-    else if (typeof value === 'number') ids++;
+    const entry = parseIndexEntry(value);
+    if (entry === false) misses++;
+    else if (entry) ids++;
   }
   return { keys: Object.keys(index).length, ids, misses };
 }
@@ -230,6 +259,7 @@ module.exports = {
   normalizeTitle,
   makeKey,
   makeKindKey,
+  getIndexEntry,
   getIndexValue,
   hasKey,
   setIndexValue,

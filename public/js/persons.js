@@ -1,8 +1,9 @@
 /* Persons widget: role switcher, ranked list, batched rendering, filmography modal. */
 
 import {
-  $, el, clear, fmtInt, fmtRating, plural, icon, toNum, emptyState, slugTitle,
+  $, el, clear, fmtInt, fmtRating, plural, toNum, emptyState, slugTitle,
 } from './ui.js';
+import { openModal as openModalShell } from './modal.js';
 
 const INITIAL = 15;
 const BATCH = 50;
@@ -403,9 +404,6 @@ function filmRow(film) {
 
 function openModal(person) {
   if (closeModalFn) closeModalFn();
-  const modalRoot = $('modal-root');
-  if (!modalRoot) return;
-
   const films = (Array.isArray(person.films) ? person.films : [])
     .filter((film) => film && film.filmSlug)
     .slice()
@@ -416,14 +414,6 @@ function openModal(person) {
   const counted = Math.min(total, Math.max(countedFromFilms, toNum(person.counted)));
   const excluded = Math.max(0, total - counted);
   const avg = avgRatingFor(person);
-
-  const backdrop = el('div', { class: 'modal-backdrop' });
-  const panel = el('div', {
-    class: 'modal',
-    role: 'dialog',
-    'aria-modal': 'true',
-    'aria-labelledby': 'person-modal-title',
-  });
 
   const head = el('div', { class: 'modal-head' });
   head.append(avatarEl(person.name, person.profilePath, 'modal-portrait'));
@@ -443,15 +433,6 @@ function openModal(person) {
   if (avg != null) hintParts.push(`Средняя оценка по учтённым фильмам — ${fmtRating(avg)}.`);
   if (hintParts.length) copy.append(el('p', { class: 'modal-hint', text: hintParts.join(' ') }));
   head.append(copy);
-  panel.append(head);
-
-  const closeButton = el('button', {
-    type: 'button',
-    class: 'modal-close',
-    'aria-label': 'Закрыть',
-    html: icon('close', 16),
-  });
-  head.append(closeButton);
 
   const body = el('div', { class: 'modal-body' });
   if (!films.length) {
@@ -484,54 +465,14 @@ function openModal(person) {
     };
     loadBatch();
   }
-  panel.append(body);
-  backdrop.append(panel);
 
-  let closed = false;
-  const previouslyFocused = document.activeElement;
-
-  const onKeyDown = (event) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      close();
-      return;
-    }
-    if (event.key !== 'Tab') return;
-    const focusable = Array.from(panel.querySelectorAll(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    )).filter((node) => !node.disabled && node.offsetParent !== null);
-    if (!focusable.length) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
-  function close() {
-    if (closed) return;
-    closed = true;
-    document.removeEventListener('keydown', onKeyDown);
-    backdrop.remove();
-    document.body.classList.remove('modal-open');
-    closeModalFn = null;
-    if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
-      previouslyFocused.focus();
-    }
-  }
-
-  closeButton.addEventListener('click', close);
-  backdrop.addEventListener('pointerdown', (event) => {
-    if (event.target === backdrop) close();
+  const modal = openModalShell({
+    head,
+    body,
+    labelledBy: 'person-modal-title',
+    onClose: () => {
+      closeModalFn = null;
+    },
   });
-
-  closeModalFn = close;
-  document.addEventListener('keydown', onKeyDown);
-  document.body.classList.add('modal-open');
-  modalRoot.append(backdrop);
-  closeButton.focus();
+  if (modal) closeModalFn = modal.close;
 }

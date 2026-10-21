@@ -46,12 +46,52 @@ async function request(url, options = {}) {
 
   const payload = await readBody(response);
   if (!response.ok) {
+    const code = payload && typeof payload === 'object' ? payload.error : '';
+    // The backend protects every /api/* route once a password is configured.
+    // Any protected call may discover that the cookie expired — let the app
+    // switch to the login view instead of surfacing a generic 401.
+    if (response.status === 401 && code === 'auth_required' && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('kinoboxd:auth-required'));
+    }
     throw new ApiError(
       describe(payload, `Сервер ответил ${response.status}`),
       { status: response.status, payload },
     );
   }
   return payload;
+}
+
+/* ---------------- auth ---------------- */
+
+export function getAuthSession() {
+  return request('/api/auth/session');
+}
+
+export function login(password) {
+  return request('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function logout() {
+  return request('/api/auth/logout', { method: 'POST' });
+}
+
+/* ---------------- manual matching ---------------- */
+
+export function searchTmdb(query, kind = 'all', { signal } = {}) {
+  const params = new URLSearchParams({ q: String(query || ''), kind: kind || 'all' });
+  return request(`/api/tmdb/search?${params.toString()}`, { signal });
+}
+
+export function matchFilm({ uploadId, slug, tmdbId, kind }) {
+  return request('/api/match', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uploadId, slug, tmdbId, kind }),
+  });
 }
 
 export function uploadZip(file) {

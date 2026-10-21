@@ -2,10 +2,14 @@
 
 import {
   $, el, clear, fmtInt, fmtPercent, fmtRating, fmtPeriod, fmtWatchTime, plural, icon,
-  monthShort, toNum, emptyState, showTooltip, moveTooltip, hideTooltip, debounce,
+  monthShort, toNum, emptyState, showTooltip, moveTooltip, hideTooltip, debounce, slugTitle,
 } from './ui.js';
 import { renderDonut, renderTimeline, renderYearBars } from './charts.js';
 import { initPersons } from './persons.js';
+import { openFilmListModal, filmCountPhrase } from './modal.js';
+import { openUnmatchedModal } from './unmatched.js';
+
+let dashHooks = {};
 
 const RATING_COLORS = [
   '#e8253f', '#f1553b', '#ff7a30', '#ffa42b', '#ffd23f',
@@ -51,6 +55,14 @@ function normalizeStats(raw) {
   const sourceRaw = summary.source && typeof summary.source === 'object' ? summary.source : null;
   const array = (value) => (Array.isArray(value) ? value : []);
 
+  const unmatched = array(source.unmatched)
+    .map((item) => ({
+      slug: String(item && item.slug ? item.slug : '').trim(),
+      title: String(item && item.title ? item.title : '').trim(),
+      year: toNum(item && item.year),
+    }))
+    .filter((item) => item.slug);
+
   return {
     summary: {
       filmCount: toNum(summary.filmCount),
@@ -58,6 +70,7 @@ function normalizeStats(raw) {
       dateFrom: summary.dateFrom || null,
       dateTo: summary.dateTo || null,
       totalMinutes: numOrNull(summary.totalMinutes),
+      unmatchedCount: Math.max(unmatched.length, Math.max(0, toNum(summary.unmatchedCount))),
       source: sourceRaw ? {
         type: String(sourceRaw.type || '').trim().toLowerCase(),
         kpUserId: sourceRaw.kpUserId != null ? String(sourceRaw.kpUserId) : '',
@@ -65,6 +78,7 @@ function normalizeStats(raw) {
         fetchedAt: sourceRaw.fetchedAt || null,
       } : null,
     },
+    unmatched,
     ratings: array(source.ratings)
       .map((item) => ({ score: toNum(item && item.score, -1), count: Math.max(0, toNum(item && item.count)) }))
       .filter((item) => item.score >= 0 && item.score <= 10),
@@ -102,7 +116,8 @@ function normalizeStats(raw) {
   };
 }
 
-export function renderDashboard(rawStats) {
+export function renderDashboard(rawStats, hooks = {}) {
+  dashHooks = hooks && typeof hooks === 'object' ? hooks : {};
   const stats = normalizeStats(rawStats);
   const isKinopoisk = Boolean(stats.summary.source && stats.summary.source.type === 'kinopoisk');
   const kicker = $('dash-kicker');
@@ -182,6 +197,47 @@ function renderSummary(stats) {
   ));
 
   host.append(renderSourceMetric(summary.source));
+
+  host.classList.toggle('has-unmatched', summary.unmatchedCount > 0);
+  if (summary.unmatchedCount > 0) host.append(renderUnmatchedMetric(stats));
+}
+
+/* unmatched tile: only when there is at least one film without a TMDB match */
+function renderUnmatchedMetric(stats) {
+  const count = stats.summary.unmatchedCount;
+  const node = el('button', {
+    type: 'button',
+    class: 'metric metric-unmatched',
+    id: 'metric-unmatched',
+    title: `Не распознано: ${fmtInt(count)} — открыть список`,
+    'aria-label': `Не распознано: ${fmtInt(count)}. Открыть список фильмов без пары`,
+  });
+
+  const labelNode = el('div', { class: 'metric-label' });
+  labelNode.innerHTML = icon('alert', 12);
+  labelNode.append(document.createTextNode('не распознано'));
+  node.append(labelNode);
+  node.append(el('div', {
+    class: 'metric-value',
+    text: fmtInt(count),
+  }));
+  node.append(el('div', {
+    class: 'metric-sub',
+    text: count > 0 ? 'сматчить вручную' : 'всё найдено',
+  }));
+
+  node.addEventListener('click', () => {
+    hideTooltip();
+    openUnmatchedModal({
+      items: stats.unmatched,
+      uploadId: typeof dashHooks.getUploadId === 'function' ? dashHooks.getUploadId() : null,
+      onMatched: () => {
+        if (typeof dashHooks.refreshStats === 'function') return dashHooks.refreshStats();
+        return null;
+      },
+    });
+  });
+  return node;
 }
 
 /* source tile: Letterboxd ZIP or Kinopoisk profile */
@@ -457,7 +513,8 @@ function renderYearBarsWidget(stats) {
     host._boxdResize = null;
   }
 
-  renderYearBars(host, stats.years);
+  const onYearClick = (year) => openYearModal(stats, year);
+  renderYearBars(host, stats.years, { onYearClick });
 
   const years = stats.years.slice().sort((a, b) => a.year - b.year);
   const note = $('yearbars-note');
@@ -470,12 +527,56 @@ function renderYearBarsWidget(stats) {
   if (typeof ResizeObserver === 'function') {
     const rerender = debounce(() => {
       if (!host.clientWidth) return;
-      renderYearBars(host, stats.years);
+      renderYearBars(host, stats.years, { onYearClick });
     }, 160);
     const observer = new ResizeObserver(rerender);
     observer.observe(host);
     host._boxdResize = observer;
   }
+}
+
+/* Year column click: films of that release year, user rating first. */
+function filmsForYear(filmsIndex, year) {
+  const target = toNum(year);
+  if (!target) return [];
+  const films = [];
+  for (const [slug, entry] of Object.entries(filmsIndex || {})) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (toNum(entry.year) !== target) continue;
+    films.push({
+      slug,
+      title: entry.title || slugTitle(slug),
+      year: target,
+      posterPath: entry.posterPath || null,
+      rating: numOrNull(entry.rating),
+      voteAverage: numOrNull(entry.voteAverage),
+    });
+  }
+  films.sort((a, b) => {
+    const ratingDiff = (b.rating == null ? -1 : b.rating) - (a.rating == null ? -1 : a.rating);
+    if (ratingDiff) return ratingDiff;
+    const voteDiff = (b.voteAverage == null ? -1 : b.voteAverage) - (a.voteAverage == null ? -1 : a.voteAverage);
+    if (voteDiff) return voteDiff;
+    return a.title.localeCompare(b.title, 'ru');
+  });
+  return films;
+}
+
+function openYearModal(stats, year) {
+  const films = filmsForYear(stats.filmsIndex, year);
+  const count = films.length;
+  const n = toNum(year);
+  openFilmListModal({
+    kicker: 'Просмотры по годам проката',
+    title: filmCountPhrase(count, n),
+    subtitle: `${String(n)} год · ${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])} в выгрузке`,
+    hint: n ? 'Сортировка: сначала высокая ваша оценка, затем рейтинг TMDB.' : '',
+    groupLabel: String(n),
+    groupNote: count ? 'ваша оценка ↓' : '',
+    emptyText: 'Для этого года нет фильмов с карточкой TMDB',
+    batch: 60,
+    films,
+  });
 }
 
 /* =========================================================
