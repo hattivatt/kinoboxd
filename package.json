@@ -1,0 +1,21 @@
+{
+  "name": "kinoboxd",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Letterboxd statistics backend with TMDB enrichment",
+  "type": "commonjs",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "cheerio": "^1.2.0",
+    "compression": "^1.8.2",
+    "express": "^4.21.2",
+    "multer": "^2.4.0"
+  }
+}

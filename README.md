@@ -1,0 +1,83 @@
+# kinoboxd — backend
+
+Node.js/Express backend for Letterboxd and KinoPoisk statistics with TMDB
+enrichment (package `kinoboxd`).
+
+## Run
+
+```bash
+cd app
+npm install
+npm start          # http://localhost:3000  (PORT env overrides)
+```
+
+## Доступ из локальной сети
+
+Сервер слушает на всех интерфейсах (`0.0.0.0`/`::`), поэтому с соседнего
+компьютера в той же сети он открывается по IP этого ПК:
+
+```
+http://<IP-этого-ПК>:3000
+```
+
+IP можно узнать двумя способами:
+
+* в выводе при старте сервера — он печатает все локальные IPv4-адреса:
+  `[server]   → http://192.168.x.x:3000  (wlp1s0)`;
+* командой `ip addr` (или `ip -4 addr`), смотреть `inet` у активного
+  интерфейса (`wlan0`, `wlp1s0`, `enp...` и т.п.).
+
+Если с другого устройства страница не открывается, скорее всего подключение
+режет брандмауэр: проверь `sudo ufw status` (при необходимости
+`sudo ufw allow 3000/tcp`) либо правила nftables (`sudo nft list ruleset`).
+Также убедись, что оба устройства в одной подсети и на роутере не включена
+изоляция клиентов (AP isolation).
+
+TMDB read-access token (v4): set `TMDB_API_TOKEN` in the environment
+(`TMDB_READ_ACCESS_TOKEN` works as an alias). For local development the
+server also accepts a one-line `config/tmdb-token` file, which is
+intentionally not committed. If neither is present, startup fails with
+`TMDB-токен не найден: задай TMDB_API_TOKEN (read access token v4) в окружении`.
+
+Frontend static files live in `app/public` (`index.html` is served for all
+non-API routes).
+
+## Troubleshooting
+
+Порт 3000 занят. Возможно, сервер уже запущен на http://localhost:3000, либо запусти с другим портом: PORT=3001 npm start
+
+## API
+
+| Method | Route | Description |
+| --- | --- | --- |
+| POST | `/api/upload` | multipart/form-data, field `file` = Letterboxd ZIP |
+| POST | `/api/enrich` | `{ "uploadId": "..." }`, starts background enrichment |
+| GET | `/api/enrich/status?uploadId=...` | `{ total, matched, failed, done }` |
+| GET | `/api/stats?uploadId=...` | full statistics payload (400 until enrichment is done) |
+| GET | `/api/health` | liveness probe |
+
+CSV files are located by basename anywhere inside the ZIP, so nested folders
+work. `diary.csv` / `watched.csv` / `ratings.csv` are parsed with a proper
+quoted-CSV parser.
+
+## Cache
+
+* `cache/index.json` — `"normalized title|year"` → TMDB id or `false`
+  (definitively not found, e.g. TV series that TMDB `/search/movie` can't
+  return).
+* `cache/details/{tmdbId}.json` — `{ details, credits }`.
+
+The cache is global and persisted before/after restart. A second upload with
+overlapping films performs no network requests.
+
+TMDB requests are capped at 12 concurrent; HTTP 429 is retried up to 5 times
+with `Retry-After`/exponential backoff.
+
+## Note on Letterboxd slugs
+
+`diary.csv` in real exports contains per-user short links
+(`boxd.it/85jq3H` → `letterboxd.com/<user>/film/...`) while `watched.csv`
+contains canonical links (`boxd.it/29Xu` → `letterboxd.com/film/...`) for the
+same film. Taking the last URI segment literally would count the same film
+twice. Diary/ratings rows are therefore merged into the watched film with the
+same normalized title+year when possible; otherwise the URI slug is used.

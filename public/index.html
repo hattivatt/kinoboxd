@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#14181c">
+  <meta name="description" content="kinoboxd — статистика просмотров: оценки, жанры, десятилетия, годы и персоналии.">
+  <title>kinoboxd — твоя киностатистика</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2314181c'/%3E%3Cpath d='M18 13h8v15l12-15h10L34 31l15 20H39L26 34v17h-8z' fill='%23e7edf3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body data-view="boot">
+  <div class="bg-glow" aria-hidden="true"></div>
+
+  <main id="app">
+    <!-- ───────────────────────── boot ───────────────────────── -->
+    <section class="view view-center" data-view="boot">
+      <div class="boot-card">
+        <div class="spinner spinner-lg" id="boot-spinner" aria-hidden="true"></div>
+        <p class="boot-text" id="boot-text">Проверяем прошлую выгрузку…</p>
+        <div id="boot-error" hidden></div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── upload ───────────────────────── -->
+    <section class="view view-center" data-view="upload" hidden>
+      <div class="upload-shell">
+        <div class="hero">
+          <div class="kicker hero-kicker">твоя киноистория</div>
+          <h1 class="hero-title">
+            <span class="brand-word">kino</span><span class="brand-word accent">boxd</span>
+          </h1>
+          <p class="hero-sub">Оценки, жанры, десятилетия и люди за кадром — из выгрузки Letterboxd или профиля Кинопоиска.</p>
+        </div>
+
+        <div class="upload-card">
+          <div class="upload-source" id="upload-source">
+            <div class="source-tabs" role="tablist" aria-label="Источник статистики">
+              <button type="button" class="source-tab is-active" id="source-tab-letterboxd" data-source-tab="letterboxd" role="tab" aria-selected="true" aria-controls="source-panel-letterboxd">
+                <span class="source-tab-radio" aria-hidden="true"></span>
+                <span class="source-tab-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/>
+                    <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+                  </svg>
+                </span>
+                <span class="source-tab-copy">
+                  <span class="source-tab-title">Выгрузка Letterboxd</span>
+                  <span class="source-tab-hint">ZIP-архив из Settings → Data</span>
+                </span>
+              </button>
+
+              <button type="button" class="source-tab" id="source-tab-kinopoisk" data-source-tab="kinopoisk" role="tab" aria-selected="false" aria-controls="source-panel-kinopoisk" tabindex="-1">
+                <span class="source-tab-radio" aria-hidden="true"></span>
+                <span class="source-tab-icon is-kp" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 4v16M19.5 4 8.5 12l11 8"/>
+                  </svg>
+                </span>
+                <span class="source-tab-copy">
+                  <span class="source-tab-title">Профиль Кинопоиска</span>
+                  <span class="source-tab-hint">Импорт оценок по ссылке</span>
+                </span>
+              </button>
+            </div>
+
+            <div class="source-panel" id="source-panel-letterboxd" role="tabpanel" aria-labelledby="source-tab-letterboxd" data-source-panel="letterboxd">
+              <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Загрузить ZIP-выгрузку Letterboxd">
+                <div class="dz-content" id="dz-content">
+                  <div class="dz-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/>
+                      <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+                    </svg>
+                  </div>
+                  <div class="dz-title">Перетащи сюда ZIP-выгрузку</div>
+                  <div class="dz-hint">или нажми, чтобы выбрать файл · только .zip</div>
+                  <span class="btn btn-primary dz-btn">Выбрать архив</span>
+                </div>
+                <div class="dz-busy" id="dz-busy" hidden>
+                  <div class="spinner" aria-hidden="true"></div>
+                  <div class="dz-title">Распаковываем архив…</div>
+                  <div class="dz-hint" id="dz-busy-name"></div>
+                </div>
+              </div>
+
+              <input type="file" id="file-input" accept=".zip,application/zip,application/x-zip-compressed" hidden>
+
+              <div class="upload-help">
+                <span>Где взять архив?</span> Letterboxd → Settings → Data → Export your data
+              </div>
+            </div>
+
+            <div class="source-panel" id="source-panel-kinopoisk" role="tabpanel" aria-labelledby="source-tab-kinopoisk" data-source-panel="kinopoisk" hidden>
+              <form class="kp-form" id="kp-form" novalidate>
+                <label class="kp-label" for="kp-url">Ссылка на профиль <span>kinopoisk.ru/user/&lt;id&gt;</span></label>
+                <div class="kp-field">
+                  <span class="kp-field-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/>
+                      <path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1"/>
+                    </svg>
+                  </span>
+                  <input class="kp-input" id="kp-url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://www.kinopoisk.ru/user/15702206/">
+                </div>
+                <div class="kp-error" id="kp-error" role="alert" hidden></div>
+                <button type="submit" class="btn btn-primary kp-submit" id="kp-submit">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 4v11m0 0l-4-4m4 4l4-4"/><path d="M5 19h14"/>
+                  </svg>
+                  <span id="kp-submit-label">Импорт</span>
+                </button>
+                <p class="kp-note">Профиль должен быть открытым. Первый импорт занимает 30–90 секунд: сервер соберёт оценки и сопоставит фильмы с TMDB.</p>
+              </form>
+            </div>
+          </div>
+
+          <div id="upload-error" hidden></div>
+          <div class="upload-preview" id="upload-preview" hidden></div>
+
+          <button type="button" class="btn btn-link back-to-dash" id="back-to-dash" hidden>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+            Вернуться к статистике
+          </button>
+        </div>
+
+        <div class="hero-notes">
+          <span><i class="mini-dot green"></i>оценки и дневник</span>
+          <span><i class="mini-dot orange"></i>TMDB-карточки</span>
+          <span><i class="mini-dot blue"></i>актёры и съёмочная группа</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── enrich / import progress ───────────────────────── -->
+    <section class="view view-center" data-view="enrich" hidden>
+      <div class="progress-shell">
+        <div class="progress-card">
+          <ol class="stage-steps" id="stage-steps" hidden aria-label="Этапы импорта">
+            <li class="stage-step is-active" data-stage="scrape">
+              <span class="stage-num" aria-hidden="true">1</span>
+              <span class="stage-copy"><b>Сбор оценок</b><span>Кинопоиск</span></span>
+            </li>
+            <li class="stage-sep" aria-hidden="true"></li>
+            <li class="stage-step" data-stage="enrich">
+              <span class="stage-num" aria-hidden="true">2</span>
+              <span class="stage-copy"><b>Матчинг</b><span>TMDB</span></span>
+            </li>
+          </ol>
+
+          <div class="progress-top">
+            <div class="kicker" id="progress-kicker">TMDB · обогащение</div>
+            <h2 id="progress-title">Собираем детали фильмов</h2>
+            <p class="progress-status" id="enrich-status" aria-live="polite">Готовим запрос…</p>
+          </div>
+
+          <div class="scrape-block" id="scrape-block" hidden>
+            <div class="scrape-meta">
+              <span id="scrape-page">Страница —</span>
+              <span class="scrape-hint">оценки Кинопоиска</span>
+            </div>
+            <div class="progress-bar progress-bar-scrape" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="scrape-progressbar">
+              <div class="progress-fill" id="scrape-fill"></div>
+            </div>
+          </div>
+
+          <div class="enrich-block" id="enrich-block">
+            <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="enrich-progressbar">
+              <div class="progress-fill" id="enrich-fill"></div>
+            </div>
+
+            <div class="progress-nums">
+              <div><b id="enrich-matched">0</b><span>найдено</span></div>
+              <div><b id="enrich-total">0</b><span>всего</span></div>
+              <div><b id="enrich-failed">0</b><span>не найдено</span></div>
+              <div class="progress-pct" id="enrich-pct">0%</div>
+            </div>
+          </div>
+
+          <div id="enrich-error" hidden></div>
+
+          <div class="progress-foot">
+            <span class="pulse-dot" aria-hidden="true"></span>
+            <span id="progress-foot-text">Прогресс обновляется каждую секунду. Вкладку можно свернуть — импорт идёт на сервере.</span>
+          </div>
+        </div>
+
+        <button type="button" class="btn btn-link" id="enrich-restart">Выбрать другую выгрузку</button>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── dashboard ───────────────────────── -->
+    <section class="view" data-view="dashboard" hidden>
+      <header class="topbar">
+        <div class="topbar-inner">
+          <div class="brand" aria-label="kinoboxd">
+            <span class="brand-name">kino<span class="accent">boxd</span></span>
+          </div>
+          <div class="topbar-actions">
+            <button type="button" class="btn btn-ghost" id="replace-upload">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+              </svg>
+              <span>Заменить выгрузку</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="dash" id="dash">
+        <div class="dash-hero">
+          <div class="kicker dash-kicker" id="dash-kicker">Letterboxd · сводка</div>
+          <h1>Твоя киностатистика</h1>
+          <p class="dash-sub" id="dash-sub">Собрано из дневника, оценок и карточек TMDB.</p>
+        </div>
+
+        <div class="summary-strip" id="summary-strip"></div>
+
+        <div class="widgets" id="widgets">
+          <section class="widget w-ratings" aria-labelledby="w-ratings-title">
+            <div class="widget-head">
+              <h2 class="widget-title" id="w-ratings-title"><span class="w-dot green"></span>Распределение по оценкам</h2>
+              <span class="widget-note" id="ratings-note"></span>
+            </div>
+            <div class="ratings-body">
+              <div class="legend-host" id="ratings-legend"></div>
+              <div class="donut-host" id="ratings-donut"></div>
+            </div>
+          </section>
+
+          <section class="widget w-genres" aria-labelledby="w-genres-title">
+            <div class="widget-head">
+              <h2 class="widget-title" id="w-genres-title"><span class="w-dot green"></span>Жанры</h2>
+              <span class="widget-note" id="genres-note"></span>
+            </div>
+            <div class="genre-list" id="genres-list"></div>
+          </section>
+
+          <section class="widget w-decades" aria-labelledby="w-decades-title">
+            <div class="widget-head">
+              <h2 class="widget-title" id="w-decades-title"><span class="w-dot blue"></span>Десятилетия</h2>
+              <span class="widget-note" id="decades-note"></span>
+            </div>
+            <div class="split-body">
+              <div class="legend-host legend-scroll" id="decades-legend"></div>
+              <div class="donut-host" id="decades-donut"></div>
+            </div>
+          </section>
+
+          <section class="widget w-years" aria-labelledby="w-years-title">
+            <div class="widget-head">
+              <h2 class="widget-title" id="w-years-title"><span class="w-dot orange"></span>Годы</h2>
+              <span class="widget-note" id="years-note"></span>
+            </div>
+            <div class="split-body">
+              <div class="legend-host legend-scroll" id="years-legend"></div>
+              <div class="donut-host" id="years-donut"></div>
+            </div>
+          </section>
+
+          <section class="widget w-yearbars" aria-labelledby="w-yearbars-title">
+            <div class="widget-head">
+              <h2 class="widget-title" id="w-yearbars-title"><span class="w-dot orange"></span>Просмотры по годам проката</h2>
+              <span class="widget-note" id="yearbars-note"></span>
+            </div>
+            <div class="chart-scroll">
+              <div id="yearbars-chart"></div>
+            </div>
+            <div class="chart-foot">
+              <span><i class="swatch orange"></i>просмотры по году выпуска фильма</span>
+              <span class="chart-foot-hint">наведи на столбик, чтобы увидеть год</span>
+            </div>
+          </section>
+
+          <section class="widget w-timeline" aria-labelledby="w-timeline-title">
+            <div class="widget-head">
+              <h2 class="widget-title" id="w-timeline-title"><span class="w-dot orange"></span>История просмотров</h2>
+              <span class="widget-note" id="timeline-note"></span>
+            </div>
+            <div class="chart-scroll">
+              <div id="timeline-chart"></div>
+            </div>
+            <div class="chart-foot">
+              <span><i class="swatch orange"></i>просмотры</span>
+              <span class="chart-foot-hint">наведи на столбик, чтобы увидеть месяц</span>
+            </div>
+          </section>
+
+          <section class="widget w-persons" aria-labelledby="w-persons-title">
+            <div class="widget-head persons-head">
+              <h2 class="widget-title" id="w-persons-title"><span class="w-dot green"></span>Персоналии</h2>
+              <div class="persons-toolbar">
+                <span class="widget-note" id="persons-note"></span>
+                <div class="select-wrap">
+                  <select id="persons-role" class="select" aria-label="Категория персоналий">
+                    <option value="actor">Актёры</option>
+                    <option value="director">Режиссёры</option>
+                    <option value="writer">Сценаристы</option>
+                    <option value="composer">Композиторы</option>
+                  </select>
+                  <svg class="select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="persons-search" id="persons-search-wrap" hidden>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+              <input type="search" id="persons-search" class="search-input" placeholder="Поиск по имени" autocomplete="off">
+            </div>
+
+            <div class="person-list" id="person-list"></div>
+            <div class="persons-more" id="persons-more"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+  <div id="modal-root"></div>
+
+  <noscript>
+    <p style="padding:24px;text-align:center;color:#e8edf2">Для работы kinoboxd нужен JavaScript.</p>
+  </noscript>
+
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,218 @@
+'use strict';
+
+const cache = require('./cache');
+const tmdb = require('./tmdb');
+
+const jobs = new Map();
+const inflight = new Map();
+
+const CONCURRENCY = tmdb.MAX_CONCURRENCY;
+
+/* ------------------------------------------------------------------ */
+/* One film: cache first, network only when needed                     */
+/* ------------------------------------------------------------------ */
+
+async function resolveFilm(film) {
+  const kind = film.kind === 'tv' ? 'tv' : 'movie';
+  const indexKey = cache.makeKindKey(film.title, film.year, kind);
+
+  const fetchDetails = async (tmdbId) => {
+    const data =
+      kind === 'tv'
+        ? await tmdb.fetchTvData(tmdbId)
+        : await tmdb.fetchMovieData(tmdbId);
+    await cache.saveDetails(tmdbId, data);
+    return data;
+  };
+
+  const cachedValue = cache.getIndexValue(indexKey);
+  if (cachedValue === false) {
+    return { tmdbId: null, cached: true };
+  }
+  if (cachedValue !== undefined) {
+    if (cache.hasDetails(cachedValue, kind)) {
+      return { tmdbId: cachedValue, cached: true };
+    }
+    if (!cache.hasDetails(cachedValue)) {
+      // We know the id, but a previous run was interrupted before details
+      // and credits were stored: finish the job without searching again.
+      await fetchDetails(cachedValue);
+      return { tmdbId: cachedValue, cached: false };
+    }
+    // Details exist for the other media kind (stale index entry): fall
+    // through and search again instead of fetching the wrong endpoint.
+  }
+
+  // Several uploads may contain the same title/year; share one lookup.
+  if (inflight.has(indexKey)) {
+    const shared = await inflight.get(indexKey);
+    return { tmdbId: shared, cached: true };
+  }
+
+  const promise = (async () => {
+    const searchOptions = { language: film.searchLanguage || 'en-US' };
+    if (film.titleRu) searchOptions.fallbackTitle = film.titleRu;
+    const found =
+      kind === 'tv'
+        ? await tmdb.searchTv(film.title, film.year, searchOptions)
+        : await tmdb.searchMovie(film.title, film.year, searchOptions);
+    if (!found) {
+      cache.setIndexValue(indexKey, false);
+      return null;
+    }
+    cache.setIndexValue(indexKey, found.id);
+    // The search may resolve to a TMDB id that is already cached (e.g. the
+    // same film under a different localized title): do not re-fetch or
+    // overwrite its details.
+    if (cache.hasDetails(found.id, kind)) return found.id;
+    await fetchDetails(found.id);
+    return found.id;
+  })();
+
+  inflight.set(indexKey, promise);
+  try {
+    const tmdbId = await promise;
+    return { tmdbId, cached: false };
+  } finally {
+    inflight.delete(indexKey);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Jobs                                                                */
+/* ------------------------------------------------------------------ */
+
+function countCached(films) {
+  let count = 0;
+  for (const film of films) {
+    if (cache.isFilmCached(film.title, film.year, film.kind)) count++;
+  }
+  return count;
+}
+
+function startEnrich(upload) {
+  const { uploadId, films } = upload;
+  const existing = jobs.get(uploadId);
+  if (existing) {
+    return { accepted: true, total: existing.total, cached: existing.cached };
+  }
+
+  const job = {
+    uploadId,
+    total: films.length,
+    matched: 0,
+    failed: 0,
+    done: films.length === 0,
+    startedAt: Date.now(),
+    finishedAt: null,
+    cached: countCached(films),
+    films: new Map(), // slug -> { tmdbId, matched }
+    inFlight: 0,
+  };
+  jobs.set(uploadId, job);
+
+  if (films.length === 0) {
+    cache.flushIndex();
+    return { accepted: true, total: 0, cached: 0 };
+  }
+
+  runJob(job, films).catch((err) => {
+    console.error(`[enrich] Job ${uploadId} crashed unexpectedly:`, err);
+    job.done = true;
+    job.finishedAt = Date.now();
+    cache.flushIndex();
+  });
+
+  return { accepted: true, total: job.total, cached: job.cached };
+}
+
+function logProgress(job, processed, startedAt) {
+  const pct = Math.floor((processed / job.total) * 100);
+  if (pct < job._nextLogPct) return;
+  job._nextLogPct = Math.min(100, Math.floor(pct / 20) * 20 + 20);
+  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+  console.log(
+    `[enrich ${job.uploadId}] ${processed}/${job.total} (${pct}%) ` +
+      `matched=${job.matched} failed=${job.failed} elapsed=${elapsed}s`
+  );
+}
+
+async function runJob(job, films) {
+  const startedAt = Date.now();
+  let cursor = 0;
+  let processed = 0;
+  job._nextLogPct = 20;
+
+  const workerCount = Math.min(CONCURRENCY, films.length);
+
+  async function worker() {
+    while (true) {
+      const index = cursor++;
+      if (index >= films.length) return;
+      const film = films[index];
+
+      try {
+        const result = await resolveFilm(film);
+        job.films.set(film.slug, {
+          tmdbId: result.tmdbId,
+          matched: result.tmdbId != null,
+        });
+        if (result.tmdbId != null) job.matched++;
+        else job.failed++;
+      } catch (err) {
+        // Network/API failure: leave the film unmatched for this run but do
+        // not poison the cache, so a later enrich can try again.
+        job.failed++;
+        job.films.set(film.slug, { tmdbId: null, matched: false, error: true });
+        console.warn(
+          `[enrich] ${film.slug} "${film.title}" (${film.year}) failed: ${err.message}`
+        );
+      }
+
+      processed++;
+      job.processed = processed;
+      logProgress(job, processed, startedAt);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  cache.flushIndex();
+  job.done = true;
+  job.finishedAt = Date.now();
+  const seconds = ((job.finishedAt - startedAt) / 1000).toFixed(1);
+  console.log(
+    `[enrich ${job.uploadId}] done: total=${job.total} matched=${job.matched} ` +
+      `failed=${job.failed} in ${seconds}s (cache keys=${cache.cacheStats().keys})`
+  );
+}
+
+function getJob(uploadId) {
+  return jobs.get(uploadId) || null;
+}
+
+function getStatus(uploadId, totalHint) {
+  const job = jobs.get(uploadId);
+  if (!job) {
+    return {
+      total: totalHint || 0,
+      matched: 0,
+      failed: 0,
+      done: false,
+      started: false,
+    };
+  }
+  return {
+    total: job.total,
+    matched: job.matched,
+    failed: job.failed,
+    done: job.done,
+    started: true,
+  };
+}
+
+module.exports = {
+  startEnrich,
+  getJob,
+  getStatus,
+};

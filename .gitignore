@@ -1,0 +1,17 @@
+node_modules/
+cache/
+config/tmdb-token
+
+*.token
+.env
+.env.*
+*.log
+
+# local scratch files
+tmp/
+.tmp/
+*.tmp
+
+# nix build output (symlink to the store)
+result
+result-*
