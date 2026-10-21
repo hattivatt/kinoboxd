@@ -47,6 +47,7 @@ intentionally not committed. If neither is present, startup fails with
 | `TMDB_API_TOKEN` | TMDB read access token v4 (алиас: `TMDB_READ_ACCESS_TOKEN`; локально также `config/tmdb-token`) |
 | `KINOBOXD_PASSWORD` | Пароль для доступа к API. Если не задан/пустой — авторизация выключена, API открыто (дефолт для локальной разработки) |
 | `KINOBOXD_STATE_DIR` | Каталог состояния в Nix-сборке (по умолчанию `$XDG_STATE_HOME/kinoboxd`) |
+| `KINOBOXD_CACHE_DIR` | Переопределяет каталог кэша (по умолчанию `app/cache`). Удобно для тестов/нестандартной раскладки; изменяет и `index.json`/`details/`, и `kp/` |
 
 ### Пароль (опционально)
 
@@ -80,6 +81,8 @@ non-API routes).
 | POST | `/api/upload` | multipart/form-data, field `file` = Letterboxd ZIP |
 | POST | `/api/enrich` | `{ "uploadId": "..." }`, starts background enrichment |
 | GET | `/api/enrich/status?uploadId=...` | `{ total, matched, failed, done }` |
+| POST | `/api/import/kinopoisk` | `{ "url": "https://www.kinopoisk.ru/user/<id>/..." }`, starts a KinoPoisk import (or a delta refresh of a cached profile) |
+| GET | `/api/import/kinopoisk/status?uploadId=...` | `{ stage, page, pageTotal, total, matched, failed, done, warning }` |
 | GET | `/api/stats?uploadId=...` | full statistics payload (400 until enrichment is done) |
 | GET | `/api/tmdb/search?q=...&kind=movie\|tv\|all` | TMDB search for manual matching, `{ results: [{ id, kind, title, year, posterPath, voteAverage }] }` |
 | POST | `/api/match` | `{ uploadId, slug, tmdbId, kind }` — attach a TMDB entry to an unmatched film; repeat of the same match is idempotent (`alreadyMatched`), a different rematch returns 409 |
@@ -99,15 +102,50 @@ CSV files are located by basename anywhere inside the ZIP, so nested folders
 work. `diary.csv` / `watched.csv` / `ratings.csv` are parsed with a proper
 quoted-CSV parser.
 
+## KinoPoisk: delta refresh
+
+A profile that was already scraped is cached in `cache/kp/{userId}.json`.
+The next import does not blindly replay that file: it first compares it with
+KinoPoisk (one page of `perpage/200`, sorted by rating date, newest first) and
+downloads only the missing votes.
+
+Pipeline stages reported by `/api/import/kinopoisk/status`:
+
+`refresh` → `enrich` → `done` (the fast path; 1 KinoPoisk request)
+`refresh` → `scrape` → `enrich` → `done` (fallback re-scrape)
+`refresh` → `enrich` → `done` with `warning` (KinoPoisk unavailable, stale cache used)
+
+Rules:
+
+* novelty is decided by `kpId` set membership, not by `.num` (the numbering
+  shifts whenever a rating is added); new entries are prepended in
+  `ratedAt`-descending order so the entry schema stays identical to a full
+  scrape;
+* if page 1 is entirely unknown (very stale cache), pages 2..5 are fetched
+  until an entry from the cache appears (`REFRESH_MAX_PAGES = 5`);
+* if KinoPoisk reports fewer records than the cache, or cache + new would
+  exceed the reported total (ratings were deleted), the import falls back to
+  a full re-scrape; the same happens when no intersection is found within the
+  5-page cap;
+* if the refresh itself fails (captcha, network, parser), the import still
+  succeeds from the stale cache and adds `warning` to the status; `error` is
+  only set for a genuinely failed full scrape;
+* without a cached profile the import starts directly in `scrape` (old
+  behaviour). KinoPoisk requests stay serialized across imports, and
+  concurrent imports of the same user share one job.
+
 ## Cache
 
 * `cache/index.json` — `"normalized title|year"` → TMDB id, `false`
   (definitively not found, e.g. TV series that TMDB `/search/movie` can't
   return), or `{ id, kind }` for a manual match.
 * `cache/details/{tmdbId}.json` — `{ details, credits }`.
+* `cache/kp/{userId}.json` — `{ fetchedAt, kpNick, entries }` of a KinoPoisk
+  profile. Kept in sync with KinoPoisk by the delta refresh described above.
 
-The cache is global and persisted before/after restart. A second upload with
-overlapping films performs no network requests.
+The cache is global and persisted before/after restart. A second Letterboxd
+upload with overlapping films performs no TMDB requests (a KinoPoisk import
+still checks the profile's newest page, see above).
 
 TMDB requests are capped at 12 concurrent; HTTP 429 is retried up to 5 times
 with `Retry-After`/exponential backoff.

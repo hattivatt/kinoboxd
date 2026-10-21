@@ -4,7 +4,13 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 
-const CACHE_DIR = path.join(__dirname, '..', 'cache');
+// KINOBOXD_CACHE_DIR lets tests / alternative deployments point the whole
+// TMDB + KinoPoisk cache tree somewhere else. Defaults to app/cache so the
+// normal launcher (and the Nix wrapper, which copies server/ next to cache/)
+// keeps working unchanged.
+const CACHE_DIR = process.env.KINOBOXD_CACHE_DIR
+  ? path.resolve(process.env.KINOBOXD_CACHE_DIR)
+  : path.join(__dirname, '..', 'cache');
 const INDEX_PATH = path.join(CACHE_DIR, 'index.json');
 const DETAILS_DIR = path.join(CACHE_DIR, 'details');
 

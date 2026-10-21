@@ -9,6 +9,12 @@
  * through the very same TMDB enrichment pipeline that is used for the
  * Letterboxd uploads (server/enrich.js).
  *
+ * When the profile is already cached, an import first checks the newest page
+ * (sorted by rating date) and merges only the votes added since the last
+ * scrape; a full re-scrape is used when the profile shrank or changed too
+ * much. If that check fails (captcha/network) the cached data is used as-is
+ * and the job reports a warning.
+ *
  * Only one request at a time is made to KinoPoisk, with a 1.5-2.5 s delay
  * between page requests.
  *
@@ -58,6 +64,13 @@ const REQUEST_TIMEOUT_MS = 30000;
 const MIN_PAGE_DELAY_MS = 1500;
 const MAX_PAGE_DELAY_MS = 2500;
 const MAX_SCOPE = 60; // hard stop for pagination loops
+
+// A delta refresh normally needs exactly one page: the votes list is sorted by
+// rating date (newest first), so every new rating is at the top. If page 1 is
+// entirely new (the cached profile is very stale) we walk further pages until
+// an entry from the cache is seen, but never more than this many pages — past
+// that a full re-scrape is cheaper and safer.
+const REFRESH_MAX_PAGES = 5;
 
 // The list page offers 10/25/50/75/100/200 per page. 200 is applied through
 // the path segment built by the page's own selector (see the file header).
@@ -413,6 +426,46 @@ function detectNick($) {
   return null;
 }
 
+/**
+ * Total number of records in the profile, parsed from the pagination line
+ * "1—200 из 1371" ("1–200 of 1371"). Returns null when the page does not
+ * contain a recognisable summary; callers then skip count-based checks.
+ */
+function parseTotalCount($) {
+  const readNumber = (value) => {
+    const digits = String(value == null ? '' : value).replace(/[^\d]/g, '');
+    if (!digits) return null;
+    const n = Number(digits);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  const parseFrom = (text) => {
+    const value = cleanText(text);
+    if (!value) return null;
+    const match = value.match(
+      /(\d[\d\s\u00a0]*)\s*[—–-]\s*\d[\d\s\u00a0]*\s*из\s*(\d[\d\s\u00a0]*)/i
+    );
+    return match ? readNumber(match[2]) : null;
+  };
+
+  // Prefer the pagination widget, then fall back to the whole page text.
+  const selectors = [
+    '.navigator',
+    '.pages',
+    '.pagination',
+    '.paginator',
+    '.pageNavigation',
+    '.pager',
+  ];
+  for (const selector of selectors) {
+    const node = $(selector).first();
+    if (node.length === 0) continue;
+    const total = parseFrom(node.text());
+    if (total != null) return total;
+  }
+  return parseFrom($('body').text());
+}
+
 function parseVotesPage(html) {
   const $ = cheerio.load(html);
   const entries = [];
@@ -518,6 +571,7 @@ function parseVotesPage(html) {
     firstNum,
     skipped,
     maxPage,
+    totalCount: parseTotalCount($),
     kpNick: detectNick($),
   };
 }
@@ -526,7 +580,12 @@ function parseVotesPage(html) {
 /* Scraping                                                            */
 /* ------------------------------------------------------------------ */
 
-async function scrapeVotes(userId, onProgress) {
+/**
+ * Open an anonymous KinoPoisk session: bootstrap the SSO cookies against the
+ * 200-per-page votes root and pin the perpage cookie. Returns the cookie jar
+ * and the (possibly already fetched) first page response.
+ */
+async function openVotesSession(userId) {
   // Bootstrap against the 200-per-page page 1, so the SSO install endpoint
   // redirects straight to a 200-entry page even before the cookie is stored.
   const votesRoot = votesPageUrl(userId, 1);
@@ -556,11 +615,16 @@ async function scrapeVotes(userId, onProgress) {
   // this is a belt-and-braces measure against redirects dropping the path.)
   jar.set(PER_PAGE_COOKIE, perPageCookieValue());
 
-  let kpNick = null;
-  let pageTotal = null;
-  let page = 1;
-  let expectedNum = 1;
+  return { votesRoot, pageUrl, jar, state, boot };
+}
+
+/**
+ * Parse page 1, reusing the bootstrap response when it is a genuine
+ * 200-per-page page 1 and requesting it again otherwise.
+ */
+async function fetchFirstVotesPage(session, userId) {
   let parsed = null;
+  const boot = session.boot;
 
   if (boot.status === 200 && boot.body.includes('profileFilmsList')) {
     // The install endpoint already redirected to the votes page. Only trust
@@ -581,9 +645,26 @@ async function scrapeVotes(userId, onProgress) {
     }
   }
   if (!parsed) {
-    const html = await fetchVotesPage(pageUrl(1), votesRoot, jar, state);
+    const html = await fetchVotesPage(
+      session.pageUrl(1),
+      session.votesRoot,
+      session.jar,
+      session.state
+    );
     parsed = parseVotesPage(html);
   }
+  return parsed;
+}
+
+async function scrapeVotes(userId, onProgress) {
+  const session = await openVotesSession(userId);
+
+  let kpNick = null;
+  let pageTotal = null;
+  let page = 1;
+  let expectedNum = 1;
+
+  let parsed = await fetchFirstVotesPage(session, userId);
 
   const byKpId = new Map();
   if (parsed.kpNick) kpNick = parsed.kpNick;
@@ -631,10 +712,10 @@ async function scrapeVotes(userId, onProgress) {
     await sleep(randomPageDelay());
     page++;
     const nextHtml = await fetchVotesPage(
-      pageUrl(page),
-      votesRoot,
-      jar,
-      state
+      session.pageUrl(page),
+      session.votesRoot,
+      session.jar,
+      session.state
     );
     parsed = parseVotesPage(nextHtml);
     if (parsed.kpNick && !kpNick) kpNick = parsed.kpNick;
@@ -690,6 +771,198 @@ async function scrapeVotes(userId, onProgress) {
     pageTotal,
     fetchedAt: new Date().toISOString(),
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Delta refresh (cached profile -> check KinoPoisk for new votes)      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Newest ratedAt in an entry list (ISO strings sort lexicographically).
+ * Used only for logging/diagnostics: novelty itself is decided by kpId set
+ * membership, because .num is the position at the time of the scrape and
+ * shifts whenever a rating is added.
+ */
+function newestRatedAt(entries) {
+  let newest = null;
+  for (const entry of entries || []) {
+    if (!entry || !entry.ratedAt) continue;
+    const value = String(entry.ratedAt);
+    if (!newest || value > newest) newest = value;
+  }
+  return newest;
+}
+
+/**
+ * Prepend the freshly rated entries to the cached list, newest first, and
+ * deduplicate by kpId. Cached entries keep their original order/fields.
+ */
+function mergeKpEntries(newEntries, cachedEntries) {
+  const orderedNew = [...(newEntries || [])].sort((a, b) => {
+    const left = a && a.ratedAt ? String(a.ratedAt) : '';
+    const right = b && b.ratedAt ? String(b.ratedAt) : '';
+    if (left === right) return 0;
+    if (!left) return 1;
+    if (!right) return -1;
+    return left < right ? 1 : -1;
+  });
+
+  const seen = new Set();
+  const merged = [];
+  for (const entry of [...orderedNew, ...(cachedEntries || [])]) {
+    const kpId = Number(entry && entry.kpId);
+    if (!Number.isFinite(kpId) || seen.has(kpId)) continue;
+    seen.add(kpId);
+    merged.push(entry);
+  }
+  return merged;
+}
+
+/**
+ * Compare the cached profile with KinoPoisk.
+ *
+ * The votes list is ordered by rating date, newest first, so page 1 holds
+ * every rating added since the last scrape. We stop at the first entry that
+ * is already in the cache (the intersection point). If page 1 is entirely
+ * new (very stale cache) pages 2..REFRESH_MAX_PAGES are fetched until an
+ * intersection appears; if it still is not there, a full re-scrape is
+ * requested (the delta would be unbounded anyway).
+ *
+ * A smaller total count than the cache, or a merged size that would exceed
+ * KinoPoisk's reported total, means ratings were removed in KinoPoisk. Then
+ * merge would silently resurrect deleted entries, so the caller falls back
+ * to a full re-scrape as well.
+ *
+ * Returns { needsFullScrape, reason?, newEntries, pagesFetched, totalCount,
+ * kpNick }. Throws KpError when the network/captcha/parse step fails; the
+ * caller then keeps the stale cache.
+ */
+async function refreshVotes(userId, cached, onProgress) {
+  const cachedEntries = Array.isArray(cached.entries) ? cached.entries : [];
+  const cachedIds = new Set();
+  for (const entry of cachedEntries) {
+    const kpId = Number(entry && entry.kpId);
+    if (Number.isFinite(kpId)) cachedIds.add(kpId);
+  }
+
+  if (cachedIds.size === 0) {
+    // Nothing to diff against; treat this like a first import.
+    return {
+      needsFullScrape: true,
+      reason: 'cached profile has no entries',
+      newEntries: [],
+      pagesFetched: 0,
+      totalCount: null,
+      kpNick: cached.kpNick == null ? null : cached.kpNick,
+    };
+  }
+
+  const session = await openVotesSession(userId);
+  let parsed = await fetchFirstVotesPage(session, userId);
+  if (!parsed.entries || parsed.entries.length === 0) {
+    throw new KpError(
+      'Не удалось разобрать список оценок Кинопоиска (страница пуста).',
+      'kp_parse_error'
+    );
+  }
+
+  let pagesFetched = 1;
+  let kpNick = parsed.kpNick || cached.kpNick || null;
+  let totalCount = parsed.totalCount;
+  let intersection = false;
+  const newById = new Map();
+
+  const absorb = (pageParsed) => {
+    if (pageParsed.kpNick) kpNick = pageParsed.kpNick;
+    if (pageParsed.totalCount != null) totalCount = pageParsed.totalCount;
+    for (const entry of pageParsed.entries) {
+      const kpId = Number(entry.kpId);
+      if (!Number.isFinite(kpId)) continue;
+      if (cachedIds.has(kpId)) {
+        intersection = true;
+        continue;
+      }
+      if (!newById.has(kpId)) newById.set(kpId, entry);
+    }
+  };
+
+  absorb(parsed);
+  if (onProgress) {
+    onProgress({ page: 1, pageTotal: 1, total: newById.size });
+  }
+
+  // Page 1 was completely unknown: keep walking until the cached tail is
+  // reached. A short page means this was the end of the list, so there is
+  // nothing more to compare against anyway.
+  while (
+    !intersection &&
+    pagesFetched < REFRESH_MAX_PAGES &&
+    parsed.entries.length >= PER_PAGE
+  ) {
+    await sleep(randomPageDelay());
+    pagesFetched++;
+    const html = await fetchVotesPage(
+      session.pageUrl(pagesFetched),
+      session.votesRoot,
+      session.jar,
+      session.state
+    );
+    parsed = parseVotesPage(html);
+    if (!parsed.entries || parsed.entries.length === 0) break;
+    absorb(parsed);
+    if (onProgress) {
+      onProgress({
+        page: pagesFetched,
+        pageTotal: REFRESH_MAX_PAGES,
+        total: newById.size,
+      });
+    }
+    console.log(
+      `[kp ${userId}] refresh page ${pagesFetched}/${REFRESH_MAX_PAGES} ` +
+        `new=${newById.size} intersection=${intersection}`
+    );
+  }
+
+  const newEntries = [...newById.values()];
+  const base = {
+    newEntries,
+    pagesFetched,
+    totalCount,
+    kpNick,
+  };
+
+  if (!intersection) {
+    return {
+      ...base,
+      needsFullScrape: true,
+      reason:
+        cachedEntries.length > 0
+          ? `no cached entry found in ${pagesFetched} page(s)`
+          : 'cache is empty',
+    };
+  }
+
+  if (
+    totalCount != null &&
+    (totalCount < cachedIds.size || cachedIds.size + newEntries.length > totalCount)
+  ) {
+    return {
+      ...base,
+      needsFullScrape: true,
+      reason:
+        `count mismatch: KinoPoisk reports ${totalCount}, ` +
+        `cache has ${cachedIds.size}, new ${newEntries.length}`,
+    };
+  }
+
+  console.log(
+    `[kp ${userId}] delta refresh: ${newEntries.length} new entry(ies) ` +
+      `from ${pagesFetched} page(s), cache=${cachedIds.size}, ` +
+      `KP total=${totalCount == null ? '?' : totalCount}, ` +
+      `newest cached=${newestRatedAt(cachedEntries) || '?'}`
+  );
+
+  return { ...base, needsFullScrape: false };
 }
 
 /* ------------------------------------------------------------------ */
@@ -810,12 +1083,14 @@ function startImport(rawUrl) {
     );
   }
 
-  // Coalesce concurrent imports of the same profile: do not scrape (or
-  // enrich) one user twice in parallel.
+  // Coalesce concurrent imports of the same profile: do not scrape, refresh
+  // (or enrich) one user twice in parallel.
   for (const [existingId, existingJob] of jobs) {
     if (
       existingJob.userId === userId &&
-      (existingJob.stage === 'scrape' || existingJob.stage === 'enrich')
+      (existingJob.stage === 'scrape' ||
+        existingJob.stage === 'refresh' ||
+        existingJob.stage === 'enrich')
     ) {
       return { uploadId: existingId, userId, ...getStatus(existingId) };
     }
@@ -840,40 +1115,124 @@ function startImport(rawUrl) {
     events: [],
   });
 
+  const cached = readKpCache(userId);
+
   const job = {
     uploadId: upload.uploadId,
     userId,
-    stage: 'scrape',
-    page: 0,
-    pageTotal: null,
+    stage: cached ? 'refresh' : 'scrape',
+    page: cached ? 1 : 0,
+    pageTotal: cached ? 1 : null,
     total: 0,
     error: null,
+    warning: null,
     startedAt: Date.now(),
   };
   jobs.set(upload.uploadId, job);
 
-  const cached = readKpCache(userId);
   if (cached) {
     console.log(
-      `[kp ${userId}] using cache (${cached.entries.length} entries, fetched ${cached.fetchedAt})`
+      `[kp ${userId}] cache hit (${cached.entries.length} entries, fetched ${cached.fetchedAt}); refreshing delta`
     );
-    applyDataset(upload, buildDataset(userId, cached));
-    job.page = null;
-    job.pageTotal = null;
-    startEnrichment(upload, job);
-    return { uploadId: upload.uploadId, userId, ...getStatus(upload.uploadId) };
   }
 
+  // Both a full scrape and a delta refresh are serialized through the same
+  // chain: KinoPoisk requests never run in parallel across imports.
   scrapeChain = scrapeChain
-    .then(() => runScrape(upload, job))
+    .then(() => runImport(upload, job, cached))
     .catch((err) => {
-      console.error('[kp] scrape queue error:', err);
+      console.error('[kp] import queue error:', err);
+      // A throw outside scrapeVotes' own try/catch (e.g. a disk error while
+      // merging the delta) must not leave the job stuck in "refresh" forever.
+      if (job.stage !== 'done' && job.stage !== 'failed') {
+        job.stage = 'failed';
+        job.error = `Не удалось импортировать профиль Кинопоиска: ${
+          err && err.message ? err.message : 'неизвестная ошибка'
+        }`;
+      }
     });
 
   return { uploadId: upload.uploadId, userId, ...getStatus(upload.uploadId) };
 }
 
+/**
+ * Entry point of a queued import. Without a cached profile this is a plain
+ * full scrape; with one, only new votes are fetched and merged into the
+ * cache (falling back to a full scrape when the profile shrank or changed
+ * too much).
+ */
+async function runImport(upload, job, cached) {
+  if (!cached) return runScrape(upload, job);
+
+  job.stage = 'refresh';
+  job.page = 1;
+  job.pageTotal = 1;
+  job.total = Array.isArray(cached.entries) ? cached.entries.length : 0;
+
+  let result;
+  try {
+    result = await refreshVotes(job.userId, cached, (progress) => {
+      job.page = progress.page;
+      if (progress.pageTotal != null) job.pageTotal = progress.pageTotal;
+    });
+  } catch (err) {
+    // KinoPoisk is unavailable (captcha, network, parser): the cached
+    // profile is still valid data from the last successful import, so the
+    // import succeeds with a warning instead of failing outright.
+    const reason = err && err.message ? err.message : 'неизвестная ошибка';
+    job.warning = `Обновление профиля не удалось, взяты данные из кэша: ${reason}`;
+    console.warn(`[kp ${job.userId}] refresh failed; keeping cache: ${reason}`);
+    applyDataset(upload, buildDataset(job.userId, cached));
+    job.page = null;
+    job.pageTotal = null;
+    job.total = Array.isArray(cached.entries) ? cached.entries.length : 0;
+    startEnrichment(upload, job);
+    return;
+  }
+
+  if (result.needsFullScrape) {
+    console.log(
+      `[kp ${job.userId}] delta refresh -> full re-scrape (${result.reason})`
+    );
+    return runScrape(upload, job);
+  }
+
+  let data = cached;
+  if (result.newEntries.length > 0) {
+    data = {
+      fetchedAt: new Date().toISOString(),
+      kpNick:
+        result.kpNick != null
+          ? result.kpNick
+          : cached.kpNick == null
+          ? null
+          : cached.kpNick,
+      entries: mergeKpEntries(result.newEntries, cached.entries),
+    };
+    await writeKpCache(job.userId, data);
+    console.log(
+      `[kp ${job.userId}] delta merged: +${result.newEntries.length} new, ` +
+        `${data.entries.length} entries total`
+    );
+  } else {
+    // No changes: do not touch the cache file (keep its fetchedAt honest).
+    console.log(
+      `[kp ${job.userId}] delta refresh: no new votes, cache unchanged ` +
+        `(${cached.entries.length} entries)`
+    );
+  }
+
+  applyDataset(upload, buildDataset(job.userId, data));
+  job.page = result.pagesFetched || 1;
+  job.pageTotal = job.page;
+  job.total = data.entries.length;
+  startEnrichment(upload, job);
+}
+
 async function runScrape(upload, job) {
+  job.stage = 'scrape';
+  job.page = 0;
+  job.pageTotal = null;
   try {
     const result = await scrapeVotes(job.userId, (progress) => {
       job.page = progress.page;
@@ -922,6 +1281,7 @@ function getStatus(uploadId) {
     matched: enrichJob ? enrichJob.matched : 0,
     failed: enrichJob ? enrichJob.failed : 0,
     done: stage === 'done',
+    warning: job.warning || null,
   };
   if (job.error) status.error = job.error;
   return status;
@@ -935,6 +1295,8 @@ module.exports = {
   KpError,
   parseUserId,
   parseVotesPage,
+  mergeKpEntries,
+  refreshVotes,
   buildDataset,
   startImport,
   getStatus,

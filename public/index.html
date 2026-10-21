@@ -235,18 +235,48 @@
             <span class="brand-name">kino<span class="accent">boxd</span></span>
           </div>
           <div class="topbar-actions">
-            <button type="button" class="btn btn-ghost" id="replace-upload">
+            <button type="button" class="btn btn-ghost" id="replace-upload" aria-label="Заменить выгрузку" title="Заменить выгрузку">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
               </svg>
               <span>Заменить выгрузку</span>
             </button>
+            <div class="profile-switcher" id="profile-switcher">
+              <button type="button" class="btn btn-ghost profile-btn" id="profile-btn" aria-haspopup="dialog" aria-expanded="false" title="Сохранённые профили на этом устройстве">
+                <span class="profile-btn-dot" aria-hidden="true"></span>
+                <span class="profile-label" id="profile-btn-label">Профиль</span>
+                <svg class="profile-caret" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+              <div class="profile-menu" id="profile-menu" role="dialog" aria-label="Сохранённые профили" hidden>
+                <div class="profile-menu-head">
+                  <span>Профили на этом устройстве</span>
+                  <span class="profile-menu-hint">до 6</span>
+                </div>
+                <div class="profile-list" id="profile-list" role="listbox" aria-label="Список профилей"></div>
+                <button type="button" class="profile-add" id="profile-add">
+                  <span aria-hidden="true">+</span>
+                  <span>Загрузить новый профиль</span>
+                </button>
+              </div>
+            </div>
             <button type="button" class="btn btn-ghost btn-logout" id="logout-btn" hidden title="Выйти из аккаунта" aria-label="Выйти">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h9"/>
               </svg>
               <span>Выйти</span>
             </button>
+          </div>
+        </div>
+        <div class="topbar-banner" id="stale-banner" role="status" hidden>
+          <div class="topbar-banner-inner">
+            <span class="stale-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V13M12 16.5v.01"/></svg>
+            </span>
+            <span class="stale-copy">
+              <b id="stale-title">Данные устарели — сервер перезапущен</b>
+              <span id="stale-meta">Показаны сохранённые данные. Обновите профиль, чтобы получить свежую статистику.</span>
+            </span>
+            <button type="button" class="btn btn-primary btn-stale" id="stale-refresh">Обновить</button>
           </div>
         </div>
       </header>
@@ -293,7 +323,7 @@
 
           <section class="widget w-years" aria-labelledby="w-years-title">
             <div class="widget-head">
-              <h2 class="widget-title" id="w-years-title"><span class="w-dot orange"></span>Годы</h2>
+              <h2 class="widget-title" id="w-years-title"><span class="w-dot orange"></span><span id="years-title-text">Годы</span></h2>
               <span class="widget-note" id="years-note"></span>
             </div>
             <div class="split-body">

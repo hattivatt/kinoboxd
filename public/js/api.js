@@ -94,36 +94,38 @@ export function matchFilm({ uploadId, slug, tmdbId, kind }) {
   });
 }
 
-export function uploadZip(file) {
+export function uploadZip(file, { signal } = {}) {
   const form = new FormData();
   form.append('file', file, file.name);
-  return request('/api/upload', { method: 'POST', body: form });
+  return request('/api/upload', { method: 'POST', body: form, signal });
 }
 
-export function startEnrich(uploadId) {
+export function startEnrich(uploadId, { signal } = {}) {
   return request('/api/enrich', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ uploadId }),
+    signal,
   });
 }
 
-export function getEnrichStatus(uploadId) {
-  return request(`/api/enrich/status?uploadId=${encodeURIComponent(uploadId)}`);
+export function getEnrichStatus(uploadId, { signal } = {}) {
+  return request(`/api/enrich/status?uploadId=${encodeURIComponent(uploadId)}`, { signal });
 }
 
-export function getStats(uploadId) {
-  return request(`/api/stats?uploadId=${encodeURIComponent(uploadId)}`);
+export function getStats(uploadId, { signal } = {}) {
+  return request(`/api/stats?uploadId=${encodeURIComponent(uploadId)}`, { signal });
 }
 
-export function startKinopoiskImport(url) {
+export function startKinopoiskImport(url, { signal } = {}) {
   return request('/api/import/kinopoisk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
+    signal,
   });
 }
 
-export function getKinopoiskStatus(uploadId) {
-  return request(`/api/import/kinopoisk/status?uploadId=${encodeURIComponent(uploadId)}`);
+export function getKinopoiskStatus(uploadId, { signal } = {}) {
+  return request(`/api/import/kinopoisk/status?uploadId=${encodeURIComponent(uploadId)}`, { signal });
 }

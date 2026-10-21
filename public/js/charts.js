@@ -38,6 +38,12 @@ function ringSlice(cx, cy, outer, inner, from, to) {
 /**
  * Donut chart with optional interactive legend.
  *
+ * Interaction can run in two modes:
+ *  - uncontrolled (default, used by ratings): clicking pins a segment locally;
+ *  - controlled (`opts.onSelect` supplied, used by decades): clicking calls
+ *    onSelect(seg) and the caller owns the selection, passing it back via
+ *    opts.selectedKey and/or the returned `setSelected(key)` controller.
+ *
  * @param {HTMLElement} host
  * @param {object} opts
  * @param {Array<{key?:string,label:string,value:number,color:string}>} opts.segments
@@ -46,6 +52,9 @@ function ringSlice(cx, cy, outer, inner, from, to) {
  * @param {HTMLElement} [opts.legendHost]
  * @param {string} [opts.ariaLabel]
  * @param {(seg:object,total:number)=>string} [opts.secondary]
+ * @param {string|null} [opts.selectedKey] persistently highlighted segment
+ * @param {(seg:object)=>void} [opts.onSelect] controlled selection handler
+ * @returns {{setSelected:(key:string|null)=>void}}
  */
 export function renderDonut(host, opts = {}) {
   const { legendHost = null, ariaLabel = '' } = opts;
@@ -53,6 +62,8 @@ export function renderDonut(host, opts = {}) {
     .map((seg, index) => ({ ...seg, key: String(seg.key ?? index), value: toNum(seg.value) }))
     .filter((seg) => seg.value > 0);
   const total = segments.reduce((sum, seg) => sum + seg.value, 0);
+  const controlled = typeof opts.onSelect === 'function';
+  let selectedKey = opts.selectedKey != null ? String(opts.selectedKey) : null;
 
   clear(host);
   if (legendHost) clear(legendHost);
@@ -61,7 +72,7 @@ export function renderDonut(host, opts = {}) {
   const svg = svgEl('svg', {
     viewBox: '0 0 220 220',
     class: 'donut-svg',
-    role: 'img',
+    role: 'group',
     'aria-label': ariaLabel || 'Круговая диаграмма',
   });
 
@@ -78,13 +89,15 @@ export function renderDonut(host, opts = {}) {
       el('span', { text: centerLabel || 'нет данных' }),
     ));
     host.append(wrap);
-    return;
+    return { setSelected() {} };
   }
 
   const map = new Map();
   const rows = new Map();
   let pinned = null;
   let hovered = null;
+
+  const activeKey = () => (controlled ? selectedKey : (pinned || selectedKey));
 
   const describe = (seg) => {
     const primary = `${seg.label} — ${fmtInt(seg.value)}`;
@@ -95,21 +108,39 @@ export function renderDonut(host, opts = {}) {
   };
 
   const applyState = () => {
-    const active = hovered || pinned;
+    const selected = activeKey();
+    const anyActive = Boolean(hovered || selected);
     for (const [key, path] of map) {
-      const hot = key === active;
-      path.classList.toggle('is-hot', hot);
-      path.classList.toggle('is-dim', Boolean(active) && !hot);
+      const hot = key === hovered;
+      const isSelected = key === selected;
+      path.classList.toggle('is-hot', hot || (isSelected && !controlled));
+      path.classList.toggle('is-selected', isSelected);
+      path.classList.toggle('is-dim', anyActive && !hot && !isSelected);
+      path.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
     }
     for (const [key, row] of rows) {
-      const hot = key === active;
-      row.classList.toggle('is-hot', hot);
-      row.classList.toggle('is-active', key === pinned);
-      row.setAttribute('aria-pressed', key === pinned ? 'true' : 'false');
+      const isSelected = key === selected;
+      row.classList.toggle('is-hot', key === hovered);
+      row.classList.toggle('is-active', isSelected);
+      row.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
     }
   };
 
+  const activate = (seg) => {
+    if (controlled) {
+      opts.onSelect(seg);
+      return;
+    }
+    pinned = pinned === seg.key ? null : seg.key;
+    applyState();
+  };
+
   const bindSegment = (node, seg) => {
+    node.setAttribute('role', 'button');
+    node.setAttribute('tabindex', '0');
+    node.setAttribute('aria-pressed', 'false');
+    const name = `${seg.label}: ${fmtInt(seg.value)}`;
+    node.setAttribute('aria-label', name);
     node.addEventListener('pointerenter', (event) => {
       hovered = seg.key;
       applyState();
@@ -123,8 +154,18 @@ export function renderDonut(host, opts = {}) {
       applyState();
       hideTooltip();
     });
-    node.addEventListener('click', () => {
-      pinned = pinned === seg.key ? null : seg.key;
+    node.addEventListener('click', () => activate(seg));
+    node.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      activate(seg);
+    });
+    node.addEventListener('focus', () => {
+      hovered = seg.key;
+      applyState();
+    });
+    node.addEventListener('blur', () => {
+      hovered = null;
       applyState();
     });
   };
@@ -194,15 +235,21 @@ export function renderDonut(host, opts = {}) {
         applyState();
         hideTooltip();
       });
-      row.addEventListener('click', () => {
-        pinned = pinned === seg.key ? null : seg.key;
-        applyState();
-      });
+      row.addEventListener('click', () => activate(seg));
       rows.set(seg.key, row);
       legend.append(row);
     }
     legendHost.append(legend);
   }
+
+  applyState();
+
+  return {
+    setSelected(key) {
+      selectedKey = key != null ? String(key) : null;
+      applyState();
+    },
+  };
 }
 
 /* =========================================================

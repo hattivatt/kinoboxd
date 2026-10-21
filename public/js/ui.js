@@ -171,6 +171,7 @@ const ICONS = {
   chevron: '<path d="M6 9l6 6 6-6"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
   kp: '<path d="M6 4v16M19.5 4 8.5 12l11 8"/>',
+  trash: '<path d="M4 7h16"/><path d="M9 7V4.8h6V7"/><path d="M6.5 7l0.9 13h9.2l0.9-13"/><path d="M10 11v5M14 11v5"/>',
 };
 
 const FILLED = new Set(['star']);

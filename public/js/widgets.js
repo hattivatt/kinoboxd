@@ -131,6 +131,9 @@ export function renderDashboard(rawStats, hooks = {}) {
   renderSummary(stats);
   renderRatings(stats);
   renderGenres(stats);
+  /* Full dashboard render always starts with no decade picked: the years
+     card is intentionally empty until the user selects a decade. */
+  selectedDecade = null;
   renderDecades(stats);
   renderYears(stats);
   renderYearBarsWidget(stats);
@@ -429,8 +432,29 @@ function renderGenres(stats) {
 }
 
 /* =========================================================
-   C/D. decades + years
+   C/D. decades + years (linked)
    ========================================================= */
+
+/* Selected decade drives the years card. null = nothing selected, which is
+   the default state: the years donut is not rendered at all. */
+let selectedDecade = null;
+let decadesDonut = null;
+
+function decadeHint(text = 'Выберите десятилетие слева, чтобы увидеть годы') {
+  const box = el('div', { class: 'years-empty' });
+  box.append(el('span', { class: 'years-empty-ring', 'aria-hidden': 'true' }));
+  box.append(el('p', { class: 'years-empty-text', text }));
+  return box;
+}
+
+function selectDecade(stats, decade) {
+  const same = selectedDecade && selectedDecade.start === decade.start;
+  selectedDecade = same ? null : { start: decade.start, label: decade.label };
+  if (decadesDonut) {
+    decadesDonut.setSelected(selectedDecade ? `decade-${selectedDecade.start}` : null);
+  }
+  renderYears(stats);
+}
 
 function renderDecades(stats) {
   const donutHost = $('decades-donut');
@@ -438,6 +462,7 @@ function renderDecades(stats) {
   const note = $('decades-note');
   if (!donutHost || !legendHost) return;
 
+  decadesDonut = null;
   const decades = stats.decades.slice().sort((a, b) => b.start - a.start || b.label.localeCompare(a.label, 'ru'));
   const total = decades.reduce((sum, item) => sum + item.count, 0);
   if (note) note.textContent = decades.length ? `${fmtInt(decades.length)} ${plural(decades.length, ['десятилетие', 'десятилетия', 'десятилетий'])}` : '';
@@ -450,18 +475,22 @@ function renderDecades(stats) {
   }
 
   const segments = decades.map((item, index) => ({
-    key: `decade-${index}`,
+    key: `decade-${item.start}`,
     label: item.label,
     value: item.count,
     color: DECADE_COLORS[index % DECADE_COLORS.length],
+    decadeStart: item.start,
   }));
+  const selectedKey = selectedDecade ? `decade-${selectedDecade.start}` : null;
 
-  renderDonut(donutHost, {
+  decadesDonut = renderDonut(donutHost, {
     segments,
     legendHost,
+    selectedKey,
+    onSelect: (seg) => selectDecade(stats, { start: seg.decadeStart, label: seg.label }),
     centerValue: fmtInt(total),
     centerLabel: 'фильмов',
-    ariaLabel: 'Распределение фильмов по десятилетиям',
+    ariaLabel: 'Распределение фильмов по десятилетиям. Выберите десятилетие, чтобы увидеть годы',
     secondary: (seg) => `${fmtPercent(seg.value, total)} всех фильмов`,
   });
 }
@@ -470,16 +499,35 @@ function renderYears(stats) {
   const donutHost = $('years-donut');
   const legendHost = $('years-legend');
   const note = $('years-note');
+  const titleText = $('years-title-text');
   if (!donutHost || !legendHost) return;
-
-  const years = stats.years.slice().sort((a, b) => b.year - a.year);
-  const total = years.reduce((sum, item) => sum + item.count, 0);
-  if (note) note.textContent = years.length ? `${fmtInt(years.length)} ${plural(years.length, ['год', 'года', 'лет'])}` : '';
 
   clear(legendHost);
   clear(donutHost);
+
+  if (titleText) titleText.textContent = selectedDecade ? `Годы · ${selectedDecade.label}` : 'Годы';
+
+  if (!selectedDecade) {
+    if (note) note.textContent = '';
+    donutHost.append(decadeHint());
+    return;
+  }
+
+  const start = toNum(selectedDecade.start)
+    || toNum((String(selectedDecade.label).match(/\d{4}/) || [])[0]);
+  const years = stats.years
+    .filter((item) => item.year >= start && item.year <= start + 9)
+    .sort((a, b) => b.year - a.year);
+  const total = years.reduce((sum, item) => sum + item.count, 0);
+
+  if (note) {
+    note.textContent = total
+      ? `${start}–${start + 9} · ${fmtInt(years.length)} ${plural(years.length, ['год', 'года', 'лет'])}`
+      : 'нет фильмов';
+  }
+
   if (!total) {
-    donutHost.append(emptyState('Нет данных по годам'));
+    donutHost.append(decadeHint(`В ${selectedDecade.label} нет фильмов`));
     return;
   }
 
@@ -495,8 +543,8 @@ function renderYears(stats) {
     legendHost,
     centerValue: fmtInt(total),
     centerLabel: 'фильмов',
-    ariaLabel: 'Распределение фильмов по годам выпуска',
-    secondary: (seg) => `${fmtPercent(seg.value, total)} всех фильмов`,
+    ariaLabel: `Распределение фильмов по годам: ${selectedDecade.label}`,
+    secondary: (seg) => `${fmtPercent(seg.value, total)} фильмов десятилетия`,
   });
 }
 
