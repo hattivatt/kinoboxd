@@ -74,6 +74,121 @@ export function filmRating(entry) {
 }
 
 /* =========================================================
+   film sorting (shared by the person / studio / year modals)
+   ========================================================= */
+
+export const FILM_SORT_OPTIONS = [
+  { key: 'rating', label: 'По моей оценке', hint: 'ваша оценка ↓' },
+  { key: 'watched', label: 'По дате просмотра', hint: 'дата просмотра ↓' },
+  { key: 'year', label: 'По году выхода', hint: 'год выхода ↓' },
+];
+
+const SORT_VALUES = new Set(FILM_SORT_OPTIONS.map((option) => option.key));
+const SORT_STORAGE_PREFIX = 'kinoboxd.modalSort.';
+
+function sortStorageKey(scope) {
+  return `${SORT_STORAGE_PREFIX}${scope || 'films'}`;
+}
+
+/** Saved sort for a modal type, validated against the known options. */
+export function getFilmSort(scope) {
+  let value = '';
+  try {
+    value = window.localStorage.getItem(sortStorageKey(scope)) || '';
+  } catch {
+    value = '';
+  }
+  return SORT_VALUES.has(value) ? value : 'rating';
+}
+
+export function setFilmSort(scope, value) {
+  if (!SORT_VALUES.has(value)) return;
+  try {
+    window.localStorage.setItem(sortStorageKey(scope), value);
+  } catch {
+    /* private mode / storage disabled — sorting still works for this dialog */
+  }
+}
+
+function pickNum(value) {
+  return value == null || value === '' ? null : Number(value);
+}
+
+function cmpTitle(a, b) {
+  return String(a.title || '').localeCompare(String(b.title || ''), 'ru');
+}
+
+function cmpVote(a, b) {
+  const av = pickNum(a.voteAverage);
+  const bv = pickNum(b.voteAverage);
+  const diff = (bv == null || !Number.isFinite(bv) ? -1 : bv) - (av == null || !Number.isFinite(av) ? -1 : av);
+  return diff || cmpTitle(a, b);
+}
+
+function cmpRating(a, b) {
+  const ar = pickNum(a.rating);
+  const br = pickNum(b.rating);
+  const diff = (br == null || !Number.isFinite(br) ? -1 : br) - (ar == null || !Number.isFinite(ar) ? -1 : ar);
+  return diff || cmpVote(a, b);
+}
+
+function cmpWatched(a, b) {
+  const ad = a.watchedDate ? String(a.watchedDate) : '';
+  const bd = b.watchedDate ? String(b.watchedDate) : '';
+  if (ad !== bd) {
+    if (!ad) return 1;
+    if (!bd) return -1;
+    return bd.localeCompare(ad);
+  }
+  return cmpTitle(a, b);
+}
+
+function cmpYear(a, b) {
+  const ay = pickNum(a.year);
+  const by = pickNum(b.year);
+  const diff = (by == null || !Number.isFinite(by) ? -1 : by) - (ay == null || !Number.isFinite(ay) ? -1 : ay);
+  return diff || cmpVote(a, b);
+}
+
+/** Return a new array ordered by the selected sort. Input is not mutated. */
+export function sortFilms(films, sortKey) {
+  const list = Array.isArray(films) ? films.slice() : [];
+  const comparator =
+    sortKey === 'watched' ? cmpWatched : sortKey === 'year' ? cmpYear : cmpRating;
+  return list.sort(comparator);
+}
+
+export function filmSortHint(sortKey) {
+  const option = FILM_SORT_OPTIONS.find((item) => item.key === sortKey);
+  return option ? option.hint : '';
+}
+
+/** Small native select used in modal headers. */
+export function createFilmSortSelect({ scope, onChange } = {}) {
+  const wrap = el('div', { class: 'modal-sort' });
+  wrap.append(el('span', { class: 'modal-sort-label', text: 'Сортировка' }));
+
+  const selectWrap = el('div', { class: 'select-wrap' });
+  const select = el('select', {
+    class: 'select select-sm',
+    'aria-label': 'Сортировка фильмов',
+  });
+  for (const option of FILM_SORT_OPTIONS) {
+    select.append(el('option', { value: option.key, text: option.label }));
+  }
+  select.value = getFilmSort(scope);
+  select.addEventListener('change', () => {
+    const value = select.value;
+    setFilmSort(scope, value);
+    if (typeof onChange === 'function') onChange(value);
+  });
+  selectWrap.append(select);
+  selectWrap.append(el('span', { class: 'select-chevron', html: icon('chevron', 14) }));
+  wrap.append(selectWrap);
+  return { node: wrap, value: select.value, select };
+}
+
+/* =========================================================
    generic shell
    ========================================================= */
 
@@ -196,7 +311,8 @@ export function closeAllModals() {
  * @param {string} [opts.groupNote]
  * @param {string} [opts.emptyText]
  * @param {number} [opts.batch]
- * @param {Array<{title:string,year?:number,posterPath?:string,rating?:number,voteAverage?:number,meta?:string}>} opts.films
+ * @param {Array<{title:string,year?:number,posterPath?:string,rating?:number,voteAverage?:number,watchedDate?:string,meta?:string}>} opts.films
+ * @param {string} [opts.sortScope]  localStorage scope for the sort selector ('year', ...)
  */
 export function openFilmListModal({
   title,
@@ -208,6 +324,7 @@ export function openFilmListModal({
   emptyText = 'Нет фильмов',
   batch = 60,
   films = [],
+  sortScope = '',
 } = {}) {
   seq += 1;
   const titleId = `film-list-title-${seq}`;
@@ -222,12 +339,35 @@ export function openFilmListModal({
   const body = el('div', { class: 'modal-body' });
   const list = Array.isArray(films) ? films.filter(Boolean) : [];
 
+  let sortKey = sortScope ? getFilmSort(sortScope) : null;
+  let ordered = sortScope ? sortFilms(list, sortKey) : list;
+  let groupNoteNode = null;
+
+  if (sortScope) {
+    const control = createFilmSortSelect({
+      scope: sortScope,
+      onChange: (value) => {
+        sortKey = value;
+        ordered = sortFilms(list, sortKey);
+        if (groupNoteNode) groupNoteNode.textContent = filmSortHint(sortKey);
+        if (typeof renderVisible === 'function') renderVisible();
+      },
+    });
+    head.append(control.node);
+    groupNote = filmSortHint(sortKey);
+  }
+
+  let renderVisible = null;
+
   if (!list.length) {
     body.append(emptyState(emptyText));
   } else {
     const group = el('div', { class: 'film-group-label' });
     group.append(el('span', { text: groupLabel }));
-    if (groupNote) group.append(el('span', { text: groupNote }));
+    if (groupNote) {
+      groupNoteNode = el('span', { text: groupNote });
+      group.append(groupNoteNode);
+    }
     body.append(group);
 
     const listHost = el('div', { class: 'film-list' });
@@ -235,23 +375,27 @@ export function openFilmListModal({
     body.append(listHost, moreHost);
 
     const size = Math.max(10, Math.min(Number(batch) || 60, 200));
-    let shown = 0;
-    const loadBatch = () => {
-      const slice = list.slice(shown, shown + size);
-      for (const film of slice) listHost.append(filmListRow(film));
-      shown += slice.length;
+    let shown = Math.min(size, ordered.length);
+
+    renderVisible = () => {
+      clear(listHost);
       clear(moreHost);
-      if (shown < list.length) {
+      const slice = ordered.slice(0, shown);
+      for (const film of slice) listHost.append(filmListRow(film));
+      if (shown < ordered.length) {
         const more = el('button', {
           type: 'button',
           class: 'btn btn-ghost',
-          text: `Показать ещё ${fmtInt(Math.min(size, list.length - shown))}`,
+          text: `Показать ещё ${fmtInt(Math.min(size, ordered.length - shown))}`,
         });
-        more.addEventListener('click', loadBatch);
+        more.addEventListener('click', () => {
+          shown = Math.min(ordered.length, shown + size);
+          renderVisible();
+        });
         moreHost.append(more);
       }
     };
-    loadBatch();
+    renderVisible();
   }
 
   return openModal({ head, body, labelledBy: titleId, className: 'modal-films' });

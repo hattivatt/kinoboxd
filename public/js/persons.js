@@ -3,7 +3,9 @@
 import {
   $, el, clear, fmtInt, fmtRating, plural, toNum, emptyState, slugTitle,
 } from './ui.js';
-import { openModal as openModalShell } from './modal.js';
+import {
+  openModal as openModalShell, createFilmSortSelect, getFilmSort, sortFilms, filmSortHint,
+} from './modal.js';
 
 const INITIAL = 15;
 const BATCH = 50;
@@ -28,7 +30,10 @@ const ROLES = {
   director: { label: 'Режиссёры', one: 'Режиссёр', forms: ['режиссёр', 'режиссёра', 'режиссёров'] },
   writer: { label: 'Сценаристы', one: 'Сценарист', forms: ['сценарист', 'сценариста', 'сценаристов'] },
   composer: { label: 'Композиторы', one: 'Композитор', forms: ['композитор', 'композитора', 'композиторов'] },
+  studio: { label: 'Студии', one: 'Студия', forms: ['студия', 'студии', 'студий'] },
 };
+
+const PERSON_SORT_SCOPE = 'person';
 
 let stats = null;
 let role = 'actor';
@@ -180,8 +185,8 @@ function fallbackStyle(name) {
   };
 }
 
-function avatarEl(name, path, extraClass = 'avatar') {
-  const url = profileUrl(path);
+function avatarEl(name, path, extraClass = 'avatar', size = 'w185') {
+  const url = profileUrl(path, size);
   if (!url) {
     return el('div', {
       class: `${extraClass} avatar-fallback`,
@@ -274,6 +279,7 @@ function personRow(person, index) {
   const counted = toNum(person.counted);
   const total = Math.max(toNum(person.total), Array.isArray(person.films) ? person.films.length : 0);
   const avg = avgRatingFor(person);
+  const isStudio = role === 'studio';
 
   const row = el('div', {
     class: 'person-row',
@@ -285,11 +291,18 @@ function personRow(person, index) {
   });
 
   row.append(el('span', { class: 'person-rank', text: String(index + 1) }));
-  row.append(avatarEl(person.name, person.profilePath));
+  row.append(avatarEl(
+    person.name,
+    person.profilePath,
+    isStudio ? 'avatar studio-logo' : 'avatar',
+    isStudio ? 'w154' : 'w185',
+  ));
 
   const info = el('div', { class: 'person-info' });
   info.append(el('div', { class: 'person-name', text: person.name }));
-  if (total > counted) {
+  if (isStudio) {
+    info.append(el('div', { class: 'person-sub', text: 'кинокомпания' }));
+  } else if (total > counted) {
     info.append(el('div', {
       class: 'person-sub',
       text: `учтено ${fmtInt(counted)} из ${fmtInt(total)}`,
@@ -320,16 +333,6 @@ function personRow(person, index) {
 /* =========================================================
    modal
    ========================================================= */
-
-function filmComparator(a, b) {
-  const countedDiff = Number(isCounted(b.counted)) - Number(isCounted(a.counted));
-  if (countedDiff) return countedDiff;
-  const aEntry = stats.filmsIndex[a.filmSlug] || {};
-  const bEntry = stats.filmsIndex[b.filmSlug] || {};
-  const voteDiff = toNum(bEntry.voteAverage) - toNum(aEntry.voteAverage);
-  if (voteDiff) return voteDiff;
-  return String(aEntry.title || a.filmSlug || '').localeCompare(String(bEntry.title || b.filmSlug || ''), 'ru');
-}
 
 const REASON_TAGS = {
   voice: 'озвучка',
@@ -375,7 +378,8 @@ function filmRow(film) {
   const entry = stats.filmsIndex[film.filmSlug] || {};
   const title = entry.title || slugTitle(film.filmSlug);
   const year = toNum(entry.year);
-  const excluded = !isCounted(film.counted);
+  const isStudio = role === 'studio';
+  const excluded = !isStudio && !isCounted(film.counted);
 
   const row = el('div', { class: `film-row${excluded ? ' is-excluded' : ''}` });
   row.append(posterEl(film));
@@ -386,9 +390,9 @@ function filmRow(film) {
   info.append(titleNode);
 
   let detail = '';
-  if (role === 'actor') {
+  if (!isStudio && role === 'actor') {
     if (film.character) detail = `«${film.character}»`;
-  } else if (film.job) {
+  } else if (!isStudio && film.job) {
     detail = JOB_RU[film.job] || String(film.job);
   }
   if (detail) info.append(el('div', { class: 'film-char', text: detail }));
@@ -402,12 +406,27 @@ function filmRow(film) {
   return row;
 }
 
+function decorateFilm(film) {
+  const entry = stats.filmsIndex[film.filmSlug] || {};
+  return {
+    ...film,
+    title: entry.title || slugTitle(film.filmSlug),
+    year: entry.year != null ? entry.year : null,
+    rating: entry.rating != null ? entry.rating : null,
+    voteAverage: entry.voteAverage != null ? entry.voteAverage : null,
+    watchedDate: entry.watchedDate || null,
+  };
+}
+
 function openModal(person) {
   if (closeModalFn) closeModalFn();
+  const isStudio = role === 'studio';
   const films = (Array.isArray(person.films) ? person.films : [])
     .filter((film) => film && film.filmSlug)
-    .slice()
-    .sort(filmComparator);
+    .map(decorateFilm);
+
+  let sortKey = getFilmSort(PERSON_SORT_SCOPE);
+  let ordered = sortFilms(films, sortKey);
 
   const countedFromFilms = films.reduce((sum, film) => sum + (isCounted(film.counted) ? 1 : 0), 0);
   const total = Math.max(films.length, toNum(person.total));
@@ -416,54 +435,93 @@ function openModal(person) {
   const avg = avgRatingFor(person);
 
   const head = el('div', { class: 'modal-head' });
-  head.append(avatarEl(person.name, person.profilePath, 'modal-portrait'));
+  head.append(avatarEl(
+    person.name,
+    person.profilePath,
+    isStudio ? 'modal-portrait studio-logo' : 'modal-portrait',
+    isStudio ? 'w154' : 'w185',
+  ));
 
   const copy = el('div', { class: 'modal-head-copy' });
   copy.append(el('div', { class: 'modal-role', text: ROLES[role].one }));
   copy.append(el('h2', { class: 'modal-title', id: 'person-modal-title', text: person.name }));
-  copy.append(el('div', {
-    class: 'modal-sub',
-    text: `${fmtInt(total)} ${plural(total, ['фильм', 'фильма', 'фильмов'])} (${fmtInt(counted)} учтено)`,
-  }));
+  if (isStudio) {
+    copy.append(el('div', {
+      class: 'modal-sub',
+      text: `${fmtInt(total)} ${plural(total, ['фильм', 'фильма', 'фильмов'])} в прокате`,
+    }));
+    if (avg != null) {
+      copy.append(el('p', {
+        class: 'modal-hint',
+        text: `Средняя оценка по фильмам компании — ${fmtRating(avg)}.`,
+      }));
+    }
+  } else {
+    copy.append(el('div', {
+      class: 'modal-sub',
+      text: `${fmtInt(total)} ${plural(total, ['фильм', 'фильма', 'фильмов'])} (${fmtInt(counted)} учтено)`,
+    }));
 
-  const hintParts = [];
-  if (excluded > 0) {
-    hintParts.push(`Не учтено ${fmtInt(excluded)}: озвучка, анимация, незначимые роли или нет данных TMDB.`);
+    const hintParts = [];
+    if (excluded > 0) {
+      hintParts.push(`Не учтено ${fmtInt(excluded)}: озвучка, анимация, незначимые роли или нет данных TMDB.`);
+    }
+    if (avg != null) hintParts.push(`Средняя оценка по учтённым фильмам — ${fmtRating(avg)}.`);
+    if (hintParts.length) copy.append(el('p', { class: 'modal-hint', text: hintParts.join(' ') }));
   }
-  if (avg != null) hintParts.push(`Средняя оценка по учтённым фильмам — ${fmtRating(avg)}.`);
-  if (hintParts.length) copy.append(el('p', { class: 'modal-hint', text: hintParts.join(' ') }));
   head.append(copy);
 
   const body = el('div', { class: 'modal-body' });
   if (!films.length) {
-    body.append(emptyState('Нет фильмов с этой персоной'));
+    body.append(emptyState(isStudio ? 'Нет фильмов этой компании' : 'Нет фильмов с этой персоной'));
   } else {
     const group = el('div', { class: 'film-group-label' });
-    group.append(el('span', { text: 'Фильмография' }));
-    group.append(el('span', { text: 'сначала учтённые' }));
+    group.append(el('span', { text: isStudio ? 'Фильмы компании' : 'Фильмография' }));
+    const noteNode = el('span', { text: filmSortHint(sortKey) });
+    group.append(noteNode);
     body.append(group);
 
     const listHost = el('div');
     const moreHost = el('div', { class: 'modal-more' });
     body.append(listHost, moreHost);
 
-    let shown = 0;
-    const loadBatch = () => {
-      const batch = films.slice(shown, shown + FILM_BATCH);
-      for (const film of batch) listHost.append(filmRow(film));
-      shown += batch.length;
+    let shown = Math.min(FILM_BATCH, ordered.length);
+    const renderVisible = () => {
+      clear(listHost);
       clear(moreHost);
-      if (shown < films.length) {
+      for (const film of ordered.slice(0, shown)) listHost.append(filmRow(film));
+      if (shown < ordered.length) {
         const more = el('button', {
           type: 'button',
           class: 'btn btn-ghost',
-          text: `Показать ещё ${fmtInt(Math.min(FILM_BATCH, films.length - shown))}`,
+          text: `Показать ещё ${fmtInt(Math.min(FILM_BATCH, ordered.length - shown))}`,
         });
-        more.addEventListener('click', loadBatch);
+        more.addEventListener('click', () => {
+          shown = Math.min(ordered.length, shown + FILM_BATCH);
+          renderVisible();
+        });
         moreHost.append(more);
       }
     };
-    loadBatch();
+
+    const control = createFilmSortSelect({
+      scope: PERSON_SORT_SCOPE,
+      onChange: (value) => {
+        sortKey = value;
+        ordered = sortFilms(films, sortKey);
+        noteNode.textContent = filmSortHint(sortKey);
+        renderVisible();
+      },
+    });
+    head.append(control.node);
+
+    renderVisible();
+  }
+
+  if (!films.length) {
+    // Keep the selector reachable even when the list is empty.
+    const control = createFilmSortSelect({ scope: PERSON_SORT_SCOPE });
+    head.append(control.node);
   }
 
   const modal = openModalShell({

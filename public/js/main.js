@@ -8,7 +8,7 @@ import {
   initUpload, setUploadBusy, showUploadPreview, showUploadError, clearUploadError,
   resetUpload, setHasSession, setSource, showKpError, setImportBusy,
 } from './upload.js';
-import { renderDashboard } from './widgets.js';
+import { renderDashboard, resetYearBarsCountry } from './widgets.js';
 import { initAuth, setAuthUi, prepareLogin } from './auth.js';
 import { closeAllModals } from './modal.js';
 import {
@@ -23,6 +23,8 @@ import { $, clear, toast, errorBox, shortErrorMessage, toNum, fmtInt } from './u
 const SESSION_KEY = 'kinoboxd.session.v1';
 const LEGACY_SESSION_KEY = 'boxdstats.session.v1';
 const POLL_INTERVAL = 1000;
+
+let lastRenderedUploadId = null;
 
 const state = {
   view: 'boot',
@@ -566,6 +568,12 @@ function applyStats(stats, { fromCache = false, profile = null } = {}) {
     bootError(new Error('Сервер вернул пустой ответ статистики.'));
     return;
   }
+  // A different dataset means the country filter no longer applies. A stats
+  // refresh for the same upload (manual match) keeps the current choice.
+  if (lastRenderedUploadId && state.uploadId && state.uploadId !== lastRenderedUploadId) {
+    resetYearBarsCountry();
+  }
+  lastRenderedUploadId = state.uploadId || lastRenderedUploadId;
   if (profile && profile.id) {
     state.profileId = profile.id;
     setActiveId(profile.id);
@@ -788,6 +796,9 @@ async function switchProfile(id) {
     return;
   }
   if (id === state.profileId && state.dashboardReady) return;
+
+  // A country filter belongs to the profile it was picked on.
+  resetYearBarsCountry();
 
   const flow = beginFlow();
   hideStaleBanner();

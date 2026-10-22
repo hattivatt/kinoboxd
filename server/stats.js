@@ -7,6 +7,163 @@ const WRITER_JOBS = new Set(['Screenplay', 'Writer', 'Story', 'Script']);
 const COMPOSER_JOBS = new Set(['Original Music Composer', 'Music']);
 const VOICE_RE = /\(voice/i;
 
+/* TMDB returns production_countries with an English `name` even when the
+ * request uses language=ru-RU, so the Russian label is resolved from the ISO
+ * code here. Unknown codes fall back to whatever TMDB sent. */
+const COUNTRY_RU = {
+  AD: 'Андорра',
+  AE: 'ОАЭ',
+  AF: 'Афганистан',
+  AL: 'Албания',
+  AM: 'Армения',
+  AN: 'Нидерландские Антильские острова',
+  AR: 'Аргентина',
+  AT: 'Австрия',
+  AU: 'Австралия',
+  AZ: 'Азербайджан',
+  BA: 'Босния и Герцеговина',
+  BD: 'Бангладеш',
+  BE: 'Бельгия',
+  BG: 'Болгария',
+  BO: 'Боливия',
+  BR: 'Бразилия',
+  BY: 'Беларусь',
+  CA: 'Канада',
+  CH: 'Швейцария',
+  CL: 'Чили',
+  CN: 'Китай',
+  CO: 'Колумбия',
+  CR: 'Коста-Рика',
+  CS: 'Сербия и Черногория',
+  CU: 'Куба',
+  CY: 'Кипр',
+  CZ: 'Чехия',
+  DE: 'Германия',
+  DK: 'Дания',
+  DO: 'Доминикана',
+  DZ: 'Алжир',
+  EC: 'Эквадор',
+  EE: 'Эстония',
+  EG: 'Египет',
+  ES: 'Испания',
+  ET: 'Эфиопия',
+  FI: 'Финляндия',
+  FR: 'Франция',
+  GB: 'Великобритания',
+  GE: 'Грузия',
+  GR: 'Греция',
+  GT: 'Гватемала',
+  HK: 'Гонконг',
+  HR: 'Хорватия',
+  HU: 'Венгрия',
+  ID: 'Индонезия',
+  IE: 'Ирландия',
+  IL: 'Израиль',
+  IN: 'Индия',
+  IQ: 'Ирак',
+  IR: 'Иран',
+  IS: 'Исландия',
+  IT: 'Италия',
+  JM: 'Ямайка',
+  JO: 'Иордания',
+  JP: 'Япония',
+  KE: 'Кения',
+  KG: 'Киргизия',
+  KH: 'Камбоджа',
+  KR: 'Южная Корея',
+  KW: 'Кувейт',
+  KZ: 'Казахстан',
+  LB: 'Ливан',
+  LK: 'Шри-Ланка',
+  LT: 'Литва',
+  LU: 'Люксембург',
+  LV: 'Латвия',
+  MA: 'Марокко',
+  MC: 'Монако',
+  MD: 'Молдавия',
+  ME: 'Черногория',
+  MK: 'Македония',
+  MN: 'Монголия',
+  MT: 'Мальта',
+  MX: 'Мексика',
+  MY: 'Малайзия',
+  NG: 'Нигерия',
+  NL: 'Нидерланды',
+  NO: 'Норвегия',
+  NP: 'Непал',
+  NZ: 'Новая Зеландия',
+  PA: 'Панама',
+  PE: 'Перу',
+  PH: 'Филиппины',
+  PK: 'Пакистан',
+  PL: 'Польша',
+  PR: 'Пуэрто-Рико',
+  PT: 'Португалия',
+  PY: 'Парагвай',
+  QA: 'Катар',
+  RO: 'Румыния',
+  RS: 'Сербия',
+  RU: 'Россия',
+  SA: 'Саудовская Аравия',
+  SE: 'Швеция',
+  SG: 'Сингапур',
+  SI: 'Словения',
+  SK: 'Словакия',
+  SN: 'Сенегал',
+  SU: 'СССР',
+  SV: 'Сальвадор',
+  SY: 'Сирия',
+  TH: 'Таиланд',
+  TJ: 'Таджикистан',
+  TM: 'Туркмения',
+  TN: 'Тунис',
+  TR: 'Турция',
+  TT: 'Тринидад и Тобаго',
+  TW: 'Тайвань',
+  UA: 'Украина',
+  US: 'США',
+  UY: 'Уругвай',
+  UZ: 'Узбекистан',
+  VA: 'Ватикан',
+  VE: 'Венесуэла',
+  VN: 'Вьетнам',
+  XC: 'Чехословакия',
+  XG: 'ГДР',
+  XK: 'Косово',
+  YU: 'Югославия',
+  ZA: 'ЮАР',
+  ZW: 'Зимбабве',
+};
+
+const CYRILLIC_RE = /[а-яё]/i;
+
+function localizedCountryName(country) {
+  const iso = String((country && country.iso_3166_1) || '').toUpperCase();
+  const name = String((country && country.name) || '').trim();
+  if (iso && COUNTRY_RU[iso]) return COUNTRY_RU[iso];
+  if (CYRILLIC_RE.test(name)) return name;
+  return name || iso || null;
+}
+
+/** Deduped list of localized country names for a matched film. */
+function filmCountries(details) {
+  const list =
+    details && Array.isArray(details.production_countries)
+      ? details.production_countries
+      : [];
+  const out = [];
+  const seen = new Set();
+  for (const country of list) {
+    const name = localizedCountryName(country);
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
 function round2(value) {
   return Math.round(value * 100) / 100;
 }
@@ -173,6 +330,7 @@ function buildStats(upload) {
   const directors = new Map();
   const writers = new Map();
   const composers = new Map();
+  const studios = new Map();
 
   const ratingCounts = {};
   for (let score = 1; score <= 10; score++) ratingCounts[score] = 0;
@@ -277,8 +435,35 @@ function buildStats(upload) {
       }
     }
 
+    // ---- studios ----
+    // Production companies are taken from the same cached details. They only
+    // exist for matched films and every appearance counts (one entry per film,
+    // duplicates inside a film are ignored). Older cache files may miss the
+    // optional field entirely — that is a silent skip, not an error.
+    if (details) {
+      const companies =
+        Array.isArray(details.production_companies) ? details.production_companies : [];
+      const seenCompanies = new Set();
+      for (const company of companies) {
+        if (!company || company.id == null) continue;
+        if (seenCompanies.has(company.id)) continue;
+        seenCompanies.add(company.id);
+        addRole(
+          studios,
+          {
+            id: company.id,
+            name: company.name || '',
+            profile_path: company.logo_path || null,
+          },
+          film.slug,
+          true,
+          {}
+        );
+      }
+    }
+
     // ---- film index ----
-    filmsIndex[film.slug] = {
+    const filmEntry = {
       title: (details && details.title) || film.titleRu || film.title,
       year,
       tmdbId,
@@ -288,6 +473,10 @@ function buildStats(upload) {
       rating: film.rating,
       watchedDate: film.watchedDate || null,
     };
+    // Only matched films have a TMDB card and therefore countries. Unmatched
+    // entries deliberately have no `countries` key at all.
+    if (details) filmEntry.countries = filmCountries(details);
+    filmsIndex[film.slug] = filmEntry;
   }
 
   // ---- timeline ----
@@ -342,6 +531,7 @@ function buildStats(upload) {
     director: serializePeople(directors, false),
     writer: serializePeople(writers, false),
     composer: serializePeople(composers, false),
+    studio: serializePeople(studios, true),
   };
 
   const unmatched = computeUnmatched(upload, job);

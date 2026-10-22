@@ -607,6 +607,32 @@ async function searchTv(title, year, options) {
   return broadSearch('tv', title, year, opts);
 }
 
+/* Production metadata is kept for the country filter (filmsIndex.countries)
+ * and the studios category (persons.studio). Both TMDB movie and TV payloads
+ * expose the same two arrays, so they share this normalizer. */
+function normalizeCountries(list) {
+  return Array.isArray(list)
+    ? list
+        .filter((c) => c && typeof c === 'object')
+        .map((c) => ({
+          iso_3166_1: typeof c.iso_3166_1 === 'string' ? c.iso_3166_1 : '',
+          name: typeof c.name === 'string' ? c.name : '',
+        }))
+    : [];
+}
+
+function normalizeCompanies(list) {
+  return Array.isArray(list)
+    ? list
+        .filter((c) => c && typeof c === 'object' && c.id != null)
+        .map((c) => ({
+          id: c.id,
+          name: typeof c.name === 'string' ? c.name : '',
+          logo_path: c.logo_path || null,
+        }))
+    : [];
+}
+
 function normalizeDetailsPayload(details, credits) {
   return {
     kind: 'movie',
@@ -622,6 +648,8 @@ function normalizeDetailsPayload(details, credits) {
       poster_path: details.poster_path || null,
       vote_average: Number.isFinite(details.vote_average) ? details.vote_average : null,
       overview: details.overview || '',
+      production_countries: normalizeCountries(details.production_countries),
+      production_companies: normalizeCompanies(details.production_companies),
     },
     credits: {
       cast: Array.isArray(credits && credits.cast)
@@ -735,6 +763,8 @@ function normalizeTvPayload(details, credits) {
       poster_path: details.poster_path || null,
       vote_average: Number.isFinite(details.vote_average) ? details.vote_average : null,
       overview: details.overview || '',
+      production_countries: normalizeCountries(details.production_countries),
+      production_companies: normalizeCompanies(details.production_companies),
     },
     credits: {
       cast: normalizedCast,

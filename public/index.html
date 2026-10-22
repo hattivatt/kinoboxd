@@ -333,9 +333,20 @@
           </section>
 
           <section class="widget w-yearbars" aria-labelledby="w-yearbars-title">
-            <div class="widget-head">
+            <div class="widget-head yearbars-head">
               <h2 class="widget-title" id="w-yearbars-title"><span class="w-dot orange"></span>Просмотры по годам проката</h2>
-              <span class="widget-note" id="yearbars-note"></span>
+              <div class="yearbars-tools">
+                <span class="country-filter">
+                  <span class="country-filter-label">Страна</span>
+                  <span class="select-wrap">
+                    <select id="yearbars-country" class="select select-sm" aria-label="Фильтр по стране производства">
+                      <option value="">Все</option>
+                    </select>
+                    <span class="select-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+                  </span>
+                </span>
+                <span class="widget-note" id="yearbars-note"></span>
+              </div>
             </div>
             <div class="chart-scroll">
               <div id="yearbars-chart"></div>
@@ -371,6 +382,7 @@
                     <option value="director">Режиссёры</option>
                     <option value="writer">Сценаристы</option>
                     <option value="composer">Композиторы</option>
+                    <option value="studio">Студии</option>
                   </select>
                   <svg class="select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                 </div>

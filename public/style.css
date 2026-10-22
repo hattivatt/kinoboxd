@@ -1568,6 +1568,7 @@ img { display: block; }
 }
 .select:hover { border-color: rgba(255, 255, 255, 0.22); background: #263646; }
 .select option { background: #1b2129; color: var(--text); }
+.select-sm { padding: 6px 28px 6px 10px; font-size: 11px; }
 .select-chevron {
   position: absolute;
   right: 10px;
@@ -1575,6 +1576,42 @@ img { display: block; }
   transform: translateY(-50%);
   pointer-events: none;
   color: var(--muted-2);
+  display: inline-flex;
+}
+
+/* year-bars country filter */
+.yearbars-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.country-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.country-filter-label {
+  font-size: 10.5px;
+  color: var(--muted-2);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.yearbars-tools .widget-note { max-width: 100%; }
+
+/* studio logos keep their aspect ratio on the dark plate (TMDB logos are
+ * mostly white-on-transparent, so a light background makes them invisible) */
+.avatar.studio-logo,
+.modal-portrait.studio-logo {
+  object-fit: contain;
+  background: #2b3744;
+  padding: 5px;
+}
+.avatar.studio-logo.avatar-fallback,
+.modal-portrait.studio-logo.avatar-fallback {
+  object-fit: cover;
+  padding: 0;
 }
 
 .persons-search {
@@ -1782,6 +1819,21 @@ img { display: block; }
   line-height: 1.5;
   color: var(--muted-2);
   max-width: 460px;
+}
+.modal-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  padding-top: 3px;
+  flex: none;
+}
+.modal-sort-label {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  white-space: nowrap;
 }
 .modal-close {
   position: absolute;
@@ -2208,7 +2260,9 @@ img { display: block; }
     border-radius: 0;
     border: 0;
   }
-  .modal-head { padding: 18px 48px 16px 16px; gap: 13px; }
+  .modal-head { padding: 18px 48px 16px 16px; gap: 13px; flex-wrap: wrap; }
+  .modal-sort { margin-left: 0; width: 100%; justify-content: flex-end; padding-top: 4px; }
+  .modal-sort-label { display: none; }
   .modal-portrait, .modal-portrait.avatar-fallback { width: 68px; height: 68px; }
   .modal-title { font-size: 19px; }
   .modal-hint { font-size: 10px; }
