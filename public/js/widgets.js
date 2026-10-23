@@ -48,6 +48,22 @@ function numOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Normalize one keyword-taxonomy bucket (categories / origins / periods). */
+function mapTaxonomy(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      key: String(item && item.key ? item.key : '').trim(),
+      name: String(item && item.name ? item.name : '').trim(),
+      count: Math.max(0, toNum(item && item.count)),
+      avgRating: numOrNull(item && item.avgRating),
+      films: Array.isArray(item && item.films)
+        ? item.films.map((slug) => String(slug)).filter(Boolean)
+        : [],
+    }))
+    .filter((item) => item.key && item.name && item.count > 0);
+}
+
 function normalizeStats(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const summary = source.summary && typeof source.summary === 'object' ? source.summary : {};
@@ -113,6 +129,9 @@ function normalizeStats(raw) {
       composer: array(persons.composer),
       studio: array(persons.studio),
     },
+    categories: mapTaxonomy(source.categories),
+    origins: mapTaxonomy(source.origins),
+    periods: mapTaxonomy(source.periods),
     filmsIndex: source.filmsIndex && typeof source.filmsIndex === 'object' ? source.filmsIndex : {},
   };
 }
@@ -137,6 +156,8 @@ export function renderDashboard(rawStats, hooks = {}) {
   selectedDecade = null;
   renderDecades(stats);
   renderYears(stats);
+  renderOrigins(stats);
+  renderPeriods(stats);
   renderYearBarsWidget(stats);
   renderTimelineWidget(stats);
   initPersons(stats);
@@ -378,57 +399,119 @@ function renderRatings(stats) {
    B. genres
    ========================================================= */
 
+function renderGenreRow(host, item, max, { isCategory = false, onClick = null } = {}) {
+  const row = el('div', { class: `genre-row${isCategory ? ' is-category' : ''}${onClick ? ' is-clickable' : ''}` });
+  const name = el('div', { class: 'genre-name' });
+  name.append(el('span', { class: 'genre-label', text: item.name }));
+  name.append(el('span', { class: 'genre-count', text: fmtInt(item.count) }));
+
+  const track = el('div', { class: 'genre-track' });
+  const fill = el('div', { class: 'genre-fill' });
+  track.append(fill);
+
+  const avg = item.avgRating != null ? fmtRating(item.avgRating) : '—';
+  const avgNode = el('div', {
+    class: 'genre-avg',
+    text: avg,
+    title: item.avgRating != null ? `Средняя оценка: ${fmtRating(item.avgRating)}` : 'Нет оценок в этой категории',
+  });
+
+  row.append(name, track, avgNode);
+  host.append(row);
+
+  requestAnimationFrame(() => {
+    fill.style.width = `${Math.max(2, (item.count / max) * 100)}%`;
+  });
+
+  const kindLabel = isCategory ? 'категория' : 'жанр';
+  row.addEventListener('pointerenter', (event) => {
+    showTooltip(
+      `${item.name} — ${fmtInt(item.count)} ${plural(item.count, ['фильм', 'фильма', 'фильмов'])}`,
+      item.avgRating != null
+        ? `${kindLabel} · средняя оценка ${fmtRating(item.avgRating)}`
+        : `${kindLabel} · средней оценки нет`,
+    );
+    moveTooltip(event);
+  });
+  row.addEventListener('pointermove', moveTooltip);
+  row.addEventListener('pointerleave', hideTooltip);
+
+  if (onClick) {
+    row.setAttribute('role', 'button');
+    row.tabIndex = 0;
+    row.setAttribute('aria-label', `${item.name}: ${fmtInt(item.count)} фильмов. Открыть список`);
+    row.addEventListener('click', () => {
+      hideTooltip();
+      onClick(item);
+    });
+    row.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      hideTooltip();
+      onClick(item);
+    });
+  }
+}
+
 function renderGenres(stats) {
   const host = $('genres-list');
+  const categoriesHost = $('categories-list');
   const note = $('genres-note');
   if (!host) return;
+
+  const genres = stats.genres
+    .slice()
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
+  const categories = stats.categories
+    .slice()
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
+
+  const genresSubhead = $('genres-subhead');
+  const categoriesSubhead = $('categories-subhead');
+  if (genresSubhead) genresSubhead.hidden = genres.length === 0;
+  if (categoriesSubhead) categoriesSubhead.hidden = categories.length === 0;
+  if (categoriesHost) categoriesHost.hidden = categories.length === 0;
+
+  if (note) {
+    if (!genres.length && !categories.length) {
+      note.textContent = '';
+    } else {
+      const parts = [];
+      if (genres.length) {
+        parts.push(`${fmtInt(genres.length)} ${plural(genres.length, ['жанр', 'жанра', 'жанров'])}`);
+      }
+      if (categories.length) {
+        parts.push(`${fmtInt(categories.length)} ${plural(categories.length, ['категория', 'категории', 'категорий'])}`);
+      }
+      note.textContent = parts.join(' · ');
+    }
+  }
+
   clear(host);
+  if (categoriesHost) clear(categoriesHost);
 
-  const genres = stats.genres.slice().sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
-  if (note) note.textContent = genres.length
-    ? `${fmtInt(genres.length)} ${plural(genres.length, ['жанр', 'жанра', 'жанров'])}`
-    : '';
-
-  if (!genres.length) {
+  if (!genres.length && !categories.length) {
     host.append(emptyState('Жанры появятся после обогащения TMDB'));
     return;
   }
 
-  const max = Math.max(1, ...genres.map((g) => g.count));
+  // One shared scale: a 100-film category looks bigger than a 40-film genre,
+  // regardless of which block it belongs to.
+  const max = Math.max(1, ...genres.map((g) => g.count), ...categories.map((c) => c.count));
 
-  for (const genre of genres) {
-    const row = el('div', { class: 'genre-row' });
-    const name = el('div', { class: 'genre-name' });
-    name.append(el('span', { class: 'genre-label', text: genre.name }));
-    name.append(el('span', { class: 'genre-count', text: fmtInt(genre.count) }));
-
-    const track = el('div', { class: 'genre-track' });
-    const fill = el('div', { class: 'genre-fill' });
-    track.append(fill);
-
-    const avg = genre.avgRating != null ? fmtRating(genre.avgRating) : '—';
-    const avgNode = el('div', {
-      class: 'genre-avg',
-      text: avg,
-      title: genre.avgRating != null ? `Средняя оценка: ${fmtRating(genre.avgRating)}` : 'Нет оценок в этом жанре',
-    });
-
-    row.append(name, track, avgNode);
-    host.append(row);
-
-    requestAnimationFrame(() => {
-      fill.style.width = `${Math.max(2, (genre.count / max) * 100)}%`;
-    });
-
-    row.addEventListener('pointerenter', (event) => {
-      showTooltip(
-        `${genre.name} — ${fmtInt(genre.count)} ${plural(genre.count, ['фильм', 'фильма', 'фильмов'])}`,
-        genre.avgRating != null ? `средняя оценка ${fmtRating(genre.avgRating)}` : 'средней оценки нет',
-      );
-      moveTooltip(event);
-    });
-    row.addEventListener('pointermove', moveTooltip);
-    row.addEventListener('pointerleave', hideTooltip);
+  if (!genres.length) host.hidden = true;
+  for (const genre of genres) renderGenreRow(host, genre, max);
+  if (categoriesHost) {
+    for (const category of categories) {
+      renderGenreRow(categoriesHost, category, max, {
+        isCategory: true,
+        onClick: (item) => openTaxonomyModal(stats, item, {
+          kicker: 'Категории',
+          subtitle: `${fmtInt(item.count)} ${plural(item.count, ['фильм', 'фильма', 'фильмов'])}`,
+          sortScope: 'taxonomy',
+        }),
+      });
+    }
   }
 }
 
@@ -546,6 +629,159 @@ function renderYears(stats) {
     centerLabel: 'фильмов',
     ariaLabel: `Распределение фильмов по годам: ${selectedDecade.label}`,
     secondary: (seg) => `${fmtPercent(seg.value, total)} фильмов десятилетия`,
+  });
+}
+
+/* =========================================================
+   C2. keyword categories modal helper
+   ========================================================= */
+
+const ORIGIN_COLORS = ['#00e054', '#40bcf4', '#ff8000', '#e8253f', '#b18cff', '#ffd166', '#00c9a7', '#f472b6'];
+const PERIOD_COLORS = ['#e8253f', '#ffd166', '#40bcf4', '#00e054', '#b18cff', '#ff8000', '#00c9a7', '#f472b6'];
+
+/** Build modal-ready film rows from the slugs stored in a taxonomy bucket. */
+function filmsFromSlugs(filmsIndex, slugs) {
+  const films = [];
+  for (const slug of Array.isArray(slugs) ? slugs : []) {
+    const entry = filmsIndex && filmsIndex[slug];
+    if (!entry || typeof entry !== 'object') continue;
+    films.push({
+      slug,
+      title: entry.title || slugTitle(slug),
+      year: toNum(entry.year) || null,
+      posterPath: entry.posterPath || null,
+      rating: numOrNull(entry.rating),
+      voteAverage: numOrNull(entry.voteAverage),
+      watchedDate: entry.watchedDate || null,
+    });
+  }
+  return films;
+}
+
+/** Shared modal for categories / origins / periods (all carry `films`). */
+function openTaxonomyModal(stats, item, { kicker = '', sortScope = 'taxonomy' } = {}) {
+  const films = filmsFromSlugs(stats.filmsIndex, item.films);
+  const avg = item.avgRating != null ? ` · средняя оценка ${fmtRating(item.avgRating)}` : '';
+  openFilmListModal({
+    kicker,
+    title: item.name,
+    subtitle: `${fmtInt(films.length)} ${plural(films.length, ['фильм', 'фильма', 'фильмов'])}${avg}`,
+    groupLabel: item.name,
+    emptyText: 'Нет фильмов с карточкой TMDB',
+    batch: 60,
+    films,
+    sortScope,
+  });
+}
+
+/* =========================================================
+   C3. originals / adaptations donut
+   ========================================================= */
+
+function renderOrigins(stats) {
+  const donutHost = $('origins-donut');
+  const legendHost = $('origins-legend');
+  const note = $('origins-note');
+  if (!donutHost || !legendHost) return;
+
+  clear(donutHost);
+  clear(legendHost);
+
+  const origins = stats.origins.filter((item) => item.count > 0);
+  const total = origins.reduce((sum, item) => sum + item.count, 0);
+  if (!total) {
+    if (note) note.textContent = '';
+    donutHost.append(emptyState('Нет данных об экранизациях'));
+    return;
+  }
+  if (note) {
+    note.textContent = `${fmtInt(total)} ${plural(total, ['фильм', 'фильма', 'фильмов'])}`;
+  }
+
+  const segments = origins.map((item, index) => ({
+    key: `origin-${item.key}`,
+    label: item.name,
+    value: item.count,
+    color: ORIGIN_COLORS[index % ORIGIN_COLORS.length],
+    originKey: item.key,
+    avgRating: item.avgRating,
+  }));
+
+  renderDonut(donutHost, {
+    segments,
+    legendHost,
+    centerValue: fmtInt(total),
+    centerLabel: 'фильмов',
+    ariaLabel: 'Оригинальные сценарии и экранизации. Нажмите на сегмент, чтобы увидеть фильмы',
+    secondary: (seg) => {
+      const pct = `${fmtPercent(seg.value, total)} всех фильмов`;
+      return seg.avgRating != null ? `${pct} · средняя ${fmtRating(seg.avgRating)}` : pct;
+    },
+    onSelect: (seg) => {
+      const item = origins.find((entry) => entry.key === seg.originKey);
+      if (item) {
+        hideTooltip();
+        openTaxonomyModal(stats, item, { kicker: 'Оригинальные и экранизации', sortScope: 'origins' });
+      }
+    },
+  });
+}
+
+/* =========================================================
+   C4. film movements / periods donut + list
+   ========================================================= */
+
+function renderPeriods(stats) {
+  const section = $('w-periods-widget');
+  const donutHost = $('periods-donut');
+  const legendHost = $('periods-legend');
+  const note = $('periods-note');
+  if (!donutHost || !legendHost) return;
+
+  const periods = stats.periods.filter((item) => item.count > 0);
+  // A donut with one wedge carries no information; hide the whole widget.
+  if (section) section.hidden = periods.length < 2;
+  if (periods.length < 2) {
+    clear(donutHost);
+    clear(legendHost);
+    if (note) note.textContent = '';
+    return;
+  }
+
+  clear(donutHost);
+  clear(legendHost);
+
+  const total = periods.reduce((sum, item) => sum + item.count, 0);
+  if (note) {
+    note.textContent = `${fmtInt(periods.length)} ${plural(periods.length, ['движение', 'движения', 'движений'])}`;
+  }
+
+  const segments = periods.map((item, index) => ({
+    key: `period-${item.key}`,
+    label: item.name,
+    value: item.count,
+    color: PERIOD_COLORS[index % PERIOD_COLORS.length],
+    periodKey: item.key,
+    avgRating: item.avgRating,
+  }));
+
+  renderDonut(donutHost, {
+    segments,
+    legendHost,
+    centerValue: fmtInt(total),
+    centerLabel: 'фильмов',
+    ariaLabel: 'Кинематографические движения и периоды. Нажмите на сегмент, чтобы увидеть фильмы',
+    secondary: (seg) => {
+      const pct = `${fmtPercent(seg.value, total)} упоминаний`;
+      return seg.avgRating != null ? `${pct} · средняя ${fmtRating(seg.avgRating)}` : pct;
+    },
+    onSelect: (seg) => {
+      const item = periods.find((entry) => entry.key === seg.periodKey);
+      if (item) {
+        hideTooltip();
+        openTaxonomyModal(stats, item, { kicker: 'Периоды', sortScope: 'periods' });
+      }
+    },
   });
 }
 

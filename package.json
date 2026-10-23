@@ -6,7 +6,8 @@
   "type": "commonjs",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "backfill:keywords": "node server/backfill.js"
   },
   "engines": {
     "node": ">=18"

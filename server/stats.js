@@ -2,10 +2,32 @@
 
 const cache = require('./cache');
 const { getJob } = require('./enrich');
+const { buildTaxonomy } = require('./taxonomy');
 
 const WRITER_JOBS = new Set(['Screenplay', 'Writer', 'Story', 'Script']);
 const COMPOSER_JOBS = new Set(['Original Music Composer', 'Music']);
 const VOICE_RE = /\(voice/i;
+
+/* Genres hidden from the dashboard: TMDB "TV Movie", "War" and "History".
+ * They are matched by id first (names are localized by TMDB) and by the
+ * English/Russian label as a fallback for older cache entries. Western and
+ * Music stay visible. */
+const HIDDEN_GENRE_IDS = new Set([10770, 10752, 36]);
+const HIDDEN_GENRE_NAMES = new Set([
+  'tv movie',
+  'television film',
+  'war',
+  'history',
+  'телевизионный фильм',
+  'военный',
+  'история',
+]);
+
+function isHiddenGenre(genre) {
+  if (!genre) return false;
+  if (HIDDEN_GENRE_IDS.has(Number(genre.id))) return true;
+  return HIDDEN_GENRE_NAMES.has(String(genre.name || '').trim().toLowerCase());
+}
 
 /* TMDB returns production_countries with an English `name` even when the
  * request uses language=ru-RU, so the Russian label is resolved from the ISO
@@ -341,6 +363,7 @@ function buildStats(upload) {
   const yearMap = new Map();
   const timelineMap = new Map();
   const filmsIndex = {};
+  const taxEntries = [];
 
   let ratedCount = 0;
   let totalMinutes = 0;
@@ -380,6 +403,7 @@ function buildStats(upload) {
     // ---- genres ----
     if (details) {
       for (const genre of details.genres || []) {
+        if (isHiddenGenre(genre)) continue;
         const name = (genre.name || '').trim();
         if (!name) continue;
         let g = genreMap.get(name);
@@ -393,6 +417,14 @@ function buildStats(upload) {
           g.ratingCount++;
         }
       }
+      // Keyword-based categories / origins / periods are aggregated once,
+      // after the per-film loop (see buildTaxonomy below).
+      taxEntries.push({
+        slug: film.slug,
+        rating: film.rating,
+        genres: details.genres || [],
+        keywords: details.keywords || [],
+      });
     }
 
     // ---- persons ----
@@ -534,6 +566,10 @@ function buildStats(upload) {
     studio: serializePeople(studios, true),
   };
 
+  // Keyword taxonomy over matched films. Categories include only non-empty
+  // buckets; origins are mutually exclusive and always sum to taxEntries.
+  const taxonomy = buildTaxonomy(taxEntries);
+
   const unmatched = computeUnmatched(upload, job);
 
   const summary = {
@@ -556,6 +592,9 @@ function buildStats(upload) {
     years,
     timeline,
     persons,
+    categories: taxonomy.categories,
+    origins: taxonomy.origins,
+    periods: taxonomy.periods,
     filmsIndex,
     unmatched,
   };

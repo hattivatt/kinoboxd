@@ -633,6 +633,26 @@ function normalizeCompanies(list) {
     : [];
 }
 
+/* TMDB keyword lists use `keywords` for movies and `results` for TV; the
+ * cache stores both as a flat [{ id, name }] array. An empty array is
+ * meaningful: it tells the backfill script the entry was already refreshed
+ * (`Array.isArray` is the idempotency marker). */
+function normalizeKeywords(raw) {
+  let list = [];
+  if (Array.isArray(raw)) list = raw;
+  else if (raw && typeof raw === 'object') {
+    if (Array.isArray(raw.keywords)) list = raw.keywords;
+    else if (Array.isArray(raw.results)) list = raw.results;
+  }
+  return list
+    .filter((keyword) => keyword && typeof keyword === 'object')
+    .map((keyword) => ({
+      id: keyword.id != null ? keyword.id : null,
+      name: typeof keyword.name === 'string' ? keyword.name : '',
+    }))
+    .filter((keyword) => keyword.name);
+}
+
 function normalizeDetailsPayload(details, credits) {
   return {
     kind: 'movie',
@@ -650,6 +670,7 @@ function normalizeDetailsPayload(details, credits) {
       overview: details.overview || '',
       production_countries: normalizeCountries(details.production_countries),
       production_companies: normalizeCompanies(details.production_companies),
+      keywords: normalizeKeywords(details.keywords),
     },
     credits: {
       cast: Array.isArray(credits && credits.cast)
@@ -680,7 +701,7 @@ function normalizeDetailsPayload(details, credits) {
  */
 async function fetchMovieData(tmdbId) {
   const [details, credits] = await Promise.all([
-    tmdbGet(`/movie/${tmdbId}`, { language: 'ru-RU' }),
+    tmdbGet(`/movie/${tmdbId}`, { language: 'ru-RU', append_to_response: 'keywords' }),
     tmdbGet(`/movie/${tmdbId}/credits`, {}),
   ]);
   if (!details || !credits) {
@@ -765,6 +786,7 @@ function normalizeTvPayload(details, credits) {
       overview: details.overview || '',
       production_countries: normalizeCountries(details.production_countries),
       production_companies: normalizeCompanies(details.production_companies),
+      keywords: normalizeKeywords(details.keywords),
     },
     credits: {
       cast: normalizedCast,
@@ -780,7 +802,7 @@ function normalizeTvPayload(details, credits) {
  */
 async function fetchTvData(tmdbId) {
   const [details, aggregate] = await Promise.all([
-    tmdbGet(`/tv/${tmdbId}`, { language: 'ru-RU' }),
+    tmdbGet(`/tv/${tmdbId}`, { language: 'ru-RU', append_to_response: 'keywords' }),
     tmdbGet(`/tv/${tmdbId}/aggregate_credits`, {}),
   ]);
   if (!details) {
@@ -878,6 +900,8 @@ async function searchCatalog(query, kind) {
 
 module.exports = {
   tmdbGet,
+  normalizeDetailsPayload,
+  normalizeTvPayload,
   searchMovie,
   searchTv,
   searchCatalog,

@@ -1236,6 +1236,8 @@ img { display: block; }
 .w-decades { grid-column: span 6; }
 .w-years { grid-column: span 6; }
 .w-yearbars { grid-column: span 12; }
+.w-origins { grid-column: span 6; }
+.w-periods { grid-column: span 6; }
 .w-timeline { grid-column: span 12; }
 .w-persons { grid-column: span 12; }
 
@@ -1439,6 +1441,28 @@ img { display: block; }
   padding-right: 4px;
   overscroll-behavior: contain;
 }
+/* Genres + keyword categories share one scroll container so the widget stays
+   a single column. The inner lists must not scroll on their own. */
+.genre-sections {
+  max-height: 364px;
+  overflow-y: auto;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+}
+.genre-sections .genre-list {
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
+.genre-subhead {
+  margin: 12px 5px 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.genre-subhead:first-child { margin-top: 0; }
 .genre-row {
   display: grid;
   grid-template-columns: minmax(88px, 27%) minmax(0, 1fr) 38px;
@@ -1449,6 +1473,11 @@ img { display: block; }
   transition: background 0.14s ease;
 }
 .genre-row:hover { background: rgba(255, 255, 255, 0.045); }
+.genre-row.is-clickable { cursor: pointer; }
+.genre-row.is-clickable:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -1px;
+}
 .genre-name {
   display: flex;
   align-items: baseline;
@@ -1481,6 +1510,9 @@ img { display: block; }
   border-radius: 3px;
   background: linear-gradient(90deg, #00a844, var(--green));
   transition: width 0.7s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+.genre-row.is-category .genre-fill {
+  background: linear-gradient(90deg, #4b5bd6, #40bcf4);
 }
 .genre-row:hover .genre-fill { filter: brightness(1.12); }
 .genre-avg {
@@ -2247,6 +2279,7 @@ img { display: block; }
   .ratings-body .donut-host { order: 1; }
   .donut-wrap { max-width: 212px; }
   .genre-row { grid-template-columns: minmax(78px, 32%) minmax(0, 1fr) 32px; gap: 7px; }
+  .genre-sections { max-height: 340px; }
   .person-row { grid-template-columns: 24px 40px minmax(0, 1fr) 74px; gap: 9px; padding: 7px 6px; }
   .avatar, .avatar-fallback { width: 40px; height: 40px; border-radius: 8px; }
   .person-name { font-size: 12.5px; }
