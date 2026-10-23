@@ -23,7 +23,7 @@ const YEAR_COLORS = [
 const GENRE_RU = {
   Action: 'Боевик',
   Adventure: 'Приключения',
-  Animation: 'Анимация',
+  Animation: 'Мультфильмы',
   Comedy: 'Комедия',
   Crime: 'Криминал',
   Documentary: 'Документальный',

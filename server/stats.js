@@ -8,11 +8,15 @@ const WRITER_JOBS = new Set(['Screenplay', 'Writer', 'Story', 'Script']);
 const COMPOSER_JOBS = new Set(['Original Music Composer', 'Music']);
 const VOICE_RE = /\(voice/i;
 
-/* Genres hidden from the dashboard: TMDB "TV Movie", "War" and "History".
- * They are matched by id first (names are localized by TMDB) and by the
+/* Genres hidden from the dashboard: TMDB "TV Movie", "War", "History" and
+ * "Animation". Animation is hidden because the dashboard splits it into the
+ * derived categories "Мультфильмы" (Animation minus anime) + "Аниме": keeping
+ * the raw genre would count the same films twice (its name is also localized
+ * as the singular "Мультфильм", which looks like a duplicate row). They are
+ * matched by id first (names are localized by TMDB) and by the
  * English/Russian label as a fallback for older cache entries. Western and
  * Music stay visible. */
-const HIDDEN_GENRE_IDS = new Set([10770, 10752, 36]);
+const HIDDEN_GENRE_IDS = new Set([10770, 10752, 36, 16]);
 const HIDDEN_GENRE_NAMES = new Set([
   'tv movie',
   'television film',
@@ -21,6 +25,10 @@ const HIDDEN_GENRE_NAMES = new Set([
   'телевизионный фильм',
   'военный',
   'история',
+  'animation',
+  'мультфильм',
+  'мультфильмы',
+  'анимация',
 ]);
 
 /* TMDB Music is id 10402 (id 35 is Comedy). The "Музыка" bucket is the Music

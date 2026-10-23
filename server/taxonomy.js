@@ -43,8 +43,11 @@ const CATEGORY_DEFS = [
   },
   { key: 'anime', name: 'Аниме', aliases: ['anime'] },
   // Animation is genre-based (TMDB genre 16) and excludes anime films; it has
-  // no keyword aliases on purpose.
-  { key: 'animation', name: 'Анимация', aliases: [], genreBased: true },
+  // no keyword aliases on purpose. The raw TMDB genre 16 is hidden from the
+  // dashboard (see stats.js), so this derived bucket is the only "Мультфильмы"
+  // entry. The key stays "animation" so existing sortScope/kicker handling is
+  // unaffected; only the display name is localized.
+  { key: 'animation', name: 'Мультфильмы', aliases: [], genreBased: true },
   {
     key: 'black-and-white',
     name: 'Чёрно-белые',
@@ -249,8 +252,9 @@ function classifyFilm(film) {
 
   const anime = categories.includes('anime');
   const animationGenre = isAnimationGenre(film && film.genres);
-  // "Анимация" is the TMDB genre minus anime. An anime title without the
-  // Animation genre still counts as anime above; it is never added here.
+  // "Мультфильмы" is the TMDB Animation genre minus anime. An anime title
+  // without the Animation genre still counts as anime above; it is never
+  // added here.
   if (animationGenre && !anime) categories.push('animation');
 
   let origin = ORIGINAL_DEF.key;
