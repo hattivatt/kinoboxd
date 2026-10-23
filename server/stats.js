@@ -582,8 +582,18 @@ function buildStats(upload) {
           ? `https://www.kinopoisk.ru/${kind === 'tv' ? 'series' : 'film'}/${film.kpId}/`
           : null);
       filmEntry.kpUrl = kpUrl || null;
+      // A KinoPoisk import has no Letterboxd URI of its own, but a previous
+      // Letterboxd export may have taught the server the TMDB <-> boxd.it
+      // pair for this very film. Letterboxd pages are public and per-film,
+      // so the link works across accounts/sources.
+      const mappedLbUri = tmdbId != null ? cache.getLbLink(tmdbId, kind) : null;
+      if (mappedLbUri) filmEntry.lbUri = mappedLbUri;
     } else {
-      filmEntry.lbUri = film.lbUri || null;
+      // Own upload source always wins; the global mapping is only a fallback
+      // for films whose export did not provide a usable URI.
+      filmEntry.lbUri = film.lbUri
+        || (tmdbId != null ? cache.getLbLink(tmdbId, kind) : null)
+        || null;
     }
     filmsIndex[film.slug] = filmEntry;
   }

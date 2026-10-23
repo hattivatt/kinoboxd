@@ -12,6 +12,7 @@ const CACHE_DIR = process.env.KINOBOXD_CACHE_DIR
   ? path.resolve(process.env.KINOBOXD_CACHE_DIR)
   : path.join(__dirname, '..', 'cache');
 const INDEX_PATH = path.join(CACHE_DIR, 'index.json');
+const LB_LINKS_PATH = path.join(CACHE_DIR, 'lb-links.json');
 const DETAILS_DIR = path.join(CACHE_DIR, 'details');
 
 fs.mkdirSync(DETAILS_DIR, { recursive: true });
@@ -146,6 +147,153 @@ function setIndexValue(key, value) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Letterboxd links: tmdbId -> boxd.it URI (global, cross-export)      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Letterboxd deep links cannot be derived from a TMDB id, but every
+ * Letterboxd export CSV carries the film's own `https://boxd.it/...` URI.
+ * Whenever an enriched Letterboxd upload yields both ids for a film we
+ * remember the pair here, so KinoPoisk (or any other) imports can link the
+ * same film without ever seeing a Letterboxd export. Letterboxd film pages
+ * are public and per-film, so the pairing is account-independent.
+ *
+ * File shape (cache/lb-links.json):
+ *   { "27205": { "lbUri": "https://boxd.it/1pXh", "kind": "movie" } }
+ *
+ * `kind` keeps TMDB movie/TV ids apart (they share one numeric namespace).
+ * Bare string values are accepted when reading; they have no kind and are
+ * therefore used for either media kind.
+ *
+ * Disambiguation: the FIRST learned URI wins. Two different Letterboxd
+ * exports may reference the same film with different short links (a per-user
+ * diary link vs the canonical one); both open the same film, so stability is
+ * preferable to churn on every upload.
+ */
+let lbLinks = {};
+try {
+  const raw = fs.readFileSync(LB_LINKS_PATH, 'utf8');
+  const parsed = JSON.parse(raw);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) lbLinks = parsed;
+} catch (err) {
+  if (err.code !== 'ENOENT') {
+    console.warn(`[cache] Could not read lb-links.json (${err.message}); starting empty.`);
+  }
+}
+
+function parseLbLink(value) {
+  if (typeof value === 'string') {
+    const uri = value.trim();
+    return /^https?:\/\//i.test(uri) ? { lbUri: uri, kind: null } : null;
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const lbUri = typeof value.lbUri === 'string' ? value.lbUri.trim() : '';
+    if (!/^https?:\/\//i.test(lbUri)) return null;
+    const kind = value.kind === 'tv' ? 'tv' : value.kind === 'movie' ? 'movie' : null;
+    return { lbUri, kind };
+  }
+  return null;
+}
+
+/**
+ * Letterboxd page for a TMDB film, or null. `kind` is checked when both the
+ * stored and the requested media kind are known.
+ */
+function getLbLink(tmdbId, kind) {
+  const n = Number(tmdbId);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const entry = parseLbLink(lbLinks[String(n)]);
+  if (!entry) return null;
+  const expected = kind === 'tv' ? 'tv' : kind === 'movie' ? 'movie' : null;
+  if (entry.kind && expected && entry.kind !== expected) return null;
+  return entry.lbUri;
+}
+
+/**
+ * Remember one TMDB <-> Letterboxd pair. Existing mappings are never
+ * overwritten (see the disambiguation note above).
+ * Returns true when a new pair was stored.
+ */
+function setLbLink(tmdbId, lbUri, kind) {
+  const n = Number(tmdbId);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  const uri = typeof lbUri === 'string' ? lbUri.trim() : '';
+  if (!/^https?:\/\//i.test(uri)) return false;
+  const key = String(n);
+  if (Object.prototype.hasOwnProperty.call(lbLinks, key)) return false;
+  lbLinks[key] = {
+    lbUri: uri,
+    kind: kind === 'tv' ? 'tv' : kind === 'movie' ? 'movie' : null,
+  };
+  persistLbLinks();
+  return true;
+}
+
+/**
+ * Harvest links from a finished enrichment job. Only films that carry both a
+ * Letterboxd URI and a TMDB id can teach the mapping; KinoPoisk uploads have
+ * no `lbUri` and are a no-op.
+ * Returns { added, existing, candidates }.
+ */
+function learnLbLinks(films, jobFilms) {
+  const result = { added: 0, existing: 0, candidates: 0 };
+  if (!Array.isArray(films) || !jobFilms || typeof jobFilms.get !== 'function') return result;
+  for (const film of films) {
+    if (!film || !film.lbUri) continue;
+    const entry = jobFilms.get(film.slug);
+    if (!entry || entry.tmdbId == null) continue;
+    result.candidates++;
+    if (setLbLink(entry.tmdbId, film.lbUri, entry.kind)) result.added++;
+    else result.existing++;
+  }
+  return result;
+}
+
+let lbSaveScheduled = false;
+let lbSaving = Promise.resolve();
+let lbDirty = false;
+
+async function writeLbLinksNow() {
+  lbDirty = false;
+  const tmp = `${LB_LINKS_PATH}.${process.pid}.${Date.now()}.tmp`;
+  await fsp.writeFile(tmp, JSON.stringify(lbLinks, null, 0), 'utf8');
+  await fsp.rename(tmp, LB_LINKS_PATH);
+}
+
+function persistLbLinks() {
+  lbDirty = true;
+  if (lbSaveScheduled) return;
+  lbSaveScheduled = true;
+  setTimeout(() => {
+    lbSaveScheduled = false;
+    lbSaving = lbSaving
+      .then(() => {
+        if (!lbDirty) return null;
+        return writeLbLinksNow();
+      })
+      .catch((err) => {
+        console.error(`[cache] Failed to save lb-links.json: ${err.message}`);
+      });
+  }, 300);
+}
+
+/** Force a synchronous write (used at the end of enrichment). */
+function flushLbLinks() {
+  try {
+    const tmp = `${LB_LINKS_PATH}.flush.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(lbLinks, null, 0), 'utf8');
+    fs.renameSync(tmp, LB_LINKS_PATH);
+    lbDirty = false;
+  } catch (err) {
+    console.error(`[cache] Failed to flush lb-links.json: ${err.message}`);
+  }
+}
+
+function lbLinksStats() {
+  return { keys: Object.keys(lbLinks).length };
+}
+
+/* ------------------------------------------------------------------ */
 /* Details: cache/details/{tmdbId}.json -> { kind, details, credits }   */
 /* ------------------------------------------------------------------ */
 
@@ -269,6 +417,11 @@ module.exports = {
   getIndexValue,
   hasKey,
   setIndexValue,
+  getLbLink,
+  setLbLink,
+  learnLbLinks,
+  flushLbLinks,
+  lbLinksStats,
   getDetails,
   hasDetails,
   saveDetails,

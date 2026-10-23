@@ -377,6 +377,13 @@ app.post('/api/match', async (req, res, next) => {
     job.matched = matched;
     job.failed = Math.max(0, job.total - matched);
 
+    // A manual (re)match on a Letterboxd upload is another chance to learn a
+    // global TMDB <-> boxd.it pair, e.g. when the automatic match failed.
+    if (film.lbUri && cache.setLbLink(tmdbId, film.lbUri, kind)) {
+      cache.flushLbLinks();
+      console.log(`[match] learned TMDB<->Letterboxd link ${kind}:${tmdbId} -> ${film.lbUri}`);
+    }
+
     // Keep the KinoPoisk movie/TV counters consistent when a manual match
     // changes the media kind. Compare against the previous effective kind, not
     // the upload kind, so a re-match does not double-adjust the counters.

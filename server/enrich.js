@@ -182,6 +182,16 @@ async function runJob(job, films) {
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   cache.flushIndex();
+  // Learn global TMDB <-> Letterboxd links from this job (Letterboxd uploads
+  // only: those films carry an lbUri). KinoPoisk imports are a no-op here.
+  const learned = cache.learnLbLinks(films, job.films);
+  cache.flushLbLinks();
+  if (learned.added > 0) {
+    console.log(
+      `[enrich ${job.uploadId}] learned ${learned.added} TMDB<->Letterboxd links ` +
+        `(${learned.candidates} films had both ids, cache now ${cache.lbLinksStats().keys})`
+    );
+  }
   job.done = true;
   job.finishedAt = Date.now();
   const seconds = ((job.finishedAt - startedAt) / 1000).toFixed(1);

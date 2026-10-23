@@ -142,6 +142,12 @@ Rules:
 * `cache/details/{tmdbId}.json` — `{ details, credits }`.
 * `cache/kp/{userId}.json` — `{ fetchedAt, kpNick, entries }` of a KinoPoisk
   profile. Kept in sync with KinoPoisk by the delta refresh described above.
+* `cache/lb-links.json` — global `"tmdbId"` → `{ lbUri, kind }` mapping learned
+  from every enriched Letterboxd upload. Letterboxd links cannot be derived
+  from a TMDB id, so KinoPoisk (and any other source) films pick up the
+  `boxd.it` link of the same TMDB film from this file. The first learned URI
+  wins; the mapping survives restarts and is independent of the upload that
+  taught it.
 
 The cache is global and persisted before/after restart. A second Letterboxd
 upload with overlapping films performs no TMDB requests (a KinoPoisk import
