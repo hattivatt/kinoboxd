@@ -3,6 +3,7 @@
 const cache = require('./cache');
 const { getJob } = require('./enrich');
 const { buildTaxonomy, normalizeKeyword } = require('./taxonomy');
+const wikidata = require('./wikidata');
 
 const WRITER_JOBS = new Set(['Screenplay', 'Writer', 'Story', 'Script']);
 const COMPOSER_JOBS = new Set(['Original Music Composer', 'Music']);
@@ -375,6 +376,10 @@ function buildStats(upload) {
     return null;
   }
 
+  // A backfill run is a separate process; pick up its wd-tags.json without a
+  // server restart. The check is one stat() per stats build.
+  wikidata.reloadIfChanged();
+
   const source =
     upload.summary && upload.summary.source
       ? upload.summary.source
@@ -472,8 +477,11 @@ function buildStats(upload) {
       taxEntries.push({
         slug: film.slug,
         rating: film.rating,
+        // Same value as filmsIndex.year; period rules (film noir) need it.
+        year,
         genres: details.genres || [],
         keywords: details.keywords || [],
+        wd: wikidata.getTags(details.imdb_id, tmdbId),
       });
     }
 

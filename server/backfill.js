@@ -6,6 +6,7 @@
  * Usage:
  *   npm run backfill:keywords              # keywords, credits untouched
  *   npm run backfill:imdb                  # IMDb ids for deep links
+ *   npm run backfill:wikidata              # P136/P462/P135/P144 tags
  *   BACKFILL_CONCURRENCY=4 npm run backfill:imdb   (default 8)
  *   node server/backfill.js imdb
  *   BACKFILL_TARGET=imdb node server/backfill.js
@@ -18,8 +19,13 @@
  *       through the normal normalizer, so the whole card is refreshed;
  *     * tv: GET /tv/{id}/external_ids (details do not carry imdb_id) and patch
  *       the existing file, keeping aggregated credits/docs untouched.
- *   Idempotent in both cases: a valid `imdb_id` or the `imdb_checked` marker
- *   set by a previous run makes the file a skip.
+ * - wikidata: query WDQS by IMDb id (P345), 450 ids per batch, with a P4947
+ *   TMDB-id fallback for films without an IMDb id. Results are persisted in
+ *   cache/wd-tags.json after every batch. Idempotent: already checked ids are
+ *   skipped; WIKIDATA_REFRESH=1 forces a refetch.
+ *
+ * All targets are idempotent: a valid `imdb_id` / `imdb_checked` marker or a
+ * checked Wikidata id makes the entry a skip.
  */
 
 const fs = require('fs');
@@ -28,6 +34,7 @@ const path = require('path');
 
 const cache = require('./cache');
 const tmdb = require('./tmdb');
+const wikidata = require('./wikidata');
 
 const CONCURRENCY = Math.max(
   1,
@@ -41,6 +48,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function normalizeTarget(value) {
   const raw = String(value || '').trim().toLowerCase();
   if (raw === 'imdb' || raw === 'imdb_id' || raw === 'imdb-id') return 'imdb';
+  if (raw === 'wikidata' || raw === 'wd' || raw === 'wd-tags') return 'wikidata';
   return 'keywords';
 }
 
@@ -196,8 +204,46 @@ function pct(part, total) {
   return `${((part / total) * 100).toFixed(1)}%`;
 }
 
+function releaseYearOf(details) {
+  const raw = String((details && (details.release_date || details.first_air_date)) || '');
+  return /^\d{4}/.test(raw) ? Number(raw.slice(0, 4)) : null;
+}
+
+async function runWikidataTarget(files, names, unreadable) {
+  const items = files.map((file) => ({
+    tmdbId: Number(file.entry.details.id),
+    kind: file.kind,
+    imdbId: tmdb.normalizeImdbId(file.entry.details.imdb_id),
+    title: file.entry.details.title || null,
+    year: releaseYearOf(file.entry.details),
+  }));
+  const startedAt = Date.now();
+  const result = await wikidata.backfill(items);
+  const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+  console.log(
+    `[backfill:wikidata] cache files=${names.length} unreadable=${unreadable} ` +
+      `skipped-imdb=${result.skippedImdb} batches=${result.batches} ` +
+      `failed-batches=${result.failedBatches} in ${seconds}s`
+  );
+  if (result.failedBatches > 0) {
+    console.warn(
+      '[backfill:wikidata] partial run: successful batches are already persisted; ' +
+        'run `npm run backfill:wikidata` again to resume (idempotent).'
+    );
+  }
+  return {
+    updated: result.coverage.movie.covered + result.coverage.tv.covered,
+    failed: result.failedBatches,
+    skipped: result.skippedImdb,
+    unreadable,
+  };
+}
+
 async function main() {
   const { files, names, unreadable } = await readAllFiles();
+  if (TARGET === 'wikidata') {
+    return runWikidataTarget(files, names, unreadable);
+  }
   const queue = [];
   let skipped = 0;
 

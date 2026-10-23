@@ -148,6 +148,9 @@ Rules:
   `boxd.it` link of the same TMDB film from this file. The first learned URI
   wins; the mapping survives restarts and is independent of the upload that
   taught it.
+* `cache/wd-tags.json` — Wikidata enrichment (see below). Written by the
+  `backfill:wikidata` CLI; the running server reloads it on the next stats
+  build when its mtime/size changed, so no restart is needed.
 
 The cache is global and persisted before/after restart. A second Letterboxd
 upload with overlapping films performs no TMDB requests (a KinoPoisk import
@@ -155,6 +158,55 @@ still checks the profile's newest page, see above).
 
 TMDB requests are capped at 12 concurrent; HTTP 429 is retried up to 5 times
 with `Retry-After`/exponential backoff.
+
+## Wikidata
+
+`npm run backfill:wikidata` enriches every cached film with curated Wikidata
+signals from the Wikidata Query Service. It is a separate, resumable CLI; the
+server never queries WDQS at request time.
+
+* Lookup is by IMDb id (`P345`), 450 ids per batch (6 batches for this cache).
+  Films without an IMDb id fall back to a TMDB-id (`P4947`) query.
+* Fetched properties: genres `P136`, color `P462`, film movements `P135`,
+  based-on works `P144` plus the `P31` type of each source work.
+* WDQS is rate-limited aggressively during outages. HTTP 429/5xx are retried
+  up to 8 times with `Retry-After`/exponential backoff capped at 60 s. Every
+  successful batch is flushed to `cache/wd-tags.json`, so an interrupted run
+  leaves valid partial data; rerun the command to resume. Already checked ids
+  (including "not found") are skipped. `WIKIDATA_REFRESH=1` forces a refetch.
+* The file is a flat two-index store (same tag object under both keys):
+  `{ "version": 1, "updatedAt": "...", "labels": {...},
+     "imdb": { "tt…": tag }, "tmdb": { "…": tag } }`.
+  A tag is `{ found, item, items, genres, colors, movements,
+  basedOn, basedTypes, basedClasses, checkedAt }`; `basedClasses` is one of
+  `remake | book | comic | play | video-game`. Multiple Wikidata items sharing
+  one IMDb id are merged rather than letting the last row win.
+* P144 classes use the priority `remake > book > comic > play > video-game`.
+  The source-type labels are fetched once from the Wikidata API and cached in
+  the same file.
+
+Merged taxonomy rules (`server/taxonomy.js`):
+
+* **Чёрно-белые**: TMDB keyword OR (`P462 = Q838368` AND NOT `Q22006653`).
+  The color exclusion matters: ~43 corpus films are tagged both black-and-white
+  and color, so the naive P462 rule would add ~35 false positives.
+* **Немые**: TMDB keyword OR `P136 = Q226730` (silent film).
+* **Фильм-нуар**: TMDB keyword OR (`P136 = Q185867` AND year ≤ 1965). The
+  year guard keeps modern noirs out of the classic period; neo-noir is its own
+  category below.
+* **Нео-нуар**: TMDB keyword OR `P136 = Q2421031`.
+* **Новая Голливуд**: TMDB keyword OR `P135 = Q377616`.
+* **Pre-Code Голливуд** (new period): `P135 = Q3408764`. TMDB has no matching
+  keyword in this corpus.
+* **Origins**: TMDB keyword classification always wins. Only when it yields
+  `original` does P144 override it with a source-based subtype. This raises
+  non-original coverage from ~40.9% to ~50.6% (2618-film cache).
+* Other periods (French New Wave, Italian Neorealism, Japanese New Wave,
+  Soviet Avant-Garde, German Expressionism) stay keyword-only.
+
+`wd-tags.json` ids and Q-ids never leak into `/api/stats`: the payload schema
+is unchanged, and the Wikidata layer only affects the counts inside the
+existing `genres` / `origins` / `periods` buckets.
 
 ## Note on Letterboxd slugs
 

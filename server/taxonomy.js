@@ -16,6 +16,10 @@
  * The corpus used to pick aliases is the local TMDB cache (2618 films), see
  * the round-2 report for the observed frequencies. Aliases with zero hits are
  * intentionally kept: TMDB may add them later.
+ *
+ * Wikidata signals (genres P136, color P462, movements P135, based-on P144)
+ * are merged on top of the keyword rules for a small set of well-curated
+ * buckets. See server/wikidata.js; raw Q-ids stay out of the API payload.
  */
 
 function normalizeKeyword(value) {
@@ -27,6 +31,24 @@ function normalizeKeyword(value) {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/* ------------------------------------------------------------------ */
+/* Wikidata Q-ids used by the merged rules                             */
+/* ------------------------------------------------------------------ */
+
+const WD = {
+  BLACK_AND_WHITE: 'Q838368', // black-and-white film (P462)
+  COLOR: 'Q22006653', // color film (P462)
+  SILENT_FILM: 'Q226730', // silent film (P136)
+  FILM_NOIR: 'Q185867', // film noir (P136)
+  NEO_NOIR: 'Q2421031', // neo-noir (P136)
+  NEW_HOLLYWOOD: 'Q377616', // New Hollywood (P135)
+  PRECODE_HOLLYWOOD: 'Q3408764', // pre-Code Hollywood (P135)
+};
+
+/* Film noir is a period as well as a category; Wikidata tags modern noirs
+ * with Q185867 too, so the period rule additionally requires an early year. */
+const FILM_NOIR_LAST_YEAR = 1965;
 
 /* ------------------------------------------------------------------ */
 /* Definitions                                                         */
@@ -144,6 +166,15 @@ const PERIOD_DEFS = [
     name: 'Новая Голливуд',
     aliases: ['new hollywood', 'american new wave'],
   },
+  // Pre-Code Hollywood (1929-1934) is absent from TMDB keywords; Wikidata's
+  // movement property P135 (Q3408764) covers it. The rule is deliberately
+  // Wikidata-only: no keyword aliases are invented.
+  {
+    key: 'pre-code-hollywood',
+    name: 'Pre-Code Голливуд',
+    aliases: [],
+    wdMovement: WD.PRECODE_HOLLYWOOD,
+  },
   // В русскоязычной традиции монтажная школа называется «советский авангард»
   // (Wikidata Q3321104); ключ оставлен прежним ради стабильности данных.
   { key: 'soviet-montage', name: 'Советский авангард', aliases: ['soviet montage'] },
@@ -202,6 +233,37 @@ function matchesAlias(keywordSet, aliases) {
   return false;
 }
 
+/**
+ * Normalized view of one film's Wikidata tag (server/wikidata.js). Missing or
+ * malformed data degrades to empty sets, so callers never need null checks.
+ */
+function wdSets(wd) {
+  const source = wd && typeof wd === 'object' ? wd : {};
+  const toSet = (value) =>
+    new Set(
+      (Array.isArray(value) ? value : [])
+        .map((item) => String(item == null ? '' : item).trim())
+        .filter(Boolean)
+    );
+  return {
+    genres: toSet(source.genres),
+    colors: toSet(source.colors),
+    movements: toSet(source.movements),
+    basedClasses: toSet(source.basedClasses),
+  };
+}
+
+/**
+ * P144 source class from Wikidata. Only consulted when the TMDB keyword rules
+ * produced "original"; the curated priority matches server/wikidata.js.
+ */
+function wdOrigin(wdSet) {
+  for (const key of ['remake', 'book', 'comic', 'play', 'video-game']) {
+    if (wdSet.basedClasses.has(key)) return key;
+  }
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Aggregation                                                         */
 /* ------------------------------------------------------------------ */
@@ -239,16 +301,50 @@ function serializeBuckets(defs, buckets, order) {
 /**
  * Classify one film.
  *
- * @param {{slug:string, rating?:number|null, genres?:Array, keywords?:Array}} film
+ * TMDB keyword rules always run first. Wikidata only widens a few curated
+ * buckets; it never removes a keyword-derived classification. Origins stay
+ * mutually exclusive: a keyword match wins, and P144 is used only when the
+ * keyword rules said "original screenplay".
+ *
+ * @param {{slug:string, rating?:number|null, year?:number|null,
+ *          genres?:Array, keywords?:Array, wd?:object}} film
  * @returns {{categories:string[], origin:string, periods:string[]}}
  */
 function classifyFilm(film) {
   const keywordSet = keywordSetOf(film && film.keywords);
+  const wd = wdSets(film && film.wd);
+  const year = Number(film && film.year);
+  const hasYear = Number.isFinite(year) && year > 0;
   const categories = [];
 
   for (const rule of CATEGORY_RULES) {
     if (rule.def.genreBased) continue;
     if (matchesAlias(keywordSet, rule.aliases)) categories.push(rule.def.key);
+  }
+
+  // Wikidata additions. The black-and-white rule needs both signals: WDQS
+  // contains films tagged black-and-white AND color (e.g. a partly colorized
+  // print); naively trusting Q838368 adds ~35 false positives in the corpus.
+  if (
+    !categories.includes('black-and-white') &&
+    wd.colors.has(WD.BLACK_AND_WHITE) &&
+    !wd.colors.has(WD.COLOR)
+  ) {
+    categories.push('black-and-white');
+  }
+  if (!categories.includes('silent') && wd.genres.has(WD.SILENT_FILM)) {
+    categories.push('silent');
+  }
+  if (
+    !categories.includes('film-noir') &&
+    wd.genres.has(WD.FILM_NOIR) &&
+    hasYear &&
+    year <= FILM_NOIR_LAST_YEAR
+  ) {
+    categories.push('film-noir');
+  }
+  if (!categories.includes('neo-noir') && wd.genres.has(WD.NEO_NOIR)) {
+    categories.push('neo-noir');
   }
 
   const anime = categories.includes('anime');
@@ -265,10 +361,30 @@ function classifyFilm(film) {
       break;
     }
   }
+  if (origin === ORIGINAL_DEF.key) {
+    const fromWikidata = wdOrigin(wd);
+    if (fromWikidata) origin = fromWikidata;
+  }
 
   const periods = [];
   for (const rule of PERIOD_RULES) {
     if (matchesAlias(keywordSet, rule.aliases)) periods.push(rule.def.key);
+  }
+  if (
+    !periods.includes('film-noir') &&
+    wd.genres.has(WD.FILM_NOIR) &&
+    hasYear &&
+    year <= FILM_NOIR_LAST_YEAR
+  ) {
+    periods.push('film-noir');
+  }
+  if (!periods.includes('new-hollywood') && wd.movements.has(WD.NEW_HOLLYWOOD)) {
+    periods.push('new-hollywood');
+  }
+  for (const rule of PERIOD_RULES) {
+    if (rule.def.wdMovement && wd.movements.has(rule.def.wdMovement)) {
+      if (!periods.includes(rule.def.key)) periods.push(rule.def.key);
+    }
   }
 
   return { categories, origin, periods };
@@ -277,7 +393,8 @@ function classifyFilm(film) {
 /**
  * Aggregate the taxonomy over every matched film.
  *
- * @param {Array<{slug:string, rating?:number|null, genres?:Array, keywords?:Array}>} films
+ * @param {Array<{slug:string, rating?:number|null, year?:number|null,
+ *                genres?:Array, keywords?:Array, wd?:object}>} films
  * @returns {{categories:Array, origins:Array, periods:Array}}
  */
 function buildTaxonomy(films) {
@@ -318,6 +435,8 @@ module.exports = {
   CATEGORY_DEFS,
   ORIGIN_DEFS,
   PERIOD_DEFS,
+  WD,
+  FILM_NOIR_LAST_YEAR,
   normalizeKeyword,
   classifyFilm,
   buildTaxonomy,
