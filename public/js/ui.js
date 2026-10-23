@@ -184,6 +184,24 @@ export function icon(name, size = 16) {
   return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" ${paint} aria-hidden="true">${body}</svg>`;
 }
 
+/* Service wordmarks for the aggregator links in film lists. They are plain
+ * SVG text glyphs so no extra assets or dependencies are needed. */
+const SERVICE_GLYPHS = {
+  lb: { text: 'LB', size: 8.5 },
+  kp: { text: 'KP', size: 9 },
+  tmdb: { text: 'TMDB', size: 5.6 },
+  imdb: { text: 'IMDb', size: 5.8 },
+};
+
+export function serviceIcon(service, size = 13) {
+  const glyph = SERVICE_GLYPHS[service];
+  if (!glyph) return icon('film', size);
+  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" focusable="false">` +
+    `<text x="12" y="16.4" text-anchor="middle" font-family="Inter, system-ui, -apple-system, sans-serif" ` +
+    `font-size="${glyph.size}" font-weight="750" letter-spacing="-0.2" fill="currentColor">${glyph.text}</text>` +
+    '</svg>';
+}
+
 /* =========================================================
    tooltip
    ========================================================= */

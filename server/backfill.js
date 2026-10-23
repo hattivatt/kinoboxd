@@ -1,16 +1,25 @@
 'use strict';
 
 /*
- * Backfill TMDB keywords for every cached details file.
+ * Backfill cached TMDB details.
  *
  * Usage:
- *   npm run backfill:keywords
- *   BACKFILL_CONCURRENCY=4 npm run backfill:keywords   (default 8)
+ *   npm run backfill:keywords              # keywords, credits untouched
+ *   npm run backfill:imdb                  # IMDb ids for deep links
+ *   BACKFILL_CONCURRENCY=4 npm run backfill:imdb   (default 8)
+ *   node server/backfill.js imdb
+ *   BACKFILL_TARGET=imdb node server/backfill.js
  *
- * The script is idempotent: entries whose `details.keywords` is already an
- * array (including an empty one) are skipped, so a second run performs no
- * network requests. Details are refreshed via the normal normalizers, which
- * keeps production countries/companies and the already cached credits.
+ * Targets
+ * - keywords: refresh every entry whose `details.keywords` is not an array
+ *   (empty array counts as done).
+ * - imdb: add `details.imdb_id`.
+ *     * movie: re-fetch GET /movie/{id}?language=ru-RU&append_to_response=keywords
+ *       through the normal normalizer, so the whole card is refreshed;
+ *     * tv: GET /tv/{id}/external_ids (details do not carry imdb_id) and patch
+ *       the existing file, keeping aggregated credits/docs untouched.
+ *   Idempotent in both cases: a valid `imdb_id` or the `imdb_checked` marker
+ *   set by a previous run makes the file a skip.
  */
 
 const fs = require('fs');
@@ -29,6 +38,14 @@ const LOG_EVERY = 50;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function normalizeTarget(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'imdb' || raw === 'imdb_id' || raw === 'imdb-id') return 'imdb';
+  return 'keywords';
+}
+
+const TARGET = normalizeTarget(process.argv[2] || process.env.BACKFILL_TARGET);
+
 function kindOf(fileName, entry) {
   if (entry && entry.kind === 'tv') return 'tv';
   if (fileName.startsWith('tv-')) return 'tv';
@@ -40,7 +57,20 @@ async function readEntry(filePath) {
   return JSON.parse(raw);
 }
 
-async function refreshOne(item) {
+function hasImdbId(details) {
+  return Boolean(details && tmdb.normalizeImdbId(details.imdb_id));
+}
+
+/** True when a previous `imdb` run already looked at this file. */
+function imdbChecked(details) {
+  return Boolean(details && details.imdb_checked === true);
+}
+
+/* ------------------------------------------------------------------ */
+/* keyword target                                                      */
+/* ------------------------------------------------------------------ */
+
+async function refreshKeywords(item) {
   const { id, kind, credits } = item;
   let lastError = null;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -54,6 +84,12 @@ async function refreshOne(item) {
         kind === 'tv'
           ? tmdb.normalizeTvPayload(details, credits || { cast: [], crew: [] })
           : tmdb.normalizeDetailsPayload(details, credits || { cast: [], crew: [] });
+      // Never drop an IMDb id that a previous imdb run already stored (the
+      // TV normalizer has no external_ids in this code path).
+      if (!payload.details.imdb_id && item.previousImdbId) {
+        payload.details.imdb_id = item.previousImdbId;
+      }
+      if (item.imdbChecked) payload.details.imdb_checked = true;
       await cache.saveDetails(id, payload);
       return { ok: true };
     } catch (err) {
@@ -66,7 +102,52 @@ async function refreshOne(item) {
   return { ok: false, error: lastError };
 }
 
-async function main() {
+/* ------------------------------------------------------------------ */
+/* imdb target                                                         */
+/* ------------------------------------------------------------------ */
+
+async function refreshImdb(item) {
+  const { id, kind } = item;
+  let lastError = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      if (kind === 'tv') {
+        const external = await tmdb.tmdbGet(`/tv/${id}/external_ids`, {});
+        if (!external) throw new Error('TMDB returned no external ids (404?)');
+        const entry = item.entry;
+        entry.details.imdb_id = tmdb.normalizeImdbId(external.imdb_id);
+        entry.details.imdb_checked = true;
+        await cache.saveDetails(id, entry);
+        return { ok: true, imdb: entry.details.imdb_id };
+      }
+
+      const details = await tmdb.tmdbGet(
+        `/movie/${id}`,
+        { language: 'ru-RU', append_to_response: 'keywords' }
+      );
+      if (!details) throw new Error('TMDB returned no details (404?)');
+      const payload = tmdb.normalizeDetailsPayload(
+        details,
+        item.credits || { cast: [], crew: [] }
+      );
+      payload.details.imdb_checked = true;
+      await cache.saveDetails(id, payload);
+      return { ok: true, imdb: payload.details.imdb_id };
+    } catch (err) {
+      lastError = err;
+      if (attempt < MAX_ATTEMPTS) {
+        await sleep(750 * attempt);
+      }
+    }
+  }
+  return { ok: false, error: lastError };
+}
+
+/* ------------------------------------------------------------------ */
+/* main                                                                */
+/* ------------------------------------------------------------------ */
+
+async function readAllFiles() {
   const detailsDir = path.join(cache.CACHE_DIR, 'details');
   let names;
   try {
@@ -76,10 +157,8 @@ async function main() {
     process.exit(1);
   }
 
-  const queue = [];
-  let skipped = 0;
+  const files = [];
   let unreadable = 0;
-
   for (const fileName of names.sort()) {
     if (!fileName.endsWith('.json')) continue;
     const filePath = path.join(detailsDir, fileName);
@@ -97,25 +176,75 @@ async function main() {
       console.warn(`[backfill] skip malformed ${fileName}`);
       continue;
     }
-    if (Array.isArray(details.keywords)) {
-      skipped++;
-      continue;
+    files.push({ fileName, entry, kind: kindOf(fileName, entry) });
+  }
+  return { files, names, unreadable };
+}
+
+function coverage(files) {
+  const out = { movie: { total: 0, withId: 0 }, tv: { total: 0, withId: 0 } };
+  for (const file of files) {
+    const bucket = out[file.kind === 'tv' ? 'tv' : 'movie'];
+    bucket.total++;
+    if (hasImdbId(file.entry.details)) bucket.withId++;
+  }
+  return out;
+}
+
+function pct(part, total) {
+  if (!total) return '0.0%';
+  return `${((part / total) * 100).toFixed(1)}%`;
+}
+
+async function main() {
+  const { files, names, unreadable } = await readAllFiles();
+  const queue = [];
+  let skipped = 0;
+
+  for (const file of files) {
+    const details = file.entry.details;
+    if (TARGET === 'imdb') {
+      if (hasImdbId(details) || imdbChecked(details)) {
+        skipped++;
+        continue;
+      }
+      queue.push({
+        id: Number(details.id),
+        kind: file.kind,
+        entry: file.entry,
+        credits: file.entry.credits || null,
+      });
+    } else {
+      if (Array.isArray(details.keywords)) {
+        skipped++;
+        continue;
+      }
+      queue.push({
+        id: Number(details.id),
+        kind: file.kind,
+        credits: file.entry.credits || null,
+        previousImdbId: hasImdbId(details) ? details.imdb_id : null,
+        imdbChecked: imdbChecked(details),
+      });
     }
-    queue.push({
-      id: Number(details.id),
-      kind: kindOf(fileName, entry),
-      credits: entry.credits || null,
-    });
   }
 
   const total = queue.length;
   console.log(
-    `[backfill] cache files=${names.length} to-refresh=${total} ` +
+    `[backfill:${TARGET}] cache files=${names.length} to-refresh=${total} ` +
       `already-done=${skipped} unreadable=${unreadable} concurrency=${CONCURRENCY}`
   );
 
   if (total === 0) {
     console.log('[backfill] nothing to do');
+    if (TARGET === 'imdb') {
+      const cov = coverage(files);
+      console.log(
+        `[backfill:imdb] coverage movies=${cov.movie.withId}/${cov.movie.total} ` +
+          `(${pct(cov.movie.withId, cov.movie.total)}) ` +
+          `tv=${cov.tv.withId}/${cov.tv.total} (${pct(cov.tv.withId, cov.tv.total)})`
+      );
+    }
     return { updated: 0, failed: 0, skipped, unreadable };
   }
 
@@ -131,7 +260,9 @@ async function main() {
       const index = cursor++;
       if (index >= queue.length) return;
       const item = queue[index];
-      const result = await refreshOne(item);
+      const result = TARGET === 'imdb'
+        ? await refreshImdb(item)
+        : await refreshKeywords(item);
       processed++;
       if (result.ok) {
         updated++;
@@ -157,10 +288,22 @@ async function main() {
 
   const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
   console.log(
-    `[backfill] done: updated=${updated} failed=${failed} skipped=${skipped} ` +
+    `[backfill:${TARGET}] done: updated=${updated} failed=${failed} skipped=${skipped} ` +
       `unreadable=${unreadable} in ${seconds}s ` +
       `tmdb requests=${tmdb.counters.requests} retries=${tmdb.counters.retries} errors=${tmdb.counters.errors}`
   );
+
+  if (TARGET === 'imdb') {
+    // Re-read from disk so the numbers reflect what was actually persisted.
+    const fresh = await readAllFiles();
+    const cov = coverage(fresh.files);
+    console.log(
+      `[backfill:imdb] coverage movies=${cov.movie.withId}/${cov.movie.total} ` +
+        `(${pct(cov.movie.withId, cov.movie.total)}) ` +
+        `tv=${cov.tv.withId}/${cov.tv.total} (${pct(cov.tv.withId, cov.tv.total)})`
+    );
+  }
+
   for (const failure of failures) {
     console.warn(
       `[backfill] failed ${failure.kind} ${failure.id}: ${failure.error && failure.error.message}`

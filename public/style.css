@@ -1170,6 +1170,24 @@ img { display: block; }
   color: #a9f5c4;
 }
 
+/* clickable neutral tile (watch time) */
+.metric-clickable {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+.metric-clickable:hover { background: rgba(255, 255, 255, 0.035); }
+.metric-clickable:active { transform: none; }
+.metric-clickable:focus-visible { outline-offset: -3px; }
+
 /* clickable "unmatched" tile */
 .metric-unmatched {
   appearance: none;
@@ -1998,6 +2016,43 @@ img { display: block; }
   color: var(--muted-2);
 }
 .film-rating.is-empty { color: var(--muted-2); font-weight: 500; }
+
+/* aggregator links (Letterboxd / KinoPoisk / TMDB / IMDb) */
+.film-links {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 3px;
+}
+.film-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 16px;
+  border-radius: 4px;
+  color: var(--muted);
+  opacity: 0.62;
+  text-decoration: none;
+  transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
+}
+.film-link:hover {
+  opacity: 1;
+  color: #dfe9f2;
+  background: rgba(255, 255, 255, 0.07);
+}
+.film-link:focus-visible {
+  opacity: 1;
+  outline: 1px solid rgba(255, 255, 255, 0.35);
+  outline-offset: 1px;
+}
+.film-link svg { display: block; }
+.unmatched-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.unmatched-actions .film-links { margin-top: 0; }
 
 /* =========================================================
    unmatched list + manual TMDB search

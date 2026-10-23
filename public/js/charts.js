@@ -267,8 +267,12 @@ function niceStep(raw) {
 /**
  * Full-width monthly bar chart. Renders a fixed-size SVG inside a scroll wrapper;
  * widgets.js re-renders it on container resize.
+ *
+ * @param {HTMLElement} host
+ * @param {Array<{month:string,watched:number,rated:number}>} timeline
+ * @param {{onMonthClick?: (month:string)=>void}} [opts]
  */
-export function renderTimeline(host, timeline) {
+export function renderTimeline(host, timeline, { onMonthClick } = {}) {
   const data = (Array.isArray(timeline) ? timeline : [])
     .filter((item) => item && typeof item.month === 'string' && /^\d{4}-\d{2}$/.test(item.month))
     .map((item) => ({ ...item, watched: Math.max(0, toNum(item.watched)), rated: Math.max(0, toNum(item.rated)) }))
@@ -359,6 +363,25 @@ export function renderTimeline(host, timeline) {
       bar.classList.remove('is-hot');
       hideTooltip();
     });
+
+    if (item.watched > 0 && typeof onMonthClick === 'function') {
+      hit.classList.add('is-clickable');
+      hit.setAttribute('data-month', item.month);
+      hit.setAttribute('role', 'button');
+      hit.setAttribute('tabindex', '0');
+      hit.setAttribute('aria-label',
+        `${monthName(item.month)}: ${fmtInt(item.watched)} ${plural(item.watched, ['просмотр', 'просмотра', 'просмотров'])} — открыть список`);
+      const activate = () => {
+        hideTooltip();
+        onMonthClick(item.month);
+      };
+      hit.addEventListener('click', activate);
+      hit.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        activate();
+      });
+    }
     svg.append(hit);
   });
 

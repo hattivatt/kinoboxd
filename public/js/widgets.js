@@ -2,11 +2,11 @@
 
 import {
   $, el, clear, fmtInt, fmtPercent, fmtRating, fmtPeriod, fmtWatchTime, plural, icon,
-  monthShort, toNum, emptyState, showTooltip, moveTooltip, hideTooltip, debounce, slugTitle,
+  monthName, monthShort, toNum, emptyState, showTooltip, moveTooltip, hideTooltip, debounce, slugTitle,
 } from './ui.js';
 import { renderDonut, renderTimeline, renderYearBars } from './charts.js';
 import { initPersons } from './persons.js';
-import { openFilmListModal, filmCountPhrase } from './modal.js';
+import { openFilmListModal, filmCountPhrase, EXTRA_SORT_OPTIONS } from './modal.js';
 import { openUnmatchedModal } from './unmatched.js';
 
 let dashHooks = {};
@@ -64,6 +64,31 @@ function mapTaxonomy(value) {
     .filter((item) => item.key && item.name && item.count > 0);
 }
 
+/**
+ * Build a modal-ready film object from one filmsIndex entry. Link fields are
+ * copied verbatim so every openFilmListModal() row can render them and they
+ * keep working after re-sorting.
+ */
+function filmFromEntry(slug, entry, extra = {}) {
+  const e = entry && typeof entry === 'object' ? entry : {};
+  return {
+    slug,
+    title: e.title || slugTitle(slug),
+    year: toNum(e.year) || null,
+    posterPath: e.posterPath || null,
+    rating: numOrNull(e.rating),
+    voteAverage: numOrNull(e.voteAverage),
+    watchedDate: e.watchedDate || null,
+    runtime: numOrNull(e.runtime),
+    kind: e.kind === 'tv' ? 'tv' : 'movie',
+    tmdbId: e.tmdbId != null ? e.tmdbId : null,
+    imdbId: e.imdbId || null,
+    lbUri: e.lbUri || null,
+    kpUrl: e.kpUrl || null,
+    ...extra,
+  };
+}
+
 function normalizeStats(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const summary = source.summary && typeof source.summary === 'object' ? source.summary : {};
@@ -76,6 +101,8 @@ function normalizeStats(raw) {
       slug: String(item && item.slug ? item.slug : '').trim(),
       title: String(item && item.title ? item.title : '').trim(),
       year: toNum(item && item.year),
+      lbUri: item && typeof item.lbUri === 'string' ? item.lbUri : null,
+      kpUrl: item && typeof item.kpUrl === 'string' ? item.kpUrl : null,
     }))
     .filter((item) => item.slug);
 
@@ -207,14 +234,7 @@ function renderSummary(stats) {
     ratedShare ? `${ratedShare} от всех` : '',
   ));
 
-  host.append(metric('clock', 'время просмотра',
-    el('div', {
-      class: 'metric-value',
-      title: watch ? watch.title : 'Нет данных',
-      text: watch ? watch.value : '—',
-    }),
-    watch ? watch.sub : 'нет данных',
-  ));
+  host.append(renderWatchMetric(stats, watch));
 
   host.append(metric('calendar', 'период',
     el('div', { class: 'metric-value is-small', text: fmtPeriod(summary.dateFrom, summary.dateTo) }),
@@ -225,6 +245,61 @@ function renderSummary(stats) {
 
   host.classList.toggle('has-unmatched', summary.unmatchedCount > 0);
   if (summary.unmatchedCount > 0) host.append(renderUnmatchedMetric(stats));
+}
+
+/* "watch time" tile: opens the longest-viewings list (runtime desc). */
+function renderWatchMetric(stats, watch) {
+  const node = el('button', {
+    type: 'button',
+    class: 'metric metric-clickable',
+    title: watch ? `${watch.title} — открыть самые длинные просмотры` : 'Самые длинные просмотры',
+    'aria-label': 'Время просмотра. Открыть самые длинные просмотры',
+  });
+  const labelNode = el('div', { class: 'metric-label' });
+  labelNode.innerHTML = icon('clock', 12);
+  labelNode.append(document.createTextNode('время просмотра'));
+  node.append(labelNode);
+  node.append(el('div', {
+    class: 'metric-value',
+    title: watch ? watch.title : 'Нет данных',
+    text: watch ? watch.value : '—',
+  }));
+  node.append(el('div', { class: 'metric-sub', text: watch ? watch.sub : 'нет данных' }));
+  node.addEventListener('click', () => {
+    hideTooltip();
+    openRuntimeModal(stats);
+  });
+  return node;
+}
+
+/** All films with their runtime, longest first (unknown runtime at the end). */
+function openRuntimeModal(stats) {
+  const films = [];
+  for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
+    if (!entry || typeof entry !== 'object') continue;
+    const runtime = numOrNull(entry.runtime);
+    films.push(filmFromEntry(slug, entry, {
+      meta: runtime != null && runtime > 0 ? `${fmtInt(runtime)} мин` : 'длительность неизвестна',
+    }));
+  }
+  const total = numOrNull(stats.summary.totalMinutes);
+  const totalText = total != null && total > 0 ? fmtWatchTime(total).title : '';
+  openFilmListModal({
+    kicker: 'Время просмотра',
+    title: 'Самые длинные просмотры',
+    subtitle: [
+      `${fmtInt(films.length)} ${plural(films.length, ['фильм', 'фильма', 'фильмов'])}`,
+      totalText,
+    ].filter(Boolean).join(' · '),
+    hint: 'Сортировка по длительности: сначала самые долгие, фильмы без хронометража — в конце.',
+    groupLabel: 'Длительность',
+    emptyText: 'Нет фильмов с карточкой TMDB',
+    films,
+    sortScope: 'runtime',
+    extraSorts: EXTRA_SORT_OPTIONS,
+    defaultSort: 'runtime',
+    batch: 60,
+  });
 }
 
 /* unmatched tile: only when there is at least one film without a TMDB match */
@@ -365,10 +440,11 @@ function renderRatings(stats) {
       label: String(score),
       value: count,
       color: RATING_COLORS[score - 1],
+      score,
     });
   }
   if (unrated > 0) {
-    segments.push({ key: 'score-0', label: 'Без оценки', value: unrated, color: '#566675' });
+    segments.push({ key: 'score-0', label: 'Без оценки', value: unrated, color: '#566675', score: 0 });
   }
   const totalAll = ratedTotal + unrated;
 
@@ -385,6 +461,7 @@ function renderRatings(stats) {
     return;
   }
 
+  const isKp = Boolean(stats.summary.source && stats.summary.source.type === 'kinopoisk');
   renderDonut(donutHost, {
     segments,
     legendHost,
@@ -392,6 +469,42 @@ function renderRatings(stats) {
     centerLabel: 'оценок',
     ariaLabel: `Распределение по оценкам, ${fmtInt(ratedTotal)} оценённых фильмов`,
     secondary: (seg) => `${fmtPercent(seg.value, totalAll)} всех фильмов`,
+    onSelect: (seg) => {
+      hideTooltip();
+      openRatingsModal(stats, toNum(seg.score), isKp);
+    },
+  });
+}
+
+/* Letterboxd ratings are half-stars (0.5-5 -> 1-10); KinoPoisk already 1-10. */
+function filmScore(entry, isKp) {
+  if (!entry || entry.rating == null) return 0;
+  const rating = Number(entry.rating);
+  if (!Number.isFinite(rating)) return 0;
+  return isKp ? Math.round(rating) : Math.round(rating * 2);
+}
+
+function openRatingsModal(stats, score, isKp) {
+  const films = [];
+  for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (filmScore(entry, isKp) !== score) continue;
+    films.push(filmFromEntry(slug, entry));
+  }
+  const count = films.length;
+  const phrase = filmCountPhrase(count);
+  const title = score === 0 ? `Без оценки — ${phrase}` : `${phrase} с оценкой ${fmtInt(score)}`;
+  openFilmListModal({
+    kicker: 'Оценки',
+    title,
+    subtitle: score === 0
+      ? 'Фильмы без вашей оценки'
+      : `Ваша оценка ${fmtInt(score)} из 10`,
+    groupLabel: score === 0 ? 'Без оценки' : `Оценка ${score}`,
+    emptyText: score === 0 ? 'Все фильмы с оценками' : 'Нет фильмов с этой оценкой',
+    films,
+    sortScope: 'ratings',
+    batch: 60,
   });
 }
 
@@ -500,7 +613,11 @@ function renderGenres(stats) {
   const max = Math.max(1, ...genres.map((g) => g.count), ...categories.map((c) => c.count));
 
   if (!genres.length) host.hidden = true;
-  for (const genre of genres) renderGenreRow(host, genre, max);
+  for (const genre of genres) {
+    renderGenreRow(host, genre, max, {
+      onClick: (item) => openGenreModal(stats, item),
+    });
+  }
   if (categoriesHost) {
     for (const category of categories) {
       renderGenreRow(categoriesHost, category, max, {
@@ -513,6 +630,31 @@ function renderGenres(stats) {
       });
     }
   }
+}
+
+/** Films of one localized genre (case-insensitive match against filmsIndex). */
+function openGenreModal(stats, item) {
+  const target = String(item && item.name ? item.name : '').trim().toLowerCase();
+  const films = [];
+  if (target) {
+    for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
+      if (!entry || typeof entry !== 'object') continue;
+      const genres = Array.isArray(entry.genres) ? entry.genres : [];
+      if (!genres.some((name) => String(name || '').trim().toLowerCase() === target)) continue;
+      films.push(filmFromEntry(slug, entry));
+    }
+  }
+  const count = films.length;
+  const avg = item.avgRating != null ? ` · средняя оценка ${fmtRating(item.avgRating)}` : '';
+  openFilmListModal({
+    kicker: 'Жанр',
+    title: item.name,
+    subtitle: `${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])}${avg}`,
+    groupLabel: item.name,
+    emptyText: 'Нет фильмов с карточкой TMDB',
+    films,
+    sortScope: 'genre',
+  });
 }
 
 /* =========================================================
@@ -629,6 +771,12 @@ function renderYears(stats) {
     centerLabel: 'фильмов',
     ariaLabel: `Распределение фильмов по годам: ${selectedDecade.label}`,
     secondary: (seg) => `${fmtPercent(seg.value, total)} фильмов десятилетия`,
+    onSelect: (seg) => {
+      const year = Number(seg.label);
+      if (!Number.isFinite(year) || year <= 0) return;
+      hideTooltip();
+      openYearModal(stats, year);
+    },
   });
 }
 
@@ -645,15 +793,7 @@ function filmsFromSlugs(filmsIndex, slugs) {
   for (const slug of Array.isArray(slugs) ? slugs : []) {
     const entry = filmsIndex && filmsIndex[slug];
     if (!entry || typeof entry !== 'object') continue;
-    films.push({
-      slug,
-      title: entry.title || slugTitle(slug),
-      year: toNum(entry.year) || null,
-      posterPath: entry.posterPath || null,
-      rating: numOrNull(entry.rating),
-      voteAverage: numOrNull(entry.voteAverage),
-      watchedDate: entry.watchedDate || null,
-    });
+    films.push(filmFromEntry(slug, entry));
   }
   return films;
 }
@@ -909,15 +1049,7 @@ function filmsForYear(filmsIndex, year, country = null) {
     if (!entry || typeof entry !== 'object') continue;
     if (toNum(entry.year) !== target) continue;
     if (country && (!Array.isArray(entry.countries) || !entry.countries.includes(country))) continue;
-    films.push({
-      slug,
-      title: entry.title || slugTitle(slug),
-      year: target,
-      posterPath: entry.posterPath || null,
-      rating: numOrNull(entry.rating),
-      voteAverage: numOrNull(entry.voteAverage),
-      watchedDate: entry.watchedDate || null,
-    });
+    films.push(filmFromEntry(slug, entry, { year: target }));
   }
   films.sort((a, b) => {
     const ratingDiff = (b.rating == null ? -1 : b.rating) - (a.rating == null ? -1 : a.rating);
@@ -954,6 +1086,31 @@ function openYearModal(stats, year) {
    E. timeline
    ========================================================= */
 
+/** Films whose last watched date falls into one `YYYY-MM` bucket. */
+function openMonthModal(stats, month) {
+  const prefix = String(month || '');
+  const films = [];
+  if (/^\d{4}-\d{2}$/.test(prefix)) {
+    for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
+      if (!entry || typeof entry !== 'object') continue;
+      const watched = entry.watchedDate ? String(entry.watchedDate) : '';
+      if (!watched.startsWith(prefix)) continue;
+      films.push(filmFromEntry(slug, entry));
+    }
+  }
+  const label = monthName(prefix);
+  const count = films.length;
+  openFilmListModal({
+    kicker: 'История просмотров',
+    title: `Просмотрено: ${label}`,
+    subtitle: `${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])} · ${label}`,
+    groupLabel: label,
+    emptyText: 'За этот месяц в выгрузке нет фильмов',
+    films,
+    sortScope: 'month',
+  });
+}
+
 function renderTimelineWidget(stats) {
   const host = $('timeline-chart');
   if (!host) return;
@@ -963,7 +1120,8 @@ function renderTimelineWidget(stats) {
     host._boxdResize = null;
   }
 
-  renderTimeline(host, stats.timeline);
+  const onMonthClick = (month) => openMonthModal(stats, month);
+  renderTimeline(host, stats.timeline, { onMonthClick });
 
   const months = stats.timeline
     .filter((item) => item && /^\d{4}-\d{2}$/.test(item.month))
@@ -980,7 +1138,7 @@ function renderTimelineWidget(stats) {
   if (typeof ResizeObserver === 'function') {
     const rerender = debounce(() => {
       if (!host.clientWidth) return;
-      renderTimeline(host, stats.timeline);
+      renderTimeline(host, stats.timeline, { onMonthClick });
     }, 160);
     const observer = new ResizeObserver(rerender);
     observer.observe(host);

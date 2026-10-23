@@ -997,6 +997,8 @@ function buildDataset(userId, cacheData) {
     films.push({
       slug,
       kpId,
+      // Public page of the title: /film/ for movies, /series/ for TV.
+      kpUrl: `${KP_ORIGIN}/${kind === 'tv' ? 'series' : 'film'}/${kpId}/`,
       title,
       titleRu,
       titleEn,

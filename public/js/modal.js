@@ -7,6 +7,7 @@
 
 import {
   $, el, clear, fmtInt, fmtRating, icon, plural, toNum, emptyState,
+  serviceIcon, showTooltip, moveTooltip, hideTooltip,
 } from './ui.js';
 
 let seq = 0;
@@ -83,22 +84,34 @@ export const FILM_SORT_OPTIONS = [
   { key: 'year', label: 'По году выхода', hint: 'год выхода ↓' },
 ];
 
-const SORT_VALUES = new Set(FILM_SORT_OPTIONS.map((option) => option.key));
+/* Only offered by callers that opt in (the "watch time" modal). */
+export const EXTRA_SORT_OPTIONS = [
+  { key: 'runtime', label: 'По длительности', hint: 'длительность ↓' },
+];
+
+const ALL_SORT_OPTIONS = [...FILM_SORT_OPTIONS, ...EXTRA_SORT_OPTIONS];
+const SORT_VALUES = new Set(ALL_SORT_OPTIONS.map((option) => option.key));
 const SORT_STORAGE_PREFIX = 'kinoboxd.modalSort.';
 
 function sortStorageKey(scope) {
   return `${SORT_STORAGE_PREFIX}${scope || 'films'}`;
 }
 
-/** Saved sort for a modal type, validated against the known options. */
-export function getFilmSort(scope) {
+/**
+ * Saved sort for a modal type, validated against the known options.
+ * `allowed` narrows the accepted keys for one dialog (e.g. runtime is only
+ * offered in the watch-time modal); otherwise the fallback applies.
+ */
+export function getFilmSort(scope, { allowed = null, fallback = 'rating' } = {}) {
   let value = '';
   try {
     value = window.localStorage.getItem(sortStorageKey(scope)) || '';
   } catch {
     value = '';
   }
-  return SORT_VALUES.has(value) ? value : 'rating';
+  if (!SORT_VALUES.has(value)) return fallback;
+  if (allowed && !allowed.has(value)) return fallback;
+  return value;
 }
 
 export function setFilmSort(scope, value) {
@@ -150,33 +163,50 @@ function cmpYear(a, b) {
   return diff || cmpVote(a, b);
 }
 
+function cmpRuntime(a, b) {
+  const ar = pickNum(a.runtime);
+  const br = pickNum(b.runtime);
+  // Unknown/zero runtimes go to the end.
+  const av = ar == null || !Number.isFinite(ar) || ar <= 0 ? -1 : ar;
+  const bv = br == null || !Number.isFinite(br) || br <= 0 ? -1 : br;
+  return (bv - av) || cmpRating(a, b);
+}
+
 /** Return a new array ordered by the selected sort. Input is not mutated. */
 export function sortFilms(films, sortKey) {
   const list = Array.isArray(films) ? films.slice() : [];
   const comparator =
-    sortKey === 'watched' ? cmpWatched : sortKey === 'year' ? cmpYear : cmpRating;
+    sortKey === 'watched' ? cmpWatched
+      : sortKey === 'year' ? cmpYear
+        : sortKey === 'runtime' ? cmpRuntime
+          : cmpRating;
   return list.sort(comparator);
 }
 
 export function filmSortHint(sortKey) {
-  const option = FILM_SORT_OPTIONS.find((item) => item.key === sortKey);
+  const option = ALL_SORT_OPTIONS.find((item) => item.key === sortKey);
   return option ? option.hint : '';
 }
 
 /** Small native select used in modal headers. */
-export function createFilmSortSelect({ scope, onChange } = {}) {
+export function createFilmSortSelect({
+  scope, onChange, extraOptions = [], allowedKeys = null, fallback = 'rating',
+} = {}) {
   const wrap = el('div', { class: 'modal-sort' });
   wrap.append(el('span', { class: 'modal-sort-label', text: 'Сортировка' }));
+
+  const options = [...FILM_SORT_OPTIONS, ...extraOptions];
+  const allowed = allowedKeys || new Set(options.map((option) => option.key));
 
   const selectWrap = el('div', { class: 'select-wrap' });
   const select = el('select', {
     class: 'select select-sm',
     'aria-label': 'Сортировка фильмов',
   });
-  for (const option of FILM_SORT_OPTIONS) {
+  for (const option of options) {
     select.append(el('option', { value: option.key, text: option.label }));
   }
-  select.value = getFilmSort(scope);
+  select.value = getFilmSort(scope, { allowed, fallback });
   select.addEventListener('change', () => {
     const value = select.value;
     setFilmSort(scope, value);
@@ -311,8 +341,10 @@ export function closeAllModals() {
  * @param {string} [opts.groupNote]
  * @param {string} [opts.emptyText]
  * @param {number} [opts.batch]
- * @param {Array<{title:string,year?:number,posterPath?:string,rating?:number,voteAverage?:number,watchedDate?:string,meta?:string}>} opts.films
+ * @param {Array<{title:string,year?:number,posterPath?:string,rating?:number,voteAverage?:number,watchedDate?:string,meta?:string,runtime?:number,lbUri?:string,kpUrl?:string,tmdbId?:number,kind?:string,imdbId?:string}>} opts.films
  * @param {string} [opts.sortScope]  localStorage scope for the sort selector ('year', ...)
+ * @param {Array<{key:string,label:string,hint:string}>} [opts.extraSorts] extra sorts for this dialog only
+ * @param {string} [opts.defaultSort] sort used when nothing valid is stored for the scope
  */
 export function openFilmListModal({
   title,
@@ -325,6 +357,8 @@ export function openFilmListModal({
   batch = 60,
   films = [],
   sortScope = '',
+  extraSorts = [],
+  defaultSort = null,
 } = {}) {
   seq += 1;
   const titleId = `film-list-title-${seq}`;
@@ -339,13 +373,20 @@ export function openFilmListModal({
   const body = el('div', { class: 'modal-body' });
   const list = Array.isArray(films) ? films.filter(Boolean) : [];
 
-  let sortKey = sortScope ? getFilmSort(sortScope) : null;
+  const sortOptions = [...FILM_SORT_OPTIONS, ...extraSorts];
+  const allowedSorts = new Set(sortOptions.map((option) => option.key));
+  let sortKey = sortScope
+    ? getFilmSort(sortScope, { allowed: allowedSorts, fallback: defaultSort || 'rating' })
+    : null;
   let ordered = sortScope ? sortFilms(list, sortKey) : list;
   let groupNoteNode = null;
 
   if (sortScope) {
     const control = createFilmSortSelect({
       scope: sortScope,
+      extraOptions: extraSorts,
+      allowedKeys: allowedSorts,
+      fallback: defaultSort || 'rating',
       onChange: (value) => {
         sortKey = value;
         ordered = sortFilms(list, sortKey);
@@ -401,6 +442,50 @@ export function openFilmListModal({
   return openModal({ head, body, labelledBy: titleId, className: 'modal-films' });
 }
 
+/**
+ * Compact aggregator links for one film: Letterboxd / KinoPoisk (source-
+ * specific), TMDB (by media kind) and IMDb. Missing ids show no button.
+ * Rendered from plain film objects so the links survive re-sorting.
+ */
+export function filmLinks(film) {
+  if (!film) return null;
+  const links = [];
+  const add = (service, label, href) => {
+    if (!href) return;
+    const anchor = el('a', {
+      class: `film-link film-link-${service}`,
+      href,
+      target: '_blank',
+      rel: 'noopener noreferrer',
+      'aria-label': `${label}: открыть страницу`,
+      title: label,
+      html: serviceIcon(service, 13),
+    });
+    anchor.addEventListener('pointerenter', (event) => {
+      showTooltip(label, `открыть на ${label}`);
+      moveTooltip(event);
+    });
+    anchor.addEventListener('pointermove', moveTooltip);
+    anchor.addEventListener('pointerleave', hideTooltip);
+    links.push(anchor);
+  };
+
+  add('lb', 'Letterboxd', film.lbUri);
+  add('kp', 'Кинопоиск', film.kpUrl);
+  if (film.tmdbId != null && Number.isFinite(Number(film.tmdbId))) {
+    const kind = film.kind === 'tv' ? 'tv' : 'movie';
+    add('tmdb', 'TMDB', `https://www.themoviedb.org/${kind}/${film.tmdbId}`);
+  }
+  if (film.imdbId) {
+    add('imdb', 'IMDb', `https://www.imdb.com/title/${encodeURIComponent(film.imdbId)}/`);
+  }
+
+  if (!links.length) return null;
+  const host = el('div', { class: 'film-links' });
+  for (const link of links) host.append(link);
+  return host;
+}
+
 export function filmListRow(film) {
   const row = el('div', { class: 'film-row film-row-static' });
   const title = film.title || 'Без названия';
@@ -412,6 +497,8 @@ export function filmListRow(film) {
   if (year > 0) titleNode.append(el('span', { class: 'film-year', text: String(year) }));
   info.append(titleNode);
   if (film.meta) info.append(el('div', { class: 'film-char', text: film.meta }));
+  const links = filmLinks(film);
+  if (links) info.append(links);
   row.append(info);
   row.append(filmRating(film));
   return row;

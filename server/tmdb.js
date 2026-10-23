@@ -653,6 +653,12 @@ function normalizeKeywords(raw) {
     .filter((keyword) => keyword.name);
 }
 
+function normalizeImdbId(value) {
+  if (typeof value !== 'string') return null;
+  const id = value.trim();
+  return /^tt\d{5,}$/.test(id) ? id : null;
+}
+
 function normalizeDetailsPayload(details, credits) {
   return {
     kind: 'movie',
@@ -662,6 +668,7 @@ function normalizeDetailsPayload(details, credits) {
       original_title: details.original_title || '',
       release_date: details.release_date || null,
       runtime: Number.isFinite(details.runtime) ? details.runtime : null,
+      imdb_id: normalizeImdbId(details.imdb_id),
       genres: Array.isArray(details.genres)
         ? details.genres.map((g) => ({ id: g.id, name: g.name }))
         : [],
@@ -722,7 +729,7 @@ async function fetchMovieData(tmdbId) {
  * latter is flattened into one crew record per (person, job) so the job
  * categories in stats.js (Director / Writer / Composer) keep working.
  */
-function normalizeTvPayload(details, credits) {
+function normalizeTvPayload(details, credits, externalIds) {
   const cast = Array.isArray(credits && credits.cast) ? credits.cast : [];
   const crew = Array.isArray(credits && credits.crew) ? credits.crew : [];
 
@@ -778,6 +785,11 @@ function normalizeTvPayload(details, credits) {
       original_title: details.original_name || '',
       release_date: details.first_air_date || null,
       runtime: episodeRunTime || 0,
+      // TV details do not carry imdb_id; it only comes from /external_ids.
+      imdb_id:
+        normalizeImdbId(externalIds && externalIds.imdb_id) ||
+        normalizeImdbId(details.imdb_id) ||
+        null,
       genres: Array.isArray(details.genres)
         ? details.genres.map((g) => ({ id: g.id, name: g.name }))
         : [],
@@ -801,9 +813,10 @@ function normalizeTvPayload(details, credits) {
  * endpoint (which has `character`/`job` instead of `roles`/`jobs`).
  */
 async function fetchTvData(tmdbId) {
-  const [details, aggregate] = await Promise.all([
+  const [details, aggregate, externalIds] = await Promise.all([
     tmdbGet(`/tv/${tmdbId}`, { language: 'ru-RU', append_to_response: 'keywords' }),
     tmdbGet(`/tv/${tmdbId}/aggregate_credits`, {}),
+    tmdbGet(`/tv/${tmdbId}/external_ids`, {}),
   ]);
   if (!details) {
     throw new Error(`TMDB returned no details for tv ${tmdbId}`);
@@ -815,7 +828,7 @@ async function fetchTvData(tmdbId) {
   if (!credits) {
     throw new Error(`TMDB returned no credits for tv ${tmdbId}`);
   }
-  return normalizeTvPayload(details, credits);
+  return normalizeTvPayload(details, credits, externalIds);
 }
 
 /* ------------------------------------------------------------------ */
@@ -902,6 +915,7 @@ module.exports = {
   tmdbGet,
   normalizeDetailsPayload,
   normalizeTvPayload,
+  normalizeImdbId,
   searchMovie,
   searchTv,
   searchCatalog,

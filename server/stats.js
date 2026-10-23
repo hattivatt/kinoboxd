@@ -256,11 +256,23 @@ function computeUnmatched(upload, job) {
     const data =
       tmdbId != null ? cache.getDetails(tmdbId, effectiveKind(film, filmJob)) : null;
     if (tmdbId == null || !data) {
-      out.push({
+      const entry = {
         slug: film.slug,
         title: unmatchedTitle(film, kpSource),
         year: film.year != null ? film.year : null,
-      });
+      };
+      // Even an unmatched entry can be looked up at its source, so the modal
+      // that offers manual matching can also link to the original page.
+      if (kpSource) {
+        const kpUrl = film.kpUrl
+          || (Number.isFinite(Number(film.kpId))
+            ? `https://www.kinopoisk.ru/${film.kind === 'tv' ? 'series' : 'film'}/${film.kpId}/`
+            : null);
+        if (kpUrl) entry.kpUrl = kpUrl;
+      } else if (film.lbUri) {
+        entry.lbUri = film.lbUri;
+      }
+      out.push(entry);
     }
   }
   return out;
@@ -495,19 +507,46 @@ function buildStats(upload) {
     }
 
     // ---- film index ----
+    // `kind` decides whether a TMDB link points at /movie/ or /tv/; the
+    // source-specific link (Letterboxd URI or KinoPoisk page) is only added
+    // for the matching import source.
     const filmEntry = {
       title: (details && details.title) || film.titleRu || film.title,
       year,
       tmdbId,
+      kind,
       posterPath: details ? details.poster_path || null : null,
       runtime: details ? details.runtime ?? null : null,
       voteAverage: details ? details.vote_average ?? null : null,
       rating: film.rating,
       watchedDate: film.watchedDate || null,
     };
-    // Only matched films have a TMDB card and therefore countries. Unmatched
-    // entries deliberately have no `countries` key at all.
-    if (details) filmEntry.countries = filmCountries(details);
+    if (details) {
+      // Localized genre names in display form ("комедия" -> "Комедия"),
+      // deduplicated; the genres widget matches them case-insensitively.
+      const genreNames = [];
+      const seenGenres = new Set();
+      for (const genre of details.genres || []) {
+        const name = String((genre && genre.name) || '').trim();
+        if (!name) continue;
+        const key = name.toLowerCase();
+        if (seenGenres.has(key)) continue;
+        seenGenres.add(key);
+        genreNames.push(name.charAt(0).toUpperCase() + name.slice(1));
+      }
+      filmEntry.genres = genreNames;
+      filmEntry.imdbId = details.imdb_id || null;
+      filmEntry.countries = filmCountries(details);
+    }
+    if (isKpSource) {
+      const kpUrl = film.kpUrl
+        || (Number.isFinite(Number(film.kpId))
+          ? `https://www.kinopoisk.ru/${kind === 'tv' ? 'series' : 'film'}/${film.kpId}/`
+          : null);
+      filmEntry.kpUrl = kpUrl || null;
+    } else {
+      filmEntry.lbUri = film.lbUri || null;
+    }
     filmsIndex[film.slug] = filmEntry;
   }
 

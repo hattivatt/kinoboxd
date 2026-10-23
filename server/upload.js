@@ -205,7 +205,15 @@ function parseLetterboxdZip(buffer) {
     return typeof slug === 'string' ? slug : null;
   }
 
-  function upsert(slug, title, year) {
+  // The canonical Letterboxd URI (`https://boxd.it/25Lk`) lives in every CSV
+  // row; it is kept on the film so the dashboard can deep-link back to it.
+  function fullUri(rawUri, slug) {
+    const value = String(rawUri || '').trim();
+    if (/^https?:\/\//i.test(value)) return value;
+    return slug ? `https://boxd.it/${slug}` : null;
+  }
+
+  function upsert(slug, title, year, uri) {
     if (!slug) return null;
     let film = films.get(slug);
     if (!film) {
@@ -213,6 +221,7 @@ function parseLetterboxdZip(buffer) {
         slug,
         title: String(title || '').trim(),
         year: parseYear(year),
+        lbUri: fullUri(uri, slug),
         rating: null,
         watchedDate: null,
         diaryWatchedDate: null,
@@ -226,6 +235,7 @@ function parseLetterboxdZip(buffer) {
     } else {
       if (!film.title && title) film.title = String(title).trim();
       if (!film.year && parseYear(year)) film.year = parseYear(year);
+      if (!film.lbUri) film.lbUri = fullUri(uri, slug);
     }
     return film;
   }
@@ -237,7 +247,7 @@ function parseLetterboxdZip(buffer) {
     const slug = slugFromUri(getField(row, 'Letterboxd URI'));
     const title = getField(row, 'Name');
     const year = getField(row, 'Year');
-    const film = upsert(slug, title, year);
+    const film = upsert(slug, title, year, getField(row, 'Letterboxd URI'));
     if (!film) continue;
 
     rememberTitleYear(title, year, film.slug);
@@ -261,7 +271,7 @@ function parseLetterboxdZip(buffer) {
       if (mergeSlug) film = films.get(mergeSlug);
     }
     if (!film) {
-      film = upsert(slug, title, year);
+      film = upsert(slug, title, year, getField(row, 'Letterboxd URI'));
       if (film) rememberTitleYear(title, year, film.slug);
     }
     if (!film) continue;
@@ -287,7 +297,7 @@ function parseLetterboxdZip(buffer) {
       if (mergeSlug) film = films.get(mergeSlug);
     }
     if (!film) {
-      film = upsert(slug, title, year);
+      film = upsert(slug, title, year, getField(row, 'Letterboxd URI'));
       if (film) rememberTitleYear(title, year, film.slug);
     }
     if (!film) continue;
@@ -365,6 +375,7 @@ function parseLetterboxdZip(buffer) {
       year: f.year,
       rating: f.rating,
       watchedDate: f.watchedDate,
+      lbUri: f.lbUri || `https://boxd.it/${f.slug}`,
     }));
 
   return {

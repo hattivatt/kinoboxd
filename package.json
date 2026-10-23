@@ -7,7 +7,8 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
-    "backfill:keywords": "node server/backfill.js"
+    "backfill:keywords": "node server/backfill.js keywords",
+    "backfill:imdb": "node server/backfill.js imdb"
   },
   "engines": {
     "node": ">=18"

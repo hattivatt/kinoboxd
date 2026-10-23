@@ -4,7 +4,7 @@ import {
   el, clear, fmtInt, fmtRating, plural, icon, toNum, debounce, emptyState, toast,
   shortErrorMessage,
 } from './ui.js';
-import { openModal, posterThumb } from './modal.js';
+import { openModal, posterThumb, filmLinks } from './modal.js';
 import { searchTmdb, matchFilm } from './api.js';
 
 const PAGE = 50;
@@ -152,7 +152,14 @@ export function openUnmatchedModal({ items = [], uploadId = null, onMatched = nu
     });
     button.addEventListener('click', () => openSearch(film));
 
-    row.append(info, button);
+    // Source-page links (Letterboxd short URI / KinoPoisk title page) stay
+    // available even before a manual TMDB match.
+    const actions = el('div', { class: 'unmatched-actions' });
+    const links = filmLinks(film);
+    if (links) actions.append(links);
+    actions.append(button);
+
+    row.append(info, actions);
     return row;
   }
 
