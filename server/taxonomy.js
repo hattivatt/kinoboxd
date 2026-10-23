@@ -145,11 +145,10 @@ const PERIOD_DEFS = [
     aliases: ['new hollywood', 'american new wave'],
   },
   { key: 'soviet-montage', name: 'Советский монтаж', aliases: ['soviet montage'] },
-  {
-    key: 'dogme-95',
-    name: 'Догма 95',
-    aliases: ['dogme 95', 'dogme95', 'dogma 95'],
-  },
+  // Dogme 95 исключён по решению пользователя: это закрытый манифест (~35
+  // сертифицированных фильмов), в коллекции таких нет, а эвристика по фон
+  // Триеру даёт ложный «Догвилль». Советский монтаж оставлен: сейчас 0
+  // фильмов, но к нему вернёмся вместе с викиданными по советским периодам.
 ];
 
 /* Pre-normalized alias sets: one Set per definition for O(1) lookups. */
