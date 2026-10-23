@@ -316,15 +316,20 @@ function normalizeTmdbId(value) {
 }
 
 /**
- * Tags for one film. IMDb wins (it is the id WDQS is queried by); the TMDB
- * key is the P4947 fallback used for the few films without an IMDb id.
+ * Tags for one film. IMDb is authoritative when the film has an IMDb id: a
+ * negative IMDb result must NOT fall through to the TMDB index, because TMDB
+ * movie/TV ids share one numeric namespace and a colliding entry could leak
+ * the other kind's tags. The TMDB key is the P4947 fallback only for films
+ * that have no IMDb id at all.
  */
 function getTags(imdbId, tmdbId) {
   ensureLoaded();
   const imdb = normalizeImdbId(imdbId);
-  if (imdb && Object.prototype.hasOwnProperty.call(store.imdb, imdb)) {
-    const tag = store.imdb[imdb];
-    if (tag && tag.found !== false) return tag;
+  if (imdb) {
+    const tag = Object.prototype.hasOwnProperty.call(store.imdb, imdb)
+      ? store.imdb[imdb]
+      : null;
+    return tag && tag.found !== false ? tag : null;
   }
   const tmdb = normalizeTmdbId(tmdbId);
   if (tmdb && Object.prototype.hasOwnProperty.call(store.tmdb, tmdb)) {
