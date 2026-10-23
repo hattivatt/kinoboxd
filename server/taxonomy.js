@@ -32,6 +32,25 @@ function normalizeKeyword(value) {
     .trim();
 }
 
+/*
+ * Person names need a stricter normalization than keywords: TMDB credits use
+ * "F. W. Murnau", "F.W. Murnau" and "Friedrich Wilhelm Murnau" for the same
+ * director, so punctuation, diacritics and hyphens must all disappear before
+ * comparison. "Jean-Luc Godard" and "Jean Luc Godard" become the same token;
+ * "Nagisa Ōshima" and "Nagisa Oshima" too. Cyrillic names are kept as-is
+ * (lowercased) because TMDB's Russian locale occasionally returns them.
+ */
+function normalizePersonName(value) {
+  return String(value == null ? '' : value)
+    .normalize('NFKD')
+    // Combining marks left by NFKD: é -> e, ō -> o, ё -> е.
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /* ------------------------------------------------------------------ */
 /* Wikidata Q-ids used by the merged rules                             */
 /* ------------------------------------------------------------------ */
@@ -184,6 +203,165 @@ const PERIOD_DEFS = [
   // фильмов, но к нему вернёмся вместе с викиданными по советским периодам.
 ];
 
+/*
+ * Director-based movement heuristics for periods whose TMDB keywords and
+ * Wikidata movement tags are too sparse. A film joins the period when ALL of
+ * the following hold:
+ *
+ *   - kind is "movie" (TV series never qualify), and it is not animation;
+ *   - the release year is inside the curated window (inclusive);
+ *   - at least one production country is in the curated ISO-3166 set;
+ *   - one of the credited directors (TMDB crew job === "Director"), after
+ *     normalizePersonName(), matches the curated list.
+ *
+ * The lists are intentionally curated, not exhaustive: only the canonical
+ * core of each movement. Names are stored in display form and normalized at
+ * module load; spelling variants that differ beyond punctuation/diacritics
+ * are listed explicitly (e.g. Murnau's full name, transliterated Ōshima).
+ *
+ * Deliberate exclusions:
+ *   - Steven Spielberg is NOT part of New Hollywood here. He belongs to the
+ *     blockbuster era that followed the classical New Hollywood circle, and
+ *     adding him would pull in films far outside the curated window.
+ *   - Andrei Tarkovsky is NOT part of Soviet montage: his work starts after
+ *     the 1924-1936 window and belongs to a different movement.
+ */
+const DIRECTOR_DEFS = [
+  {
+    key: 'french-new-wave',
+    window: { from: 1958, to: 1973 },
+    countries: ['FR'],
+    directors: [
+      'François Truffaut',
+      'Jean-Luc Godard',
+      'Claude Chabrol',
+      'Éric Rohmer',
+      'Jacques Rivette',
+      'Alain Resnais',
+      'Agnès Varda',
+      'Jacques Demy',
+      'Louis Malle',
+      'Chris Marker',
+      'Jacques Rozier',
+      'Jean Eustache',
+      'Maurice Pialat',
+    ],
+  },
+  {
+    key: 'german-expressionism',
+    window: { from: 1919, to: 1931 },
+    countries: ['DE', 'AT'],
+    directors: [
+      'Robert Wiene',
+      // Same person under three common credit spellings.
+      'F. W. Murnau',
+      'F.W. Murnau',
+      'Friedrich Wilhelm Murnau',
+      'Fritz Lang',
+      'G. W. Pabst',
+      'G.W. Pabst',
+      'Georg Wilhelm Pabst',
+      'Paul Wegener',
+      'Paul Leni',
+    ],
+  },
+  {
+    key: 'italian-neorealism',
+    window: { from: 1945, to: 1955 },
+    countries: ['IT'],
+    directors: [
+      'Roberto Rossellini',
+      'Vittorio De Sica',
+      'Luchino Visconti',
+      'Giuseppe De Santis',
+      'Pietro Germi',
+      'Renato Castellani',
+      'Alberto Lattuada',
+      'Luigi Zampa',
+      'Mario Monicelli',
+    ],
+  },
+  {
+    key: 'new-hollywood',
+    window: { from: 1967, to: 1980 },
+    countries: ['US'],
+    directors: [
+      'Francis Ford Coppola',
+      // TMDB occasionally credits him without the middle name.
+      'Francis Coppola',
+      'Martin Scorsese',
+      'George Lucas',
+      'Robert Altman',
+      'Hal Ashby',
+      'William Friedkin',
+      'Peter Bogdanovich',
+      'Michael Cimino',
+      'Brian De Palma',
+      'Brian DePalma',
+      'Arthur Penn',
+      'Mike Nichols',
+      // Polanski is included: his American period (Rosemary's Baby, Chinatown)
+      // is part of the same movement.
+      'Roman Polanski',
+      'Terrence Malick',
+      'Bob Rafelson',
+      'Dennis Hopper',
+      'Warren Beatty',
+      'John Cassavetes',
+    ],
+  },
+  {
+    key: 'japanese-new-wave',
+    window: { from: 1956, to: 1975 },
+    countries: ['JP'],
+    directors: [
+      'Nagisa Ōshima',
+      'Nagisa Oshima',
+      'Shōhei Imamura',
+      'Shohei Imamura',
+      'Masahiro Shinoda',
+      'Hiroshi Teshigahara',
+      'Yoshishige Yoshida',
+      'Seijun Suzuki',
+      'Yasuzō Masumura',
+      'Yasuzo Masumura',
+      'Kōji Wakamatsu',
+      'Koji Wakamatsu',
+    ],
+  },
+  {
+    key: 'soviet-montage',
+    window: { from: 1924, to: 1936 },
+    // UA is included for Dovzhenko's Ukrainian SSR productions; the 1924-1936
+    // window keeps this from matching post-Soviet Ukrainian films.
+    countries: ['SU', 'RU', 'UA'],
+    directors: [
+      'Sergei Eisenstein',
+      'Sergei M. Eisenstein',
+      'Sergey Eisenstein',
+      'Сергей Эйзенштейн',
+      'Vsevolod Pudovkin',
+      'Всеволод Пудовкин',
+      'Dziga Vertov',
+      'Дзига Вертов',
+      'Lev Kuleshov',
+      'Лев Кулешов',
+      'Alexander Dovzhenko',
+      'Oleksandr Dovzhenko',
+      'Александр Довженко',
+      'Олександр Довженко',
+      'Grigori Kozintsev',
+      'Grigory Kozintsev',
+      'Григорий Козинцев',
+      'Leonid Trauberg',
+      'Леонид Трауберг',
+      'Esfir Shub',
+      'Esther Shub',
+      'Эсфирь Шуб',
+    ],
+  },
+];
+
 /* Pre-normalized alias sets: one Set per definition for O(1) lookups. */
 function aliasSets(defs) {
   return defs.map((def) => ({
@@ -195,6 +373,15 @@ function aliasSets(defs) {
 const CATEGORY_RULES = aliasSets(CATEGORY_DEFS);
 const ORIGIN_RULES = aliasSets(ORIGIN_DEFS);
 const PERIOD_RULES = aliasSets(PERIOD_DEFS);
+
+/* Pre-normalized director rules: sets keep the hot path linear in the number
+ * of credited directors (usually one) instead of the length of the corpus. */
+const DIRECTOR_RULES = DIRECTOR_DEFS.map((def) => ({
+  key: def.key,
+  window: def.window,
+  countries: new Set((def.countries || []).map((code) => String(code).toUpperCase())),
+  directors: new Set((def.directors || []).map(normalizePersonName).filter(Boolean)),
+}));
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -304,10 +491,12 @@ function serializeBuckets(defs, buckets, order) {
  * TMDB keyword rules always run first. Wikidata only widens a few curated
  * buckets; it never removes a keyword-derived classification. Origins stay
  * mutually exclusive: a keyword match wins, and P144 is used only when the
- * keyword rules said "original screenplay".
+ * keyword rules said "original screenplay". Finally, curated director-based
+ * rules widen the remaining movement periods (movie-only, see DIRECTOR_DEFS).
  *
  * @param {{slug:string, rating?:number|null, year?:number|null,
- *          genres?:Array, keywords?:Array, wd?:object}} film
+ *          genres?:Array, keywords?:Array, wd?:object,
+ *          directors?:string[], countries?:string[], kind?:string}} film
  * @returns {{categories:string[], origin:string, periods:string[]}}
  */
 function classifyFilm(film) {
@@ -387,6 +576,42 @@ function classifyFilm(film) {
     }
   }
 
+  // Curated director heuristic. TV and animation are excluded by design; the
+  // period must also agree on release year and production country.
+  const kind = String((film && film.kind) || 'movie').toLowerCase() === 'tv' ? 'tv' : 'movie';
+  if (kind === 'movie' && !animationGenre && hasYear) {
+    const directors = new Set(
+      (Array.isArray(film && film.directors) ? film.directors : [])
+        .map(normalizePersonName)
+        .filter(Boolean)
+    );
+    const countries = new Set(
+      (Array.isArray(film && film.countries) ? film.countries : [])
+        .map((code) => String(code == null ? '' : code).toUpperCase())
+        .filter(Boolean)
+    );
+    if (directors.size > 0 && countries.size > 0) {
+      for (const rule of DIRECTOR_RULES) {
+        if (periods.includes(rule.key)) continue;
+        if (year < rule.window.from || year > rule.window.to) continue;
+        let countryMatch = false;
+        for (const code of countries) {
+          if (rule.countries.has(code)) {
+            countryMatch = true;
+            break;
+          }
+        }
+        if (!countryMatch) continue;
+        for (const name of directors) {
+          if (rule.directors.has(name)) {
+            periods.push(rule.key);
+            break;
+          }
+        }
+      }
+    }
+  }
+
   return { categories, origin, periods };
 }
 
@@ -394,7 +619,8 @@ function classifyFilm(film) {
  * Aggregate the taxonomy over every matched film.
  *
  * @param {Array<{slug:string, rating?:number|null, year?:number|null,
- *                genres?:Array, keywords?:Array, wd?:object}>} films
+ *                genres?:Array, keywords?:Array, wd?:object,
+ *                directors?:string[], countries?:string[], kind?:string}>} films
  * @returns {{categories:Array, origins:Array, periods:Array}}
  */
 function buildTaxonomy(films) {
@@ -435,9 +661,11 @@ module.exports = {
   CATEGORY_DEFS,
   ORIGIN_DEFS,
   PERIOD_DEFS,
+  DIRECTOR_DEFS,
   WD,
   FILM_NOIR_LAST_YEAR,
   normalizeKeyword,
+  normalizePersonName,
   classifyFilm,
   buildTaxonomy,
 };

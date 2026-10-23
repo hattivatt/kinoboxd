@@ -208,6 +208,42 @@ function filmCountries(details) {
   return out;
 }
 
+/**
+ * ISO-3166-1 codes from TMDB production_countries. Kept separate from the
+ * localized `filmCountries` payload: the period heuristics need codes
+ * (e.g. "SU" for Soviet films), while the dashboard displays Russian names.
+ */
+function productionCountryCodes(details) {
+  const list =
+    details && Array.isArray(details.production_countries)
+      ? details.production_countries
+      : [];
+  const out = [];
+  const seen = new Set();
+  for (const country of list) {
+    const code = String((country && country.iso_3166_1) || '').toUpperCase();
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+  }
+  return out;
+}
+
+/** Names of credited directors (TMDB crew job is exactly "Director"). */
+function crewDirectorNames(credits) {
+  const list = credits && Array.isArray(credits.crew) ? credits.crew : [];
+  const out = [];
+  const seen = new Set();
+  for (const role of list) {
+    if (!role || role.job !== 'Director') continue;
+    const name = String(role.name || '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
 function round2(value) {
   return Math.round(value * 100) / 100;
 }
@@ -473,7 +509,10 @@ function buildStats(upload) {
         }
       }
       // Keyword-based categories / origins / periods are aggregated once,
-      // after the per-film loop (see buildTaxonomy below).
+      // after the per-film loop (see buildTaxonomy below). The director
+      // heuristic additionally needs the media kind, credited directors and
+      // production-country ISO codes; statistics displayed elsewhere are
+      // unaffected.
       taxEntries.push({
         slug: film.slug,
         rating: film.rating,
@@ -482,6 +521,9 @@ function buildStats(upload) {
         genres: details.genres || [],
         keywords: details.keywords || [],
         wd: wikidata.getTags(details.imdb_id, tmdbId),
+        kind,
+        directors: crewDirectorNames(credits),
+        countries: productionCountryCodes(details),
       });
     }
 
