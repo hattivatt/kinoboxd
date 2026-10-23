@@ -1,14 +1,11 @@
 /* "Не распознано" tile modal: list of unmatched films + manual TMDB search. */
 
 import {
-  el, clear, fmtInt, fmtRating, plural, icon, toNum, debounce, emptyState, toast,
-  shortErrorMessage,
+  el, clear, fmtInt, plural, icon, toNum, emptyState,
 } from './ui.js';
-import { openModal, posterThumb, filmLinks } from './modal.js';
-import { searchTmdb, matchFilm } from './api.js';
+import { openModal, renderFilmMenu, openMatchSearchModal } from './modal.js';
 
 const PAGE = 50;
-let searchSeq = 0;
 
 const KIND_LABEL = {
   movie: 'фильм',
@@ -153,10 +150,11 @@ export function openUnmatchedModal({ items = [], uploadId = null, onMatched = nu
     button.addEventListener('click', () => openSearch(film));
 
     // Source-page links (Letterboxd short URI / KinoPoisk title page) stay
-    // available even before a manual TMDB match.
+    // available even before a manual TMDB match; unmatched rows have no
+    // "Исправить матч" item — the button below is their matching flow.
     const actions = el('div', { class: 'unmatched-actions' });
-    const links = filmLinks(film);
-    if (links) actions.append(links);
+    const menu = renderFilmMenu(film, { allowRematch: false });
+    if (menu) actions.append(menu);
     actions.append(button);
 
     row.append(info, actions);
@@ -170,10 +168,12 @@ export function openUnmatchedModal({ items = [], uploadId = null, onMatched = nu
   }
 
   function openSearch(film) {
-    openMatchSearch({
+    openMatchSearchModal({
       film,
       uploadId,
-      onMatched: (result) => {
+      kind: 'all',
+      mode: 'match',
+      onPicked: (result) => {
         removeFilm(film.slug);
         if (typeof onMatched === 'function') {
           try {
@@ -194,230 +194,5 @@ export function openUnmatchedModal({ items = [], uploadId = null, onMatched = nu
   });
 
   render();
-  return modal;
-}
-
-/* =========================================================
-   TMDB search dialog
-   ========================================================= */
-
-function openMatchSearch({ film, uploadId, onMatched }) {
-  searchSeq += 1;
-  const id = `match-search-title-${searchSeq}`;
-  const head = el('div', { class: 'modal-head' });
-  const copy = el('div', { class: 'modal-head-copy' });
-  copy.append(el('div', { class: 'modal-role', text: 'Ручной матч · TMDB' }));
-  copy.append(el('h2', { class: 'modal-title', id, text: 'Найти фильм в TMDB' }));
-  const year = toNum(film.year);
-  copy.append(el('div', {
-    class: 'modal-sub',
-    text: `Для «${film.title || film.slug}»${year > 0 ? ` (${year})` : ''} · slug: ${film.slug}`,
-  }));
-  copy.append(el('p', {
-    class: 'modal-hint',
-    text: 'Выбери подходящий результат. Мы привяжем его к этой записи и пересчитаем статистику.',
-  }));
-  head.append(copy);
-
-  const body = el('div', { class: 'modal-body match-body' });
-
-  const bar = el('div', { class: 'match-search-bar' });
-  const searchWrap = el('div', { class: 'match-search' });
-  searchWrap.append(el('span', { class: 'match-search-icon', html: icon('search', 15) }));
-  const input = el('input', {
-    type: 'search',
-    class: 'search-input',
-    id: 'match-search-input',
-    placeholder: 'Название на любом языке',
-    autocomplete: 'off',
-    'aria-label': 'Поисковый запрос в TMDB',
-  });
-  searchWrap.append(input);
-
-  const selectWrap = el('div', { class: 'select-wrap' });
-  const select = el('select', { class: 'select', id: 'match-search-kind', 'aria-label': 'Тип: фильм или сериал' });
-  for (const [value, label] of [['all', 'Всё'], ['movie', 'Фильмы'], ['tv', 'Сериалы']]) {
-    select.append(el('option', { value, text: label }));
-  }
-  selectWrap.append(select);
-  selectWrap.append(el('span', {
-    class: 'select-chevron',
-    html: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
-  }));
-  bar.append(searchWrap, selectWrap);
-  body.append(bar);
-
-  const status = el('div', { class: 'match-status', id: 'match-search-status', 'aria-live': 'polite' });
-  const results = el('div', { class: 'match-results' });
-  const moreHost = el('div', { class: 'modal-more' });
-  body.append(status, results, moreHost);
-
-  const modal = openModal({
-    head,
-    body,
-    labelledBy: id,
-    className: 'modal-match',
-  });
-  if (!modal) return null;
-
-  let closed = false;
-  let matching = false;
-  let seq = 0;
-  let controller = null;
-  let allResults = [];
-  let visible = 12;
-
-  const debouncedSearch = debounce(() => runSearch(), 400);
-
-  function setStatus(text, { error = false } = {}) {
-    status.textContent = text || '';
-    status.classList.toggle('is-error', Boolean(error && text));
-  }
-
-  async function runSearch() {
-    const query = input.value.trim();
-    if (!query) {
-      allResults = [];
-      clear(results);
-      clear(moreHost);
-      setStatus('Введи название — поиск идёт по TMDB');
-      return;
-    }
-
-    seq += 1;
-    const mine = seq;
-    if (controller) controller.abort();
-    controller = new AbortController();
-    setStatus('Ищем в TMDB…');
-
-    try {
-      const data = await searchTmdb(query, select.value, { signal: controller.signal });
-      if (closed || mine !== seq) return;
-      const list = data && Array.isArray(data.results) ? data.results : [];
-      allResults = list;
-      visible = 12;
-      renderResults();
-    } catch (error) {
-      if (closed || mine !== seq) return;
-      if (error && error.code === 'aborted') return;
-      allResults = [];
-      clear(results);
-      clear(moreHost);
-      setStatus(shortErrorMessage(error), { error: true });
-    }
-  }
-
-  function renderResults() {
-    clear(results);
-    clear(moreHost);
-
-    if (!allResults.length) {
-      setStatus('Ничего не нашли — попробуй другое название или тип');
-      return;
-    }
-
-    setStatus(`${fmtInt(allResults.length)} ${plural(allResults.length, ['вариант', 'варианта', 'вариантов'])} · выбери нужный`);
-
-    for (const result of allResults.slice(0, visible)) results.append(resultRow(result));
-
-    const remaining = allResults.length - visible;
-    if (remaining > 0) {
-      const more = el('button', {
-        type: 'button',
-        class: 'btn btn-ghost',
-        text: `Показать ещё ${fmtInt(Math.min(12, remaining))}`,
-      });
-      more.addEventListener('click', () => {
-        visible += 12;
-        renderResults();
-      });
-      moreHost.append(more);
-    }
-  }
-
-  function resultRow(result) {
-    const row = el('div', { class: 'match-result' });
-    row.append(posterThumb(result.posterPath, result.title));
-
-    const info = el('div', { class: 'film-info' });
-    const titleNode = el('div', { class: 'film-title', text: result.title || 'Без названия' });
-    const resultYear = toNum(result.year);
-    if (resultYear > 0) titleNode.append(el('span', { class: 'film-year', text: String(resultYear) }));
-    info.append(titleNode);
-
-    const meta = el('div', { class: 'film-char match-meta' });
-    meta.append(el('span', { class: 'match-kind', text: kindLabel(result.kind) }));
-    if (result.voteAverage != null && Number.isFinite(Number(result.voteAverage))) {
-      meta.append(el('span', { class: 'match-score', text: `TMDB ${fmtRating(result.voteAverage)}` }));
-    }
-    if (result.id != null) meta.append(el('span', { class: 'match-id', text: `#${result.id}` }));
-    info.append(meta);
-
-    const button = el('button', {
-      type: 'button',
-      class: 'btn btn-primary match-choose',
-      text: 'Выбрать',
-    });
-    button.addEventListener('click', () => choose(result, button));
-
-    row.append(info, button);
-    return row;
-  }
-
-  async function choose(result, button) {
-    if (matching) return;
-    if (!uploadId) {
-      setStatus('Нет активной выгрузки — обнови страницу и попробуй снова.', { error: true });
-      return;
-    }
-    matching = true;
-    const label = button.textContent;
-    button.disabled = true;
-    button.textContent = 'Матчим…';
-    setStatus(`Сопоставляем «${result.title || 'фильм'}» с TMDB…`);
-
-    try {
-      const kind = result.kind === 'tv' || result.kind === 'movie'
-        ? result.kind
-        : (select.value === 'tv' ? 'tv' : 'movie');
-      await matchFilm({
-        uploadId,
-        slug: film.slug,
-        tmdbId: result.id,
-        kind,
-      });
-      if (closed) return;
-      closed = true;
-      modal.close();
-      toast(`Сматчено: ${result.title || 'фильм'}`, 'success');
-      if (typeof onMatched === 'function') onMatched(result);
-    } catch (error) {
-      button.disabled = false;
-      button.textContent = label;
-      let message = shortErrorMessage(error);
-      if (error && error.status === 409) {
-        message = 'Этот фильм уже сопоставлен с другой записью TMDB — обнови страницу.';
-      } else if (error && error.status === 400) {
-        message = 'Сервер ещё не готов принять матч. Попробуй через пару секунд.';
-      }
-      setStatus(message, { error: true });
-    } finally {
-      matching = false;
-    }
-  }
-
-  input.addEventListener('input', debouncedSearch);
-  select.addEventListener('change', () => runSearch());
-  modal.panel.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && event.target === input) {
-      event.preventDefault();
-      runSearch();
-    }
-  });
-
-  input.value = film.title || '';
-  input.focus();
-  input.select();
-  runSearch();
   return modal;
 }

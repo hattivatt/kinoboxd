@@ -198,6 +198,22 @@ function isExactTvTitleLoose(show, title) {
     .includes(wanted);
 }
 
+/**
+ * Strict-stage pick. Only an item whose (localized or original) title equals
+ * the query after normalization — or after punctuation folding — is accepted.
+ * The year filter alone must never decide a match: TMDB's year-scoped search
+ * happily returns unrelated films ("Send Help" 2025 -> "POSH (Please only
+ * Send help)").
+ */
+function findExactTitle(items, title, isTv) {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  const exact = isTv ? isExactTvTitle : isExactTitle;
+  const loose = isTv ? isExactTvTitleLoose : isExactTitleLoose;
+  return items.find((item) => exact(item, title)) ||
+    items.find((item) => loose(item, title)) ||
+    null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Broad fallback matching (only after the strict stage failed)        */
 /* ------------------------------------------------------------------ */
@@ -399,14 +415,16 @@ async function broadSearch(kind, title, year, options) {
       );
       // Guardrails per candidate: an exact title is accepted even when the
       // year is off (premiere vs release); a partial title requires a
-      // plausible year; a sole search hit is accepted only when its year
-      // matches. Candidates that do not pass never become the best match,
-      // even if another query ranks them higher.
+      // plausible year; a sole search hit is accepted only when it also has a
+      // plausible title (a lone unrelated result must not win just because
+      // TMDB returned one item). Candidates that do not pass never become the
+      // best match, even if another query ranks them higher.
       const acceptable =
         scored.titleScore >= 0.99 ||
         (scored.titleScore >= 0.85 &&
           (!numericYear || scored.yearScore >= 0.8)) ||
         (scored.resultCount === 1 &&
+          scored.titleScore >= 0.5 &&
           (!numericYear || scored.yearScore >= 0.8));
       if (acceptable && (!best || scored.total > best.total)) best = scored;
     }
@@ -471,13 +489,10 @@ async function searchMovie(title, year, options) {
 
   if (numericYear) {
     const withinYear = firstResults.filter((movie) => matchesYear(movie, numericYear));
-    if (withinYear.length > 0) {
-      return (
-        withinYear.find((movie) => isExactTitle(movie, title)) ||
-        withinYear.find((movie) => isExactTitleLoose(movie, title)) ||
-        withinYear[0]
-      );
-    }
+    const exact = findExactTitle(withinYear, title, false);
+    if (exact) return exact;
+    // No title match in the year-scoped results: do NOT fall back to the
+    // first hit. Continue to the year-less exact search and then broadSearch.
   } else {
     const exact =
       firstResults.find((movie) => isExactTitle(movie, title)) ||
@@ -504,23 +519,15 @@ async function searchMovie(title, year, options) {
     let fallbackResults = await search(fallbackParams);
     if (numericYear) {
       const withinYear = fallbackResults.filter((movie) => matchesYear(movie, numericYear));
-      if (withinYear.length > 0) {
-        return (
-          withinYear.find((movie) => isExactTitle(movie, fallbackTitle)) ||
-          withinYear.find((movie) => isExactTitleLoose(movie, fallbackTitle)) ||
-          withinYear[0]
-        );
-      }
+      // Same strict rule for the localized title: exact title only.
+      const exactFallback = findExactTitle(withinYear, fallbackTitle, false);
+      if (exactFallback) return exactFallback;
     }
     fallbackResults = await search({ query: fallbackTitle, language: 'ru-RU' });
     const fallbackExact =
       fallbackResults.find((movie) => isExactTitle(movie, fallbackTitle)) ||
       fallbackResults.find((movie) => isExactTitleLoose(movie, fallbackTitle));
     if (fallbackExact) return fallbackExact;
-    if (numericYear) {
-      const withinYear = fallbackResults.filter((movie) => matchesYear(movie, numericYear));
-      if (withinYear.length > 0) return withinYear[0];
-    }
   }
 
   // Strict matching failed: one broad, year-less pass with title variants.
@@ -564,12 +571,10 @@ async function searchTv(title, year, options) {
 
   if (numericYear) {
     const withinYear = firstResults.filter((show) => matchesYear(show, numericYear));
-    if (withinYear.length > 0) {
-      const exact =
-        withinYear.find((show) => isExactTvTitle(show, query)) ||
-        withinYear.find((show) => isExactTvTitleLoose(show, query));
-      if (exact) return exact;
-    }
+    const exact = findExactTitle(withinYear, query, true);
+    if (exact) return exact;
+    // No exact title in the year-scoped results: fall through to the
+    // year-less exact retries and finally broadSearch.
   } else {
     const exact =
       firstResults.find((show) => isExactTvTitle(show, query)) ||
@@ -588,22 +593,12 @@ async function searchTv(title, year, options) {
 
   for (const params of candidates) {
     const results = await search(params);
-    const exact =
-      results.find((show) => isExactTvTitle(show, params.query)) ||
-      results.find((show) => isExactTvTitleLoose(show, params.query));
+    const exact = findExactTitle(results, params.query, true);
     if (exact) return exact;
   }
 
-  // Nothing exact: keep a within-year result from the localized search as a
-  // last resort (TMDB often returns the right show with a slightly different
-  // localized name).
-  if (numericYear && fallbackTitle) {
-    const results = await search({ query: fallbackTitle, language: 'ru-RU' });
-    const withinYear = results.filter((show) => matchesYear(show, numericYear));
-    if (withinYear.length > 0) return withinYear[0];
-  }
-
-  // Strict matching failed: one broad, year-less pass with title variants.
+  // No lenient year-only fallback here: a same-year show with a different
+  // title is not a match. broadSearch ranks exact titles across years.
   return broadSearch('tv', title, year, opts);
 }
 

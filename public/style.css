@@ -2017,42 +2017,101 @@ img { display: block; }
 }
 .film-rating.is-empty { color: var(--muted-2); font-weight: 500; }
 
-/* aggregator links (Letterboxd / KinoPoisk / TMDB / IMDb) */
-.film-links {
+/* film row trailing controls: rating + actions menu */
+.film-row-controls {
   display: flex;
   align-items: center;
-  gap: 3px;
-  margin-top: 3px;
+  gap: 7px;
+  justify-self: end;
+  min-width: 0;
 }
-.film-link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 16px;
-  border-radius: 4px;
+.film-info .tag { display: inline-block; margin-top: 3px; }
+
+/* kebab menu (aggregator links + manual re-match) */
+.film-menu { position: relative; display: flex; flex: none; }
+.film-menu-toggle {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
   color: var(--muted);
-  opacity: 0.62;
-  text-decoration: none;
-  transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
 }
-.film-link:hover {
-  opacity: 1;
-  color: #dfe9f2;
-  background: rgba(255, 255, 255, 0.07);
+.film-menu-toggle:hover,
+.film-menu-toggle[aria-expanded="true"] {
+  color: #e8f0f7;
+  background: rgba(255, 255, 255, 0.075);
+  border-color: rgba(255, 255, 255, 0.09);
 }
-.film-link:focus-visible {
-  opacity: 1;
-  outline: 1px solid rgba(255, 255, 255, 0.35);
+.film-menu-toggle:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.4);
   outline-offset: 1px;
 }
-.film-link svg { display: block; }
+.film-menu-toggle svg { display: block; pointer-events: none; }
+.film-menu-popup {
+  position: fixed;
+  z-index: 205;
+  min-width: 188px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  background: #1b232c;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 9px;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.6);
+  animation: filmMenuIn 0.13s ease both;
+}
+@keyframes filmMenuIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.film-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #dfe9f2;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.film-menu-item:hover,
+.film-menu-item:focus-visible {
+  background: rgba(255, 255, 255, 0.075);
+  color: #fff;
+  outline: none;
+}
+.film-menu-icon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  color: var(--muted);
+}
+.film-menu-item:hover .film-menu-icon { color: #dfe9f2; }
+.film-menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.film-menu-sep {
+  height: 1px;
+  margin: 4px 7px;
+  background: rgba(255, 255, 255, 0.11);
+}
+.film-menu-rematch { color: #ffd166; }
+.film-menu-rematch .film-menu-icon { color: #ffd166; }
 .unmatched-actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.unmatched-actions .film-links { margin-top: 0; }
 
 /* =========================================================
    unmatched list + manual TMDB search

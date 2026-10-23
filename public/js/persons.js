@@ -5,6 +5,7 @@ import {
 } from './ui.js';
 import {
   openModal as openModalShell, createFilmSortSelect, getFilmSort, sortFilms, filmSortHint,
+  filmRating, renderFilmMenu,
 } from './modal.js';
 
 const INITIAL = 15;
@@ -396,12 +397,18 @@ function filmRow(film) {
     detail = JOB_RU[film.job] || String(film.job);
   }
   if (detail) info.append(el('div', { class: 'film-char', text: detail }));
-  row.append(info);
 
   if (excluded) {
     const tag = exclusionReason(film);
-    if (tag) row.append(el('span', { class: 'tag', text: tag }));
+    if (tag) info.append(el('span', { class: 'tag', text: tag }));
   }
+  row.append(info);
+
+  const controls = el('div', { class: 'film-row-controls' });
+  controls.append(filmRating(entry));
+  const menu = renderFilmMenu(film);
+  if (menu) controls.append(menu);
+  row.append(controls);
 
   return row;
 }
@@ -410,11 +417,19 @@ function decorateFilm(film) {
   const entry = stats.filmsIndex[film.filmSlug] || {};
   return {
     ...film,
+    ...entry,
+    slug: film.filmSlug,
     title: entry.title || slugTitle(film.filmSlug),
     year: entry.year != null ? entry.year : null,
+    posterPath: entry.posterPath || null,
     rating: entry.rating != null ? entry.rating : null,
     voteAverage: entry.voteAverage != null ? entry.voteAverage : null,
     watchedDate: entry.watchedDate || null,
+    kind: entry.kind === 'tv' ? 'tv' : 'movie',
+    tmdbId: entry.tmdbId != null ? entry.tmdbId : null,
+    imdbId: entry.imdbId || null,
+    lbUri: entry.lbUri || null,
+    kpUrl: entry.kpUrl || null,
   };
 }
 

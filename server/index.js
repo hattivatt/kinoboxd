@@ -247,11 +247,12 @@ app.get('/api/tmdb/search', async (req, res, next) => {
 });
 
 /**
- * Attach a TMDB id chosen by the user to a previously unmatched film.
+ * Attach a TMDB id chosen by the user to a film.
  *
- * Idempotent: repeating the exact same match returns 200 with
- * `alreadyMatched: true`; matching a film that is already matched to a
- * different TMDB entry returns 409.
+ * - Unmatched film: creates the match.
+ * - Matched film with the same id/kind: idempotent 200 `alreadyMatched`.
+ * - Matched film with a different id/kind: re-match (details are fetched
+ *   when missing, the cache index key and the job entry are rewritten).
  */
 app.post('/api/match', async (req, res, next) => {
   try {
@@ -303,38 +304,50 @@ app.post('/api/match', async (req, res, next) => {
     const filmKind = film.kind === 'tv' ? 'tv' : 'movie';
     const existing = job.films.get(slug);
     const existingKind = existing && existing.kind ? existing.kind : filmKind;
-    if (
-      existing &&
-      existing.tmdbId === tmdbId &&
-      existingKind === kind &&
-      cache.hasDetails(tmdbId, kind)
-    ) {
+    const alreadyMatched = Boolean(existing && existing.tmdbId != null);
+    const previousKind = existing && existing.kind ? existing.kind : filmKind;
+
+    if (alreadyMatched && existing.tmdbId === tmdbId && existingKind === kind) {
+      // Idempotent repeat of the same match. Finish a pending details fetch
+      // from an interrupted run so the response really is "ready".
+      if (!cache.hasDetails(tmdbId, kind)) {
+        const data =
+          kind === 'tv' ? await tmdb.fetchTvData(tmdbId) : await tmdb.fetchMovieData(tmdbId);
+        await cache.saveDetails(tmdbId, data);
+      }
       return res.status(200).json({
         ok: true,
         alreadyMatched: true,
+        rematched: false,
         slug,
         tmdbId,
         kind,
       });
     }
 
-    const unmatched = listUnmatched(upload) || [];
-    if (!unmatched.some((entry) => entry.slug === slug)) {
-      if (existing && existing.tmdbId != null) {
+    const isRematch = alreadyMatched;
+
+    if (!isRematch) {
+      // Only a genuinely unmatched film can receive its first manual match.
+      const unmatched = listUnmatched(upload) || [];
+      if (!unmatched.some((entry) => entry.slug === slug)) {
+        if (existing && existing.tmdbId != null) {
+          throw new HttpError(
+            409,
+            'This film is already matched to another TMDB entry.',
+            'already_matched'
+          );
+        }
         throw new HttpError(
-          409,
-          'This film is already matched to another TMDB entry.',
-          'already_matched'
+          404,
+          'This film is not in the unmatched list.',
+          'not_unmatched'
         );
       }
-      throw new HttpError(
-        404,
-        'This film is not in the unmatched list.',
-        'not_unmatched'
-      );
     }
 
-    // 1. Details/credits: reuse the cache whenever possible.
+    // 1. Details/credits: reuse the cache whenever possible; a re-match to a
+    //    new id/kind fetches and stores the missing entry first.
     if (!cache.hasDetails(tmdbId, kind)) {
       const data =
         kind === 'tv' ? await tmdb.fetchTvData(tmdbId) : await tmdb.fetchMovieData(tmdbId);
@@ -349,8 +362,14 @@ app.post('/api/match', async (req, res, next) => {
     cache.flushIndex();
 
     // 3. Mark the job entry; buildStats() is computed on demand, so the next
-    //    /api/stats request already reflects the match.
-    job.films.set(slug, { tmdbId, matched: true, kind, manual: true });
+    //    /api/stats request already reflects the match (or re-match).
+    job.films.set(slug, {
+      tmdbId,
+      matched: true,
+      kind,
+      manual: true,
+      ...(isRematch ? { rematched: true } : {}),
+    });
     let matched = 0;
     for (const entry of job.films.values()) {
       if (entry.matched) matched++;
@@ -359,9 +378,10 @@ app.post('/api/match', async (req, res, next) => {
     job.failed = Math.max(0, job.total - matched);
 
     // Keep the KinoPoisk movie/TV counters consistent when a manual match
-    // changes the media kind. Letterboxd summaries have no such counters.
+    // changes the media kind. Compare against the previous effective kind, not
+    // the upload kind, so a re-match does not double-adjust the counters.
     if (
-      filmKind !== kind &&
+      previousKind !== kind &&
       upload.summary &&
       Number.isFinite(upload.summary.movieCount) &&
       Number.isFinite(upload.summary.tvCount)
@@ -375,8 +395,18 @@ app.post('/api/match', async (req, res, next) => {
       }
     }
 
-    console.log(`[match] ${uploadId} ${slug} -> ${kind}:${tmdbId} (${film.title})`);
-    res.status(200).json({ ok: true, slug, tmdbId, kind });
+    console.log(
+      `[match] ${uploadId} ${slug} -> ${kind}:${tmdbId} (${film.title})` +
+        (isRematch ? ' [rematch]' : '')
+    );
+    res.status(200).json({
+      ok: true,
+      rematched: isRematch,
+      alreadyMatched: false,
+      slug,
+      tmdbId,
+      kind,
+    });
   } catch (err) {
     next(err);
   }

@@ -6,7 +6,7 @@ import {
 } from './ui.js';
 import { renderDonut, renderTimeline, renderYearBars } from './charts.js';
 import { initPersons } from './persons.js';
-import { openFilmListModal, filmCountPhrase, EXTRA_SORT_OPTIONS } from './modal.js';
+import { openFilmListModal, filmCountPhrase, EXTRA_SORT_OPTIONS, setFilmMenuContext } from './modal.js';
 import { openUnmatchedModal } from './unmatched.js';
 
 let dashHooks = {};
@@ -165,6 +165,14 @@ function normalizeStats(raw) {
 
 export function renderDashboard(rawStats, hooks = {}) {
   dashHooks = hooks && typeof hooks === 'object' ? hooks : {};
+  // Film rows live inside modals rendered outside this call (persons,
+  // openFilmListModal), so hand them the current upload id and refresh hook.
+  setFilmMenuContext({
+    uploadId: typeof dashHooks.getUploadId === 'function' ? dashHooks.getUploadId() : null,
+    refreshStats: typeof dashHooks.refreshStats === 'function'
+      ? dashHooks.refreshStats
+      : null,
+  });
   const stats = normalizeStats(rawStats);
   const isKinopoisk = Boolean(stats.summary.source && stats.summary.source.type === 'kinopoisk');
   const kicker = $('dash-kicker');

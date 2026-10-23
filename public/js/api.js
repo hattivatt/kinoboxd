@@ -46,7 +46,10 @@ async function request(url, options = {}) {
 
   const payload = await readBody(response);
   if (!response.ok) {
-    const code = payload && typeof payload === 'object' ? payload.error : '';
+    const code = payload && typeof payload === 'object'
+      ? (typeof payload.code === 'string' ? payload.code
+        : payload.error === 'auth_required' ? payload.error : '')
+      : '';
     // The backend protects every /api/* route once a password is configured.
     // Any protected call may discover that the cookie expired — let the app
     // switch to the login view instead of surfacing a generic 401.
@@ -55,7 +58,7 @@ async function request(url, options = {}) {
     }
     throw new ApiError(
       describe(payload, `Сервер ответил ${response.status}`),
-      { status: response.status, payload },
+      { status: response.status, code, payload },
     );
   }
   return payload;
