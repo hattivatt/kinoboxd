@@ -2,7 +2,7 @@
 
 const cache = require('./cache');
 const { getJob } = require('./enrich');
-const { buildTaxonomy } = require('./taxonomy');
+const { buildTaxonomy, normalizeKeyword } = require('./taxonomy');
 
 const WRITER_JOBS = new Set(['Screenplay', 'Writer', 'Story', 'Script']);
 const COMPOSER_JOBS = new Set(['Original Music Composer', 'Music']);
@@ -22,6 +22,19 @@ const HIDDEN_GENRE_NAMES = new Set([
   'военный',
   'история',
 ]);
+
+/* TMDB Music is id 10402 (id 35 is Comedy). The "Музыка" bucket is the Music
+ * genre minus films tagged with the "musical" keyword: those belong to the
+ * derived "Мюзикл" category only, so a film is never counted in both. */
+const MUSIC_GENRE_ID = 10402;
+const MUSIC_GENRE_NAMES = new Set(['music', 'музыка']);
+const MUSICAL_KEYWORD = 'musical';
+
+function isMusicGenre(genre) {
+  if (!genre) return false;
+  if (Number(genre.id) === MUSIC_GENRE_ID) return true;
+  return MUSIC_GENRE_NAMES.has(normalizeKeyword(genre.name));
+}
 
 function isHiddenGenre(genre) {
   if (!genre) return false;
@@ -370,7 +383,7 @@ function buildStats(upload) {
   for (let score = 1; score <= 10; score++) ratingCounts[score] = 0;
   ratingCounts[0] = 0;
 
-  const genreMap = new Map(); // name -> { count, ratingSum, ratingCount }
+  const genreMap = new Map(); // name -> { key, name, count, ratingSum, ratingCount, films }
   const decadeMap = new Map();
   const yearMap = new Map();
   const timelineMap = new Map();
@@ -414,16 +427,33 @@ function buildStats(upload) {
 
     // ---- genres ----
     if (details) {
+      const keywordSet = new Set(
+        (Array.isArray(details.keywords) ? details.keywords : [])
+          .map((keyword) => normalizeKeyword(keyword && keyword.name))
+          .filter(Boolean)
+      );
+      const isMusical = keywordSet.has(MUSICAL_KEYWORD);
       for (const genre of details.genres || []) {
         if (isHiddenGenre(genre)) continue;
+        // "Мюзикл" (keyword) and "Музыка" (TMDB genre) are mutually
+        // exclusive: a musical-tagged Music film is counted in Мюзикл only.
+        if (isMusical && isMusicGenre(genre)) continue;
         const name = (genre.name || '').trim();
         if (!name) continue;
         let g = genreMap.get(name);
         if (!g) {
-          g = { name, count: 0, ratingSum: 0, ratingCount: 0 };
+          g = {
+            key: `genre-${Number(genre.id) || normalizeKeyword(name).replace(/\s+/g, '-')}`,
+            name,
+            count: 0,
+            ratingSum: 0,
+            ratingCount: 0,
+            films: [],
+          };
           genreMap.set(name, g);
         }
         g.count++;
+        g.films.push(film.slug);
         if (film.rating !== null) {
           g.ratingSum += film.rating;
           g.ratingCount++;
@@ -577,11 +607,13 @@ function buildStats(upload) {
 
   const genres = [...genreMap.values()]
     .map((g) => ({
+      key: g.key,
       // TMDB returns Russian genre names in lowercase ("драма"); the
       // payload uses the display form ("Драма").
       name: g.name.charAt(0).toUpperCase() + g.name.slice(1),
       count: g.count,
       avgRating: g.ratingCount > 0 ? round2(g.ratingSum / g.ratingCount) : null,
+      films: g.films.slice().sort(),
     }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
 
@@ -609,6 +641,15 @@ function buildStats(upload) {
   // buckets; origins are mutually exclusive and always sum to taxEntries.
   const taxonomy = buildTaxonomy(taxEntries);
 
+  // One flat list for the dashboard: TMDB genres (hidden ones filtered out,
+  // Music already adjusted for the "musical" keyword) plus keyword-derived
+  // categories. Sorting is count desc, ties by Russian name asc. Counts are
+  // intentionally not expected to sum to filmCount: a film can have several
+  // genres and several independent categories.
+  const mergedGenres = [...genres, ...taxonomy.categories].sort(
+    (a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru')
+  );
+
   const unmatched = computeUnmatched(upload, job);
 
   const summary = {
@@ -626,12 +667,11 @@ function buildStats(upload) {
   return {
     summary,
     ratings,
-    genres,
+    genres: mergedGenres,
     decades,
     years,
     timeline,
     persons,
-    categories: taxonomy.categories,
     origins: taxonomy.origins,
     periods: taxonomy.periods,
     filmsIndex,

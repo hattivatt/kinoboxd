@@ -129,9 +129,13 @@ function normalizeStats(raw) {
       .map((item) => {
         const rawName = String(item && item.name ? item.name : '').trim();
         return {
+          key: String(item && item.key ? item.key : '').trim(),
           name: GENRE_RU[rawName] || rawName,
           count: Math.max(0, toNum(item && item.count)),
           avgRating: numOrNull(item && item.avgRating),
+          films: array(item && item.films)
+            .map((slug) => String(slug))
+            .filter(Boolean),
         };
       })
       .filter((item) => item.name && item.count > 0),
@@ -156,7 +160,6 @@ function normalizeStats(raw) {
       composer: array(persons.composer),
       studio: array(persons.studio),
     },
-    categories: mapTaxonomy(source.categories),
     origins: mapTaxonomy(source.origins),
     periods: mapTaxonomy(source.periods),
     filmsIndex: source.filmsIndex && typeof source.filmsIndex === 'object' ? source.filmsIndex : {},
@@ -576,92 +579,69 @@ function renderGenreRow(host, item, max, { isCategory = false, onClick = null } 
 
 function renderGenres(stats) {
   const host = $('genres-list');
-  const categoriesHost = $('categories-list');
   const note = $('genres-note');
   if (!host) return;
 
-  const genres = stats.genres
+  // stats.genres is already the merged genre + category list (count desc,
+  // name asc on ties) from the backend. Re-sorting here keeps old cached
+  // payloads consistent and makes the widget independent of payload order.
+  const items = stats.genres
     .slice()
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
-  const categories = stats.categories
-    .slice()
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
-
-  const genresSubhead = $('genres-subhead');
-  const categoriesSubhead = $('categories-subhead');
-  if (genresSubhead) genresSubhead.hidden = genres.length === 0;
-  if (categoriesSubhead) categoriesSubhead.hidden = categories.length === 0;
-  if (categoriesHost) categoriesHost.hidden = categories.length === 0;
 
   if (note) {
-    if (!genres.length && !categories.length) {
-      note.textContent = '';
-    } else {
-      const parts = [];
-      if (genres.length) {
-        parts.push(`${fmtInt(genres.length)} ${plural(genres.length, ['жанр', 'жанра', 'жанров'])}`);
-      }
-      if (categories.length) {
-        parts.push(`${fmtInt(categories.length)} ${plural(categories.length, ['категория', 'категории', 'категорий'])}`);
-      }
-      note.textContent = parts.join(' · ');
-    }
+    note.textContent = items.length
+      ? `${fmtInt(items.length)} ${plural(items.length, ['жанр', 'жанра', 'жанров'])}`
+      : '';
   }
 
   clear(host);
-  if (categoriesHost) clear(categoriesHost);
 
-  if (!genres.length && !categories.length) {
+  if (!items.length) {
     host.append(emptyState('Жанры появятся после обогащения TMDB'));
     return;
   }
 
-  // One shared scale: a 100-film category looks bigger than a 40-film genre,
-  // regardless of which block it belongs to.
-  const max = Math.max(1, ...genres.map((g) => g.count), ...categories.map((c) => c.count));
-
-  if (!genres.length) host.hidden = true;
-  for (const genre of genres) {
-    renderGenreRow(host, genre, max, {
-      onClick: (item) => openGenreModal(stats, item),
+  const max = Math.max(1, ...items.map((item) => item.count));
+  for (const item of items) {
+    // Genre buckets use the "genre-<id>" key; keyword taxonomy buckets use
+    // short slugs ("musical", "anime", …). Only the latter are categories.
+    const isCategory = !/^genre-/.test(item.key || '');
+    renderGenreRow(host, item, max, {
+      isCategory,
+      onClick: (rowItem) => openGenreModal(stats, rowItem, { isCategory }),
     });
-  }
-  if (categoriesHost) {
-    for (const category of categories) {
-      renderGenreRow(categoriesHost, category, max, {
-        isCategory: true,
-        onClick: (item) => openTaxonomyModal(stats, item, {
-          kicker: 'Категории',
-          subtitle: `${fmtInt(item.count)} ${plural(item.count, ['фильм', 'фильма', 'фильмов'])}`,
-          sortScope: 'taxonomy',
-        }),
-      });
-    }
   }
 }
 
-/** Films of one localized genre (case-insensitive match against filmsIndex). */
-function openGenreModal(stats, item) {
-  const target = String(item && item.name ? item.name : '').trim().toLowerCase();
-  const films = [];
-  if (target) {
-    for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
-      if (!entry || typeof entry !== 'object') continue;
-      const genres = Array.isArray(entry.genres) ? entry.genres : [];
-      if (!genres.some((name) => String(name || '').trim().toLowerCase() === target)) continue;
-      films.push(filmFromEntry(slug, entry));
+/** Films of one merged genre/category bucket. */
+function openGenreModal(stats, item, { isCategory = false } = {}) {
+  let films = [];
+  if (Array.isArray(item.films) && item.films.length) {
+    films = filmsFromSlugs(stats.filmsIndex, item.films);
+  } else {
+    // Fallback for old payloads / genre buckets without a films array:
+    // match the localized genre name against the film index.
+    const target = String(item && item.name ? item.name : '').trim().toLowerCase();
+    if (target) {
+      for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
+        if (!entry || typeof entry !== 'object') continue;
+        const genres = Array.isArray(entry.genres) ? entry.genres : [];
+        if (!genres.some((name) => String(name || '').trim().toLowerCase() === target)) continue;
+        films.push(filmFromEntry(slug, entry));
+      }
     }
   }
   const count = films.length;
   const avg = item.avgRating != null ? ` · средняя оценка ${fmtRating(item.avgRating)}` : '';
   openFilmListModal({
-    kicker: 'Жанр',
+    kicker: isCategory ? 'Категория' : 'Жанр',
     title: item.name,
     subtitle: `${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])}${avg}`,
     groupLabel: item.name,
     emptyText: 'Нет фильмов с карточкой TMDB',
     films,
-    sortScope: 'genre',
+    sortScope: isCategory ? 'taxonomy' : 'genre',
   });
 }
 
