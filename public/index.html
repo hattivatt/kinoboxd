@@ -68,68 +68,24 @@
           <h1 class="hero-title">
             <span class="brand-word">kino</span><span class="brand-word accent">boxd</span>
           </h1>
-          <p class="hero-sub">Оценки, жанры, десятилетия и люди за кадром — из выгрузки Letterboxd или профиля Кинопоиска.</p>
+          <p class="hero-sub">Оценки, жанры, десятилетия и люди за кадром — из профиля Кинопоиска. Letterboxd-архив можно прикрепить к нему ради реальных дат просмотра и пересмотров.</p>
         </div>
 
         <div class="upload-card">
           <div class="upload-source" id="upload-source">
-            <div class="source-tabs" role="tablist" aria-label="Источник статистики">
-              <button type="button" class="source-tab is-active" id="source-tab-letterboxd" data-source-tab="letterboxd" role="tab" aria-selected="true" aria-controls="source-panel-letterboxd">
-                <span class="source-tab-radio" aria-hidden="true"></span>
-                <span class="source-tab-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/>
-                    <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
-                  </svg>
-                </span>
-                <span class="source-tab-copy">
-                  <span class="source-tab-title">Выгрузка Letterboxd</span>
-                  <span class="source-tab-hint">ZIP-архив из Settings → Data</span>
-                </span>
-              </button>
-
-              <button type="button" class="source-tab" id="source-tab-kinopoisk" data-source-tab="kinopoisk" role="tab" aria-selected="false" aria-controls="source-panel-kinopoisk" tabindex="-1">
-                <span class="source-tab-radio" aria-hidden="true"></span>
-                <span class="source-tab-icon is-kp" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M6 4v16M19.5 4 8.5 12l11 8"/>
-                  </svg>
-                </span>
-                <span class="source-tab-copy">
-                  <span class="source-tab-title">Профиль Кинопоиска</span>
-                  <span class="source-tab-hint">Импорт оценок по ссылке</span>
-                </span>
-              </button>
+            <div class="source-single-head">
+              <span class="source-tab-icon is-kp" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6 4v16M19.5 4 8.5 12l11 8"/>
+                </svg>
+              </span>
+              <span class="source-tab-copy">
+                <span class="source-tab-title">Профиль Кинопоиска</span>
+                <span class="source-tab-hint">Импорт оценок по ссылке</span>
+              </span>
             </div>
 
-            <div class="source-panel" id="source-panel-letterboxd" role="tabpanel" aria-labelledby="source-tab-letterboxd" data-source-panel="letterboxd">
-              <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Загрузить ZIP-выгрузку Letterboxd">
-                <div class="dz-content" id="dz-content">
-                  <div class="dz-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/>
-                      <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
-                    </svg>
-                  </div>
-                  <div class="dz-title">Перетащи сюда ZIP-выгрузку</div>
-                  <div class="dz-hint">или нажми, чтобы выбрать файл · только .zip</div>
-                  <span class="btn btn-primary dz-btn">Выбрать архив</span>
-                </div>
-                <div class="dz-busy" id="dz-busy" hidden>
-                  <div class="spinner" aria-hidden="true"></div>
-                  <div class="dz-title">Распаковываем архив…</div>
-                  <div class="dz-hint" id="dz-busy-name"></div>
-                </div>
-              </div>
-
-              <input type="file" id="file-input" accept=".zip,application/zip,application/x-zip-compressed" hidden>
-
-              <div class="upload-help">
-                <span>Где взять архив?</span> Letterboxd → Settings → Data → Export your data
-              </div>
-            </div>
-
-            <div class="source-panel" id="source-panel-kinopoisk" role="tabpanel" aria-labelledby="source-tab-kinopoisk" data-source-panel="kinopoisk" hidden>
+            <div class="source-panel" id="source-panel-kinopoisk">
               <form class="kp-form" id="kp-form" novalidate>
                 <label class="kp-label" for="kp-url">Ссылка на профиль <span>kinopoisk.ru/user/&lt;id&gt;</span></label>
                 <div class="kp-field">
@@ -151,10 +107,20 @@
                 <p class="kp-note">Профиль должен быть открытым. Первый импорт занимает 30–90 секунд: сервер соберёт оценки и сопоставит фильмы с TMDB.</p>
               </form>
             </div>
-          </div>
 
-          <div id="upload-error" hidden></div>
-          <div class="upload-preview" id="upload-preview" hidden></div>
+            <div class="attach-inline">
+              <span class="attach-inline-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+                </svg>
+              </span>
+              <span class="attach-inline-copy">
+                <b>Прикрепить Letterboxd-архив</b>
+                <span id="upload-attach-hint">Сначала импортируйте профиль Кинопоиска — архив прикрепляется к нему.</span>
+              </span>
+              <button type="button" class="btn btn-ghost" id="upload-attach-lb" disabled>Прикрепить</button>
+            </div>
+          </div>
 
           <button type="button" class="btn btn-link back-to-dash" id="back-to-dash" hidden>
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
@@ -163,8 +129,8 @@
         </div>
 
         <div class="hero-notes">
-          <span><i class="mini-dot green"></i>оценки и дневник</span>
-          <span><i class="mini-dot orange"></i>TMDB-карточки</span>
+          <span><i class="mini-dot green"></i>оценки Кинопоиска</span>
+          <span><i class="mini-dot orange"></i>даты просмотра и пересмотры из LB</span>
           <span><i class="mini-dot blue"></i>актёры и съёмочная группа</span>
         </div>
       </div>
@@ -240,6 +206,12 @@
                 <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
               </svg>
               <span>Заменить выгрузку</span>
+            </button>
+            <button type="button" class="btn btn-ghost attach-lb" id="attach-lb" hidden title="Прикрепить ZIP-архив Letterboxd к профилю Кинопоиска" aria-label="Прикрепить Letterboxd-архив">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+              </svg>
+              <span id="attach-lb-label">Прикрепить Letterboxd</span>
             </button>
             <button type="button" class="btn btn-ghost profile-refresh" id="profile-refresh" hidden title="Проверить новые оценки на Кинопоиске" aria-label="Обновить профиль Кинопоиска">
               <span class="spinner spinner-sm profile-refresh-spinner" id="profile-refresh-spinner" hidden aria-hidden="true"></span>

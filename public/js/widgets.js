@@ -106,6 +106,10 @@ function normalizeStats(raw) {
     }))
     .filter((item) => item.slug);
 
+  const attachedRaw = summary.attachedLb && typeof summary.attachedLb === 'object'
+    ? summary.attachedLb
+    : null;
+
   return {
     summary: {
       filmCount: toNum(summary.filmCount),
@@ -114,6 +118,13 @@ function normalizeStats(raw) {
       dateTo: summary.dateTo || null,
       totalMinutes: numOrNull(summary.totalMinutes),
       unmatchedCount: Math.max(unmatched.length, Math.max(0, toNum(summary.unmatchedCount))),
+      rewatchCount: Math.max(0, toNum(summary.rewatchCount)),
+      attachedLb: attachedRaw ? {
+        fileName: attachedRaw.fileName ? String(attachedRaw.fileName) : null,
+        attachedAt: attachedRaw.attachedAt || null,
+        events: Math.max(0, toNum(attachedRaw.events)),
+        ratedEvents: Math.max(0, toNum(attachedRaw.ratedEvents)),
+      } : null,
       source: sourceRaw ? {
         type: String(sourceRaw.type || '').trim().toLowerCase(),
         kpUserId: sourceRaw.kpUserId != null ? String(sourceRaw.kpUserId) : '',
@@ -182,8 +193,11 @@ export function renderDashboard(rawStats, hooks = {}) {
   if (kicker) kicker.textContent = isKinopoisk ? 'Кинопоиск · сводка' : 'Letterboxd · сводка';
   const sub = $('dash-sub');
   if (sub) {
+    const attachment = isKinopoisk ? stats.summary.attachedLb : null;
     sub.textContent = isKinopoisk
-      ? 'Собрано из оценок Кинопоиска и карточек TMDB.'
+      ? (attachment
+        ? `Оценки Кинопоиска, карточки TMDB и Letterboxd-архив: реальные даты просмотра, пересмотры${stats.summary.rewatchCount ? ` (${fmtInt(stats.summary.rewatchCount)})` : ''}.`
+        : 'Собрано из оценок Кинопоиска и карточек TMDB. Прикрепите Letterboxd-архив ради реальных дат и пересмотров.')
       : 'Собрано из дневника, оценок и карточек TMDB.';
   }
   renderSummary(stats);
@@ -252,7 +266,7 @@ function renderSummary(stats) {
     'первый — последний просмотр',
   ));
 
-  host.append(renderSourceMetric(summary.source));
+  host.append(renderSourceMetric(summary.source, summary.attachedLb));
 
   host.classList.toggle('has-unmatched', summary.unmatchedCount > 0);
   if (summary.unmatchedCount > 0) host.append(renderUnmatchedMetric(stats));
@@ -361,7 +375,7 @@ function formatFetchedAt(value) {
   }).format(date);
 }
 
-function renderSourceMetric(source) {
+function renderSourceMetric(source, attachedLb = null) {
   const isKinopoisk = Boolean(source && source.type === 'kinopoisk');
   const plate = el('div', { class: `source-plate${isKinopoisk ? '' : ' is-letterboxd'}` });
 
@@ -374,9 +388,24 @@ function renderSourceMetric(source) {
       class: 'src-uid',
       text: who,
     }));
+    const attached = attachedLb && typeof attachedLb === 'object' ? attachedLb : null;
+    if (attached) {
+      plate.append(el('span', { class: 'src-sep', text: '·' }));
+      plate.append(el('span', {
+        class: 'src-lb-tag',
+        text: 'LB',
+        title: `Letterboxd: ${attached.fileName || 'архив'}`,
+      }));
+    }
 
     const fetched = formatFetchedAt(source.fetchedAt);
-    const sub = fetched ? `список оценок получен ${fetched}` : 'оценки Кинопоиска';
+    const attachedAt = attached ? formatFetchedAt(attached.attachedAt) : '';
+    const subParts = [
+      fetched ? `оценки получены ${fetched}` : 'оценки Кинопоиска',
+      attached ? `LB-событий: ${fmtInt(attached.events)}` : '',
+      attached && attachedAt ? `архив ${attachedAt}` : '',
+    ].filter(Boolean);
+    const sub = subParts.join(' · ');
     const metricNode = el('div', { class: 'metric metric-source' });
     const labelNode = el('div', { class: 'metric-label' });
     labelNode.innerHTML = icon('kp', 12);
@@ -393,6 +422,10 @@ function renderSourceMetric(source) {
     const tooltipSecondary = [
       source.kpNick && source.kpUserId ? `user ${source.kpUserId}` : '',
       fetched ? `список оценок получен ${fetched}` : 'источник: профиль Кинопоиска',
+      attached
+        ? `Letterboxd: ${attached.fileName || 'архив'}${attachedAt ? ` от ${attachedAt}` : ''} · ` +
+          `${fmtInt(attached.events)} событий, ${fmtInt(attached.ratedEvents)} с оценкой КП`
+        : '',
     ].filter(Boolean).join(' · ');
     metricNode.addEventListener('pointerenter', (event) => {
       showTooltip(primary, tooltipSecondary);

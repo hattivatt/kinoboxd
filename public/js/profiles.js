@@ -1,9 +1,13 @@
 /* Local profile registry (IndexedDB) with a memory-only degradation path.
  *
+ * KinoPoisk is the only profile source. A Letterboxd archive is an attachment
+ * on the server, not a registry entry: boot removes legacy `type:'lb'`
+ * profiles and their `stats`/`files` records.
+ *
  * Stores (DB «kinoboxd», version 1):
- *   profiles  keyPath id  { id, type:'kp'|'lb', label, kpUrl, kpUserId, kpNick,
- *                           lbFileName, uploadId, savedAt, source }
- *   files     keyPath id  { id, name, type, blob, savedAt }
+ *   profiles  keyPath id  { id, type:'kp', label, kpUrl, kpUserId, kpNick,
+ *                           uploadId, savedAt, source }
+ *   files     keyPath id  { id, name, type, blob, savedAt }   (legacy LB ZIPs)
  *   stats     keyPath id  { id, stats, savedAt, bytes }
  *
  * When IndexedDB is missing/blocked (private mode, hardened browser) every
@@ -157,35 +161,29 @@ export function getActiveId() {
    ========================================================= */
 
 function fallbackId(record) {
-  if (record.type === 'kp' && record.kpUserId) return `kp:${record.kpUserId}`;
-  if (record.type === 'lb' && record.lbFileName) return `lb:${record.lbFileName}`;
-  return `profile:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+  if (record.kpUserId) return `kp:${record.kpUserId}`;
+  return `kp:legacy:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function labelFor(record) {
-  if (record.type === 'kp') {
-    const who = record.kpNick || (record.kpUserId ? `user ${record.kpUserId}` : 'профиль');
-    return `Кинопоиск · ${who}`;
-  }
-  return record.lbFileName ? `Letterboxd · ${record.lbFileName}` : 'Letterboxd (выгрузка)';
+  const who = record.kpNick || (record.kpUserId ? `user ${record.kpUserId}` : 'профиль');
+  return `Кинопоиск · ${who}`;
 }
 
 function normalizeRecord(input) {
   const raw = input && typeof input === 'object' ? input : {};
-  const type = raw.type === 'kp' ? 'kp' : 'lb';
   const record = {
     id: '',
-    type,
+    type: 'kp',
     label: '',
     kpUrl: typeof raw.kpUrl === 'string' && raw.kpUrl ? raw.kpUrl : null,
     kpUserId: raw.kpUserId != null && String(raw.kpUserId) ? String(raw.kpUserId) : null,
     kpNick: raw.kpNick != null && String(raw.kpNick) ? String(raw.kpNick) : null,
-    lbFileName: typeof raw.lbFileName === 'string' && raw.lbFileName ? raw.lbFileName : null,
     uploadId: typeof raw.uploadId === 'string' && raw.uploadId ? raw.uploadId : null,
     savedAt: Number.isFinite(Number(raw.savedAt)) ? Number(raw.savedAt) : Date.now(),
     source: raw.source && typeof raw.source === 'object'
       ? { ...raw.source }
-      : { type: type === 'kp' ? 'kinopoisk' : 'letterboxd' },
+      : { type: 'kinopoisk' },
   };
   record.id = typeof raw.id === 'string' && raw.id ? raw.id : fallbackId(record);
   record.label = typeof raw.label === 'string' && raw.label.trim()
@@ -300,6 +298,66 @@ export async function clearProfiles() {
       mode = 'memory';
     }
   }
+}
+
+/* =========================================================
+   legacy Letterboxd standalone profiles (soft migration)
+   ========================================================= */
+
+function isLegacyLbId(id) {
+  return typeof id === 'string' && id.startsWith('lb:');
+}
+
+/**
+ * Letterboxd profiles no longer exist as registry entities. Called once at
+ * boot: delete every non-KinoPoisk profile together with its cached stats and
+ * stored ZIP. Returns the number of removed profile records.
+ */
+export async function migrateLetterboxdProfiles() {
+  await ready();
+  let removed = 0;
+
+  const records = await listProfiles();
+  for (const record of records) {
+    if (record && record.type === 'kp') continue;
+    await removeProfile(record.id);
+    removed += 1;
+  }
+
+  // Orphaned payloads from an older registry version (profile row already
+  // gone, stats/files keys left behind).
+  for (const id of Array.from(memory.stats.keys())) {
+    if (isLegacyLbId(id)) memory.stats.delete(id);
+  }
+  for (const id of Array.from(memory.files.keys())) {
+    if (isLegacyLbId(id)) memory.files.delete(id);
+  }
+  if (mode === 'idb') {
+    try {
+      const statsRecords = await tx(STATS_STORE, 'readonly', (transaction) => (
+        requestValue(transaction.objectStore(STATS_STORE).getAll())
+      ));
+      const fileRecords = await tx(FILE_STORE, 'readonly', (transaction) => (
+        requestValue(transaction.objectStore(FILE_STORE).getAll())
+      ));
+      const statsIds = (Array.isArray(statsRecords) ? statsRecords : [])
+        .map((record) => record && record.id)
+        .filter(isLegacyLbId);
+      const fileIds = (Array.isArray(fileRecords) ? fileRecords : [])
+        .map((record) => record && record.id)
+        .filter(isLegacyLbId);
+      if (statsIds.length || fileIds.length) {
+        await tx([STATS_STORE, FILE_STORE], 'readwrite', (transaction) => {
+          for (const id of statsIds) transaction.objectStore(STATS_STORE).delete(id);
+          for (const id of fileIds) transaction.objectStore(FILE_STORE).delete(id);
+        });
+      }
+    } catch {
+      mode = 'memory';
+    }
+  }
+
+  return removed;
 }
 
 /* =========================================================

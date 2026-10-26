@@ -1,23 +1,23 @@
 /* Entry point: boot → upload → enrich (poll) → dashboard. */
 
 import {
-  uploadZip, startEnrich, getEnrichStatus, getStats,
-  startKinopoiskImport, getKinopoiskStatus, getAuthSession,
+  getStats, startKinopoiskImport, getKinopoiskStatus, getAuthSession,
 } from './api.js';
 import {
-  initUpload, setUploadBusy, showUploadPreview, showUploadError, clearUploadError,
-  resetUpload, setHasSession, setSource, showKpError, setImportBusy,
+  initUpload, resetUpload, setHasSession, showKpError, setImportBusy,
+  setAttachAvailable,
 } from './upload.js';
 import { renderDashboard, resetYearBarsFilters } from './widgets.js';
 import { initAuth, setAuthUi, prepareLogin } from './auth.js';
 import { closeAllModals } from './modal.js';
 import {
   ready as initProfiles, listProfiles, getProfile, saveProfile, removeProfile,
-  getStatsCache, saveStatsCache, saveFile, getFile, setActiveId,
+  getStatsCache, saveStatsCache, setActiveId, migrateLetterboxdProfiles,
 } from './profiles.js';
 import {
   initProfileSwitcher, renderProfileSwitcher, closeProfileSwitcher,
 } from './switcher.js';
+import { initAttach, updateAttachButton, openAttachModal } from './attach.js';
 import { $, clear, toast, dismissToasts, errorBox, shortErrorMessage, toNum, fmtInt } from './ui.js';
 
 const SESSION_KEY = 'kinoboxd.session.v1';
@@ -33,16 +33,13 @@ const state = {
   uploadFilms: null,
   stats: null,
   dashboardReady: false,
-  currentFile: null,
-  lbFileName: null,
+  attachedLb: null,
   profileId: null,
   profiles: [],
   staleProfileId: null,
   flowSeq: 0,
   flowAbort: null,
-  uploading: false,
-  enrichStarting: false,
-  importSource: 'letterboxd',
+  importSource: 'kinopoisk',
   importStarting: false,
   importStage: 'scrape',
   refreshing: false,
@@ -51,7 +48,6 @@ const state = {
   importToast: null,
   pollTimer: 0,
   pollMode: null,
-  idlePolls: 0,
   statusMisses: 0,
   authRequired: false,
   authed: true,
@@ -97,11 +93,10 @@ function saveSession(profile = null) {
       uploadId: state.uploadId || null,
       profileId: profileId || null,
       summary: state.uploadSummary || null,
-      source: state.importSource,
-      lbFileName: state.lbFileName || null,
+      source: 'kinopoisk',
       savedAt: Date.now(),
     };
-    if (state.importSource === 'kinopoisk' && state.kp) {
+    if (state.kp) {
       payload.kp = {
         url: state.kp.url || null,
         kpUserId: state.kp.kpUserId || null,
@@ -164,6 +159,11 @@ function renderProfiles() {
     activeId: state.profileId,
   });
   updateProfileRefreshButton();
+  updateAttachButton({
+    active: state.importSource === 'kinopoisk' && Boolean(state.uploadId),
+    attachment: state.attachedLb,
+  });
+  setAttachAvailable(state.importSource === 'kinopoisk' && Boolean(state.uploadId));
 }
 
 /* =========================================================
@@ -259,40 +259,27 @@ async function ensureProfileForSession(saved) {
   const wantedId = typeof saved.profileId === 'string' && saved.profileId ? saved.profileId : null;
   if (wantedId) {
     const existing = await getProfile(wantedId);
-    if (existing) return existing;
+    if (existing && existing.type === 'kp') return existing;
   }
 
-  // Migrate a pre-registry session (or recover a record that vanished): build
-  // an id from the stable source key so a future re-import dedupes into it.
-  const type = saved.source === 'kinopoisk' ? 'kp' : 'lb';
+  // Legacy Letterboxd profiles were deleted at boot; only a KinoPoisk
+  // identity can be restored from the localStorage session.
+  if (saved.source !== 'kinopoisk') return null;
   const kpUserId = saved.kp && saved.kp.kpUserId ? String(saved.kp.kpUserId) : null;
+  if (!kpUserId) return null;
   const kpNick = saved.kp && saved.kp.kpNick ? String(saved.kp.kpNick) : null;
-  const lbFileName = typeof saved.lbFileName === 'string' && saved.lbFileName ? saved.lbFileName : null;
-
-  let id;
-  let label;
-  if (type === 'kp' && kpUserId) {
-    id = `kp:${kpUserId}`;
-    label = `Кинопоиск · ${kpNick || `user ${kpUserId}`}`;
-  } else if (type === 'lb' && lbFileName) {
-    id = `lb:${lbFileName}`;
-    label = `Letterboxd · ${lbFileName}`;
-  } else {
-    id = `${type === 'kp' ? 'kp' : 'lb'}:legacy:${saved.uploadId}`;
-    label = type === 'kp' ? 'Кинопоиск (импорт)' : 'Letterboxd (выгрузка)';
-  }
+  const id = `kp:${kpUserId}`;
 
   const record = await saveProfile({
     id,
-    type,
-    label,
+    type: 'kp',
+    label: `Кинопоиск · ${kpNick || `user ${kpUserId}`}`,
     kpUrl: saved.kp && saved.kp.url ? saved.kp.url : null,
     kpUserId,
     kpNick,
-    lbFileName,
     uploadId: saved.uploadId || null,
     savedAt: saved.savedAt || Date.now(),
-    source: { type: type === 'kp' ? 'kinopoisk' : 'letterboxd', migrated: true },
+    source: { type: 'kinopoisk', migrated: true },
   }, { keepId: id });
 
   state.profileId = record.id;
@@ -307,51 +294,35 @@ async function persistActiveProfile(stats) {
     const src = stats.summary && stats.summary.source && typeof stats.summary.source === 'object'
       ? stats.summary.source
       : null;
-    const isKp = Boolean(src && src.type === 'kinopoisk') || state.importSource === 'kinopoisk';
-    const kpUserId = src && src.kpUserId != null
+    if (!src || src.type !== 'kinopoisk') return;
+    const kpUserId = src.kpUserId != null
       ? String(src.kpUserId)
       : (state.kp && state.kp.kpUserId ? String(state.kp.kpUserId) : null);
-    const kpNick = src && src.kpNick ? String(src.kpNick) : ((state.kp && state.kp.kpNick) || null);
-    const lbFileName = state.lbFileName || (state.currentFile && state.currentFile.name ? state.currentFile.name : null);
+    if (!kpUserId) return;
+    const kpNick = src.kpNick ? String(src.kpNick) : ((state.kp && state.kp.kpNick) || null);
 
-    let id;
-    let type;
-    if (isKp) {
-      if (!kpUserId) return;
-      // A delta refresh of the active profile must update that registry record
-      // in place, even if its id predates the `kp:<userId>` convention.
-      const active = state.profileId ? await getProfile(state.profileId) : null;
-      id = active
-        && active.type === 'kp'
-        && String(active.kpUserId || '') === String(kpUserId)
-        ? active.id
-        : `kp:${kpUserId}`;
-      type = 'kp';
-    } else {
-      if (lbFileName) id = `lb:${lbFileName}`;
-      else if (state.profileId && state.profileId.startsWith('lb:')) id = state.profileId;
-      else return;
-      type = 'lb';
-    }
+    // A delta refresh of the active profile must update that registry record
+    // in place, even if its id predates the `kp:<userId>` convention.
+    const active = state.profileId ? await getProfile(state.profileId) : null;
+    const id = active
+      && active.type === 'kp'
+      && String(active.kpUserId || '') === String(kpUserId)
+      ? active.id
+      : `kp:${kpUserId}`;
 
     const previous = await getProfile(id);
     const record = await saveProfile({
       ...(previous || {}),
       id,
-      type,
-      label: type === 'kp'
-        ? `Кинопоиск · ${kpNick || `user ${kpUserId}`}`
-        : (lbFileName
-          ? `Letterboxd · ${lbFileName}`
-          : ((previous && previous.label) || 'Letterboxd (выгрузка)')),
-      kpUrl: type === 'kp' ? ((state.kp && state.kp.url) || (previous && previous.kpUrl) || null) : null,
-      kpUserId: type === 'kp' ? kpUserId : null,
-      kpNick: type === 'kp' ? kpNick : null,
-      lbFileName: type === 'lb' ? (lbFileName || (previous && previous.lbFileName) || null) : null,
+      type: 'kp',
+      label: `Кинопоиск · ${kpNick || `user ${kpUserId}`}`,
+      kpUrl: (state.kp && state.kp.url) || (previous && previous.kpUrl) || null,
+      kpUserId,
+      kpNick,
       uploadId: state.uploadId || (previous && previous.uploadId) || null,
       savedAt: Date.now(),
       source: {
-        type: type === 'kp' ? 'kinopoisk' : 'letterboxd',
+        type: 'kinopoisk',
         ...(src || {}),
       },
     }, { keepId: id });
@@ -434,9 +405,8 @@ function bootError(error) {
           state.uploadFilms = null;
           state.stats = null;
           state.dashboardReady = false;
-          state.importSource = 'letterboxd';
+          state.importSource = 'kinopoisk';
           state.kp = null;
-          state.lbFileName = null;
           resetUpload();
           setHasSession(false);
           showView('upload');
@@ -459,6 +429,8 @@ async function boot() {
   }
 
   await initProfiles();
+  // Soft migration: Letterboxd profiles and their cached payloads are gone.
+  await migrateLetterboxdProfiles();
 
   await checkAuth();
   if (!isFlow(flow)) return;
@@ -473,7 +445,6 @@ async function boot() {
   if (!saved) {
     state.uploadId = null;
     state.profileId = null;
-    state.lbFileName = null;
     setActiveId(null);
     resetUpload();
     setHasSession(false);
@@ -486,27 +457,41 @@ async function boot() {
   // session write (it may create and persist a migrated registry record).
   state.uploadId = saved.uploadId || null;
   state.uploadSummary = saved.summary || null;
-  state.importSource = saved.source === 'kinopoisk' ? 'kinopoisk' : 'letterboxd';
-  state.lbFileName = saved.lbFileName || null;
+  state.importSource = 'kinopoisk';
 
   const profile = await ensureProfileForSession(saved);
   if (!isFlow(flow)) return;
+  if (!profile) {
+    // Legacy Letterboxd session (or a KP profile without a KinoPoisk id):
+    // there is nothing to restore anymore.
+    clearSession();
+    state.uploadId = null;
+    state.uploadSummary = null;
+    state.uploadFilms = null;
+    state.stats = null;
+    state.dashboardReady = false;
+    state.kp = null;
+    setActiveId(null);
+    resetUpload();
+    setHasSession(false);
+    showView('upload');
+    await refreshProfiles();
+    toast('Letterboxd-профили больше не поддерживаются — импортируйте профиль Кинопоиска, а архив прикрепите к нему.', 'info', { duration: 8000 });
+    return;
+  }
   state.profileId = profile.id;
   setActiveId(profile.id);
   state.staleProfileId = null;
 
   state.uploadId = saved.uploadId || profile.uploadId || null;
   state.uploadSummary = saved.summary || null;
-  state.lbFileName = profile.lbFileName || saved.lbFileName || null;
-  state.importSource = (saved.source === 'kinopoisk' || profile.type === 'kp') ? 'kinopoisk' : 'letterboxd';
+  state.importSource = 'kinopoisk';
   const savedKp = saved.kp && typeof saved.kp === 'object' ? saved.kp : null;
-  state.kp = state.importSource === 'kinopoisk'
-    ? {
-      url: (savedKp && savedKp.url) || profile.kpUrl || null,
-      kpUserId: (savedKp && savedKp.kpUserId) || profile.kpUserId || null,
-      kpNick: (savedKp && savedKp.kpNick) || profile.kpNick || null,
-    }
-    : null;
+  state.kp = {
+    url: (savedKp && savedKp.url) || profile.kpUrl || null,
+    kpUserId: (savedKp && savedKp.kpUserId) || profile.kpUserId || null,
+    kpNick: (savedKp && savedKp.kpNick) || profile.kpNick || null,
+  };
   saveSession(profile);
 
   await refreshProfiles();
@@ -528,19 +513,11 @@ async function boot() {
     if (!isFlow(flow) || (error && error.code === 'aborted')) return;
     if (error && error.status === 401) return; // login view already opened by the auth event
     if (error && error.status === 400) {
-      if (state.importSource === 'kinopoisk') {
-        // The import is still running on the server — resume its two-stage progress.
-        showView('enrich');
-        prepareKinopoiskProgress();
-        setProgressStatus('Продолжаем импорт с Кинопоиска…');
-        startKinopoiskPolling();
-        return;
-      }
-      // The backend knows this upload but stats aren't ready yet — resume enrichment view.
+      // The import is still running on the server — resume its two-stage progress.
       showView('enrich');
-      prepareProgress();
-      setProgressStatus('Продолжаем обогащение…');
-      startPolling();
+      prepareKinopoiskProgress();
+      setProgressStatus('Продолжаем импорт с Кинопоиска…');
+      startKinopoiskPolling();
       return;
     }
     if (error && (error.status === 404 || error.status === 410)) {
@@ -680,17 +657,17 @@ function applyStats(stats, { fromCache = false, profile = null } = {}) {
   }
   const source = stats.summary && stats.summary.source;
   dismissImportToast();
+  state.importSource = 'kinopoisk';
   if (source && source.type === 'kinopoisk') {
-    state.importSource = 'kinopoisk';
     state.kp = {
       ...(state.kp || {}),
       kpUserId: source.kpUserId != null ? String(source.kpUserId) : (state.kp && state.kp.kpUserId) || null,
       kpNick: source.kpNick || (state.kp && state.kp.kpNick) || null,
     };
-  } else if (source && source.type === 'letterboxd') {
-    state.importSource = 'letterboxd';
-    state.kp = null;
   }
+  state.attachedLb = stats.summary && stats.summary.attachedLb
+    ? stats.summary.attachedLb
+    : null;
   state.stats = stats;
   state.dashboardReady = true;
   if (!fromCache) hideStaleBanner();
@@ -726,13 +703,12 @@ function showUnrecoverableProfile(profile, message) {
   state.uploadFilms = null;
   state.stats = null;
   state.dashboardReady = false;
-  state.lbFileName = null;
+  state.attachedLb = null;
   state.kp = null;
-  state.importSource = profile && profile.type === 'kp' ? 'kinopoisk' : 'letterboxd';
+  state.importSource = 'kinopoisk';
   hideStaleBanner();
   resetUpload();
   setHasSession(false);
-  setSource(state.importSource);
   showView('upload');
   renderProfiles();
   toast(message || 'Сервер перезапустился — загрузите выгрузку заново.', 'info', { duration: 7000 });
@@ -770,7 +746,7 @@ async function recoverProfile(profile, { flow = null } = {}) {
   state.uploadFilms = null;
   state.stats = null;
   state.dashboardReady = false;
-  state.lbFileName = profile.lbFileName || null;
+  state.attachedLb = null;
   renderProfiles();
 
   if (profile.type === 'kp') {
@@ -834,55 +810,8 @@ async function recoverProfile(profile, { flow = null } = {}) {
     }
   }
 
-  // Letterboxd: replay the stored ZIP bytes through upload → enrich.
-  state.importSource = 'letterboxd';
-  state.kp = null;
-  showView('enrich');
-  prepareProgress();
-  setProgressStatus('Сервер перезапустился — загружаем сохранённый архив заново…');
-
-  try {
-    const file = await getFile(profile.id);
-    if (!isFlow(current)) return true;
-    if (!file) {
-      showUnrecoverableProfile(profile, 'ZIP-архив этого профиля не сохранён в браузере — загрузите выгрузку Letterboxd заново.');
-      return false;
-    }
-
-    state.lbFileName = profile.lbFileName || file.name || null;
-    const data = await uploadZip(file, { signal: current.signal });
-    if (!isFlow(current)) return true;
-    if (!data || typeof data !== 'object' || !data.uploadId) {
-      throw new Error('Сервер вернул неожиданный ответ: в нём нет uploadId.');
-    }
-
-    state.uploadId = data.uploadId;
-    state.uploadSummary = data.summary && typeof data.summary === 'object' ? data.summary : null;
-    state.uploadFilms = Array.isArray(data.films) ? data.films : null;
-    saveSession();
-
-    await saveProfile({
-      ...profile,
-      uploadId: data.uploadId,
-      lbFileName: state.lbFileName,
-      savedAt: Date.now(),
-      source: { ...(profile.source || {}), recoveredAt: Date.now() },
-    }, { keepId: profile.id });
-    if (!isFlow(current)) return true;
-    await refreshProfiles();
-    if (!isFlow(current)) return true;
-
-    await handleStartEnrich(current);
-    toast('Архив загружен заново — восстанавливаем профиль.', 'info', { duration: 5200 });
-    return true;
-  } catch (error) {
-    if (!isFlow(current) || (error && error.code === 'aborted')) return true;
-    showProgressError(shortErrorMessage(error), () => {
-      const retryFlow = beginFlow();
-      recoverProfile(profile, { flow: retryFlow });
-    });
-    return true;
-  }
+  showUnrecoverableProfile(profile, 'Профиль Кинопоиска не удалось восстановить — импортируйте его заново.');
+  return false;
 }
 
 async function switchProfile(id) {
@@ -909,13 +838,15 @@ async function switchProfile(id) {
   state.uploadId = profile.uploadId || null;
   state.uploadSummary = null;
   state.uploadFilms = null;
-  state.lbFileName = profile.lbFileName || null;
-  state.importSource = profile.type === 'kp' ? 'kinopoisk' : 'letterboxd';
-  state.kp = profile.type === 'kp'
-    ? { url: profile.kpUrl || null, kpUserId: profile.kpUserId || null, kpNick: profile.kpNick || null }
-    : null;
+  state.importSource = 'kinopoisk';
+  state.kp = {
+    url: profile.kpUrl || null,
+    kpUserId: profile.kpUserId || null,
+    kpNick: profile.kpNick || null,
+  };
   state.stats = null;
   state.dashboardReady = false;
+  state.attachedLb = null;
   saveSession(profile);
   renderProfiles();
 
@@ -951,17 +882,10 @@ async function switchProfile(id) {
     }
 
     if (error && error.status === 400) {
-      if (profile.type === 'kp') {
-        showView('enrich');
-        prepareKinopoiskProgress();
-        setProgressStatus('Продолжаем импорт с Кинопоиска…');
-        startKinopoiskPolling();
-      } else {
-        showView('enrich');
-        prepareProgress();
-        setProgressStatus('Продолжаем обогащение…');
-        startPolling();
-      }
+      showView('enrich');
+      prepareKinopoiskProgress();
+      setProgressStatus('Продолжаем импорт с Кинопоиска…');
+      startKinopoiskPolling();
       return;
     }
 
@@ -991,15 +915,14 @@ async function deleteSavedProfile(id) {
     state.uploadFilms = null;
     state.stats = null;
     state.dashboardReady = false;
-    state.lbFileName = null;
+    state.attachedLb = null;
     state.kp = null;
-    state.importSource = profile.type === 'kp' ? 'kinopoisk' : 'letterboxd';
+    state.importSource = 'kinopoisk';
     hideStaleBanner();
     resetUpload();
     setHasSession(false);
-    setSource(state.importSource);
     showView('upload');
-    toast('Профиль удалён. Выберите источник статистики.', 'info');
+    toast('Профиль удалён. Импортируйте профиль Кинопоиска.', 'info');
   } else {
     toast('Профиль удалён', 'info');
   }
@@ -1009,74 +932,6 @@ async function deleteSavedProfile(id) {
 /* =========================================================
    upload
    ========================================================= */
-
-function isZip(file) {
-  if (!file) return false;
-  const byName = /\.zip$/i.test(file.name || '');
-  const byType = ['application/zip', 'application/x-zip-compressed', 'multipart/x-zip'].includes(file.type || '');
-  return byName || byType;
-}
-
-async function handleFile(file) {
-  if (state.uploading || !file) return;
-
-  if (!isZip(file)) {
-    showUploadError('Letterboxd отдаёт статистику в ZIP-архиве. Выбери файл с расширением .zip.', {});
-    toast('Нужен ZIP-архив Letterboxd', 'error');
-    return;
-  }
-  if (file.size === 0) {
-    showUploadError('Файл пустой — похоже, архив не скачался до конца.', {});
-    toast('Архив пустой', 'error');
-    return;
-  }
-
-  state.currentFile = file;
-  state.uploading = true;
-  clearUploadError();
-  setUploadBusy(true, file.name);
-  beginFlow();
-
-  try {
-    const data = await uploadZip(file);
-    if (!data || typeof data !== 'object' || !data.uploadId) {
-      throw new Error('Сервер вернул неожиданный ответ: в нём нет uploadId.');
-    }
-
-    state.uploadId = data.uploadId;
-    state.uploadSummary = data.summary && typeof data.summary === 'object' ? data.summary : null;
-    state.uploadFilms = Array.isArray(data.films) ? data.films : null;
-    state.stats = null;
-    state.dashboardReady = false;
-    state.importSource = 'letterboxd';
-    state.kp = null;
-    state.lbFileName = file.name || null;
-    state.profileId = null;
-    setActiveId(null);
-
-    // Keep the ZIP bytes so this profile can be re-imported after a server
-    // restart even when its stats payload is too large to cache.
-    if (state.lbFileName) await saveFile(`lb:${state.lbFileName}`, file);
-
-    saveSession();
-    setHasSession(false);
-    showUploadPreview(data, file);
-    renderProfiles();
-
-    const filmCount = state.uploadSummary && Number.isFinite(Number(state.uploadSummary.films))
-      ? Number(state.uploadSummary.films)
-      : (state.uploadFilms ? state.uploadFilms.length : 0);
-    toast(`Архив распакован: ${fmtInt(filmCount)} ${pluralFilms(filmCount)}.`, 'success');
-  } catch (error) {
-    showUploadError(shortErrorMessage(error), {
-      onRetry: () => handleFile(file),
-    });
-    toast('Не удалось загрузить архив', 'error');
-  } finally {
-    state.uploading = false;
-    setUploadBusy(false);
-  }
-}
 
 function pluralFilms(count) {
   const n = Math.abs(Math.round(toNum(count))) % 100;
@@ -1091,11 +946,13 @@ function openUploadScreen() {
   closeProfileSwitcher();
   resetProfileRefresh();
   resetUpload();
-  setHasSession(Boolean(state.stats && state.dashboardReady));
+  const hasSession = Boolean(state.stats && state.dashboardReady);
+  setHasSession(hasSession);
+  setAttachAvailable(hasSession && state.importSource === 'kinopoisk' && Boolean(state.uploadId));
   showView('upload');
 }
 
-function newUploadFromScratch(source = 'letterboxd') {
+function newUploadFromScratch() {
   beginFlow();
   resetProfileRefresh();
   dismissImportToast();
@@ -1106,11 +963,10 @@ function newUploadFromScratch(source = 'letterboxd') {
   state.uploadFilms = null;
   state.stats = null;
   state.dashboardReady = false;
-  state.lbFileName = null;
-  state.importSource = source === 'kinopoisk' ? 'kinopoisk' : 'letterboxd';
+  state.attachedLb = null;
+  state.importSource = 'kinopoisk';
   state.kp = null;
   resetUpload();
-  setSource(state.importSource);
   setHasSession(false);
   showView('upload');
   renderProfiles();
@@ -1119,12 +975,6 @@ function newUploadFromScratch(source = 'letterboxd') {
 /* =========================================================
    enrich + polling
    ========================================================= */
-
-function estimateTotal() {
-  const fromSummary = state.uploadSummary ? Number(state.uploadSummary.films) : 0;
-  if (Number.isFinite(fromSummary) && fromSummary > 0) return fromSummary;
-  return state.uploadFilms ? state.uploadFilms.length : 0;
-}
 
 function setProgress({ matched, total, failed, done } = {}) {
   const totalValue = Math.max(0, toNum(total));
@@ -1150,14 +1000,6 @@ function setProgress({ matched, total, failed, done } = {}) {
 function setProgressStatus(text) {
   const node = $('enrich-status');
   if (node) node.textContent = text;
-}
-
-function prepareProgress() {
-  hideProgressError();
-  resetProgressMode('letterboxd');
-  const total = estimateTotal();
-  setProgress({ matched: 0, total, failed: 0, done: false });
-  setProgressStatus('Запускаем обогащение…');
 }
 
 /* =========================================================
@@ -1237,44 +1079,33 @@ function setProgressFoot(text) {
   if (node) node.textContent = text;
 }
 
-function resetProgressMode(mode) {
+function resetProgressMode() {
   const steps = $('stage-steps');
   const scrapeBlock = $('scrape-block');
   const enrichBlock = $('enrich-block');
   const kicker = $('progress-kicker');
   const title = $('progress-title');
 
-  if (mode === 'kinopoisk') {
-    setProgressFoot('Прогресс обновляется каждую секунду. Вкладку можно свернуть — импорт идёт на сервере.');
-    if (steps) steps.hidden = false;
-    setStageCopy('scrape', STAGE_COPY.scrape.title, STAGE_COPY.scrape.sub);
-    if (scrapeBlock) scrapeBlock.hidden = false;
-    if (enrichBlock) enrichBlock.hidden = true;
-    if (kicker) {
-      kicker.textContent = state.kp && state.kp.kpUserId
-        ? `Кинопоиск · user ${state.kp.kpUserId}`
-        : 'Кинопоиск · импорт';
-    }
-    if (title) title.textContent = 'Собираю ваш список оценок';
-    resetScrapeProgress();
-    state.importStage = 'scrape';
-    setStepper('scrape');
-    setProgress({ matched: 0, total: 0, failed: 0, done: false });
-  } else {
-    setProgressFoot('Прогресс обновляется каждую секунду. Вкладку можно свернуть — обогащение идёт на сервере.');
-    if (steps) steps.hidden = true;
-    if (scrapeBlock) scrapeBlock.hidden = true;
-    if (enrichBlock) enrichBlock.hidden = false;
-    if (kicker) kicker.textContent = 'TMDB · обогащение';
-    if (title) title.textContent = 'Собираем детали фильмов';
-    const bar = $('scrape-progressbar');
-    if (bar) bar.classList.remove('is-indeterminate');
+  setProgressFoot('Прогресс обновляется каждую секунду. Вкладку можно свернуть — импорт идёт на сервере.');
+  if (steps) steps.hidden = false;
+  setStageCopy('scrape', STAGE_COPY.scrape.title, STAGE_COPY.scrape.sub);
+  if (scrapeBlock) scrapeBlock.hidden = false;
+  if (enrichBlock) enrichBlock.hidden = true;
+  if (kicker) {
+    kicker.textContent = state.kp && state.kp.kpUserId
+      ? `Кинопоиск · user ${state.kp.kpUserId}`
+      : 'Кинопоиск · импорт';
   }
+  if (title) title.textContent = 'Собираю ваш список оценок';
+  resetScrapeProgress();
+  state.importStage = 'scrape';
+  setStepper('scrape');
+  setProgress({ matched: 0, total: 0, failed: 0, done: false });
 }
 
 function prepareKinopoiskProgress() {
   hideProgressError();
-  resetProgressMode('kinopoisk');
+  resetProgressMode();
   setProgressStatus('Готовим запрос…');
 }
 
@@ -1453,14 +1284,14 @@ function showKinopoiskError(message, retry) {
   // A failed refresh must leave the topbar button usable again.
   if (state.refreshing) resetProfileRefresh();
   dismissImportToast();
-  setProgressFoot('Импорт остановлен. Можно повторить попытку или выбрать ZIP-выгрузку.');
+  setProgressFoot('Импорт остановлен. Можно повторить попытку или сменить профиль.');
   clear(host);
   host.append(errorBox({
     title: 'Импорт не удался',
     message: message || 'Сервер не смог собрать оценки с Кинопоиска.',
     actions: [
       retry ? { label: 'Повторить', primary: true, onClick: retry } : null,
-      { label: 'Загрузить ZIP вместо этого', onClick: () => newUploadFromScratch('letterboxd') },
+      { label: 'Другой профиль', onClick: () => newUploadFromScratch() },
     ].filter(Boolean),
   }));
   host.hidden = false;
@@ -1490,7 +1321,7 @@ async function handleKinopoiskImport({ url, kpUserId, refresh = false } = {}) {
     state.uploadFilms = null;
     state.stats = null;
     state.dashboardReady = false;
-    state.lbFileName = null;
+    state.attachedLb = null;
     if (!refresh) {
       // A brand-new import registers itself through persistActiveProfile().
       // A refresh keeps the active profile so the registry record is updated
@@ -1526,7 +1357,6 @@ async function handleKinopoiskImport({ url, kpUserId, refresh = false } = {}) {
       return false;
     }
     showView('upload');
-    setSource('kinopoisk');
     showKpError(importErrorMessage(error));
     toast('Не удалось начать импорт', 'error');
     return false;
@@ -1542,59 +1372,6 @@ function hideProgressError() {
   host.hidden = true;
 }
 
-function showProgressError(message, retry) {
-  const host = $('enrich-error');
-  if (!host) return;
-  clear(host);
-  host.append(errorBox({
-    title: 'Обогащение прервалось',
-    message,
-    actions: [
-      retry ? { label: 'Повторить', primary: true, onClick: retry } : null,
-      { label: 'Другая выгрузка', onClick: newUploadFromScratch },
-    ].filter(Boolean),
-  }));
-  host.hidden = false;
-}
-
-async function handleStartEnrich(flow = null) {
-  if (!state.uploadId || state.enrichStarting) return;
-  const uploadId = state.uploadId;
-  state.enrichStarting = true;
-
-  showView('enrich');
-  prepareProgress();
-  setProgressStatus('Запускаем обогащение…');
-
-  try {
-    const result = await startEnrich(uploadId);
-    if (flow && !isFlow(flow)) return;
-    if (state.view !== 'enrich' || state.uploadId !== uploadId) return;
-
-    if (result && typeof result === 'object') {
-      const total = Number.isFinite(Number(result.total)) ? Number(result.total) : estimateTotal();
-      const matched = Number.isFinite(Number(result.cached)) ? Number(result.cached) : 0;
-      setProgress({ matched, total, failed: 0, done: false });
-      if (total > 0) setProgressStatus(`Найдено ${fmtInt(Math.min(matched, total))} из ${fmtInt(total)}`);
-    }
-    startPolling();
-  } catch (error) {
-    if (flow && !isFlow(flow)) return;
-    if (state.view !== 'enrich' || state.uploadId !== uploadId) return;
-    if (error && (error.status === 404 || error.status === 410)) {
-      clearSession();
-      state.uploadId = null;
-      setProgressStatus('Выгрузка не найдена на сервере');
-      showProgressError(shortErrorMessage(error), null);
-      return;
-    }
-    setProgressStatus('Не удалось запустить обогащение');
-    showProgressError(shortErrorMessage(error), () => handleStartEnrich(flow));
-  } finally {
-    state.enrichStarting = false;
-  }
-}
-
 function stopPolling() {
   if (state.pollTimer) {
     window.clearTimeout(state.pollTimer);
@@ -1603,106 +1380,12 @@ function stopPolling() {
   state.pollMode = null;
 }
 
-function startPolling() {
-  stopPolling();
-  state.pollMode = 'letterboxd';
-  state.idlePolls = 0;
-  state.statusMisses = 0;
-  if (!state.uploadId) return;
-  pollOnce();
-}
-
 function startKinopoiskPolling() {
   stopPolling();
   state.pollMode = 'kinopoisk';
-  state.idlePolls = 0;
   state.statusMisses = 0;
   if (!state.uploadId) return;
   pollKinopoiskOnce();
-}
-
-function showEnrichNotStarted() {
-  const host = $('enrich-error');
-  if (!host) return;
-  clear(host);
-  host.append(errorBox({
-    tone: 'info',
-    title: 'Обогащение ещё не запущено',
-    message: 'Выгрузка загружена, но поиск в TMDB не стартовал. Запусти его — и вернёшься к прогрессу.',
-    actions: [
-      {
-        label: 'Начать обогащение',
-        primary: true,
-        onClick: () => {
-          hideProgressError();
-          handleStartEnrich();
-        },
-      },
-      { label: 'Другая выгрузка', onClick: newUploadFromScratch },
-    ],
-  }));
-  host.hidden = false;
-}
-
-async function pollOnce() {
-  if (!state.uploadId || state.view !== 'enrich' || state.pollMode !== 'letterboxd') return;
-
-  try {
-    const status = await getEnrichStatus(state.uploadId);
-    if (state.view !== 'enrich' || state.pollMode !== 'letterboxd') return;
-    state.statusMisses = 0;
-
-    const done = Boolean(status && status.done);
-    const matched = status ? toNum(status.matched) : 0;
-    const total = status ? toNum(status.total) : estimateTotal();
-    const failed = status ? toNum(status.failed) : 0;
-
-    setProgress({ matched, total, failed, done });
-
-    if (done) {
-      setProgressStatus('Готово! Собираем статистику…');
-      await finishStats(0);
-      return;
-    }
-
-    if (total === 0 && matched === 0) {
-      state.idlePolls += 1;
-      if (state.idlePolls >= 3) {
-        setProgressStatus('Обогащение ещё не запущено');
-        showEnrichNotStarted();
-        return;
-      }
-    } else {
-      state.idlePolls = 0;
-    }
-
-    setProgressStatus(total > 0
-      ? `Обогащаем карточки TMDB · ${fmtInt(matched)} из ${fmtInt(total)}`
-      : 'Готовим список фильмов…');
-
-    state.pollTimer = window.setTimeout(pollOnce, POLL_INTERVAL);
-  } catch (error) {
-    if (state.view !== 'enrich' || state.pollMode !== 'letterboxd') return;
-    if (error && (error.status === 404 || error.status === 410)) {
-      // A freshly started background job can become visible a moment later.
-      state.statusMisses += 1;
-      if (state.statusMisses <= 4) {
-        setProgressStatus('Ждём статус обогащения…');
-        state.pollTimer = window.setTimeout(pollOnce, POLL_INTERVAL);
-        return;
-      }
-      clearSession();
-      state.uploadId = null;
-      setProgressStatus('Выгрузка не найдена на сервере');
-      showProgressError(shortErrorMessage(error), null);
-      return;
-    }
-    setProgressStatus('Связь с сервером потеряна');
-    showProgressError(shortErrorMessage(error), () => {
-      hideProgressError();
-      startPolling();
-    });
-  }
 }
 
 async function pollKinopoiskOnce() {
@@ -1780,12 +1463,11 @@ function retryKinopoiskImport() {
     handleKinopoiskImport({ url: state.kp.url, kpUserId: state.kp.kpUserId });
     return;
   }
-  newUploadFromScratch('kinopoisk');
+  newUploadFromScratch();
 }
 
 async function finishStats(attempt = 0) {
   if (state.view !== 'enrich' || !state.uploadId) return;
-  const isKinopoisk = state.importSource === 'kinopoisk';
   try {
     const stats = await getStats(state.uploadId);
     if (state.view !== 'enrich') return;
@@ -1797,7 +1479,7 @@ async function finishStats(attempt = 0) {
     }
   } catch (error) {
     if (error && error.status === 400 && attempt < 7) {
-      setProgressStatus(isKinopoisk ? 'Импорт завершён, считаем статистику…' : 'TMDB закончил, считаем статистику…');
+      setProgressStatus('Импорт завершён, считаем статистику…');
       state.pollTimer = window.setTimeout(() => finishStats(attempt + 1), 600 + attempt * 350);
       return;
     }
@@ -1807,8 +1489,7 @@ async function finishStats(attempt = 0) {
       hideProgressError();
       finishStats(attempt + 1);
     };
-    if (isKinopoisk) showKinopoiskError(shortErrorMessage(error), retry);
-    else showProgressError(shortErrorMessage(error), retry);
+    showKinopoiskError(shortErrorMessage(error), retry);
   }
 }
 
@@ -1830,10 +1511,18 @@ function bindUi() {
     },
   });
 
+  initAttach({
+    getUploadId: () => (state.importSource === 'kinopoisk' ? state.uploadId : null),
+    getAttachment: () => state.attachedLb,
+    onAttached: async () => {
+      await refreshStats();
+      renderProfiles();
+    },
+  });
+
   initUpload({
-    onFile: handleFile,
-    onEnrich: handleStartEnrich,
     onImport: handleKinopoiskImport,
+    onAttach: () => openAttachModal(),
     onBack: () => {
       closeProfileSwitcher();
       if (state.stats && state.dashboardReady) showView('dashboard');

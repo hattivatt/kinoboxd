@@ -97,23 +97,15 @@ export function matchFilm({ uploadId, slug, tmdbId, kind }) {
   });
 }
 
-export function uploadZip(file, { signal } = {}) {
+/**
+ * Attach a Letterboxd ZIP to the active KinoPoisk import.
+ * The server resolves kpUserId from uploadId and persists the attachment.
+ */
+export function attachLbZip(uploadId, file, { signal } = {}) {
   const form = new FormData();
-  form.append('file', file, file.name);
-  return request('/api/upload', { method: 'POST', body: form, signal });
-}
-
-export function startEnrich(uploadId, { signal } = {}) {
-  return request('/api/enrich', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ uploadId }),
-    signal,
-  });
-}
-
-export function getEnrichStatus(uploadId, { signal } = {}) {
-  return request(`/api/enrich/status?uploadId=${encodeURIComponent(uploadId)}`, { signal });
+  form.append('uploadId', uploadId);
+  form.append('file', file, file.name || 'letterboxd-export.zip');
+  return request('/api/attach/lbzip', { method: 'POST', body: form, signal });
 }
 
 export function getStats(uploadId, { signal } = {}) {
