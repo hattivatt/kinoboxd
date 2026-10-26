@@ -202,14 +202,17 @@ const CATEGORY_DEFS = [
     aliases: ['folk horror'],
   },
   /*
-   * Mockumentary: 8 / 6 / 9. Keyword "mockumentary" (8) plus the harmless
-   * "fake documentary" alias (1 hit, already covered). "faux documentary" and
-   * "pseudo documentary" are deliberately NOT aliases: in this corpus they
-   * are used for found footage (Paranormal Activity, Blair Witch, REC, The
-   * Visit, Monster) and would contradict the user's decision to keep found
-   * footage outside the taxonomy. Note that Wikidata's Q3272147 is "found
-   * footage film", not mockumentary; the correct item is Q459435, whose 6
-   * tags add only District 9 (accepted: the film's first act is explicitly
+   * Mockumentary: 17 / 6 / 18. Keyword "mockumentary" (8) plus the harmless
+   * "fake documentary" alias (1 hit, already covered) and — by explicit user
+   * decision — "faux documentary" (8) and "pseudo documentary" (6). In this
+   * corpus those last two are largely found-footage spellings (Paranormal
+   * Activity, Blair Witch, REC, The Visit, Cloverfield, Searching,
+   * Gonjiam), so the user accepted the overlap: faux/pseudo documentaries
+   * count as mockumentary even though they intersect the found-footage
+   * family. Found footage is NOT a separate category and stays outside the
+   * taxonomy. Note that Wikidata's Q3272147 is "found footage film", not
+   * mockumentary; the correct item is Q459435, whose 6 tags add only
+   * District 9 (accepted: the film's first act is explicitly
    * documentary-styled). Known keyword false positive: Gia (1998), tagged
    * "mockumentary" by TMDB users although it is a biopic; it stays because
    * exact-keyword rules have no per-film exclusions.
@@ -217,7 +220,7 @@ const CATEGORY_DEFS = [
   {
     key: 'mockumentary',
     name: 'Мокьюментари',
-    aliases: ['mockumentary', 'fake documentary'],
+    aliases: ['mockumentary', 'fake documentary', 'faux documentary', 'pseudo documentary'],
     wdGenre: WD.MOCKUMENTARY,
   },
   {

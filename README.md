@@ -220,10 +220,12 @@ Merged taxonomy rules (`server/taxonomy.js`):
   (would add Ghostbusters, Evolution, The Mist).
 * **Фолк-хоррор**: TMDB keyword `folk horror` only (11 films); Q104902646 has
   no P136 uses in the current Wikidata cache.
-* **Мокьюментари**: TMDB keyword `mockumentary` (alias `fake documentary`) OR
-  `P136 = Q459435` (9 films). `faux documentary`/`pseudo documentary` are
-  found-footage spellings in this corpus and are deliberately excluded, as is
-  Q3272147 (found footage film). Known keyword FP: Gia (1998).
+* **Мокьюментари**: TMDB keyword `mockumentary` (aliases `fake documentary`,
+  `faux documentary`, `pseudo documentary`) OR `P136 = Q459435` (18 films).
+  Per the user's decision, faux/pseudo documentary count as mockumentary even
+  though in this corpus they are mostly found-footage spellings; found footage
+  is not a separate category and stays outside the taxonomy. Q3272147 (found
+  footage film) is still not used. Known keyword FP: Gia (1998).
 * **Новая Голливуд**: TMDB keyword OR `P135 = Q377616`.
 * **Pre-Code Голливуд** (new period): `P135 = Q3408764`. TMDB has no matching
   keyword in this corpus.
