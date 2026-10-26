@@ -1,6 +1,7 @@
 'use strict';
 
 const cache = require('./cache');
+const attachmentStore = require('./attachment');
 const { getJob } = require('./enrich');
 const { buildTaxonomy, normalizeKeyword } = require('./taxonomy');
 const wikidata = require('./wikidata');
@@ -422,6 +423,39 @@ function buildStats(upload) {
       : { type: 'letterboxd' };
   const isKpSource = source.type === 'kinopoisk';
 
+  // Letterboxd attachment: real watch dates, rewatches and watchlist. The
+  // file is read on every stats build so a restart, a re-attach or a new
+  // KinoPoisk import (which creates a new uploadId) is picked up instantly.
+  const attachment = isKpSource && source.kpUserId
+    ? attachmentStore.readAttachment(source.kpUserId)
+    : null;
+  const attachmentDiaryByTmdb = new Map(); // tmdbId -> diary events (real dates)
+  const attachmentRewatchByTmdb = new Map(); // tmdbId -> rewatch=true event count
+  let attachmentRewatchCount = 0;
+  if (attachment) {
+    for (const event of attachment.events || []) {
+      if (!event || event.tmdbId == null) continue;
+      if (event.rewatch) {
+        attachmentRewatchCount += 1;
+        attachmentRewatchByTmdb.set(
+          event.tmdbId,
+          (attachmentRewatchByTmdb.get(event.tmdbId) || 0) + 1
+        );
+      }
+      if (event.source !== 'diary') continue;
+      const key = Number(event.tmdbId);
+      if (!Number.isFinite(key)) continue;
+      if (!attachmentDiaryByTmdb.has(key)) attachmentDiaryByTmdb.set(key, []);
+      attachmentDiaryByTmdb.get(key).push(event);
+    }
+  }
+  const appliedAttachmentTmdbIds = new Set();
+  let appliedEventCount = 0;
+  let appliedRatedEventCount = 0;
+  let realDateFrom = null;
+  let realDateTo = null;
+  const rewatchBySlug = new Map(); // KinoPoisk slug -> rewatch=true diary events
+
   const actors = new Map();
   const directors = new Map();
   const writers = new Map();
@@ -439,6 +473,21 @@ function buildStats(upload) {
   const filmsIndex = {};
   const taxEntries = [];
 
+  function addTimelineEvent(date, rated) {
+    if (!date || !/^\d{4}-\d{2}/.test(String(date))) return;
+    const day = String(date).slice(0, 10);
+    const month = day.slice(0, 7);
+    let bucket = timelineMap.get(month);
+    if (!bucket) {
+      bucket = { month, watched: 0, rated: 0 };
+      timelineMap.set(month, bucket);
+    }
+    bucket.watched++;
+    if (rated) bucket.rated++;
+    if (!realDateFrom || day < realDateFrom) realDateFrom = day;
+    if (!realDateTo || day > realDateTo) realDateTo = day;
+  }
+
   let ratedCount = 0;
   let totalMinutes = 0;
 
@@ -449,6 +498,39 @@ function buildStats(upload) {
     const data = tmdbId != null ? cache.getDetails(tmdbId, kind) : null;
     const details = data ? data.details : null;
     const credits = data ? data.credits : null;
+
+    // ---- real watch date + viewing timeline (KinoPoisk + attachment) ----
+    // With an attached Letterboxd archive every diary event is one viewing,
+    // so rewatches are counted and the month comes from Watched Date instead
+    // of the KinoPoisk rating date. Films without a matched diary event keep
+    // the old proxy: one viewing in the month of the KinoPoisk rating.
+    let effectiveWatchedDate = film.watchedDate || null;
+    if (isKpSource) {
+      const rated = film.rating !== null && film.rating !== undefined;
+      const tmdbKey = tmdbId != null ? Number(tmdbId) : null;
+      const diaryEvents = tmdbKey != null && !appliedAttachmentTmdbIds.has(tmdbKey)
+        ? attachmentDiaryByTmdb.get(tmdbKey) || null
+        : null;
+
+      if (diaryEvents && diaryEvents.length > 0) {
+        appliedAttachmentTmdbIds.add(tmdbKey);
+        let latest = null;
+        for (const event of diaryEvents) {
+          const watchDate = event.watchDate ? String(event.watchDate).slice(0, 10) : null;
+          addTimelineEvent(watchDate, rated);
+          appliedEventCount++;
+          if (rated) appliedRatedEventCount++;
+          if (watchDate && (!latest || watchDate > latest)) latest = watchDate;
+        }
+        if (latest) effectiveWatchedDate = latest;
+        const rewatches = attachmentRewatchByTmdb.get(tmdbKey) || 0;
+        if (rewatches > 0) rewatchBySlug.set(film.slug, rewatches);
+      } else if (effectiveWatchedDate) {
+        // No diary event for this KinoPoisk film (or no attachment at all):
+        // count one proxy viewing on the rating date.
+        addTimelineEvent(effectiveWatchedDate, rated);
+      }
+    }
 
     // ---- ratings histogram ----
     // Letterboxd ratings are half-stars (0.5-5, scaled x2). KinoPoisk is a
@@ -607,7 +689,7 @@ function buildStats(upload) {
       runtime: details ? details.runtime ?? null : null,
       voteAverage: details ? details.vote_average ?? null : null,
       rating: film.rating,
-      watchedDate: film.watchedDate || null,
+      watchedDate: effectiveWatchedDate,
     };
     if (details) {
       // Localized genre names in display form ("комедия" -> "Комедия"),
@@ -649,23 +731,25 @@ function buildStats(upload) {
   }
 
   // ---- timeline ----
-  // Only real diary entries belong on the Letterboxd viewing timeline and
-  // only ratedAt entries on the KinoPoisk one. watched.csv carries the
-  // Letterboxd import date for every film (all 2024-12-18 in this export),
-  // which would create a huge fake spike. Rewatches are kept: the parser
-  // emits one event per diary row.
-  for (const event of upload.events || []) {
-    if (event.source !== 'diary' && event.source !== 'kp') continue;
-    if (!event.date) continue;
-    const month = event.date.slice(0, 7);
-    let bucket = timelineMap.get(month);
-    if (!bucket) {
-      bucket = { month, watched: 0, rated: 0 };
-      timelineMap.set(month, bucket);
+  // KinoPoisk timelines are built in the film loop above (attachment diary
+  // events or the ratedAt proxy). A pure Letterboxd upload — still supported
+  // as an attachment payload / legacy upload — only uses diary events here.
+  // watched.csv carries the import date for every film, which would create a
+  // huge fake spike, so it never feeds the timeline.
+  if (!isKpSource) {
+    for (const event of upload.events || []) {
+      if (event.source !== 'diary') continue;
+      if (!event.date) continue;
+      addTimelineEvent(event.date, event.rating !== null && event.rating !== undefined);
     }
-    bucket.watched++;
-    if (event.rating !== null && event.rating !== undefined) bucket.rated++;
   }
+
+  // Rewatch ranking for KinoPoisk profiles: films whose diary has at least
+  // two entries marked Rewatch=true. Counts are rewatch events, not viewings.
+  const rewatches = [...rewatchBySlug.entries()]
+    .filter(([, count]) => count >= 2)
+    .map(([slug, count]) => ({ slug, count }))
+    .sort((a, b) => b.count - a.count || a.slug.localeCompare(b.slug));
 
   const ratings = [];
   for (let score = 1; score <= 10; score++) {
@@ -723,14 +807,26 @@ function buildStats(upload) {
   const summary = {
     filmCount: upload.films.length,
     ratedCount,
-    dateFrom: upload.summary.dateFrom,
-    dateTo: upload.summary.dateTo,
+    // With an attachment the displayed period is derived from the real
+    // viewing dates that actually feed the timeline (including the ratedAt
+    // fallback for films without a diary event).
+    dateFrom: isKpSource ? (realDateFrom || upload.summary.dateFrom) : upload.summary.dateFrom,
+    dateTo: isKpSource ? (realDateTo || upload.summary.dateTo) : upload.summary.dateTo,
     totalMinutes,
     source,
     unmatchedCount: unmatched.length,
   };
   if (Number.isFinite(upload.summary.movieCount)) summary.movieCount = upload.summary.movieCount;
   if (Number.isFinite(upload.summary.tvCount)) summary.tvCount = upload.summary.tvCount;
+  if (attachment) {
+    summary.rewatchCount = attachmentRewatchCount;
+    summary.attachedLb = {
+      fileName: attachment.fileName || null,
+      attachedAt: attachment.attachedAt || null,
+      events: appliedEventCount,
+      ratedEvents: appliedRatedEventCount,
+    };
+  }
 
   return {
     summary,
@@ -743,6 +839,7 @@ function buildStats(upload) {
     origins: taxonomy.origins,
     periods: taxonomy.periods,
     filmsIndex,
+    rewatches,
     unmatched,
   };
 }

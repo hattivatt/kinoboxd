@@ -15,6 +15,7 @@ const {
 } = require('./upload');
 const enrich = require('./enrich');
 const kp = require('./kp');
+const attachment = require('./attachment');
 const config = require('./config');
 const cache = require('./cache');
 const tmdb = require('./tmdb');
@@ -182,6 +183,93 @@ app.get('/api/import/kinopoisk/status', (req, res, next) => {
       );
     }
     res.status(200).json(status);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Letterboxd attachment on a KinoPoisk profile                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Attach a Letterboxd export to the active KinoPoisk import.
+ *
+ * multipart/form-data: field `file` (ZIP), `uploadId` query or body field.
+ * The server resolves `kpUserId` from the KinoPoisk job, parses diary.csv /
+ * watched.csv / watchlist.csv, matches every film through the shared TMDB
+ * matcher and stores cache/profile-lb/{kpUserId}.json atomically. Repeating
+ * the call replaces the whole attachment (idempotent) — no duplicate events.
+ */
+app.post('/api/attach/lbzip', (req, res, next) => {
+  uploadMiddleware.single('file')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({
+          error: 'ZIP file is too large (limit: 100 MB).',
+          code: 'file_too_large',
+        });
+      }
+      return res.status(400).json({
+        error: `Upload failed: ${err.message}`,
+        code: 'upload_failed',
+      });
+    }
+    next();
+  });
+}, async (req, res, next) => {
+  try {
+    const uploadId = (req.body && req.body.uploadId) || req.query.uploadId;
+    if (!uploadId || typeof uploadId !== 'string') {
+      throw new HttpError(400, 'Body must contain "uploadId".', 'upload_id_required');
+    }
+    const upload = getUpload(uploadId);
+    if (!upload) {
+      throw new HttpError(404, 'Unknown uploadId. Start the KinoPoisk import again.', 'unknown_upload');
+    }
+    const job = kp.getJob(uploadId);
+    if (!job || !job.userId) {
+      throw new HttpError(
+        400,
+        'Letterboxd archives can only be attached to a KinoPoisk import.',
+        'not_kinopoisk_import'
+      );
+    }
+    if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
+      throw new HttpError(
+        400,
+        'No file received. Send the Letterboxd ZIP as multipart/form-data field "file".',
+        'file_required'
+      );
+    }
+
+    const built = await attachment.buildAttachment(
+      req.file.buffer,
+      req.file.originalname || req.file.name || 'letterboxd-export.zip'
+    );
+    await attachment.writeAttachment(job.userId, built.attachment);
+
+    // Keep the in-memory job pointed at the fresh attachment; stats.js reads
+    // the persisted file, so this is only metadata for status responses.
+    upload.attachment = built.attachment;
+    job.attachment = {
+      fileName: built.attachment.fileName,
+      attachedAt: built.attachment.attachedAt,
+      events: built.stats.events,
+      watchlist: built.stats.watchlist,
+    };
+
+    console.log(
+      `[attach ${job.userId}] ${built.stats.events} events ` +
+        `(${built.stats.diaryEvents} diary), matched ${built.stats.matched}, ` +
+        `watchlist ${built.stats.watchlist}, rewatches ${built.stats.rewatchCount}`
+    );
+
+    res.status(200).json({
+      attached: true,
+      fileName: built.attachment.fileName,
+      ...built.stats,
+    });
   } catch (err) {
     next(err);
   }

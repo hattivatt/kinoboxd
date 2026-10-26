@@ -164,6 +164,7 @@ function parseLetterboxdZip(buffer) {
   const diaryRows = readCsvEntry(zip, entries, 'diary.csv');
   const watchedRows = readCsvEntry(zip, entries, 'watched.csv');
   const ratingRows = readCsvEntry(zip, entries, 'ratings.csv');
+  const watchlistRows = readCsvEntry(zip, entries, 'watchlist.csv');
 
   if (!diaryRows && !watchedRows) {
     throw new HttpError(
@@ -257,7 +258,7 @@ function parseLetterboxdZip(buffer) {
     }
     // A watched.csv event is only used for films that have no diary entries.
     // (resolved after diary.csv is parsed)
-    events.push({ slug: film.slug, date, rating: null, source: 'watched' });
+    events.push({ slug: film.slug, date, rating: null, rewatch: false, source: 'watched' });
   }
 
   // ratings.csv -------------------------------------------------------
@@ -318,10 +319,12 @@ function parseLetterboxdZip(buffer) {
       }
     }
 
+    const rewatchRaw = String(getField(row, 'Rewatch') || '').trim().toLowerCase();
     events.push({
       slug: film.slug,
       date: watchedDate,
       rating,
+      rewatch: rewatchRaw === 'yes' || rewatchRaw === 'true' || rewatchRaw === '1',
       source: 'diary',
     });
   }
@@ -353,10 +356,41 @@ function parseLetterboxdZip(buffer) {
       const film = films.get(event.slug);
       if (film && film.rating !== null) event.rating = film.rating;
     }
+    // Attachments and the unit tests address events by film title/year as
+    // well, so keep the denormalized fields on every event.
+    const film = films.get(event.slug);
+    if (film) {
+      event.title = film.title;
+      event.year = film.year;
+      event.lbUri = film.lbUri;
+    }
+    event.rewatch = Boolean(event.rewatch);
   }
 
   // Drop events without a usable date (they cannot be placed on timeline)
   const datedEvents = events.filter((e) => e.date);
+
+  // watchlist.csv ------------------------------------------------------
+  // The contract keeps the watchlist as raw archive data for a future UI;
+  // stats never consume it. One entry per Letterboxd URI (last row wins).
+  const watchlist = [];
+  const watchlistSeen = new Map();
+  for (const row of watchlistRows || []) {
+    const slug = slugFromUri(getField(row, 'Letterboxd URI'));
+    if (!slug) continue;
+    const entry = {
+      lbSlug: slug,
+      title: String(getField(row, 'Name') || '').trim(),
+      year: parseYear(getField(row, 'Year')),
+      listedAt: validDate(getField(row, 'Date')),
+    };
+    if (watchlistSeen.has(slug)) {
+      watchlist[watchlistSeen.get(slug)] = entry;
+    } else {
+      watchlistSeen.set(slug, watchlist.length);
+      watchlist.push(entry);
+    }
+  }
 
   const ratedFilms = [...films.values()].filter((f) => f.rating !== null).length;
 
@@ -390,6 +424,13 @@ function parseLetterboxdZip(buffer) {
     },
     films: filmList,
     events: datedEvents,
+    watchlist,
+    files: {
+      diary: Boolean(diaryRows),
+      watched: Boolean(watchedRows),
+      ratings: Boolean(ratingRows),
+      watchlist: Boolean(watchlistRows),
+    },
   };
 }
 
