@@ -1,7 +1,7 @@
 # kinoboxd — backend
 
-Node.js/Express backend for Letterboxd and KinoPoisk statistics with TMDB
-enrichment (package `kinoboxd`).
+Node.js/Express backend for KinoPoisk statistics with TMDB enrichment and an
+optional Letterboxd archive attachment (package `kinoboxd`).
 
 ## Run
 
@@ -78,11 +78,9 @@ non-API routes).
 
 | Method | Route | Description |
 | --- | --- | --- |
-| POST | `/api/upload` | multipart/form-data, field `file` = Letterboxd ZIP |
-| POST | `/api/enrich` | `{ "uploadId": "..." }`, starts background enrichment |
-| GET | `/api/enrich/status?uploadId=...` | `{ total, matched, failed, done }` |
 | POST | `/api/import/kinopoisk` | `{ "url": "https://www.kinopoisk.ru/user/<id>/..." }`, starts a KinoPoisk import (or a delta refresh of a cached profile) |
 | GET | `/api/import/kinopoisk/status?uploadId=...` | `{ stage, page, pageTotal, total, matched, failed, done, warning }` |
+| POST | `/api/attach/lbzip?uploadId=...` | multipart/form-data, field `file` = Letterboxd ZIP; attaches the archive to the active KinoPoisk import (see below) |
 | GET | `/api/stats?uploadId=...` | full statistics payload (400 until enrichment is done) |
 | GET | `/api/tmdb/search?q=...&kind=movie\|tv\|all` | TMDB search for manual matching, `{ results: [{ id, kind, title, year, posterPath, voteAverage }] }` |
 | POST | `/api/match` | `{ uploadId, slug, tmdbId, kind }` — attach a TMDB entry to an unmatched film; repeat of the same match is idempotent (`alreadyMatched`), a different rematch returns 409 |
@@ -101,6 +99,93 @@ becomes `{ id, kind }`, and enrichment/stats honour that kind on the next run.
 CSV files are located by basename anywhere inside the ZIP, so nested folders
 work. `diary.csv` / `watched.csv` / `ratings.csv` are parsed with a proper
 quoted-CSV parser.
+
+## Letterboxd attachment (KinoPoisk profiles)
+
+Letterboxd is not a profile source anymore: it is an attachment to the active
+KinoPoisk profile. The backend keeps it in `cache/profile-lb/{kpUserId}.json`
+and re-reads that file on every `/api/stats` build, so it survives restarts,
+re-imports and delta refreshes without a re-attach.
+
+```bash
+curl -X POST "http://localhost:3000/api/attach/lbzip?uploadId=$UPLOAD_ID" \
+  -F "file=@letterboxd-export.zip"
+```
+
+The endpoint requires the `uploadId` of a live KinoPoisk import (the server
+resolves `kpUserId` from that job), a valid ZIP and both `diary.csv` and
+`watched.csv`; otherwise it returns 400. Re-posting replaces the whole
+attachment atomically (idempotent — no duplicate events).
+
+Response (extra fields are informational):
+
+```json
+{
+  "attached": true,
+  "fileName": "letterboxd-export.zip",
+  "events": 1371,
+  "diaryEvents": 385,
+  "watchedEvents": 986,
+  "rewatchCount": 16,
+  "matched": 1324,
+  "matchedFilms": 1323,
+  "films": 1370,
+  "watchlist": 72,
+  "learnedLinks": 9
+}
+```
+
+Data model:
+
+```json
+{
+  "attachedAt": "2026-10-26T08:17:40.916Z",
+  "fileName": "letterboxd-export.zip",
+  "events": [{
+    "tmdbId": 630,
+    "lbSlug": "29Xu",
+    "title": "The Wizard of Oz",
+    "year": 1939,
+    "rating": 4,
+    "watchDate": "2024-11-22",
+    "rewatch": false,
+    "source": "diary"
+  }],
+  "watchlist": [{ "lbSlug": "NKc", "title": "Rio", "year": 2011, "listedAt": "2024-12-20" }]
+}
+```
+
+* `events` keeps every dated archive event: diary rows (real `Watched Date`,
+  fallback `Date`) plus one `watched.csv` fallback event for films that have no
+  diary row. The latter survive for the future watchlist/rewatch UI but are
+  **not** used for the timeline or `watchedDate` (their date is the export
+  date, not a real viewing).
+* Every film is matched through the shared TMDB matcher (`server/tmdb.js`,
+  strict + broad rules) after checking `cache/index.json`; a known miss is not
+  re-requested. Matched events also teach the global `cache/lb-links.json`
+  mapping (`first wins`).
+* The whole archive is stored, including films outside the current KinoPoisk
+  set. Stats only apply events whose `tmdbId` belongs to a KinoPoisk film, so a
+  later delta refresh integrates new films automatically.
+
+Stats changes for a KinoPoisk profile with an attachment:
+
+* `filmsIndex[slug].watchedDate` = latest diary `watchDate` of that TMDB film;
+  films without a diary event keep the KinoPoisk rating date as a proxy.
+* `timeline` months use the real watch dates; each diary event is one viewing,
+  so rewatches add extra rows. KinoPoisk films without an event contribute one
+  proxy viewing in the rating month. `watched` counts every viewing;
+  `rated` counts viewings of films that have a KinoPoisk rating.
+* `rewatches` = `[{ slug, count }]` for KinoPoisk films with at least **two
+  diary events marked `Rewatch=true`** (`count` = number of such events).
+* `summary.rewatchCount` counts all archive events with `rewatch=true`;
+  `summary.attachedLb = { fileName, attachedAt, events, ratedEvents }`, where
+  `events`/`ratedEvents` are the diary events actually applied to the
+  KinoPoisk film set (and how many belong to rated films).
+
+`POST /api/upload` and `/api/enrich` still exist for backwards compatibility
+with old clients/tests, but the web UI no longer creates standalone Letterboxd
+profiles. Legacy `type:'lb'` profiles are deleted from IndexedDB on boot.
 
 ## KinoPoisk: delta refresh
 
@@ -142,19 +227,23 @@ Rules:
 * `cache/details/{tmdbId}.json` — `{ details, credits }`.
 * `cache/kp/{userId}.json` — `{ fetchedAt, kpNick, entries }` of a KinoPoisk
   profile. Kept in sync with KinoPoisk by the delta refresh described above.
+* `cache/profile-lb/{kpUserId}.json` — persistent Letterboxd attachment
+  (events, watchlist, file metadata) described above. Replaced atomically on
+  re-attach; independent of the in-memory `uploadId`.
 * `cache/lb-links.json` — global `"tmdbId"` → `{ lbUri, kind }` mapping learned
-  from every enriched Letterboxd upload. Letterboxd links cannot be derived
-  from a TMDB id, so KinoPoisk (and any other source) films pick up the
-  `boxd.it` link of the same TMDB film from this file. The first learned URI
-  wins; the mapping survives restarts and is independent of the upload that
-  taught it.
+  from every enriched Letterboxd upload and every attachment event.
+  Letterboxd links cannot be derived from a TMDB id, so KinoPoisk (and any
+  other source) films pick up the `boxd.it` link of the same TMDB film from
+  this file. The first learned URI wins; the mapping survives restarts and is
+  independent of the upload that taught it.
 * `cache/wd-tags.json` — Wikidata enrichment (see below). Written by the
   `backfill:wikidata` CLI; the running server reloads it on the next stats
   build when its mtime/size changed, so no restart is needed.
 
-The cache is global and persisted before/after restart. A second Letterboxd
-upload with overlapping films performs no TMDB requests (a KinoPoisk import
-still checks the profile's newest page, see above).
+The cache is global and persisted before/after restart. Re-attaching a
+Letterboxd archive with overlapping films performs no TMDB requests; films
+already known to the index resolve from the cache (a KinoPoisk import still
+checks the profile's newest page, see above).
 
 TMDB requests are capped at 12 concurrent; HTTP 429 is retried up to 5 times
 with `Retry-After`/exponential backoff.
@@ -239,7 +328,7 @@ Merged taxonomy rules (`server/taxonomy.js`):
 is unchanged, and the Wikidata layer only affects the counts inside the
 existing `genres` / `origins` / `periods` buckets.
 
-## Note on Letterboxd slugs
+## Note on Letterboxd archives
 
 `diary.csv` in real exports contains per-user short links
 (`boxd.it/85jq3H` → `letterboxd.com/<user>/film/...`) while `watched.csv`
@@ -247,3 +336,10 @@ contains canonical links (`boxd.it/29Xu` → `letterboxd.com/film/...`) for the
 same film. Taking the last URI segment literally would count the same film
 twice. Diary/ratings rows are therefore merged into the watched film with the
 same normalized title+year when possible; otherwise the URI slug is used.
+Attachment events keep the archive's own slug (`lbSlug`) and are mapped to
+KinoPoisk films by TMDB id, not by slug.
+
+Timeline fallback for KinoPoisk films without a diary event is the month of the
+KinoPoisk rating date (`ratedAt`). It is a proxy: a rating date is not
+necessarily a viewing date. This is intentionally marked in the UI text and
+kept only so the timeline still covers the whole KinoPoisk profile.
