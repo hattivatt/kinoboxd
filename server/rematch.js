@@ -183,6 +183,7 @@ async function resolveEntry(key, value, lookup) {
       if (oldYear != null && Math.abs(oldYear - parsed.year) <= 2) {
         return {
           status: 'guarded',
+          reason: 'low-votes',
           from: current,
           candidate: next,
           candidateYear,
@@ -206,6 +207,7 @@ async function resolveEntry(key, value, lookup) {
       if (hardGuard || current == null || oldPlausible || oldYear == null) {
         return {
           status: 'guarded',
+          reason: hardGuard ? 'year' : 'year+low-votes',
           from: current,
           candidate: next,
           candidateYear,
@@ -315,7 +317,7 @@ async function runRematch() {
           if (process.env.DEBUG_REMATCH) {
             console.log(
               `[rematch] "${key}" ${result.from == null ? 'false' : result.from} -> ` +
-                `keep (year guard: candidate ${result.candidate} is ${result.candidateYear})`
+                `keep (${result.reason} guard: candidate ${result.candidate} is ${result.candidateYear})`
             );
           }
         } else {
