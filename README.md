@@ -340,8 +340,10 @@ profiles supply the localized title and the real media kind when available.
 Useful environment variables: `REMATCH_DRY_RUN=1` (log changes without
 writing), `REMATCH_CONCURRENCY=8` and `TMDB_API_BASE` (alternate API host).
 The summary prints total keys, skipped manual entries, re-evaluated keys,
-changed/unchanged/still-failed counts, refetched details and TMDB retry
-counters.
+changed/unchanged/still-failed counts, unconfirmed/year-guarded skips,
+refetched details and TMDB retry counters. On NixOS add `"rematch"` to
+`services.kinoboxd.backfillTargets` (the module enum includes it) and start
+`kinoboxd-backfill` manually; the oneshot is not triggered automatically.
 
 ## Wikidata
 
