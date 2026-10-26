@@ -55,7 +55,14 @@ class Semaphore {
 
 const limiter = new Semaphore(MAX_CONCURRENCY);
 
-const counters = { requests: 0, retries: 0, errors: 0 };
+const counters = {
+  requests: 0,
+  retries: 0,
+  transportRetries: 0,
+  serverRetries: 0,
+  rateLimitRetries: 0,
+  errors: 0,
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -68,9 +75,18 @@ function parseRetryAfter(value) {
   return null;
 }
 
+// The public TMDB endpoint occasionally resets connections in some networks
+// (`fetch failed`, ECONNRESET/ETIMEDOUT/EAI_*). Four retries with a 1/2/4/8 s
+// exponential backoff turn those transient failures into ordinary successes;
+// a persistent outage still fails fast enough for the caller to report it.
+const RETRY_DELAYS = [1000, 2000, 4000, 8000];
+const MAX_RATE_LIMIT_RETRIES = 5;
+
 /**
- * GET a TMDB endpoint withBearer auth, global 12-request limit and 429
- * handling (up to 5 retries, Retry-After respected).
+ * GET a TMDB endpoint with Bearer auth, global 12-request limit, four
+ * transport/5xx retries (1/2/4/8 s) and 429 handling (up to 5 retries,
+ * Retry-After respected). Retry chatter is quiet unless DEBUG_RETRY is set;
+ * callers print the aggregate `counters` at the end of a run instead.
  */
 async function tmdbGet(pathname, params) {
   const url = new URL(API_BASE + pathname);
@@ -81,7 +97,10 @@ async function tmdbGet(pathname, params) {
   }
 
   let lastError = null;
-  for (let attempt = 0; attempt <= 5; attempt++) {
+  let transportAttempt = 0;
+  let rateLimitHits = 0;
+
+  while (true) {
     let response;
     try {
       response = await limiter.run(() => {
@@ -98,8 +117,17 @@ async function tmdbGet(pathname, params) {
     } catch (err) {
       counters.errors++;
       lastError = err;
-      if (attempt < 2) {
-        await sleep(500 * (attempt + 1));
+      if (transportAttempt < RETRY_DELAYS.length) {
+        const delay = RETRY_DELAYS[transportAttempt++];
+        counters.retries++;
+        counters.transportRetries++;
+        if (process.env.DEBUG_RETRY) {
+          console.warn(
+            `[tmdb] transport error on ${pathname} (${err.message}); ` +
+              `retry ${transportAttempt}/${RETRY_DELAYS.length} in ${delay}ms`
+          );
+        }
+        await sleep(delay);
         continue;
       }
       throw new Error(`TMDB request failed (${pathname}): ${err.message}`);
@@ -107,11 +135,20 @@ async function tmdbGet(pathname, params) {
 
     if (response.status === 429) {
       counters.retries++;
+      counters.rateLimitRetries++;
+      rateLimitHits++;
       const retryAfter = parseRetryAfter(response.headers.get('retry-after'));
-      const backoff = retryAfter != null ? retryAfter : Math.min(1000 * 2 ** attempt, 30000);
-      console.warn(
-        `[tmdb] 429 on ${pathname}; retry ${attempt + 1}/5 in ${Math.round(backoff)}ms`
-      );
+      const backoff =
+        retryAfter != null ? retryAfter : Math.min(1000 * 2 ** (rateLimitHits - 1), 30000);
+      if (rateLimitHits > MAX_RATE_LIMIT_RETRIES) {
+        throw new Error(`TMDB rate limit not resolved (${pathname})`);
+      }
+      if (process.env.DEBUG_RETRY || rateLimitHits === 1 || rateLimitHits % 10 === 0) {
+        console.warn(
+          `[tmdb] 429 on ${pathname}; retry ${rateLimitHits}/${MAX_RATE_LIMIT_RETRIES} ` +
+            `in ${Math.round(backoff)}ms`
+        );
+      }
       await sleep(backoff);
       continue;
     }
@@ -122,8 +159,17 @@ async function tmdbGet(pathname, params) {
       const body = await response.text().catch(() => '');
       lastError = new Error(`TMDB HTTP ${response.status} (${pathname}): ${body.slice(0, 200)}`);
       counters.errors++;
-      if (response.status >= 500 && attempt < 2) {
-        await sleep(500 * (attempt + 1));
+      if (response.status >= 500 && transportAttempt < RETRY_DELAYS.length) {
+        const delay = RETRY_DELAYS[transportAttempt++];
+        counters.retries++;
+        counters.serverRetries++;
+        if (process.env.DEBUG_RETRY) {
+          console.warn(
+            `[tmdb] HTTP ${response.status} on ${pathname}; ` +
+              `retry ${transportAttempt}/${RETRY_DELAYS.length} in ${delay}ms`
+          );
+        }
+        await sleep(delay);
         continue;
       }
       throw lastError;
@@ -131,8 +177,6 @@ async function tmdbGet(pathname, params) {
 
     return response.json();
   }
-
-  throw new Error(`TMDB rate limit not resolved (${pathname}): ${lastError ? lastError.message : ''}`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -160,12 +204,6 @@ function normalizedTvNames(show) {
   return [normalizeTitle(show.name), normalizeTitle(show.original_name)].filter(Boolean);
 }
 
-function isExactTitle(movie, title) {
-  const wanted = normalizeTitle(title);
-  if (!wanted) return false;
-  return normalizedNames(movie).includes(wanted);
-}
-
 // Punctuation-insensitive comparison, used only as a fallback (e.g.
 // "The Mitchells vs the Machines" vs TMDB's "... vs. the Machines").
 // "ё" is folded to "е" because KinoPoisk often drops the diaeresis while
@@ -176,6 +214,64 @@ function looseTitle(value) {
     .toLowerCase()
     .replace(/ё/g, 'е')
     .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+const EPISODE_ORDINALS = new Set([
+  'i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x',
+  '1', '2', '3', '4', '5', '6', '7', '8', '9', '10',
+]);
+
+function titleWords(value) {
+  return String(value == null ? '' : value)
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+}
+
+/**
+ * Tokens with a leading "Episode <roman/arabic>" marker removed. TMDB's
+ * canonical titles routinely drop the episode number ("Star Wars: Episode
+ * VIII - The Last Jedi" is stored as "Star Wars: The Last Jedi"), while
+ * KinoPoisk keeps it. Only strip when at least three content tokens remain so
+ * a literal "Star Wars: Episode VIII" cannot collapse to "Star Wars".
+ */
+function titleTokens(value) {
+  const tokens = titleWords(value);
+  const stripped = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (
+      (token === 'episode' || token === 'эпизод') &&
+      i + 1 < tokens.length &&
+      EPISODE_ORDINALS.has(tokens[i + 1])
+    ) {
+      i++;
+      continue;
+    }
+    stripped.push(token);
+  }
+  return stripped.length >= 3 ? stripped : tokens;
+}
+
+function titleKey(value) {
+  return titleTokens(value).join('');
+}
+
+function titleTokenSet(value) {
+  return new Set(titleTokens(value));
+}
+
+function isExactTitle(movie, title) {
+  const wanted = normalizeTitle(title);
+  if (!wanted) return false;
+  if (normalizedNames(movie).includes(wanted)) return true;
+  const wantedKey = titleKey(title);
+  return Boolean(wantedKey) &&
+    [movie.title, movie.original_title]
+      .map(titleKey)
+      .filter(Boolean)
+      .includes(wantedKey);
 }
 
 function isExactTitleLoose(movie, title) {
@@ -190,7 +286,13 @@ function isExactTitleLoose(movie, title) {
 function isExactTvTitle(show, title) {
   const wanted = normalizeTitle(title);
   if (!wanted) return false;
-  return normalizedTvNames(show).includes(wanted);
+  if (normalizedTvNames(show).includes(wanted)) return true;
+  const wantedKey = titleKey(title);
+  return Boolean(wantedKey) &&
+    [show.name, show.original_name]
+      .map(titleKey)
+      .filter(Boolean)
+      .includes(wantedKey);
 }
 
 function isExactTvTitleLoose(show, title) {
@@ -216,6 +318,63 @@ function findExactTitle(items, title, isTv) {
   return items.find((item) => exact(item, title)) ||
     items.find((item) => loose(item, title)) ||
     null;
+}
+
+function exactMatchRank(item, title, isTv) {
+  const names = isTv
+    ? [item.name, item.original_name]
+    : [item.title, item.original_title];
+  const wanted = normalizeTitle(title);
+  if (wanted && names.map(normalizeTitle).includes(wanted)) return 0;
+  const wantedLoose = looseTitle(title);
+  if (wantedLoose && names.map(looseTitle).includes(wantedLoose)) return 1;
+  const wantedKey = titleKey(title);
+  if (wantedKey && names.map(titleKey).includes(wantedKey)) return 2;
+  return null;
+}
+
+/**
+ * Collect exact-title candidates from several year-scoped/year-less searches
+ * and pick the one closest to the requested year. This matters for remakes:
+ * a year-less "Cinderella" search returns the 2015 film before the 1950 one,
+ * while the correct entry for a 1949 KinoPoisk key is the 1950 classic.
+ * Ties prefer the primary title over the localized fallback.
+ */
+function pickExactCandidate(candidates, year) {
+  if (!candidates || candidates.length === 0) return null;
+  const ranked = candidates.map((candidate) => {
+    const release = releaseYear(candidate.item);
+    const yearDelta =
+      year && release != null ? Math.abs(release - year) : Number.MAX_SAFE_INTEGER;
+    // Years 0/1 apart are equally plausible (festival vs wide release). A
+    // low-vote same-name short must not beat the real film just because its
+    // release_date happens to be one year closer ("The Witch" 2016 vs a
+    // 7-vote 2015 namesake).
+    const yearBucket = yearDelta <= 1 ? 0 : yearDelta === 2 ? 1 : 2;
+    return { ...candidate, yearDelta, yearBucket };
+  });
+  ranked.sort((a, b) => {
+    if (a.yearBucket !== b.yearBucket) return a.yearBucket - b.yearBucket;
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    if (a.voteCount !== b.voteCount) return b.voteCount - a.voteCount;
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.yearDelta - b.yearDelta;
+  });
+  return ranked[0].item;
+}
+
+function collectExactCandidates(list, items, title, isTv, priority) {
+  if (!Array.isArray(items)) return;
+  for (const item of items) {
+    const rank = exactMatchRank(item, title, isTv);
+    if (rank == null) continue;
+    list.push({
+      item,
+      rank,
+      priority,
+      voteCount: Number(item.vote_count) || 0,
+    });
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -269,36 +428,74 @@ function diceSimilarity(a, b) {
 }
 
 /**
- * 1.0 = exact after lowercasing/punctuation/ё-folding, 0.8-0.95 = one title
- * is a prefix/containment of the other, otherwise Dice bigram similarity.
+ * Similarity of one candidate title to the *canonical* KinoPoisk titles.
+ *
+ * `query` is only a search-recall hint ("Star Wars", "Impossible" after the
+ * colon expansion); a hit on such a fragment must not become a 1.0 title
+ * match. `canonical` therefore holds the full title and its localized
+ * fallback; the ranker scores the candidate against those only.
+ *
+ * Metric:
+ *  - exact normalized token key -> 1.0;
+ *  - one full string contains the other -> minLen/maxLen (so a fragment such
+ *    as "impossible" inside "mission impossible dead reckoning" scores low);
+ *  - otherwise token Jaccard (|intersection| / |union|), with a Dice
+ *    bigram fallback for transliteration variants ("Yongpari" vs "Yong Pal",
+ *    "Слезы" vs "Слёзы");
+ *  - a candidate that starts with every canonical token and adds at most two
+ *    suffix tokens ("... Part One", "(Целитель)") gets a near-exact boost.
  */
-function titleMatchScore(names, query) {
-  const wanted = looseTitle(query);
-  if (!wanted) return 0;
+function titleMatchScore(names, canonical) {
+  const wanted = Array.isArray(canonical) ? canonical : [canonical];
   let best = 0;
-  for (const raw of names) {
-    const name = looseTitle(raw);
-    if (!name) continue;
-    if (name === wanted) return 1;
-    const min = Math.min(name.length, wanted.length);
-    const max = Math.max(name.length, wanted.length);
-    if (min >= 4 && (name.startsWith(wanted) || wanted.startsWith(name))) {
-      best = Math.max(best, 0.8 + 0.15 * (min / max));
-    } else if (min >= 5 && (name.includes(wanted) || wanted.includes(name))) {
-      best = Math.max(best, 0.7 + 0.15 * (min / max));
-    } else {
-      best = Math.max(best, diceSimilarity(name, wanted));
+  for (const query of wanted) {
+    const wantedKey = titleKey(query);
+    const wantedSet = titleTokenSet(query);
+    if (!wantedKey) continue;
+    for (const raw of names) {
+      const nameKey = titleKey(raw);
+      if (!nameKey) continue;
+      if (nameKey === wantedKey) return 1;
+      const nameSet = titleTokenSet(raw);
+
+      let queryInName = true;
+      for (const token of wantedSet) {
+        if (!nameSet.has(token)) {
+          queryInName = false;
+          break;
+        }
+      }
+      const extra = nameSet.size - wantedSet.size;
+      const suffixBoost =
+        queryInName && extra > 0 && extra <= 2 && nameKey.startsWith(wantedKey)
+          ? 0.85 + 0.15 * (wantedSet.size / nameSet.size)
+          : 0;
+
+      let score = 0;
+      if (nameKey.includes(wantedKey) || wantedKey.includes(nameKey)) {
+        score = Math.min(nameKey.length, wantedKey.length) /
+          Math.max(nameKey.length, wantedKey.length);
+      } else {
+        let intersection = 0;
+        for (const token of wantedSet) {
+          if (nameSet.has(token)) intersection++;
+        }
+        const union = wantedSet.size + nameSet.size - intersection;
+        score = union > 0 ? intersection / union : 0;
+        score = Math.max(score, diceSimilarity(nameKey, wantedKey));
+      }
+      best = Math.max(best, score, suffixBoost);
     }
   }
   return best;
 }
 
-function scoreCandidate(kind, item, query, year, resultCount) {
+function scoreCandidate(kind, item, canonical, year, resultCount) {
   const names =
     kind === 'tv'
       ? [item.name, item.original_name]
       : [item.title, item.original_title];
-  const titleScore = titleMatchScore(names, query);
+  const titleScore = titleMatchScore(names, canonical);
   const release = releaseYear(item);
   let yearScore = 0;
   if (year && release) {
@@ -312,12 +509,15 @@ function scoreCandidate(kind, item, query, year, resultCount) {
       : 0;
   const voteRaw = Number(item.vote_average);
   const vote = Number.isFinite(voteRaw) ? Math.max(0, Math.min(1, voteRaw / 10)) : 0;
+  const voteCountRaw = Number(item.vote_count);
+  const voteCount = Number.isFinite(voteCountRaw) && voteCountRaw > 0 ? voteCountRaw : 0;
 
   return {
     item,
     titleScore,
     yearScore,
     resultCount,
+    voteCount,
     total: titleScore * 1000 + yearScore * 20 + popularity * 3 + vote * 2,
   };
 }
@@ -386,6 +586,15 @@ async function broadSearch(kind, title, year, options) {
   const numericYear = Number(year) > 0 ? Number(year) : null;
   const pathname = kind === 'tv' ? '/search/tv' : '/search/movie';
   const queries = buildBroadQueries(title, opts);
+  // Score candidates against the real titles, never against a recall-only
+  // fragment produced by the "Main: subtitle" expansion.
+  const canonical = [];
+  for (const value of [title, opts.fallbackTitle]) {
+    const text = String(value || '').trim();
+    if (!text) continue;
+    if (canonical.some((seen) => normalizeTitle(seen) === normalizeTitle(text))) continue;
+    canonical.push(text);
+  }
   let best = null;
 
   for (const entry of queries) {
@@ -413,23 +622,29 @@ async function broadSearch(kind, title, year, options) {
       const scored = scoreCandidate(
         kind,
         item,
-        entry.query,
+        canonical,
         numericYear,
         results.length
       );
-      // Guardrails per candidate: an exact title is accepted even when the
-      // year is off (premiere vs release); a partial title requires a
-      // plausible year; a sole search hit is accepted only when it also has a
-      // plausible title (a lone unrelated result must not win just because
-      // TMDB returned one item). Candidates that do not pass never become the
-      // best match, even if another query ranks them higher.
-      const acceptable =
-        scored.titleScore >= 0.99 ||
-        (scored.titleScore >= 0.85 &&
-          (!numericYear || scored.yearScore >= 0.8)) ||
-        (scored.resultCount === 1 &&
-          scored.titleScore >= 0.5 &&
-          (!numericYear || scored.yearScore >= 0.8));
+      // Guardrails per candidate:
+      //  - an exact title is accepted even when the year is off;
+      //  - a very close title (>=0.90, e.g. transliteration + sequel suffix)
+      //    needs a plausible year;
+      //  - a partial title (0.85-0.90) additionally needs real audience mass
+      //    (vote_count >= 200), so an obscure same-name short cannot win;
+      //  - a sole search hit needs a plausible title/year and audience mass.
+      // Candidates that do not pass never become the best match, even if
+      // another query ranks them higher.
+      const yearOk = !numericYear || scored.yearScore >= 0.8;
+      const exact = scored.titleScore >= 0.99;
+      const close = scored.titleScore >= 0.9 && yearOk;
+      const partial = scored.titleScore >= 0.85 && yearOk && scored.voteCount >= 200;
+      const single =
+        scored.resultCount === 1 &&
+        scored.titleScore >= 0.5 &&
+        yearOk &&
+        scored.voteCount >= 200;
+      const acceptable = exact || close || partial || single;
       if (acceptable && (!best || scored.total > best.total)) best = scored;
     }
   }
@@ -439,7 +654,8 @@ async function broadSearch(kind, title, year, options) {
   console.log(
     `[tmdb] broad match: "${title}" (${year || '?'}) -> ` +
       `${best.item.id} "${best.item.title || best.item.name}" ` +
-      `(title=${best.titleScore.toFixed(2)} year=${best.yearScore.toFixed(2)})`
+      `(title=${best.titleScore.toFixed(2)} year=${best.yearScore.toFixed(2)} ` +
+      `votes=${best.voteCount})`
   );
   return best.item;
 }
@@ -487,52 +703,58 @@ async function searchMovie(title, year, options) {
     return results;
   }
 
+  const fallbackTitle = String(opts.fallbackTitle || '').trim();
+  const hasFallback =
+    fallbackTitle && normalizeTitle(fallbackTitle) !== normalizeTitle(query);
+
   const firstParams = { query, language };
   if (numericYear) firstParams.year = numericYear;
   const firstResults = await search(firstParams);
 
-  if (numericYear) {
-    const withinYear = firstResults.filter((movie) => matchesYear(movie, numericYear));
-    const exact = findExactTitle(withinYear, title, false);
+  if (!numericYear) {
+    const candidates = [];
+    collectExactCandidates(candidates, firstResults, title, false, 0);
+    if (hasFallback) {
+      const fallbackResults = await search({ query: fallbackTitle, language: 'ru-RU' });
+      collectExactCandidates(candidates, fallbackResults, fallbackTitle, false, 1);
+    }
+    const exact = pickExactCandidate(candidates, numericYear);
     if (exact) return exact;
-    // No title match in the year-scoped results: do NOT fall back to the
-    // first hit. Continue to the year-less exact search and then broadSearch.
-  } else {
-    const exact =
-      firstResults.find((movie) => isExactTitle(movie, title)) ||
-      firstResults.find((movie) => isExactTitleLoose(movie, title));
-    if (exact) return exact;
-    // Without a year we accept the first exact match only, otherwise report
-    // "not found" and let the cache hold false.
+    // Without a year we accept an exact match only, otherwise report "not
+    // found" and let the cache hold false.
     return null;
   }
 
-  const secondResults = await search({ query, language });
-  const exact =
-    secondResults.find((movie) => isExactTitle(movie, title)) ||
-    secondResults.find((movie) => isExactTitleLoose(movie, title));
-  if (exact) return exact;
+  // A title that exactly matches inside the year window is the strongest
+  // possible signal; no need for more searches.
+  const withinYear = firstResults.filter((movie) => matchesYear(movie, numericYear));
+  const firstCandidates = [];
+  collectExactCandidates(firstCandidates, withinYear, title, false, 0);
+  const firstExact = pickExactCandidate(firstCandidates, numericYear);
+  if (firstExact) return firstExact;
 
-  // KinoPoisk's "original title" field often contains a romanized title
-  // (e.g. "Geung see sin sang" for Mr. Vampire) that TMDB does not index by.
-  // Retry with the Russian title, which TMDB does have.
-  const fallbackTitle = String(opts.fallbackTitle || '').trim();
-  if (fallbackTitle && normalizeTitle(fallbackTitle) !== normalizeTitle(query)) {
-    const fallbackParams = { query: fallbackTitle, language: 'ru-RU' };
-    if (numericYear) fallbackParams.year = numericYear;
-    let fallbackResults = await search(fallbackParams);
-    if (numericYear) {
-      const withinYear = fallbackResults.filter((movie) => matchesYear(movie, numericYear));
-      // Same strict rule for the localized title: exact title only.
-      const exactFallback = findExactTitle(withinYear, fallbackTitle, false);
-      if (exactFallback) return exactFallback;
-    }
-    fallbackResults = await search({ query: fallbackTitle, language: 'ru-RU' });
-    const fallbackExact =
-      fallbackResults.find((movie) => isExactTitle(movie, fallbackTitle)) ||
-      fallbackResults.find((movie) => isExactTitleLoose(movie, fallbackTitle));
-    if (fallbackExact) return fallbackExact;
+  // Otherwise collect exact candidates from the localized year-scoped search
+  // and both year-less searches, then choose by year proximity. This keeps
+  // the 1965 "Красная борода" when a year-less "Akahige" search would return
+  // a 1997 namesake, and prefers the exact primary title over a localized
+  // namesake with the same year ("Deep Cover" vs "Под прикрытием").
+  const candidates = [];
+  if (hasFallback) {
+    const fallbackYearResults = await search({
+      query: fallbackTitle,
+      language: 'ru-RU',
+      year: numericYear,
+    });
+    collectExactCandidates(candidates, fallbackYearResults, fallbackTitle, false, 1);
   }
+  const secondResults = await search({ query, language });
+  collectExactCandidates(candidates, secondResults, title, false, 0);
+  if (hasFallback) {
+    const fallbackResults = await search({ query: fallbackTitle, language: 'ru-RU' });
+    collectExactCandidates(candidates, fallbackResults, fallbackTitle, false, 1);
+  }
+  const exact = pickExactCandidate(candidates, numericYear);
+  if (exact) return exact;
 
   // Strict matching failed: one broad, year-less pass with title variants.
   return broadSearch('movie', title, year, opts);
@@ -573,33 +795,38 @@ async function searchTv(title, year, options) {
   if (numericYear) firstParams.first_air_date_year = numericYear;
   const firstResults = await search(firstParams);
 
+  const hasFallback =
+    fallbackTitle && normalizeTitle(fallbackTitle) !== normalizeTitle(query);
+
   if (numericYear) {
     const withinYear = firstResults.filter((show) => matchesYear(show, numericYear));
-    const exact = findExactTitle(withinYear, query, true);
+    const firstCandidates = [];
+    collectExactCandidates(firstCandidates, withinYear, query, true, 0);
+    const exact = pickExactCandidate(firstCandidates, numericYear);
     if (exact) return exact;
     // No exact title in the year-scoped results: fall through to the
     // year-less exact retries and finally broadSearch.
   } else {
-    const exact =
-      firstResults.find((show) => isExactTvTitle(show, query)) ||
-      firstResults.find((show) => isExactTvTitleLoose(show, query));
-    if (exact) return exact;
-    return null;
+    const candidates = [];
+    collectExactCandidates(candidates, firstResults, query, true, 0);
+    if (hasFallback) {
+      const fallbackResults = await search({ query: fallbackTitle, language: 'ru-RU' });
+      collectExactCandidates(candidates, fallbackResults, fallbackTitle, true, 1);
+    }
+    return pickExactCandidate(candidates, numericYear);
   }
 
-  // Year-less retries: the localized (Russian) title first, then the English
-  // query. Only an exact normalized title match is accepted.
+  // Year-less retries: the localized (Russian) title and the primary query.
+  // Collect both, then choose the candidate closest to the requested year.
   const candidates = [];
-  if (fallbackTitle && normalizeTitle(fallbackTitle) !== normalizeTitle(query)) {
-    candidates.push({ query: fallbackTitle, language: 'ru-RU' });
+  if (hasFallback) {
+    const fallbackResults = await search({ query: fallbackTitle, language: 'ru-RU' });
+    collectExactCandidates(candidates, fallbackResults, fallbackTitle, true, 1);
   }
-  candidates.push({ query, language });
-
-  for (const params of candidates) {
-    const results = await search(params);
-    const exact = findExactTitle(results, params.query, true);
-    if (exact) return exact;
-  }
+  const secondResults = await search({ query, language });
+  collectExactCandidates(candidates, secondResults, query, true, 0);
+  const exact = pickExactCandidate(candidates, numericYear);
+  if (exact) return exact;
 
   // No lenient year-only fallback here: a same-year show with a different
   // title is not a match. broadSearch ranks exact titles across years.
@@ -941,6 +1168,10 @@ module.exports = {
   fetchMovieData,
   fetchTvData,
   releaseYear,
+  // Exported for the matcher unit tests (pure functions, no network).
+  titleMatchScore,
+  titleKey,
   counters,
   MAX_CONCURRENCY,
+  API_BASE,
 };

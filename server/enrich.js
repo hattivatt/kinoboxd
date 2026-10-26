@@ -7,6 +7,8 @@ const jobs = new Map();
 const inflight = new Map();
 
 const CONCURRENCY = tmdb.MAX_CONCURRENCY;
+const RETRY_DELAY_MS = 2000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /* ------------------------------------------------------------------ */
 /* One film: cache first, network only when needed                     */
@@ -181,6 +183,58 @@ async function runJob(job, films) {
 
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
+  // Transport failures (TMDB resets connections in some networks) leave no
+  // index entry, so a single retry pass after the main run can rescue the
+  // tail without poisoning the cache. Only films that failed with an error
+  // are retried; genuine "not found" results stay false.
+  const retryFilms = films.filter((film) => {
+    const entry = job.films.get(film.slug);
+    return entry && entry.error === true;
+  });
+  let retriedSuccesses = 0;
+  if (retryFilms.length > 0) {
+    console.log(
+      `[enrich ${job.uploadId}] retrying ${retryFilms.length} transport failure(s) once ` +
+        `in ${RETRY_DELAY_MS}ms`
+    );
+    await sleep(RETRY_DELAY_MS);
+    let retryCursor = 0;
+    const retryWorkers = Math.min(CONCURRENCY, retryFilms.length);
+    async function retryWorker() {
+      while (true) {
+        const index = retryCursor++;
+        if (index >= retryFilms.length) return;
+        const film = retryFilms[index];
+        try {
+          const result = await resolveFilm(film);
+          job.films.set(film.slug, {
+            tmdbId: result.tmdbId,
+            matched: result.tmdbId != null,
+            kind: result.kind || null,
+          });
+          if (result.tmdbId != null) {
+            job.matched++;
+            retriedSuccesses++;
+          } else {
+            // Still a definitive miss; keep it counted as failed.
+          }
+        } catch (err) {
+          console.warn(
+            `[enrich] retry ${film.slug} "${film.title}" (${film.year}) failed again: ${err.message}`
+          );
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: retryWorkers }, () => retryWorker()));
+    const recovered = retriedSuccesses;
+    job.failed -= recovered;
+    job.retriedSuccesses = retriedSuccesses;
+    console.log(
+      `[enrich ${job.uploadId}] retry pass: recovered=${recovered} ` +
+        `still-failed=${job.failed}`
+    );
+  }
+
   cache.flushIndex();
   // Learn global TMDB <-> Letterboxd links from this job (Letterboxd uploads
   // only: those films carry an lbUri). KinoPoisk imports are a no-op here.
@@ -197,7 +251,9 @@ async function runJob(job, films) {
   const seconds = ((job.finishedAt - startedAt) / 1000).toFixed(1);
   console.log(
     `[enrich ${job.uploadId}] done: total=${job.total} matched=${job.matched} ` +
-      `failed=${job.failed} in ${seconds}s (cache keys=${cache.cacheStats().keys})`
+      `failed=${job.failed} retriedSuccesses=${job.retriedSuccesses || 0} in ${seconds}s ` +
+      `(cache keys=${cache.cacheStats().keys}, tmdb requests=${tmdb.counters.requests} ` +
+      `retries=${tmdb.counters.retries})`
   );
 }
 
