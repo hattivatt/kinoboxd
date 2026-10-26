@@ -249,6 +249,71 @@ function round2(value) {
   return Math.round(value * 100) / 100;
 }
 
+/* ------------------------------------------------------------------ */
+/* Watch calendar / streaks                                            */
+/* ------------------------------------------------------------------ */
+
+/** UTC day number for a `YYYY-MM-DD` string (no DST, no local timezone). */
+function dayNumber(date) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || ''));
+  if (!match) return null;
+  return Math.floor(
+    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86400000
+  );
+}
+
+/**
+ * Consecutive calendar-day streaks over `watchDays` ([{ date, count }]).
+ *
+ * `current` is the run that ends at the most recent viewing, regardless of
+ * today's date: "3 days in a row" from 23→25 Oct stays valid on the 26th.
+ * The UI is responsible for the softer "last watch was N days ago" hint.
+ * Dates are UTC strings; watching at 00:30 MSK is stored as the previous UTC
+ * day by the KinoPoisk scraped `ratedAt` and Letterboxd diary dates alike.
+ */
+function computeStreaks(watchDays) {
+  const dates = (Array.isArray(watchDays) ? watchDays : [])
+    .map((entry) => (entry && entry.date ? String(entry.date) : ''))
+    .filter((date) => dayNumber(date) != null)
+    .sort();
+  if (!dates.length) {
+    return { current: 0, best: 0, lastWatchDate: null, bestDates: [] };
+  }
+
+  let best = 1;
+  let bestFrom = dates[0];
+  let bestTo = dates[0];
+  let run = 1;
+  let runStart = dates[0];
+
+  for (let i = 1; i < dates.length; i++) {
+    if (dayNumber(dates[i]) - dayNumber(dates[i - 1]) === 1) {
+      run++;
+    } else {
+      run = 1;
+      runStart = dates[i];
+    }
+    if (run > best) {
+      best = run;
+      bestFrom = runStart;
+      bestTo = dates[i];
+    }
+  }
+
+  let current = 1;
+  for (let i = dates.length - 1; i > 0; i--) {
+    if (dayNumber(dates[i]) - dayNumber(dates[i - 1]) === 1) current++;
+    else break;
+  }
+
+  return {
+    current,
+    best,
+    lastWatchDate: dates[dates.length - 1],
+    bestDates: [bestFrom, bestTo],
+  };
+}
+
 function releaseYear(releaseDate, fallbackYear) {
   if (releaseDate && /^\d{4}-\d{2}-\d{2}$/.test(releaseDate)) {
     return parseInt(releaseDate.slice(0, 4), 10);
@@ -473,7 +538,14 @@ function buildStats(upload) {
   const filmsIndex = {};
   const taxEntries = [];
 
-  function addTimelineEvent(date, rated) {
+  // Day-level view of the same events that feed `timeline`. The sum of
+  // watchDays[].count is therefore always equal to sum timeline[].watched.
+  // `slugs` keeps one entry per viewing (rewatches repeat the slug) so the
+  // calendar can open the exact film list of a day without another endpoint.
+  const watchDayMap = new Map(); // "YYYY-MM-DD" -> { date, count, slugs }
+  const watchEvents = []; // { date, slug, rewatch } — one per viewing
+
+  function addTimelineEvent(date, rated, event = null) {
     if (!date || !/^\d{4}-\d{2}/.test(String(date))) return;
     const day = String(date).slice(0, 10);
     const month = day.slice(0, 7);
@@ -486,6 +558,21 @@ function buildStats(upload) {
     if (rated) bucket.rated++;
     if (!realDateFrom || day < realDateFrom) realDateFrom = day;
     if (!realDateTo || day > realDateTo) realDateTo = day;
+
+    if (event && event.slug) {
+      let watchDay = watchDayMap.get(day);
+      if (!watchDay) {
+        watchDay = { date: day, count: 0, slugs: [] };
+        watchDayMap.set(day, watchDay);
+      }
+      watchDay.count++;
+      watchDay.slugs.push(String(event.slug));
+      watchEvents.push({
+        date: day,
+        slug: String(event.slug),
+        rewatch: event.rewatch === undefined ? null : event.rewatch,
+      });
+    }
   }
 
   let ratedCount = 0;
@@ -517,7 +604,10 @@ function buildStats(upload) {
         let latest = null;
         for (const event of diaryEvents) {
           const watchDate = event.watchDate ? String(event.watchDate).slice(0, 10) : null;
-          addTimelineEvent(watchDate, rated);
+          addTimelineEvent(watchDate, rated, {
+            slug: film.slug,
+            rewatch: Boolean(event.rewatch),
+          });
           appliedEventCount++;
           if (rated) appliedRatedEventCount++;
           if (watchDate && (!latest || watchDate > latest)) latest = watchDate;
@@ -527,8 +617,12 @@ function buildStats(upload) {
         if (rewatches > 0) rewatchBySlug.set(film.slug, rewatches);
       } else if (effectiveWatchedDate) {
         // No diary event for this KinoPoisk film (or no attachment at all):
-        // count one proxy viewing on the rating date.
-        addTimelineEvent(effectiveWatchedDate, rated);
+        // count one proxy viewing on the rating date. There is no rewatch
+        // signal on KinoPoisk itself, so the flag stays null.
+        addTimelineEvent(effectiveWatchedDate, rated, {
+          slug: film.slug,
+          rewatch: null,
+        });
       }
     }
 
@@ -740,7 +834,11 @@ function buildStats(upload) {
     for (const event of upload.events || []) {
       if (event.source !== 'diary') continue;
       if (!event.date) continue;
-      addTimelineEvent(event.date, event.rating !== null && event.rating !== undefined);
+      addTimelineEvent(
+        event.date,
+        event.rating !== null && event.rating !== undefined,
+        { slug: event.slug || null, rewatch: Boolean(event.rewatch) }
+      );
     }
   }
 
@@ -780,6 +878,18 @@ function buildStats(upload) {
   const timeline = [...timelineMap.values()].sort((a, b) =>
     a.month.localeCompare(b.month)
   );
+
+  // Day-level viewing history for the calendar heatmap. Sorted ascending;
+  // sum(count) === sum(timeline.watched) by construction.
+  const watchDays = [...watchDayMap.values()].sort((a, b) =>
+    a.date.localeCompare(b.date)
+  );
+  // The newest 15 viewings, newest first, for the "recently watched" strip.
+  const recentlyWatched = watchEvents
+    .slice()
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 15);
+  const streaks = computeStreaks(watchDays);
 
   const persons = {
     actor: serializePeople(actors, true),
@@ -835,6 +945,9 @@ function buildStats(upload) {
     decades,
     years,
     timeline,
+    watchDays,
+    recentlyWatched,
+    streaks,
     persons,
     origins: taxonomy.origins,
     periods: taxonomy.periods,

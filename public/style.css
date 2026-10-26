@@ -1581,6 +1581,225 @@ img { display: block; }
 .chart-foot-hint { opacity: 0.8; }
 
 /* =========================================================
+   recently watched strip
+   ========================================================= */
+
+.w-recent,
+.w-calendar { grid-column: span 12; }
+
+.recent-head { margin-bottom: 13px; }
+.recent-strip {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding: 2px 2px 6px;
+}
+.recent-card {
+  flex: 0 0 78px;
+  width: 78px;
+  min-width: 0;
+}
+.recent-poster {
+  position: relative;
+  width: 78px;
+  height: 117px;
+  border-radius: 8px;
+  overflow: visible;
+  cursor: pointer;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+.recent-poster:hover,
+.recent-poster:focus-visible {
+  border-color: rgba(0, 224, 84, 0.45);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.32);
+  outline: none;
+}
+.recent-poster .film-poster,
+.recent-poster .poster-fallback {
+  width: 100%;
+  height: 100%;
+  border-radius: 7px;
+  object-fit: cover;
+}
+.recent-poster .poster-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  font-weight: 750;
+  color: var(--muted);
+  background: linear-gradient(145deg, #26333f, #1a222b);
+}
+.recent-poster .recent-rewatch {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  z-index: 2;
+  align-self: auto;
+  padding: 2px 5px;
+  border: 1px solid rgba(255, 209, 102, 0.45);
+  border-radius: 4px;
+  background: rgba(20, 24, 28, 0.82);
+  color: #ffd166;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.recent-date {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.25;
+  color: var(--muted);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.recent-film-menu {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 3;
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+.recent-poster:hover .recent-film-menu,
+.recent-poster:focus-within .recent-film-menu { opacity: 1; }
+.recent-film-menu .film-menu-toggle {
+  width: 23px;
+  height: 23px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(16, 21, 26, 0.82);
+  backdrop-filter: blur(3px);
+}
+
+/* =========================================================
+   watch calendar
+   ========================================================= */
+
+.calendar-head {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  row-gap: 10px;
+  margin-bottom: 14px;
+}
+.streak-card {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  min-height: 30px;
+  padding: 6px 12px;
+  border: 1px solid rgba(0, 224, 84, 0.2);
+  border-radius: 9px;
+  background:
+    radial-gradient(220px 70px at 12% 0%, rgba(0, 224, 84, 0.13), transparent 75%),
+    rgba(0, 224, 84, 0.045);
+  font-size: 11.5px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+.streak-bolt {
+  font-size: 14px;
+  line-height: 1;
+  filter: drop-shadow(0 0 6px rgba(255, 209, 102, 0.35));
+}
+.streak-main { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.streak-label { color: var(--muted); font-size: 10.5px; font-weight: 650; letter-spacing: 0.04em; }
+.streak-num { font-size: 19px; line-height: 1; color: var(--green); font-weight: 800; letter-spacing: -0.03em; }
+.streak-unit { color: var(--text-soft); font-size: 11px; }
+.streak-meta {
+  padding-left: 12px;
+  border-left: 1px solid rgba(255, 255, 255, 0.09);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.calendar-host {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.cal-year {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.cal-year-label {
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.cal-scroll {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  overscroll-behavior-x: contain;
+}
+.cal-months {
+  position: relative;
+  height: 15px;
+  min-width: 100%;
+}
+.cal-month-label {
+  position: absolute;
+  top: 0;
+  font-size: 8.5px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--muted-2);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.cal-grid {
+  display: grid;
+  grid-template-rows: repeat(7, 11px);
+  grid-auto-flow: column;
+  gap: 2px;
+  width: max-content;
+}
+.cal-cell {
+  display: block;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  border: 0;
+  border-radius: 2.5px;
+  background: rgba(255, 255, 255, 0.045);
+  appearance: none;
+  -webkit-appearance: none;
+  transition: transform 0.1s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+.cal-cell.is-blank { background: transparent; pointer-events: none; }
+.cal-cell[title] { cursor: default; }
+.cal-cell.is-active { cursor: pointer; }
+.cal-level-0 { background: rgba(255, 255, 255, 0.045); }
+.cal-level-1 { background: rgba(0, 224, 84, 0.22); }
+.cal-level-2 { background: rgba(0, 224, 84, 0.42); }
+.cal-level-3 { background: rgba(0, 224, 84, 0.64); }
+.cal-level-4 { background: rgba(0, 224, 84, 0.9); box-shadow: 0 0 6px rgba(0, 224, 84, 0.28); }
+.cal-cell.is-active:hover,
+.cal-cell.is-active:focus-visible {
+  transform: scale(1.25);
+  filter: brightness(1.2);
+  outline: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45);
+}
+
+/* =========================================================
    persons
    ========================================================= */
 
@@ -2321,6 +2540,17 @@ img { display: block; }
   .dash-hero h1 { font-size: clamp(30px, 8vw, 40px); }
   .widget { padding: 18px 17px 17px; }
   .w-persons { padding-bottom: 14px; }
+  .calendar-head { flex-direction: column; align-items: stretch; }
+  .streak-card { width: 100%; }
+  .streak-meta {
+    width: 100%;
+    padding-left: 0;
+    border-left: 0;
+    padding-top: 3px;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+  }
+  .recent-card { flex-basis: 72px; width: 72px; }
+  .recent-poster { width: 72px; height: 108px; }
 }
 
 @media (max-width: 560px) {
@@ -2407,6 +2637,8 @@ img { display: block; }
   .film-row { grid-template-columns: 30px minmax(0, 1fr) auto; gap: 9px; padding: 6px 6px; }
   .film-poster { width: 30px; height: 45px; }
   .film-title { font-size: 12px; }
+  .cal-year { grid-template-columns: 29px minmax(0, 1fr); gap: 7px; }
+  .cal-year-label { font-size: 10px; }
   .toasts { right: 12px; bottom: 12px; width: calc(100vw - 24px); }
 }
 

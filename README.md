@@ -182,6 +182,22 @@ Stats changes for a KinoPoisk profile with an attachment:
   `summary.attachedLb = { fileName, attachedAt, events, ratedEvents }`, where
   `events`/`ratedEvents` are the diary events actually applied to the
   KinoPoisk film set (and how many belong to rated films).
+* `watchDays = [{ date: "YYYY-MM-DD", count, slugs: [filmSlug, …] }]` is the
+  day-level view of exactly the same events that feed `timeline`:
+  `sum(watchDays.count) === sum(timeline.watched)` by construction. Diary
+  events contribute one entry per viewing (a rewatch repeats the slug); a
+  KinoPoisk film without a diary event contributes one proxy viewing on its
+  rating date. Without an attachment every film contributes that proxy, so
+  the sum equals `summary.filmCount`. `slugs` is what the calendar day modal
+  lists; the array is omitted in the compact mental model above but always
+  present (one entry per viewing).
+* `recentlyWatched = [{ date, slug, rewatch }]` — the newest 15 viewings,
+  newest first (`rewatch` is `null` for the KinoPoisk rating-date proxy).
+* `streaks = { current, best, lastWatchDate, bestDates: [from, to] }` — runs
+  of consecutive calendar days with at least one viewing. `current` is the
+  run ending at the latest viewing, independent of today's date; the UI adds
+  the softer "last watch was N days ago" hint. All dates are UTC `YYYY-MM-DD`
+  strings: a 00:30 MSK rating is stored by KinoPoisk as the previous UTC day.
 
 `POST /api/upload` and `/api/enrich` still exist for backwards compatibility
 with old clients/tests, but the web UI no longer creates standalone Letterboxd

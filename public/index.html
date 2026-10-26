@@ -270,6 +270,14 @@
         <div class="summary-strip" id="summary-strip"></div>
 
         <div class="widgets" id="widgets">
+          <section class="widget w-recent" id="w-recent-widget" aria-labelledby="w-recent-title" hidden>
+            <div class="widget-head recent-head">
+              <h2 class="widget-title" id="w-recent-title"><span class="w-dot green"></span>Недавно смотрел</h2>
+              <span class="widget-note" id="recent-note"></span>
+            </div>
+            <div class="recent-strip" id="recent-strip"></div>
+          </section>
+
           <section class="widget w-ratings" aria-labelledby="w-ratings-title">
             <div class="widget-head">
               <h2 class="widget-title" id="w-ratings-title"><span class="w-dot green"></span>Распределение по оценкам</h2>
@@ -378,6 +386,18 @@
             <div class="chart-foot">
               <span><i class="swatch orange"></i>просмотры</span>
               <span class="chart-foot-hint">наведи на столбик, чтобы увидеть месяц</span>
+            </div>
+          </section>
+
+          <section class="widget w-calendar" id="w-calendar-widget" aria-labelledby="w-calendar-title" hidden>
+            <div class="widget-head calendar-head">
+              <h2 class="widget-title" id="w-calendar-title"><span class="w-dot green"></span>Календарь просмотров</h2>
+              <div class="streak-card" id="streak-card"></div>
+            </div>
+            <div class="calendar-host" id="calendar-host"></div>
+            <div class="chart-foot">
+              <span><i class="swatch green"></i>просмотры по дням</span>
+              <span class="chart-foot-hint">нажми на день, чтобы увидеть фильмы</span>
             </div>
           </section>
 

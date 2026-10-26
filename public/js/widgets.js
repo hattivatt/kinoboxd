@@ -6,7 +6,10 @@ import {
 } from './ui.js';
 import { renderDonut, renderTimeline, renderYearBars } from './charts.js';
 import { initPersons } from './persons.js';
-import { openFilmListModal, filmCountPhrase, EXTRA_SORT_OPTIONS, setFilmMenuContext } from './modal.js';
+import {
+  openFilmListModal, filmCountPhrase, EXTRA_SORT_OPTIONS, setFilmMenuContext,
+  posterThumb, renderFilmMenu,
+} from './modal.js';
 import { openUnmatchedModal } from './unmatched.js';
 
 let dashHooks = {};
@@ -89,6 +92,59 @@ function filmFromEntry(slug, entry, extra = {}) {
   };
 }
 
+/** Days since epoch for a `YYYY-MM-DD` string (UTC, no DST). */
+function dayIndex(date) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || ''));
+  if (!match) return null;
+  return Math.floor(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86400000);
+}
+
+/**
+ * Server streaks, with a local fallback so an older cached payload that
+ * already has watchDays (but not streaks) still renders the card. Same rule:
+ * the current run ends at the last viewing and is independent of today.
+ */
+function normalizeStreaks(raw, watchDays) {
+  const validDate = (value) => dayIndex(value) != null;
+  if (raw && typeof raw === 'object') {
+    const current = Math.max(0, toNum(raw.current));
+    const best = Math.max(0, toNum(raw.best));
+    const lastWatchDate = validDate(raw.lastWatchDate) ? String(raw.lastWatchDate).slice(0, 10) : null;
+    const bestDates = Array.isArray(raw.bestDates)
+      ? raw.bestDates.map((date) => String(date).slice(0, 10)).filter(validDate)
+      : [];
+    if (best > 0 || lastWatchDate) {
+      return { current, best, lastWatchDate, bestDates };
+    }
+  }
+  const dates = (Array.isArray(watchDays) ? watchDays : [])
+    .map((entry) => String((entry && entry.date) || '').slice(0, 10))
+    .filter(validDate)
+    .sort();
+  if (!dates.length) return { current: 0, best: 0, lastWatchDate: null, bestDates: [] };
+  let best = 1;
+  let bestFrom = dates[0];
+  let bestTo = dates[0];
+  let run = 1;
+  let runStart = dates[0];
+  for (let i = 1; i < dates.length; i++) {
+    if (dayIndex(dates[i]) - dayIndex(dates[i - 1]) === 1) run++;
+    else { run = 1; runStart = dates[i]; }
+    if (run > best) { best = run; bestFrom = runStart; bestTo = dates[i]; }
+  }
+  let current = 1;
+  for (let i = dates.length - 1; i > 0; i--) {
+    if (dayIndex(dates[i]) - dayIndex(dates[i - 1]) === 1) current++;
+    else break;
+  }
+  return {
+    current,
+    best,
+    lastWatchDate: dates[dates.length - 1],
+    bestDates: [bestFrom, bestTo],
+  };
+}
+
 function normalizeStats(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const summary = source.summary && typeof source.summary === 'object' ? source.summary : {};
@@ -164,6 +220,26 @@ function normalizeStats(raw) {
       }))
       .filter((item) => item.year > 0 && item.count > 0),
     timeline: array(source.timeline).filter((item) => item && item.month),
+    watchDays: array(source.watchDays)
+      .map((item) => {
+        const date = String((item && item.date) || '').slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+        return {
+          date,
+          count: Math.max(0, toNum(item && item.count)),
+          slugs: array(item && item.slugs).map((slug) => String(slug)).filter(Boolean),
+        };
+      })
+      .filter((item) => item && item.count > 0)
+      .sort((a, b) => a.date.localeCompare(b.date)),
+    recentlyWatched: array(source.recentlyWatched)
+      .map((item) => ({
+        date: String((item && item.date) || '').slice(0, 10),
+        slug: String((item && item.slug) || '').trim(),
+        rewatch: item && item.rewatch === true,
+      }))
+      .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && item.slug),
+    streaks: normalizeStreaks(source.streaks, array(source.watchDays)),
     persons: {
       actor: array(persons.actor),
       director: array(persons.director),
@@ -212,6 +288,8 @@ export function renderDashboard(rawStats, hooks = {}) {
   renderPeriods(stats);
   renderYearBarsWidget(stats);
   renderTimelineWidget(stats);
+  renderRecentlyWatched(stats);
+  renderWatchCalendar(stats);
   initPersons(stats);
 }
 
@@ -1254,5 +1332,374 @@ function renderTimelineWidget(stats) {
     const observer = new ResizeObserver(rerender);
     observer.observe(host);
     host._boxdResize = observer;
+  }
+}
+
+/* =========================================================
+   F. recently watched strip
+   ========================================================= */
+
+const MONTHS_GEN = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+];
+const MONTHS_SHORT_GEN = [
+  'янв.', 'февр.', 'мар.', 'апр.', 'мая', 'июн.',
+  'июл.', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.',
+];
+/* Standalone month labels for the calendar axis ("май", not "мая"). */
+const CAL_MONTHS = [
+  'янв', 'фев', 'мар', 'апр', 'май', 'июн',
+  'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
+];
+
+function dateParts(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
+  if (!match) return null;
+  return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+}
+
+/** "25 октября 2026" */
+function fmtDayRu(value) {
+  const parts = dateParts(value);
+  if (!parts) return String(value || '');
+  return `${parts.day} ${MONTHS_GEN[parts.month - 1]} ${parts.year}`;
+}
+
+/** "25 окт. 2026" */
+function fmtDayShortRu(value) {
+  const parts = dateParts(value);
+  if (!parts) return String(value || '');
+  return `${parts.day} ${MONTHS_SHORT_GEN[parts.month - 1]} ${parts.year}`;
+}
+
+/** Days between today's local calendar date and a UTC `YYYY-MM-DD`. */
+function daysSince(value) {
+  const parts = dateParts(value);
+  if (!parts) return null;
+  const now = new Date();
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((today - Date.UTC(parts.year, parts.month - 1, parts.day)) / 86400000);
+}
+
+/** "сегодня" / "вчера" / "3 дня назад" / "2025-06-14". */
+function relativeDayLabel(value) {
+  const diff = daysSince(value);
+  if (diff == null) return String(value || '');
+  if (diff === 0) return 'сегодня';
+  if (diff === 1) return 'вчера';
+  if (diff > 1 && diff <= 7) return `${diff} ${plural(diff, ['день', 'дня', 'дней'])} назад`;
+  return value;
+}
+
+function fmtDateRange(dates) {
+  const list = Array.isArray(dates) ? dates.filter(dateParts) : [];
+  if (!list.length) return '';
+  if (list.length === 1 || list[0] === list[1]) return fmtDayRu(list[0]);
+  const a = dateParts(list[0]);
+  const b = dateParts(list[list.length - 1]);
+  if (a.year === b.year && a.month === b.month) {
+    return `${a.day}–${b.day} ${MONTHS_GEN[b.month - 1]} ${b.year}`;
+  }
+  if (a.year === b.year) {
+    return `${a.day} ${MONTHS_GEN[a.month - 1]} — ${b.day} ${MONTHS_GEN[b.month - 1]} ${b.year}`;
+  }
+  return `${fmtDayRu(list[0])} — ${fmtDayRu(list[list.length - 1])}`;
+}
+
+function renderRecentlyWatched(stats) {
+  const section = $('w-recent-widget');
+  const host = $('recent-strip');
+  const note = $('recent-note');
+  if (!section || !host) return;
+  clear(host);
+
+  const items = Array.isArray(stats.recentlyWatched) ? stats.recentlyWatched : [];
+  if (!items.length) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+
+  if (note) {
+    note.textContent = `${fmtInt(items.length)} ${plural(items.length, ['просмотр', 'просмотра', 'просмотров'])}`;
+  }
+
+  for (const item of items) {
+    const entry = stats.filmsIndex && stats.filmsIndex[item.slug];
+    if (!entry || typeof entry !== 'object') continue;
+    const film = filmFromEntry(item.slug, entry);
+    const title = film.title || slugTitle(item.slug);
+
+    const card = el('div', { class: 'recent-card' });
+    const poster = el('div', {
+      class: 'recent-poster',
+      role: 'button',
+      tabIndex: 0,
+      'aria-label': `${title}: ссылки и действия`,
+      title: `${title}${film.year ? ` (${film.year})` : ''} · ${fmtDayRu(item.date)}`,
+    });
+    poster.append(posterThumb(film.posterPath, title));
+
+    if (item.rewatch) {
+      poster.append(el('span', { class: 'tag recent-rewatch', text: 'повтор' }));
+    }
+
+    const menu = renderFilmMenu(film);
+    if (menu) {
+      menu.classList.add('recent-film-menu');
+      poster.append(menu);
+    }
+
+    const openMenu = () => {
+      const toggle = menu && menu.querySelector('.film-menu-toggle');
+      if (toggle) {
+        toggle.click();
+        return;
+      }
+      // A film without any external links still opens a one-row list so the
+      // card never becomes a dead end.
+      openFilmListModal({
+        kicker: 'Недавно смотрел',
+        title,
+        subtitle: fmtDayRu(item.date),
+        groupLabel: fmtDayRu(item.date),
+        films: [film],
+        sortScope: 'recent',
+      });
+    };
+    poster.addEventListener('click', (event) => {
+      if (event.target.closest('.film-menu')) return;
+      hideTooltip();
+      openMenu();
+    });
+    poster.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      hideTooltip();
+      openMenu();
+    });
+
+    card.append(poster);
+    card.append(el('div', {
+      class: 'recent-date',
+      text: relativeDayLabel(item.date),
+      title: fmtDayRu(item.date),
+    }));
+    host.append(card);
+  }
+}
+
+/* =========================================================
+   G. watch calendar heatmap + streaks
+   ========================================================= */
+
+function heatLevel(count) {
+  const n = toNum(count);
+  if (n <= 0) return 0;
+  if (n === 1) return 1;
+  if (n === 2) return 2;
+  if (n === 3) return 3;
+  return 4;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function openWatchDayModal(stats, day) {
+  const counts = new Map();
+  for (const slug of Array.isArray(day.slugs) ? day.slugs : []) {
+    const key = String(slug || '').trim();
+    if (!key) continue;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+
+  const films = [];
+  for (const [slug, viewings] of counts) {
+    const entry = stats.filmsIndex && stats.filmsIndex[slug];
+    if (!entry || typeof entry !== 'object') continue;
+    films.push(filmFromEntry(slug, entry, viewings > 1 ? { meta: 'повтор' } : {}));
+  }
+
+  // Fallback for an older payload without per-day slugs: use films whose
+  // latest watchedDate is this day (still exact for one-viewing days).
+  if (!films.length) {
+    for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (String(entry.watchedDate || '').slice(0, 10) !== day.date) continue;
+      films.push(filmFromEntry(slug, entry));
+    }
+  }
+
+  const count = Math.max(toNum(day.count), films.length);
+  openFilmListModal({
+    kicker: 'Календарь просмотров',
+    title: fmtDayRu(day.date),
+    subtitle: `${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])} · `
+      + `${fmtInt(films.length)} ${plural(films.length, ['фильм', 'фильма', 'фильмов'])}`,
+    groupLabel: fmtDayRu(day.date),
+    emptyText: 'За этот день нет фильмов в выгрузке',
+    films,
+    sortScope: 'watchday',
+  });
+}
+
+function buildYearCalendar(year, byDate, stats) {
+  const first = Date.UTC(year, 0, 1);
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const daysInYear = leap ? 366 : 365;
+  const offset = (new Date(first).getUTCDay() + 6) % 7; // Monday = 0
+  const columns = Math.ceil((offset + daysInYear) / 7);
+  const pitch = 13; // 11px cell + 2px gap; keep in sync with CSS
+
+  const row = el('div', { class: 'cal-year', dataset: { year: String(year) } });
+  row.append(el('div', { class: 'cal-year-label', text: String(year) }));
+
+  const scroll = el('div', { class: 'cal-scroll' });
+  const months = el('div', {
+    class: 'cal-months',
+    style: { width: `${columns * pitch}px` },
+    'aria-hidden': 'true',
+  });
+
+  let lastLabelColumn = -10;
+  let monthStartDay = 0;
+  for (let month = 0; month < 12; month++) {
+    const column = Math.floor((offset + monthStartDay) / 7);
+    if (column - lastLabelColumn >= 2) {
+      months.append(el('span', {
+        class: 'cal-month-label',
+        text: CAL_MONTHS[month],
+        style: { left: `${column * pitch}px` },
+      }));
+      lastLabelColumn = column;
+    }
+    monthStartDay += new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  }
+
+  const grid = el('div', {
+    class: 'cal-grid',
+    role: 'grid',
+    'aria-label': `Календарь просмотров, ${year}`,
+    style: { gridTemplateColumns: `repeat(${columns}, 11px)` },
+  });
+
+  const totalCells = columns * 7;
+  for (let index = 0; index < totalCells; index++) {
+    const dayOfYear = index - offset;
+    if (dayOfYear < 0 || dayOfYear >= daysInYear) {
+      grid.append(el('span', { class: 'cal-cell is-blank', 'aria-hidden': 'true' }));
+      continue;
+    }
+    const dateObj = new Date(first + dayOfYear * 86400000);
+    const date = `${year}-${pad2(dateObj.getUTCMonth() + 1)}-${pad2(dateObj.getUTCDate())}`;
+    const day = byDate.get(date) || null;
+    const count = day ? toNum(day.count) : 0;
+    const cell = el(day && count > 0 ? 'button' : 'span', {
+      class: `cal-cell cal-level-${heatLevel(count)}${count > 0 ? ' is-active' : ''}`,
+      dataset: { date, count: String(count) },
+      title: count > 0
+        ? `${date} — ${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])}`
+        : `${date} — нет просмотров`,
+      role: 'gridcell',
+      'aria-label': count > 0
+        ? `${date}: ${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])}`
+        : `${date}: нет просмотров`,
+    });
+    if (day && count > 0) {
+      if (cell.tagName === 'BUTTON') cell.type = 'button';
+      cell.addEventListener('pointerenter', (event) => {
+        showTooltip(
+          `${date} — ${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])}`,
+          'нажмите, чтобы увидеть фильмы'
+        );
+        moveTooltip(event);
+      });
+      cell.addEventListener('pointermove', moveTooltip);
+      cell.addEventListener('pointerleave', hideTooltip);
+      cell.addEventListener('click', () => {
+        hideTooltip();
+        openWatchDayModal(stats, day);
+      });
+    }
+    grid.append(cell);
+  }
+
+  scroll.append(months, grid);
+  row.append(scroll);
+  return row;
+}
+
+function renderStreaks(streaks) {
+  const host = $('streak-card');
+  if (!host) return;
+  clear(host);
+
+  if (!streaks || !streaks.lastWatchDate) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+
+  const current = Math.max(0, toNum(streaks.current));
+  const best = Math.max(0, toNum(streaks.best));
+  const currentWord = plural(current, ['день', 'дня', 'дней']);
+
+  host.append(el('span', { class: 'streak-bolt', text: '⚡', 'aria-hidden': 'true' }));
+  const main = el('span', { class: 'streak-main' });
+  main.append(el('span', { class: 'streak-label', text: 'Серия:' }));
+  main.append(el('b', { class: 'streak-num', text: fmtInt(current) }));
+  main.append(el('span', { class: 'streak-unit', text: currentWord }));
+  host.append(main);
+
+  const meta = [];
+  const range = fmtDateRange(streaks.bestDates);
+  meta.push(`Рекорд: ${fmtInt(best)}${range ? ` (${range})` : ''}`);
+  meta.push(`Последний просмотр: ${fmtDayShortRu(streaks.lastWatchDate)}`);
+  host.append(el('span', { class: 'streak-meta', text: meta.join(' · ') }));
+
+  const daysAgo = daysSince(streaks.lastWatchDate);
+  if (current > 0) {
+    host.title = `Текущая серия: ${current} ${currentWord} подряд · последний просмотр ${fmtDayRu(streaks.lastWatchDate)}`;
+  } else {
+    host.title = daysAgo == null
+      ? 'Нет данных о просмотрах'
+      : `Последний просмотр был ${daysAgo} ${plural(daysAgo, ['день', 'дня', 'дней'])} назад`;
+  }
+}
+
+function renderWatchCalendar(stats) {
+  const section = $('w-calendar-widget');
+  const host = $('calendar-host');
+  if (!section || !host) return;
+
+  const days = Array.isArray(stats.watchDays) ? stats.watchDays : [];
+  if (!days.length) {
+    section.hidden = true;
+    clear(host);
+    return;
+  }
+  section.hidden = false;
+
+  renderStreaks(stats.streaks);
+  clear(host);
+
+  const byDate = new Map(days.map((day) => [day.date, day]));
+  const years = [...new Set(days.map((day) => Number(String(day.date).slice(0, 4))))]
+    .filter((year) => Number.isFinite(year) && year > 0)
+    .sort((a, b) => a - b);
+
+  const first = years[0];
+  const last = years[years.length - 1];
+  for (let year = first; year <= last; year++) {
+    host.append(buildYearCalendar(year, byDate, stats));
+  }
+
+  const total = days.reduce((sum, day) => sum + toNum(day.count), 0);
+  const note = $('calendar-note');
+  if (note) {
+    note.textContent = `${fmtInt(days.length)} ${plural(days.length, ['день', 'дня', 'дней'])} · `
+      + `${fmtInt(total)} ${plural(total, ['просмотр', 'просмотра', 'просмотров'])}`;
   }
 }
