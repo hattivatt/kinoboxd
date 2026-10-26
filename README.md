@@ -201,6 +201,29 @@ Merged taxonomy rules (`server/taxonomy.js`):
 * **Спагетти-вестерн**: TMDB keyword `spaghetti western` (alias `italo
   western`) OR `P136 = Q212781`. Both signals currently identify the same six
   corpus films.
+* **Слэшер**: TMDB keyword `slasher` OR `P136 = Q853630` (42 films in the
+  2623-film corpus; the 14 Wikidata-only additions are slasher/giallo
+  classics or slasher-adjacent, no false-positive cut).
+* **Зомби**: TMDB keyword `zombie` OR `P136 = Q3072049` (46 films). Two
+  Wikidata-only tags are borderline (Pirates 4's undead crew, Corpse Bride's
+  skeletons) but only one is a clear outlier, below the agreed cut-off.
+* **Киберпанк**: TMDB keyword `cyberpunk` OR `P136 = Q174526` (37 films).
+  `biopunk` is deliberately not an alias (its only hit, Silent Hill, is not
+  cyberpunk).
+* **Боди-хоррор**: TMDB keyword `body horror` OR `P136 = Q3641550` (20 films;
+  the single Wikidata tag is already keyword-matched).
+* **Готический хоррор**: TMDB keyword `gothic horror` only (15 films). The
+  broader Wikidata item Q114413232 would widen the bucket to 23 borderline
+  titles, so it is not wired; the generic `gothic` keyword is also excluded.
+* **Кайдзю**: TMDB keyword `kaiju` OR `P136 = Q1065444` (14 films; the one
+  Wikidata-only title is King Kong 1933). `giant monster` is not an alias
+  (would add Ghostbusters, Evolution, The Mist).
+* **Фолк-хоррор**: TMDB keyword `folk horror` only (11 films); Q104902646 has
+  no P136 uses in the current Wikidata cache.
+* **Мокьюментари**: TMDB keyword `mockumentary` (alias `fake documentary`) OR
+  `P136 = Q459435` (9 films). `faux documentary`/`pseudo documentary` are
+  found-footage spellings in this corpus and are deliberately excluded, as is
+  Q3272147 (found footage film). Known keyword FP: Gia (1998).
 * **Новая Голливуд**: TMDB keyword OR `P135 = Q377616`.
 * **Pre-Code Голливуд** (new period): `P135 = Q3408764`. TMDB has no matching
   keyword in this corpus.
