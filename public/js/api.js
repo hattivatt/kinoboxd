@@ -112,6 +112,17 @@ export function getStats(uploadId, { signal } = {}) {
   return request(`/api/stats?uploadId=${encodeURIComponent(uploadId)}`, { signal });
 }
 
+/* ---------------- cached profiles + comparison ---------------- */
+
+export function getKpProfiles({ signal } = {}) {
+  return request('/api/profiles', { signal });
+}
+
+export function getCompare(a, b, { signal } = {}) {
+  const params = new URLSearchParams({ a: String(a || ''), b: String(b || '') });
+  return request(`/api/compare?${params.toString()}`, { signal });
+}
+
 export function startKinopoiskImport(url, { signal } = {}) {
   return request('/api/import/kinopoisk', {
     method: 'POST',

@@ -1295,6 +1295,8 @@ function getJob(uploadId) {
 
 module.exports = {
   KpError,
+  KP_DIR,
+  readKpCache,
   parseUserId,
   parseVotesPage,
   mergeKpEntries,

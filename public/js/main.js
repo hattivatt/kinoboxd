@@ -1,7 +1,7 @@
 /* Entry point: boot → upload → enrich (poll) → dashboard. */
 
 import {
-  getStats, startKinopoiskImport, getKinopoiskStatus, getAuthSession,
+  getStats, startKinopoiskImport, getKinopoiskStatus, getAuthSession, getKpProfiles,
 } from './api.js';
 import {
   initUpload, resetUpload, setHasSession, showKpError, setImportBusy,
@@ -18,6 +18,9 @@ import {
   initProfileSwitcher, renderProfileSwitcher, closeProfileSwitcher,
 } from './switcher.js';
 import { initAttach, updateAttachButton, openAttachModal } from './attach.js';
+import {
+  initCompare, openCompare, renderCompareAvailability,
+} from './compare.js';
 import { $, clear, toast, dismissToasts, errorBox, shortErrorMessage, toNum, fmtInt } from './ui.js';
 
 const SESSION_KEY = 'kinoboxd.session.v1';
@@ -45,6 +48,7 @@ const state = {
   refreshing: false,
   refreshContext: null,
   kp: null,
+  serverProfiles: [],
   importToast: null,
   pollTimer: 0,
   pollMode: null,
@@ -150,6 +154,12 @@ async function refreshProfiles() {
   } catch {
     state.profiles = [];
   }
+  try {
+    const list = await getKpProfiles();
+    state.serverProfiles = Array.isArray(list) ? list : [];
+  } catch {
+    state.serverProfiles = state.serverProfiles || [];
+  }
   renderProfiles();
 }
 
@@ -158,12 +168,28 @@ function renderProfiles() {
     profiles: state.profiles,
     activeId: state.profileId,
   });
+  renderCompareAvailability(state.serverProfiles);
   updateProfileRefreshButton();
   updateAttachButton({
     active: state.importSource === 'kinopoisk' && Boolean(state.uploadId),
     attachment: state.attachedLb,
   });
   setAttachAvailable(state.importSource === 'kinopoisk' && Boolean(state.uploadId));
+}
+
+/* =========================================================
+   profile comparison
+   ========================================================= */
+
+function activeKpUserId() {
+  const record = activeProfileRecord();
+  if (record && record.kpUserId) return String(record.kpUserId);
+  return state.kp && state.kp.kpUserId ? String(state.kp.kpUserId) : null;
+}
+
+function openCompareScreen() {
+  closeProfileSwitcher();
+  return openCompare({ activeUserId: activeKpUserId() });
 }
 
 /* =========================================================
@@ -1508,6 +1534,16 @@ function bindUi() {
     onAdd: () => {
       closeProfileSwitcher();
       openUploadScreen();
+    },
+  });
+
+  initCompare({
+    onShow: () => showView('compare'),
+    onBack: () => showView(state.dashboardReady ? 'dashboard' : 'upload'),
+    onOpen: () => { openCompareScreen(); },
+    onMenuOpen: () => {
+      closeProfileSwitcher();
+      openCompareScreen();
     },
   });
 

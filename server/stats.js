@@ -491,8 +491,15 @@ function serializePeople(bucket, onlyCounted) {
 /* Stats                                                               */
 /* ------------------------------------------------------------------ */
 
-function buildStats(upload) {
-  const job = getJob(upload.uploadId);
+/**
+ * Compute the full dashboard payload for an upload.
+ *
+ * `jobOverride` is used by the profile comparison endpoint, which resolves
+ * TMDB matches straight from the cache and must not register a fake job in the
+ * live enrich registry. /api/stats keeps calling buildStats(upload) unchanged.
+ */
+function buildStats(upload, jobOverride = null) {
+  const job = jobOverride || getJob(upload.uploadId);
   if (!job || !job.done) {
     return null;
   }

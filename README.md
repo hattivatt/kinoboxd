@@ -82,6 +82,8 @@ non-API routes).
 | GET | `/api/import/kinopoisk/status?uploadId=...` | `{ stage, page, pageTotal, total, matched, failed, done, warning }` |
 | POST | `/api/attach/lbzip?uploadId=...` | multipart/form-data, field `file` = Letterboxd ZIP; attaches the archive to the active KinoPoisk import (see below) |
 | GET | `/api/stats?uploadId=...` | full statistics payload (400 until enrichment is done) |
+| GET | `/api/profiles` | cached KinoPoisk profiles: `[{ kpUserId, nick, entries, attachedLb, ratedCount }]`, sorted by `entries` desc |
+| GET | `/api/compare?a=<userId>&b=<userId>` | read-only comparison of two cached profiles (see below); 400 for the same id, 404 for an unknown profile |
 | GET | `/api/tmdb/search?q=...&kind=movie\|tv\|all` | TMDB search for manual matching, `{ results: [{ id, kind, title, year, posterPath, voteAverage }] }` |
 | POST | `/api/match` | `{ uploadId, slug, tmdbId, kind }` — attach a TMDB entry to an unmatched film; repeat of the same match is idempotent (`alreadyMatched`), a different rematch returns 409 |
 | POST | `/api/auth/login` | `{ password }` → session cookie (only when `KINOBOXD_PASSWORD` is set) |
@@ -99,6 +101,47 @@ becomes `{ id, kind }`, and enrichment/stats honour that kind on the next run.
 CSV files are located by basename anywhere inside the ZIP, so nested folders
 work. `diary.csv` / `watched.csv` / `ratings.csv` are parsed with a proper
 quoted-CSV parser.
+
+## Profile comparison
+
+`GET /api/compare?a=15702206&b=3063379` compares two **cached** KinoPoisk
+profiles without touching KinoPoisk. It works after a server restart because
+everything is rebuilt from the persistent caches: `cache/kp/{userId}.json`,
+the shared TMDB `details/` + `index.json`, and `cache/profile-lb/{userId}.json`
+when an attachment exists.
+
+```json
+{
+  "a": { "kpUserId": "15702206", "nick": "Axis", "filmCount": 1376,
+         "ratedCount": 1376, "avgRating": 7.54, "totalMinutes": 147509,
+         "dateFrom": "2019-01-27", "dateTo": "2026-10-25" },
+  "b": { "...": "same shape" },
+  "intersection": 1315, "uniqueA": 61, "uniqueB": 1154,
+  "genres":    [{ "name": "Драма", "countA": 552, "countB": 855, "delta": -303 }],
+  "actors":    [{ "name": "Johnny Depp", "countA": 22, "countB": 36, "delta": -14 }],
+  "directors": [{ "name": "Alfred Hitchcock", "countA": 16, "countB": 16, "delta": 0 }],
+  "ratings":   [{ "score": 10, "countA": 9, "countB": 116 }]
+}
+```
+
+* `intersection` is the number of shared **TMDB ids** (matched films).
+* `uniqueA` / `uniqueB` are `filmCount - intersection`, so they include films
+  that TMDB could not match. Films without a TMDB id can never be shared.
+* `genres` is the top 12 by `countA + countB` (TMDB genres plus derived
+  categories, exactly the merged `/api/stats` genre list). `actors` (counted
+  significant roles) and `directors` are top 10 by the same sum. `delta` is
+  `countA - countB`, so negative values favour profile B.
+* `avgRating` is the mean KinoPoisk rating on the native 1–10 scale;
+  `totalMinutes` comes from the cached TMDB runtimes (same as
+  `summary.totalMinutes` on the dashboard).
+
+The endpoint builds `kp.buildDataset()` + an ephemeral enrich map and reuses
+`stats.buildStats(upload, jobOverride)`; the override keeps the fake job out of
+the live enrich registry, so the normal `/api/stats` flow is unchanged.
+`X-Compare-Ms` reports the server-side compute time. The first call for a
+profile pair is ~1.5 s on a 1.4k/2.5k profile pair, subsequent calls are
+~50 ms (the derived model is cached until the profile file's mtime/size
+changes). Payload is ~2.8 KB.
 
 ## Letterboxd attachment (KinoPoisk profiles)
 

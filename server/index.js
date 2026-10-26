@@ -20,6 +20,7 @@ const config = require('./config');
 const cache = require('./cache');
 const tmdb = require('./tmdb');
 const auth = require('./auth');
+const kpCompare = require('./compare');
 const { buildStats, listUnmatched } = require('./stats');
 
 // Fail fast, before the HTTP server starts, if TMDB credentials are missing.
@@ -298,6 +299,40 @@ app.get('/api/stats', (req, res, next) => {
       });
     }
     res.status(200).json(stats);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Cached profiles + comparison                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Cached KinoPoisk profiles (one per cache/kp/{userId}.json). The list is
+ * independent of the browser registry and survives server restarts, so the
+ * comparison screen can always use it.
+ */
+app.get('/api/profiles', (req, res, next) => {
+  try {
+    res.status(200).json(kpCompare.listProfiles());
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Read-only comparison of two cached KinoPoisk profiles. All numbers come
+ * from the persistent caches (profile + TMDB details + Letterboxd
+ * attachment); no live KinoPoisk request is made.
+ */
+app.get('/api/compare', (req, res, next) => {
+  try {
+    const startedAt = process.hrtime.bigint();
+    const payload = kpCompare.compareProfiles(req.query.a, req.query.b);
+    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    res.set('X-Compare-Ms', elapsedMs.toFixed(1));
+    res.status(200).json(payload);
   } catch (err) {
     next(err);
   }
