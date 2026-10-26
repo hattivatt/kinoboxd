@@ -13,7 +13,7 @@
  * all become "neo noir", while "musical number" stays a different token and
  * is not picked up by the "musical" rule.
  *
- * The corpus used to pick aliases is the local TMDB cache (2618 films), see
+ * The corpus used to pick aliases is the local TMDB cache (2623 films), see
  * the round-2 report for the observed frequencies. Aliases with zero hits are
  * intentionally kept: TMDB may add them later.
  *
@@ -63,6 +63,12 @@ const WD = {
   NEO_NOIR: 'Q2421031', // neo-noir (P136)
   GIALLO: 'Q1332055', // giallo (P136)
   SPAGHETTI_WESTERN: 'Q212781', // Spaghetti Western (P136)
+  SLASHER: 'Q853630', // slasher film (P136)
+  ZOMBIE: 'Q3072049', // zombie film (P136)
+  CYBERPUNK: 'Q174526', // cyberpunk (P136)
+  BODY_HORROR: 'Q3641550', // body horror (P136)
+  KAIJU: 'Q1065444', // kaiju (P136)
+  MOCKUMENTARY: 'Q459435', // mockumentary (P136)
   NEW_HOLLYWOOD: 'Q377616', // New Hollywood (P135)
   PRECODE_HOLLYWOOD: 'Q3408764', // pre-Code Hollywood (P135)
 };
@@ -94,6 +100,125 @@ const CATEGORY_DEFS = [
     name: 'Спагетти-вестерн',
     aliases: ['spaghetti western', 'italo western'],
     wdGenre: WD.SPAGHETTI_WESTERN,
+  },
+  /*
+   * Horror / sci-fi genre cycles (corpus 2623, Oct 2026). Counts below are
+   * keyword / Wikidata / union on the whole cache; LB and KP views are
+   * subsets. The TMDB keyword spelling is exact-normalized; "… film" aliases
+   * that produced zero hits are still listed where they are the canonical
+   * Wikidata/IMDb name.
+   *
+   * Slasher: 28 / 36 / 42. Wikidata adds 14 keyword-less titles; all are
+   * slasher-adjacent or slasher classics (Psycho is already keyword-tagged;
+   * the early gialli, American Psycho, Final Destination, Sweeney Todd,
+   * Tucker & Dale, Cabin in the Woods). No obvious false positives, so the
+   * P136 signal is kept.
+   */
+  {
+    key: 'slasher',
+    name: 'Слэшер',
+    aliases: ['slasher', 'slasher film'],
+    wdGenre: WD.SLASHER,
+  },
+  /*
+   * Zombie: 40 / 33 / 46. Wikidata-only additions are Evil Dead II, Doom,
+   * Cargo (all genuine zombie/undead films), the 1972 Tales from the Crypt
+   * anthology (undead segment) and two borderline tags: Pirates of the
+   * Caribbean: On Stranger Tides (Blackbeard's undead "zombie" crew) and
+   * Corpse Bride (skeletons, no zombie outbreak). That is 1 clear outlier out
+   * of 6 WD-only films, below the agreed >=3/15 cut-off, so the P136 signal
+   * is kept; the two borderline titles are documented here instead of
+   * inventing a per-film blacklist.
+   */
+  {
+    key: 'zombie',
+    name: 'Зомби',
+    aliases: ['zombie', 'zombie film'],
+    wdGenre: WD.ZOMBIE,
+  },
+  /*
+   * Cyberpunk: 25 / 28 / 37. The earlier research count of 38 included the
+   * "biopunk" keyword, whose only corpus hit is Silent Hill — not cyberpunk;
+   * it is deliberately not an alias. Wikidata-only additions are the
+   * Terminator cycle, I Robot, Advent Children, Paprika, Tron: Legacy, Cloud
+   * Atlas, Hardcore Henry and Ready Player One — all standard/adjacent
+   * cyberpunk, no P136 cut.
+   */
+  {
+    key: 'cyberpunk',
+    name: 'Киберпанк',
+    aliases: ['cyberpunk', 'cyberpunk film'],
+    wdGenre: WD.CYBERPUNK,
+  },
+  /*
+   * Body horror: 20 / 1 / 20. Wikidata has a single P136 tag in the corpus
+   * (and that film is also keyword-tagged), so the signal is harmless but
+   * adds nothing today. Kept for future cache growth.
+   */
+  {
+    key: 'body-horror',
+    name: 'Боди-хоррор',
+    aliases: ['body horror', 'bodily horror'],
+    wdGenre: WD.BODY_HORROR,
+  },
+  /*
+   * Gothic horror: 15 / 0 / 15, keyword-only. Wikidata has "gothic horror
+   * film" (Q114413232), but in this corpus it tags 9 films of which only one
+   * is keyword-matched: it would add Rosemary's Baby, Night of the Living
+   * Dead, Dracula, Sleepy Hollow, Crimson Peak etc. and grow the bucket from
+   * 15 to 23. That is wider than the requested "exact gothic horror" scope,
+   * so the WD branch is deliberately not wired here. The broad "gothic"
+   * keyword (18 hits: Wednesday, Edward Scissorhands, Rebecca…) is likewise
+   * not an alias.
+   */
+  {
+    key: 'gothic-horror',
+    name: 'Готический хоррор',
+    aliases: ['gothic horror', 'gothic horror film'],
+  },
+  /*
+   * Kaiju: 13 / 8 / 14. The WD-only addition is King Kong (1933), the
+   * canonical giant-monster precursor — acceptable. "giant monster" is NOT
+   * an alias: it would add Ghostbusters, Evolution, The Mist and other
+   * creature features (13 -> 19). TMDB keyword "kaiju" itself has one known
+   * false positive (Superman, 2025), which cannot be filtered by an exact
+   * keyword rule; it is documented rather than special-cased.
+   */
+  {
+    key: 'kaiju',
+    name: 'Кайдзю',
+    aliases: ['kaiju', 'kaiju film'],
+    wdGenre: WD.KAIJU,
+  },
+  /*
+   * Folk horror: 11 / 0 / 11, keyword-only. Q104902646 ("folk horror film")
+   * exists but has no P136 uses in the local Wikidata cache, so no WD branch
+   * is needed. The keyword covers The Wicker Man, The Witch, Midsommar, Viy,
+   * The Blair Witch Project etc.
+   */
+  {
+    key: 'folk-horror',
+    name: 'Фолк-хоррор',
+    aliases: ['folk horror'],
+  },
+  /*
+   * Mockumentary: 8 / 6 / 9. Keyword "mockumentary" (8) plus the harmless
+   * "fake documentary" alias (1 hit, already covered). "faux documentary" and
+   * "pseudo documentary" are deliberately NOT aliases: in this corpus they
+   * are used for found footage (Paranormal Activity, Blair Witch, REC, The
+   * Visit, Monster) and would contradict the user's decision to keep found
+   * footage outside the taxonomy. Note that Wikidata's Q3272147 is "found
+   * footage film", not mockumentary; the correct item is Q459435, whose 6
+   * tags add only District 9 (accepted: the film's first act is explicitly
+   * documentary-styled). Known keyword false positive: Gia (1998), tagged
+   * "mockumentary" by TMDB users although it is a biopic; it stays because
+   * exact-keyword rules have no per-film exclusions.
+   */
+  {
+    key: 'mockumentary',
+    name: 'Мокьюментари',
+    aliases: ['mockumentary', 'fake documentary'],
+    wdGenre: WD.MOCKUMENTARY,
   },
   {
     key: 'arthouse',
