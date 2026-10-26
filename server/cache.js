@@ -18,6 +18,31 @@ const DETAILS_DIR = path.join(CACHE_DIR, 'details');
 fs.mkdirSync(DETAILS_DIR, { recursive: true });
 
 /* ------------------------------------------------------------------ */
+/* Cross-process freshness                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Cheap identity of one cache file: inode + size + mtime (nanoseconds).
+ *
+ * Cache files are always replaced atomically (tmp + rename) by the writer
+ * processes, so the inode changes on every write; mtime catches in-place
+ * edits and size catches truncation. A stat() costs microseconds and is
+ * therefore affordable on every memory-cache read — that is what lets a
+ * running server notice files written by a backfill/rematch process without
+ * a restart.
+ *
+ * Returns null when the file does not exist (or cannot be stat'ed).
+ */
+function fingerprintOf(filePath) {
+  try {
+    const st = fs.statSync(filePath, { bigint: true });
+    return `${st.mtimeNs}:${st.size}:${st.ino}`;
+  } catch (err) {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Index: "normalized title|year" -> tmdbId (number) or false          */
 /* ------------------------------------------------------------------ */
 
@@ -46,11 +71,22 @@ function makeKindKey(title, year, kind) {
 }
 
 let index = {};
+// Fingerprint of the file version currently represented by `index`.
+let indexFingerprint = null;
+// Values written by this process that are not on disk yet. Needed to merge
+// local changes with an externally replaced index.json instead of losing
+// either side.
+const indexPending = new Map();
+
 try {
   const raw = fs.readFileSync(INDEX_PATH, 'utf8');
   const parsed = JSON.parse(raw);
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) index = parsed;
+  indexFingerprint = fingerprintOf(INDEX_PATH);
 } catch (err) {
+  // Remember the broken/missing file's fingerprint so reads do not retry the
+  // same parse on every accessor call; a later external write changes it.
+  indexFingerprint = fingerprintOf(INDEX_PATH);
   if (err.code !== 'ENOENT') {
     console.warn(`[cache] Could not read index.json (${err.message}); starting empty.`);
   }
@@ -81,7 +117,54 @@ function parseIndexEntry(value) {
   return undefined;
 }
 
+/**
+ * Pick up an index.json replaced by another process (backfill, rematch,
+ * manual edit). One statSync on the hot path; the actual reload happens only
+ * when the fingerprint moved.
+ *
+ * Local unsaved writes win over the loaded file; every other disk key is
+ * accepted, so neither side loses data.
+ *
+ * Exported so a stats build can force one refresh up front; all accessors
+ * also call it themselves, so no caller can accidentally read stale data.
+ */
+function refreshIndexIfChanged() {
+  const current = fingerprintOf(INDEX_PATH);
+  if (current === indexFingerprint) return false;
+
+  let disk = {};
+  if (current !== null) {
+    try {
+      const raw = fs.readFileSync(INDEX_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('not a JSON object');
+      }
+      disk = parsed;
+    } catch (err) {
+      // A corrupt/partially visible file must not wipe the in-memory cache;
+      // keep what we have and remember the version we refused to load.
+      indexFingerprint = current;
+      console.warn(`[cache] Could not reload index.json (${err.message}); keeping in-memory index.`);
+      return false;
+    }
+  }
+
+  const merged = Object.assign({}, disk);
+  for (const [key, value] of indexPending) merged[key] = value;
+  index = merged;
+  indexFingerprint = current;
+  if (indexPending.size > 0) {
+    dirty = true;
+    persistIndex();
+  } else {
+    dirty = false;
+  }
+  return true;
+}
+
 function getIndexEntry(key) {
+  refreshIndexIfChanged();
   if (!Object.prototype.hasOwnProperty.call(index, key)) return undefined;
   return parseIndexEntry(index[key]);
 }
@@ -94,6 +177,7 @@ function getIndexValue(key) {
 }
 
 function hasKey(key) {
+  refreshIndexIfChanged();
   return Object.prototype.hasOwnProperty.call(index, key);
 }
 
@@ -104,11 +188,20 @@ let saving = Promise.resolve();
 let dirty = false;
 
 async function writeIndexNow() {
+  // Merge anything written externally since our last access before we
+  // replace the file; this keeps other processes' matches alive.
+  refreshIndexIfChanged();
   dirty = false;
   const tmp = `${INDEX_PATH}.${process.pid}.${Date.now()}.tmp`;
   const data = JSON.stringify(index, null, 0);
   await fsp.writeFile(tmp, data, 'utf8');
   await fsp.rename(tmp, INDEX_PATH);
+  indexFingerprint = fingerprintOf(INDEX_PATH);
+  // Pending values that are still current are now on disk. Values changed
+  // during the await stay pending and keep `dirty` set for the next write.
+  for (const [key, value] of indexPending) {
+    if (index[key] === value) indexPending.delete(key);
+  }
 }
 
 function persistIndex() {
@@ -132,17 +225,24 @@ function flushIndex() {
   // Force a final synchronous write; used at the end of enrichment so that
   // results are on disk even if the process exits right after.
   try {
+    // Merge a concurrently replaced file first so a flush never clobbers
+    // keys learned by another process while this job was running.
+    refreshIndexIfChanged();
     const tmp = `${INDEX_PATH}.flush.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(index, null, 0), 'utf8');
     fs.renameSync(tmp, INDEX_PATH);
+    indexFingerprint = fingerprintOf(INDEX_PATH);
     dirty = false;
+    indexPending.clear();
   } catch (err) {
     console.error(`[cache] Failed to flush index.json: ${err.message}`);
   }
 }
 
 function setIndexValue(key, value) {
+  refreshIndexIfChanged();
   index[key] = value;
+  indexPending.set(key, value);
   persistIndex();
 }
 
@@ -171,14 +271,56 @@ function setIndexValue(key, value) {
  * preferable to churn on every upload.
  */
 let lbLinks = {};
+let lbFingerprint = null;
+const lbPending = new Map();
 try {
   const raw = fs.readFileSync(LB_LINKS_PATH, 'utf8');
   const parsed = JSON.parse(raw);
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) lbLinks = parsed;
+  lbFingerprint = fingerprintOf(LB_LINKS_PATH);
 } catch (err) {
+  lbFingerprint = fingerprintOf(LB_LINKS_PATH);
   if (err.code !== 'ENOENT') {
     console.warn(`[cache] Could not read lb-links.json (${err.message}); starting empty.`);
   }
+}
+
+/**
+ * Same cross-process contract as refreshIndexIfChanged: one statSync per
+ * call, reload only when another process replaced the file. Locally learned
+ * pairs that are not on disk yet are overlaid on the loaded file.
+ */
+function refreshLbLinksIfChanged() {
+  const current = fingerprintOf(LB_LINKS_PATH);
+  if (current === lbFingerprint) return false;
+
+  let disk = {};
+  if (current !== null) {
+    try {
+      const raw = fs.readFileSync(LB_LINKS_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('not a JSON object');
+      }
+      disk = parsed;
+    } catch (err) {
+      lbFingerprint = current;
+      console.warn(`[cache] Could not reload lb-links.json (${err.message}); keeping in-memory links.`);
+      return false;
+    }
+  }
+
+  const merged = Object.assign({}, disk);
+  for (const [key, value] of lbPending) merged[key] = value;
+  lbLinks = merged;
+  lbFingerprint = current;
+  if (lbPending.size > 0) {
+    lbDirty = true;
+    persistLbLinks();
+  } else {
+    lbDirty = false;
+  }
+  return true;
 }
 
 function parseLbLink(value) {
@@ -202,6 +344,7 @@ function parseLbLink(value) {
 function getLbLink(tmdbId, kind) {
   const n = Number(tmdbId);
   if (!Number.isFinite(n) || n <= 0) return null;
+  refreshLbLinksIfChanged();
   const entry = parseLbLink(lbLinks[String(n)]);
   if (!entry) return null;
   const expected = kind === 'tv' ? 'tv' : kind === 'movie' ? 'movie' : null;
@@ -219,12 +362,15 @@ function setLbLink(tmdbId, lbUri, kind) {
   if (!Number.isFinite(n) || n <= 0) return false;
   const uri = typeof lbUri === 'string' ? lbUri.trim() : '';
   if (!/^https?:\/\//i.test(uri)) return false;
+  refreshLbLinksIfChanged();
   const key = String(n);
   if (Object.prototype.hasOwnProperty.call(lbLinks, key)) return false;
-  lbLinks[key] = {
+  const value = {
     lbUri: uri,
     kind: kind === 'tv' ? 'tv' : kind === 'movie' ? 'movie' : null,
   };
+  lbLinks[key] = value;
+  lbPending.set(key, value);
   persistLbLinks();
   return true;
 }
@@ -238,6 +384,7 @@ function setLbLink(tmdbId, lbUri, kind) {
 function learnLbLinks(films, jobFilms) {
   const result = { added: 0, existing: 0, candidates: 0 };
   if (!Array.isArray(films) || !jobFilms || typeof jobFilms.get !== 'function') return result;
+  refreshLbLinksIfChanged();
   for (const film of films) {
     if (!film || !film.lbUri) continue;
     const entry = jobFilms.get(film.slug);
@@ -254,10 +401,15 @@ let lbSaving = Promise.resolve();
 let lbDirty = false;
 
 async function writeLbLinksNow() {
+  refreshLbLinksIfChanged();
   lbDirty = false;
   const tmp = `${LB_LINKS_PATH}.${process.pid}.${Date.now()}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(lbLinks, null, 0), 'utf8');
   await fsp.rename(tmp, LB_LINKS_PATH);
+  lbFingerprint = fingerprintOf(LB_LINKS_PATH);
+  for (const [key, value] of lbPending) {
+    if (lbLinks[key] === value) lbPending.delete(key);
+  }
 }
 
 function persistLbLinks() {
@@ -280,16 +432,20 @@ function persistLbLinks() {
 /** Force a synchronous write (used at the end of enrichment). */
 function flushLbLinks() {
   try {
+    refreshLbLinksIfChanged();
     const tmp = `${LB_LINKS_PATH}.flush.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(lbLinks, null, 0), 'utf8');
     fs.renameSync(tmp, LB_LINKS_PATH);
+    lbFingerprint = fingerprintOf(LB_LINKS_PATH);
     lbDirty = false;
+    lbPending.clear();
   } catch (err) {
     console.error(`[cache] Failed to flush lb-links.json: ${err.message}`);
   }
 }
 
 function lbLinksStats() {
+  refreshLbLinksIfChanged();
   return { keys: Object.keys(lbLinks).length };
 }
 
@@ -307,12 +463,26 @@ function tvCollisionPath(id) {
   return path.join(DETAILS_DIR, `tv-${id}.json`);
 }
 
+/**
+ * Read one details file together with the fingerprint of the exact version
+ * that was parsed. If a writer replaces the file mid-read we retry once, so
+ * the returned data and fingerprint always describe the same bytes.
+ * Returns { data, fingerprint } or null for missing/corrupt files.
+ */
 function readDetailsFile(filePath) {
   try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!parsed || !parsed.details || !parsed.credits) return null;
-    return parsed;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const before = fingerprintOf(filePath);
+      if (before === null) return null;
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const after = fingerprintOf(filePath);
+      if (after === null) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.details || !parsed.credits) return null;
+      if (after === before) return { data: parsed, fingerprint: after };
+      // The file changed while we were reading it; loop and read again.
+    }
+    return null;
   } catch (err) {
     return null;
   }
@@ -333,34 +503,66 @@ function findDetails(id, kind) {
   if (expected === 'tv') candidates.push(tvCollisionPath(n));
 
   for (const filePath of candidates) {
-    const data = readDetailsFile(filePath);
-    if (!data) continue;
-    const dataKind = data.kind === 'tv' ? 'tv' : 'movie';
+    const found = readDetailsFile(filePath);
+    if (!found) continue;
+    const dataKind = found.data.kind === 'tv' ? 'tv' : 'movie';
     if (expected && dataKind !== expected) continue;
-    return { path: filePath, data };
+    return { path: filePath, data: found.data, fingerprint: found.fingerprint };
   }
   return null;
+}
+
+function detailsMemoryKey(id, kind) {
+  return `${kind === 'tv' ? 'tv' : kind === 'movie' ? 'movie' : 'any'}:${id}`;
+}
+
+/** A memory entry is only valid while its source file still has the same fingerprint. */
+function memoryDetailsIsFresh(entry) {
+  if (!entry || !entry.fingerprint) return false;
+  return fingerprintOf(entry.path) === entry.fingerprint;
+}
+
+function loadDetailsIntoMemory(memoryKey, n, kind) {
+  const found = findDetails(n, kind);
+  if (!found) {
+    detailsMemory.delete(memoryKey);
+    return null;
+  }
+  const entry = {
+    data: found.data,
+    path: found.path,
+    fingerprint: found.fingerprint,
+  };
+  detailsMemory.set(memoryKey, entry);
+  return entry;
 }
 
 function getDetails(id, kind) {
   if (id == null) return null;
   const n = Number(id);
   if (!Number.isFinite(n)) return null;
-  const memoryKey = `${kind === 'tv' ? 'tv' : kind === 'movie' ? 'movie' : 'any'}:${n}`;
-  if (detailsMemory.has(memoryKey)) return detailsMemory.get(memoryKey);
-  const found = findDetails(n, kind);
-  if (!found) return null;
-  detailsMemory.set(memoryKey, found.data);
-  return found.data;
+  const memoryKey = detailsMemoryKey(n, kind);
+  const cached = detailsMemory.get(memoryKey);
+  if (cached) {
+    if (memoryDetailsIsFresh(cached)) return cached.data;
+    // The file was replaced, truncated or removed by another process.
+    detailsMemory.delete(memoryKey);
+  }
+  const entry = loadDetailsIntoMemory(memoryKey, n, kind);
+  return entry ? entry.data : null;
 }
 
 function hasDetails(id, kind) {
   if (id == null) return false;
   const n = Number(id);
   if (!Number.isFinite(n)) return false;
-  const memoryKey = `${kind === 'tv' ? 'tv' : kind === 'movie' ? 'movie' : 'any'}:${n}`;
-  if (detailsMemory.has(memoryKey)) return true;
-  return findDetails(n, kind) !== null;
+  const memoryKey = detailsMemoryKey(n, kind);
+  const cached = detailsMemory.get(memoryKey);
+  if (cached) {
+    if (memoryDetailsIsFresh(cached)) return true;
+    detailsMemory.delete(memoryKey);
+  }
+  return loadDetailsIntoMemory(memoryKey, n, kind) !== null;
 }
 
 async function saveDetails(id, data) {
@@ -371,16 +573,18 @@ async function saveDetails(id, data) {
   if (kind === 'tv') {
     // Never overwrite a movie that happens to share the numeric id.
     const existing = readDetailsFile(target);
-    if (existing && existing.kind !== 'tv') {
+    if (existing && existing.data.kind !== 'tv') {
       target = tvCollisionPath(n);
     }
   }
 
-  detailsMemory.set(`${kind}:${n}`, data);
-  if (kind === 'movie') detailsMemory.set(`any:${n}`, data);
   const tmp = `${target}.${process.pid}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(data), 'utf8');
   await fsp.rename(tmp, target);
+
+  const entry = { data, path: target, fingerprint: fingerprintOf(target) };
+  detailsMemory.set(`${kind}:${n}`, entry);
+  if (kind === 'movie') detailsMemory.set(`any:${n}`, entry);
 }
 
 /**
@@ -398,6 +602,7 @@ function isFilmCached(title, year, kind) {
 }
 
 function cacheStats() {
+  refreshIndexIfChanged();
   let ids = 0;
   let misses = 0;
   for (const value of Object.values(index)) {
@@ -417,6 +622,8 @@ module.exports = {
   getIndexValue,
   hasKey,
   setIndexValue,
+  refreshIndexIfChanged,
+  refreshLbLinksIfChanged,
   getLbLink,
   setLbLink,
   learnLbLinks,

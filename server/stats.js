@@ -504,9 +504,12 @@ function buildStats(upload, jobOverride = null) {
     return null;
   }
 
-  // A backfill run is a separate process; pick up its wd-tags.json without a
-  // server restart. The check is one stat() per stats build.
+  // Backfill / rematch run in separate processes; pick up their cache files
+  // without a server restart. Each check is one stat() per stats build (the
+  // accessors also self-check before returning memory-cached values).
   wikidata.reloadIfChanged();
+  cache.refreshIndexIfChanged();
+  cache.refreshLbLinksIfChanged();
 
   const source =
     upload.summary && upload.summary.source
