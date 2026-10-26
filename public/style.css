@@ -1100,7 +1100,7 @@ img { display: block; }
 /* summary strip */
 .summary-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent 70%), var(--card);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1222,7 +1222,7 @@ img { display: block; }
 .metric-unmatched .metric-sub { color: #a9763f; }
 .metric-unmatched:focus-visible { outline-offset: -3px; }
 .metric-unmatched:last-child { border-right: 0; }
-.summary-strip.has-unmatched { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.summary-strip.has-unmatched { grid-template-columns: repeat(7, minmax(0, 1fr)); }
 
 /* =========================================================
    widget grid
@@ -1257,6 +1257,10 @@ img { display: block; }
 
 .w-ratings { grid-column: span 7; }
 .w-genres { grid-column: span 5; }
+.w-franchises { grid-column: span 6; }
+.w-runtime { grid-column: span 6; }
+.w-matrix { grid-column: span 12; }
+.w-auteur { grid-column: span 12; }
 .w-decades { grid-column: span 6; }
 .w-years { grid-column: span 6; }
 .w-yearbars { grid-column: span 12; }
@@ -1522,6 +1526,148 @@ img { display: block; }
   font-size: 10.5px;
   color: var(--muted-2);
   font-variant-numeric: tabular-nums;
+}
+
+.w-franchises .genre-list,
+.w-runtime .genre-list {
+  max-height: 300px;
+}
+
+/* =========================================================
+   decades × scores heatmap
+   ========================================================= */
+
+.matrix-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.decade-matrix {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: separate;
+  border-spacing: 3px;
+  table-layout: fixed;
+}
+.decade-matrix th {
+  font-weight: 600;
+}
+.dm-corner,
+.dm-score {
+  padding: 0 2px 4px;
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  text-align: center;
+}
+.dm-corner {
+  width: 92px;
+  text-align: left;
+  padding-left: 6px;
+}
+.dm-decade {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 92px;
+  padding: 2px 8px 2px 6px;
+  background: var(--card);
+  text-align: left;
+  vertical-align: middle;
+}
+.dm-decade-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dm-decade-avg {
+  display: block;
+  margin-top: 1px;
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.decade-matrix tbody tr.is-lowlight .dm-decade-label,
+.decade-matrix tbody tr.is-lowlight .dm-cell {
+  opacity: 0.48;
+}
+.dm-cell {
+  height: 29px;
+  padding: 0;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.018);
+  text-align: center;
+  vertical-align: middle;
+}
+.dm-cell.is-empty {
+  background: rgba(255, 255, 255, 0.014);
+}
+.dm-cell button {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  width: 100%;
+  height: 29px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: #dff3ff;
+  cursor: pointer;
+  transition: filter 0.14s ease, box-shadow 0.14s ease;
+}
+.dm-cell button:hover {
+  filter: brightness(1.22);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+}
+.dm-cell button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -1px;
+}
+.dm-heat-1 { background: rgba(64, 188, 244, 0.13); }
+.dm-heat-2 { background: rgba(64, 188, 244, 0.26); }
+.dm-heat-3 { background: rgba(64, 188, 244, 0.43); color: #04151f; }
+.dm-heat-4 { background: rgba(64, 188, 244, 0.68); color: #04151f; }
+
+/* =========================================================
+   auteur index line
+   ========================================================= */
+
+.auteur-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 9px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-soft);
+}
+.auteur-emoji {
+  font-size: 16px;
+  line-height: 1;
+}
+.auteur-stat {
+  display: inline;
+}
+.auteur-stat b {
+  font-weight: 720;
+  color: #f3f7fa;
+  font-variant-numeric: tabular-nums;
+}
+.auteur-sep {
+  color: var(--muted-2);
 }
 
 /* =========================================================
@@ -2515,10 +2661,10 @@ img { display: block; }
 @media (max-width: 1100px) {
   .summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .summary-strip.has-unmatched { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .metric:nth-child(2), .metric:nth-child(4) { border-right: none; }
+  .metric:nth-child(2), .metric:nth-child(4), .metric:nth-child(6) { border-right: none; }
   .metric:nth-child(1), .metric:nth-child(2),
   .metric:nth-child(3), .metric:nth-child(4) { border-bottom: 1px solid var(--border); }
-  .metric-source { grid-column: span 2; border-bottom: none; }
+  .metric-source { grid-column: auto; border-bottom: none; }
   .metric-unmatched { grid-column: span 2; border-bottom: none; }
 }
 
@@ -2526,7 +2672,6 @@ img { display: block; }
   .w-ratings, .w-genres, .w-decades, .w-years { grid-column: span 6; }
   .ratings-body { grid-template-columns: minmax(130px, 0.92fr) minmax(170px, 1.08fr); }
 }
-
 @media (max-width: 900px) {
   .dash { padding: 24px 20px 70px; }
   .topbar-inner { padding: 11px 20px; }

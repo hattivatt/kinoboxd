@@ -45,6 +45,21 @@ const GENRE_RU = {
   Western: 'Вестерн',
 };
 
+/* Runtime buckets arrive from the backend in display order; these labels are
+ * the only UI wording that differs from the compact payload keys. */
+const RUNTIME_BUCKET_LABELS = {
+  '<40': 'До 40 мин',
+  '40-59': '40–59 мин',
+  '60-89': '60–89 мин',
+  '90-119': '90–119 мин',
+  '120-149': '120–149 мин',
+  '150-179': '150–179 мин',
+  '180-239': '180–239 мин',
+  '240+': '240+ мин',
+  unknown: 'Неизвестно',
+};
+const RUNTIME_BUCKET_ORDER = Object.keys(RUNTIME_BUCKET_LABELS);
+
 function numOrNull(value) {
   if (value == null || value === '') return null;
   const n = Number(value);
@@ -165,6 +180,12 @@ function normalizeStats(raw) {
   const attachedRaw = summary.attachedLb && typeof summary.attachedLb === 'object'
     ? summary.attachedLb
     : null;
+  const auteurRaw = summary.auteurIndex && typeof summary.auteurIndex === 'object'
+    ? summary.auteurIndex
+    : null;
+  const topAuteurRaw = auteurRaw && auteurRaw.topAuteur && typeof auteurRaw.topAuteur === 'object'
+    ? auteurRaw.topAuteur
+    : null;
 
   return {
     summary: {
@@ -173,8 +194,19 @@ function normalizeStats(raw) {
       dateFrom: summary.dateFrom || null,
       dateTo: summary.dateTo || null,
       totalMinutes: numOrNull(summary.totalMinutes),
+      avgRuntime: numOrNull(summary.avgRuntime),
       unmatchedCount: Math.max(unmatched.length, Math.max(0, toNum(summary.unmatchedCount))),
       rewatchCount: Math.max(0, toNum(summary.rewatchCount)),
+      auteurIndex: auteurRaw ? {
+        directors: Math.max(0, toNum(auteurRaw.directors)),
+        films: Math.max(0, toNum(auteurRaw.films)),
+        ratio: numOrNull(auteurRaw.ratio),
+        avgFilmsPerDirector: numOrNull(auteurRaw.avgFilmsPerDirector),
+        topAuteur: topAuteurRaw && topAuteurRaw.name ? {
+          name: String(topAuteurRaw.name),
+          count: Math.max(0, toNum(topAuteurRaw.count)),
+        } : null,
+      } : null,
       attachedLb: attachedRaw ? {
         fileName: attachedRaw.fileName ? String(attachedRaw.fileName) : null,
         attachedAt: attachedRaw.attachedAt || null,
@@ -213,6 +245,46 @@ function normalizeStats(raw) {
         count: Math.max(0, toNum(item && item.count)),
       }))
       .filter((item) => item.label && item.count > 0),
+    franchises: array(source.franchises)
+      .map((item) => ({
+        collectionId: toNum(item && item.collectionId),
+        name: String(item && item.name ? item.name : '').trim(),
+        posterPath: item && typeof item.posterPath === 'string' ? item.posterPath : null,
+        count: Math.max(0, toNum(item && item.count)),
+        avgRating: numOrNull(item && item.avgRating),
+        films: array(item && item.films)
+          .map((slug) => String(slug))
+          .filter(Boolean),
+      }))
+      .filter((item) => item.collectionId > 0 && item.name && item.films.length >= 2)
+      .sort((a, b) => b.films.length - a.films.length || a.name.localeCompare(b.name, 'ru')),
+    runtimeHistogram: array(source.runtimeHistogram)
+      .map((item) => ({
+        bucket: String(item && item.bucket ? item.bucket : ''),
+        count: Math.max(0, toNum(item && item.count)),
+        avgRating: numOrNull(item && item.avgRating),
+      }))
+      .filter((item) => item.bucket && item.count > 0)
+      .sort((a, b) => RUNTIME_BUCKET_ORDER.indexOf(a.bucket) - RUNTIME_BUCKET_ORDER.indexOf(b.bucket)),
+    decadeRatings: array(source.decadeRatings)
+      .map((row) => {
+        const rawScores = array(row && row.scores);
+        const counts = new Map();
+        for (const cell of rawScores) {
+          const score = toNum(cell && cell.score, -1);
+          if (score < 1 || score > 10) continue;
+          counts.set(score, Math.max(0, toNum(cell && cell.count)));
+        }
+        return {
+          decadeLabel: String(row && row.decadeLabel ? row.decadeLabel : '').trim(),
+          scores: Array.from({ length: 10 }, (_, index) => ({
+            score: index + 1,
+            count: counts.get(index + 1) || 0,
+          })),
+        };
+      })
+      .filter((row) => row.decadeLabel)
+      .sort((a, b) => (parseInt(a.decadeLabel, 10) || 0) - (parseInt(b.decadeLabel, 10) || 0)),
     years: array(source.years)
       .map((item) => ({
         year: toNum(item && item.year),
@@ -279,11 +351,15 @@ export function renderDashboard(rawStats, hooks = {}) {
   renderSummary(stats);
   renderRatings(stats);
   renderGenres(stats);
+  renderFranchises(stats);
+  renderRuntimeHistogram(stats);
   /* Full dashboard render always starts with no decade picked: the years
      card is intentionally empty until the user selects a decade. */
   selectedDecade = null;
   renderDecades(stats);
   renderYears(stats);
+  renderDecadeMatrix(stats);
+  renderAuteurIndex(stats);
   renderOrigins(stats);
   renderPeriods(stats);
   renderYearBarsWidget(stats);
@@ -338,6 +414,22 @@ function renderSummary(stats) {
   ));
 
   host.append(renderWatchMetric(stats, watch));
+
+  const avgRuntime = summary.avgRuntime;
+  const runtimeKnown = Object.values(stats.filmsIndex || {})
+    .filter((entry) => numOrNull(entry && entry.runtime) > 0).length;
+  host.append(metric('clock', 'ср. длительность',
+    el('div', {
+      class: 'metric-value',
+      text: avgRuntime != null && avgRuntime > 0 ? `${fmtInt(avgRuntime)} мин` : '—',
+    }),
+    avgRuntime != null && avgRuntime > 0
+      ? `${fmtInt(runtimeKnown)} ${plural(runtimeKnown, ['фильм', 'фильма', 'фильмов'])} с TMDB`
+      : 'нет данных',
+    avgRuntime != null && avgRuntime > 0
+      ? `Средний хронометраж: ${fmtInt(avgRuntime)} мин`
+      : 'Нет фильмов с известным хронометражем',
+  ));
 
   host.append(metric('calendar', 'период',
     el('div', { class: 'metric-value is-small', text: fmtPeriod(summary.dateFrom, summary.dateTo) }),
@@ -634,7 +726,7 @@ function openRatingsModal(stats, score, isKp) {
    B. genres
    ========================================================= */
 
-function renderGenreRow(host, item, max, { isCategory = false, onClick = null } = {}) {
+function renderGenreRow(host, item, max, { isCategory = false, onClick = null, kindLabel = null } = {}) {
   const row = el('div', { class: `genre-row${isCategory ? ' is-category' : ''}${onClick ? ' is-clickable' : ''}` });
   const name = el('div', { class: 'genre-name' });
   name.append(el('span', { class: 'genre-label', text: item.name }));
@@ -658,13 +750,13 @@ function renderGenreRow(host, item, max, { isCategory = false, onClick = null } 
     fill.style.width = `${Math.max(2, (item.count / max) * 100)}%`;
   });
 
-  const kindLabel = isCategory ? 'категория' : 'жанр';
+  const label = kindLabel || (isCategory ? 'категория' : 'жанр');
   row.addEventListener('pointerenter', (event) => {
     showTooltip(
       `${item.name} — ${fmtInt(item.count)} ${plural(item.count, ['фильм', 'фильма', 'фильмов'])}`,
       item.avgRating != null
-        ? `${kindLabel} · средняя оценка ${fmtRating(item.avgRating)}`
-        : `${kindLabel} · средней оценки нет`,
+        ? `${label} · средняя оценка ${fmtRating(item.avgRating)}`
+        : `${label} · средней оценки нет`,
     );
     moveTooltip(event);
   });
@@ -754,6 +846,314 @@ function openGenreModal(stats, item, { isCategory = false } = {}) {
     films,
     sortScope: isCategory ? 'taxonomy' : 'genre',
   });
+}
+
+/* =========================================================
+   B2. franchises (TMDB collections)
+   ========================================================= */
+
+function renderFranchises(stats) {
+  const host = $('franchises-list');
+  const note = $('franchises-note');
+  if (!host) return;
+
+  const items = stats.franchises
+    .slice()
+    .sort((a, b) => b.films.length - a.films.length || a.name.localeCompare(b.name, 'ru'));
+
+  if (note) {
+    note.textContent = items.length
+      ? `${fmtInt(items.length)} ${plural(items.length, ['коллекция', 'коллекции', 'коллекций'])}`
+      : '';
+  }
+
+  clear(host);
+  if (!items.length) {
+    host.append(emptyState('Мульти-фильмовых коллекций TMDB нет'));
+    return;
+  }
+
+  const max = Math.max(1, ...items.map((item) => item.films.length));
+  for (const item of items) {
+    renderGenreRow(host, {
+      name: item.name,
+      count: item.films.length,
+      avgRating: item.avgRating,
+    }, max, {
+      kindLabel: 'франшиза',
+      onClick: (rowItem) => openFranchiseModal(stats, { ...item, name: rowItem.name }),
+    });
+  }
+}
+
+function openFranchiseModal(stats, item) {
+  const films = filmsFromSlugs(stats.filmsIndex, item.films);
+  const count = films.length;
+  const avg = item.avgRating != null ? ` · средняя оценка ${fmtRating(item.avgRating)}` : '';
+  openFilmListModal({
+    kicker: 'Франшиза',
+    title: item.name,
+    subtitle: `${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])}${avg}`,
+    hint: 'Фильмы одной коллекции TMDB, по годам выхода.',
+    groupLabel: item.name,
+    emptyText: 'Нет фильмов с карточкой TMDB',
+    films,
+    sortScope: 'franchise',
+    defaultSort: 'year',
+  });
+}
+
+/* =========================================================
+   B3. runtime histogram
+   ========================================================= */
+
+function runtimeBucketOf(runtime) {
+  const minutes = Number(runtime);
+  if (!Number.isFinite(minutes) || minutes <= 0) return 'unknown';
+  if (minutes < 40) return '<40';
+  if (minutes < 60) return '40-59';
+  if (minutes < 90) return '60-89';
+  if (minutes < 120) return '90-119';
+  if (minutes < 150) return '120-149';
+  if (minutes < 180) return '150-179';
+  if (minutes < 240) return '180-239';
+  return '240+';
+}
+
+function renderRuntimeHistogram(stats) {
+  const host = $('runtime-list');
+  const note = $('runtime-note');
+  if (!host) return;
+
+  const items = stats.runtimeHistogram
+    .slice()
+    .sort((a, b) => RUNTIME_BUCKET_ORDER.indexOf(a.bucket) - RUNTIME_BUCKET_ORDER.indexOf(b.bucket));
+
+  const total = items.reduce((sum, item) => sum + item.count, 0);
+  if (note) {
+    note.textContent = total
+      ? `${fmtInt(total)} ${plural(total, ['фильм', 'фильма', 'фильмов'])}`
+      : '';
+  }
+
+  clear(host);
+  if (!items.length) {
+    host.append(emptyState('Нет данных о длительности'));
+    return;
+  }
+
+  const max = Math.max(1, ...items.map((item) => item.count));
+  for (const item of items) {
+    renderGenreRow(host, {
+      name: RUNTIME_BUCKET_LABELS[item.bucket] || item.bucket,
+      count: item.count,
+      avgRating: item.avgRating,
+    }, max, {
+      kindLabel: 'длительность',
+      onClick: () => openRuntimeBucketModal(stats, item),
+    });
+  }
+}
+
+function openRuntimeBucketModal(stats, item) {
+  const films = [];
+  for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (runtimeBucketOf(entry.runtime) !== item.bucket) continue;
+    films.push(filmFromEntry(slug, entry));
+  }
+  const label = RUNTIME_BUCKET_LABELS[item.bucket] || item.bucket;
+  const count = films.length;
+  const avg = item.avgRating != null ? ` · средняя оценка ${fmtRating(item.avgRating)}` : '';
+  openFilmListModal({
+    kicker: 'Длительность',
+    title: label,
+    subtitle: `${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])}${avg}`,
+    groupLabel: label,
+    emptyText: 'Нет фильмов с таким хронометражем',
+    films,
+    sortScope: 'runtime-bucket',
+    extraSorts: EXTRA_SORT_OPTIONS,
+    defaultSort: 'runtime',
+  });
+}
+
+/* =========================================================
+   B4. decades × scores heatmap
+   ========================================================= */
+
+function matrixHeatLevel(count, max) {
+  if (!count || !max) return 0;
+  const ratio = count / max;
+  if (ratio >= 0.66) return 4;
+  if (ratio >= 0.34) return 3;
+  if (ratio >= 0.17) return 2;
+  return 1;
+}
+
+function renderDecadeMatrix(stats) {
+  const section = $('w-matrix-widget');
+  const table = $('decade-matrix');
+  const note = $('matrix-note');
+  if (!table) return;
+
+  const rows = stats.decadeRatings
+    .slice()
+    .sort((a, b) => (parseInt(a.decadeLabel, 10) || 0) - (parseInt(b.decadeLabel, 10) || 0));
+  if (!rows.length) {
+    if (section) section.hidden = true;
+    clear(table);
+    if (note) note.textContent = '';
+    return;
+  }
+  if (section) section.hidden = false;
+
+  let max = 0;
+  let ratedTotal = 0;
+  for (const row of rows) {
+    for (const cell of row.scores) {
+      if (cell.count > max) max = cell.count;
+      ratedTotal += cell.count;
+    }
+  }
+  if (note) {
+    note.textContent = `${fmtInt(rows.length)} ${plural(rows.length, ['десятилетие', 'десятилетия', 'десятилетий'])}`
+      + ` · ${fmtInt(ratedTotal)} ${plural(ratedTotal, ['оценка', 'оценки', 'оценок'])}`;
+  }
+
+  clear(table);
+  const thead = el('thead');
+  const headRow = el('tr');
+  headRow.append(el('th', { class: 'dm-corner', scope: 'col', text: 'Десятилетие' }));
+  for (let score = 1; score <= 10; score++) {
+    headRow.append(el('th', { class: 'dm-score', scope: 'col', text: String(score) }));
+  }
+  thead.append(headRow);
+  table.append(thead);
+
+  const tbody = el('tbody');
+  for (const row of rows) {
+    const rated = row.scores.reduce((sum, cell) => sum + cell.count, 0);
+    const weighted = row.scores.reduce((sum, cell) => sum + cell.score * cell.count, 0);
+    const avg = rated > 0 ? weighted / rated : null;
+
+    const tr = el('tr', { class: rated > 0 ? '' : 'is-lowlight' });
+    const th = el('th', { class: 'dm-decade', scope: 'row' });
+    th.append(el('span', { class: 'dm-decade-label', text: row.decadeLabel }));
+    if (avg != null) {
+      th.append(el('span', {
+        class: 'dm-decade-avg',
+        text: `ср. ${fmtRating(avg)}`,
+        title: `Средняя оценка фильмов десятилетия: ${fmtRating(avg)}`,
+      }));
+    }
+    tr.append(th);
+
+    for (const cell of row.scores) {
+      if (cell.count <= 0) {
+        tr.append(el('td', { class: 'dm-cell is-empty', 'aria-label': `${row.decadeLabel}, оценка ${cell.score}: нет фильмов` }));
+        continue;
+      }
+      const level = matrixHeatLevel(cell.count, max);
+      const td = el('td', { class: 'dm-cell' });
+      const button = el('button', {
+        type: 'button',
+        class: `dm-heat-${level}`,
+        text: fmtInt(cell.count),
+        'aria-label': `${row.decadeLabel}, оценка ${cell.score}: ${fmtInt(cell.count)} ${plural(cell.count, ['фильм', 'фильма', 'фильмов'])}`,
+        title: `${row.decadeLabel} · оценка ${cell.score}: ${fmtInt(cell.count)} ${plural(cell.count, ['фильм', 'фильма', 'фильмов'])}`,
+      });
+      button.addEventListener('pointerenter', (event) => {
+        showTooltip(
+          `${row.decadeLabel} · оценка ${cell.score}`,
+          `${fmtInt(cell.count)} ${plural(cell.count, ['фильм', 'фильма', 'фильмов'])} · нажми, чтобы открыть`,
+        );
+        moveTooltip(event);
+      });
+      button.addEventListener('pointermove', moveTooltip);
+      button.addEventListener('pointerleave', hideTooltip);
+      button.addEventListener('click', () => {
+        hideTooltip();
+        openDecadeScoreModal(stats, row.decadeLabel, cell.score);
+      });
+      td.append(button);
+      tr.append(td);
+    }
+    tbody.append(tr);
+  }
+  table.append(tbody);
+}
+
+function openDecadeScoreModal(stats, decadeLabel, score) {
+  const start = parseInt(decadeLabel, 10);
+  if (!Number.isFinite(start)) return;
+  const isKp = Boolean(stats.summary.source && stats.summary.source.type === 'kinopoisk');
+  const films = [];
+  for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
+    if (!entry || typeof entry !== 'object') continue;
+    const year = toNum(entry.year);
+    if (year < start || year > start + 9) continue;
+    if (filmScore(entry, isKp) !== score) continue;
+    films.push(filmFromEntry(slug, entry));
+  }
+  const count = films.length;
+  openFilmListModal({
+    kicker: 'Десятилетия × оценки',
+    title: `${decadeLabel} · оценка ${score}`,
+    subtitle: `${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])} · ваша оценка ${score} из 10`,
+    groupLabel: `${decadeLabel} · ${score}`,
+    emptyText: 'Нет фильмов с этой оценкой в десятилетии',
+    films,
+    sortScope: 'decade-score',
+    defaultSort: 'year',
+  });
+}
+
+/* =========================================================
+   B5. auteur index (plain sentence)
+   ========================================================= */
+
+function renderAuteurIndex(stats) {
+  const section = $('w-auteur-widget');
+  const line = $('auteur-line');
+  const note = $('auteur-note');
+  if (!section || !line) return;
+
+  const auteur = stats.summary.auteurIndex;
+  if (!auteur || auteur.directors <= 0 || auteur.films <= 0) {
+    section.hidden = true;
+    clear(line);
+    return;
+  }
+  section.hidden = false;
+
+  const per = auteur.avgFilmsPerDirector;
+  const perText = per != null ? fmtRating(per) : '—';
+  const perWord = per != null && Math.abs(per - 1) < 0.05 ? 'фильм' : 'фильма';
+
+  clear(line);
+  line.append(el('span', { class: 'auteur-emoji', text: '🎬', 'aria-hidden': 'true' }));
+  line.append(el('span', { class: 'auteur-stat' }));
+  line.lastChild.append('Режиссёров: ');
+  line.lastChild.append(el('b', { text: fmtInt(auteur.directors) }));
+  line.lastChild.append(' на ');
+  line.lastChild.append(el('b', { text: fmtInt(auteur.films) }));
+  line.lastChild.append(` ${plural(auteur.films, ['фильм', 'фильма', 'фильмов'])}`);
+  line.append(el('span', { class: 'auteur-sep', text: '·' }));
+  line.append(el('span', { class: 'auteur-stat' }));
+  line.lastChild.append(el('b', { text: perText }));
+  line.lastChild.append(` ${perWord} на режиссёра`);
+
+  if (auteur.topAuteur) {
+    line.append(el('span', { class: 'auteur-sep', text: '·' }));
+    line.append(el('span', { class: 'auteur-stat' }));
+    line.lastChild.append('Самый насмотренный: ');
+    line.lastChild.append(el('b', { text: auteur.topAuteur.name }));
+    line.lastChild.append(` (${fmtInt(auteur.topAuteur.count)})`);
+  }
+  if (note) {
+    note.textContent = `${fmtInt(auteur.films)} ${plural(auteur.films, ['фильм', 'фильма', 'фильмов'])} с TMDB`;
+  }
 }
 
 /* =========================================================

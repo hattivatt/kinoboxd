@@ -297,6 +297,30 @@
             <div class="genre-list" id="genres-list"></div>
           </section>
 
+          <section class="widget w-franchises" id="w-franchises-widget" aria-labelledby="w-franchises-title">
+            <div class="widget-head">
+              <h2 class="widget-title" id="w-franchises-title"><span class="w-dot green"></span>Франшизы</h2>
+              <span class="widget-note" id="franchises-note"></span>
+            </div>
+            <div class="genre-list" id="franchises-list"></div>
+            <div class="chart-foot">
+              <span><i class="swatch green"></i>фильмы одной коллекции TMDB</span>
+              <span class="chart-foot-hint">нажми на строку, чтобы увидеть фильмы</span>
+            </div>
+          </section>
+
+          <section class="widget w-runtime" id="w-runtime-widget" aria-labelledby="w-runtime-title">
+            <div class="widget-head">
+              <h2 class="widget-title" id="w-runtime-title"><span class="w-dot orange"></span>Длительность</h2>
+              <span class="widget-note" id="runtime-note"></span>
+            </div>
+            <div class="genre-list" id="runtime-list"></div>
+            <div class="chart-foot">
+              <span><i class="swatch orange"></i>фильмы по хронометражу</span>
+              <span class="chart-foot-hint">средняя оценка — справа</span>
+            </div>
+          </section>
+
           <section class="widget w-decades" aria-labelledby="w-decades-title">
             <div class="widget-head">
               <h2 class="widget-title" id="w-decades-title"><span class="w-dot blue"></span>Десятилетия</h2>
@@ -317,6 +341,28 @@
               <div class="legend-host legend-scroll" id="years-legend"></div>
               <div class="donut-host" id="years-donut"></div>
             </div>
+          </section>
+
+          <section class="widget w-matrix" id="w-matrix-widget" aria-labelledby="w-matrix-title">
+            <div class="widget-head">
+              <h2 class="widget-title" id="w-matrix-title"><span class="w-dot blue"></span>Десятилетия × оценки</h2>
+              <span class="widget-note" id="matrix-note"></span>
+            </div>
+            <div class="matrix-scroll">
+              <table class="decade-matrix" id="decade-matrix" aria-label="Количество фильмов по десятилетиям и оценкам"></table>
+            </div>
+            <div class="chart-foot">
+              <span><i class="swatch blue"></i>чем ярче ячейка, тем больше фильмов</span>
+              <span class="chart-foot-hint">нажми на число, чтобы увидеть фильмы</span>
+            </div>
+          </section>
+
+          <section class="widget w-auteur" id="w-auteur-widget" aria-labelledby="w-auteur-title" hidden>
+            <div class="widget-head">
+              <h2 class="widget-title" id="w-auteur-title"><span class="w-dot blue"></span>Авторский индекс</h2>
+              <span class="widget-note" id="auteur-note"></span>
+            </div>
+            <p class="auteur-line" id="auteur-line"></p>
           </section>
 
           <section class="widget w-origins" aria-labelledby="w-origins-title">

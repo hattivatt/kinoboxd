@@ -6,9 +6,10 @@
  * Usage:
  *   npm run backfill:keywords              # keywords, credits untouched
  *   npm run backfill:imdb                  # IMDb ids for deep links
+ *   npm run backfill:collections           # belongs_to_collection (franchises)
  *   npm run backfill:wikidata              # P136/P462/P135/P144 tags
  *   BACKFILL_CONCURRENCY=4 npm run backfill:imdb   (default 8)
- *   node server/backfill.js imdb
+ *   node server/backfill.js collections
  *   BACKFILL_TARGET=imdb node server/backfill.js
  *
  * Targets
@@ -19,6 +20,11 @@
  *       through the normal normalizer, so the whole card is refreshed;
  *     * tv: GET /tv/{id}/external_ids (details do not carry imdb_id) and patch
  *       the existing file, keeping aggregated credits/docs untouched.
+ * - collections: add `details.belongs_to_collection` to movie entries fetched
+ *   before the field was normalized. A `null` value is meaningful (standalone
+ *   film), so presence of the key is the idempotency marker; `collection_checked`
+ *   is kept as an explicit marker for older runs. TV is skipped (TMDB does not
+ *   expose collections for series).
  * - wikidata: query WDQS by IMDb id (P345), 450 ids per batch, with a P4947
  *   TMDB-id fallback for films without an IMDb id. Results are persisted in
  *   cache/wd-tags.json after every batch. Idempotent: already checked ids are
@@ -49,6 +55,9 @@ function normalizeTarget(value) {
   const raw = String(value || '').trim().toLowerCase();
   if (raw === 'imdb' || raw === 'imdb_id' || raw === 'imdb-id') return 'imdb';
   if (raw === 'wikidata' || raw === 'wd' || raw === 'wd-tags') return 'wikidata';
+  if (raw === 'collections' || raw === 'collection' || raw === 'franchises') {
+    return 'collections';
+  }
   return 'keywords';
 }
 
@@ -72,6 +81,15 @@ function hasImdbId(details) {
 /** True when a previous `imdb` run already looked at this file. */
 function imdbChecked(details) {
   return Boolean(details && details.imdb_checked === true);
+}
+
+/** True when a previous `collections` run (or the current normalizer) wrote
+ *  the field. `null` is a valid, meaningful value for standalone films. */
+function collectionChecked(entry) {
+  const details = entry && entry.details;
+  if (!details) return false;
+  return Object.prototype.hasOwnProperty.call(details, 'belongs_to_collection')
+    || details.collection_checked === true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -141,6 +159,43 @@ async function refreshImdb(item) {
       payload.details.imdb_checked = true;
       await cache.saveDetails(id, payload);
       return { ok: true, imdb: payload.details.imdb_id };
+    } catch (err) {
+      lastError = err;
+      if (attempt < MAX_ATTEMPTS) {
+        await sleep(750 * attempt);
+      }
+    }
+  }
+  return { ok: false, error: lastError };
+}
+
+/* ------------------------------------------------------------------ */
+/* collections target                                                  */
+/* ------------------------------------------------------------------ */
+
+async function refreshCollections(item) {
+  const { id } = item;
+  let lastError = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const details = await tmdb.tmdbGet(
+        `/movie/${id}`,
+        { language: 'ru-RU', append_to_response: 'keywords' }
+      );
+      if (!details) throw new Error('TMDB returned no details (404?)');
+      const payload = tmdb.normalizeDetailsPayload(
+        details,
+        item.credits || { cast: [], crew: [] }
+      );
+      // Re-fetching through the normalizer must not erase markers written by
+      // the other backfill targets.
+      if (!payload.details.imdb_id && item.previousImdbId) {
+        payload.details.imdb_id = item.previousImdbId;
+      }
+      if (item.imdbChecked) payload.details.imdb_checked = true;
+      payload.details.collection_checked = true;
+      await cache.saveDetails(id, payload);
+      return { ok: true, collection: payload.details.belongs_to_collection };
     } catch (err) {
       lastError = err;
       if (attempt < MAX_ATTEMPTS) {
@@ -260,6 +315,20 @@ async function main() {
         entry: file.entry,
         credits: file.entry.credits || null,
       });
+    } else if (TARGET === 'collections') {
+      // TV details have no belongs_to_collection; only movies need a refetch.
+      if (file.kind === 'tv' || collectionChecked(file.entry)) {
+        skipped++;
+        continue;
+      }
+      queue.push({
+        id: Number(details.id),
+        kind: file.kind,
+        entry: file.entry,
+        credits: file.entry.credits || null,
+        previousImdbId: hasImdbId(details) ? details.imdb_id : null,
+        imdbChecked: imdbChecked(details),
+      });
     } else {
       if (Array.isArray(details.keywords)) {
         skipped++;
@@ -308,7 +377,9 @@ async function main() {
       const item = queue[index];
       const result = TARGET === 'imdb'
         ? await refreshImdb(item)
-        : await refreshKeywords(item);
+        : TARGET === 'collections'
+          ? await refreshCollections(item)
+          : await refreshKeywords(item);
       processed++;
       if (result.ok) {
         updated++;

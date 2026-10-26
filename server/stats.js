@@ -249,6 +249,25 @@ function round2(value) {
   return Math.round(value * 100) / 100;
 }
 
+/* Runtime histogram buckets, in display order. Any runtime that is missing,
+ * null or 0 belongs to "unknown"; TMDB series often report no episode runtime. */
+const RUNTIME_BUCKET_ORDER = [
+  '<40', '40-59', '60-89', '90-119', '120-149', '150-179', '180-239', '240+', 'unknown',
+];
+
+function runtimeBucket(runtime) {
+  const minutes = Number(runtime);
+  if (!Number.isFinite(minutes) || minutes <= 0) return 'unknown';
+  if (minutes < 40) return '<40';
+  if (minutes < 60) return '40-59';
+  if (minutes < 90) return '60-89';
+  if (minutes < 120) return '90-119';
+  if (minutes < 150) return '120-149';
+  if (minutes < 180) return '150-179';
+  if (minutes < 240) return '180-239';
+  return '240+';
+}
+
 /* ------------------------------------------------------------------ */
 /* Watch calendar / streaks                                            */
 /* ------------------------------------------------------------------ */
@@ -533,6 +552,8 @@ function buildStats(upload) {
 
   const genreMap = new Map(); // name -> { key, name, count, ratingSum, ratingCount, films }
   const decadeMap = new Map();
+  const decadeScoreMap = new Map(); // decade start -> counts[1..10]
+  const franchiseMap = new Map(); // collection id -> { id, name, posterPath, films, rating… }
   const yearMap = new Map();
   const timelineMap = new Map();
   const filmsIndex = {};
@@ -577,6 +598,7 @@ function buildStats(upload) {
 
   let ratedCount = 0;
   let totalMinutes = 0;
+  let runtimeCount = 0;
 
   for (const film of upload.films) {
     const filmJob = job.films.get(film.slug) || {};
@@ -640,7 +662,10 @@ function buildStats(upload) {
 
     // ---- runtime ----
     const runtime = details && Number.isFinite(details.runtime) ? details.runtime : 0;
-    if (runtime > 0) totalMinutes += runtime;
+    if (runtime > 0) {
+      totalMinutes += runtime;
+      runtimeCount++;
+    }
 
     // ---- year / decade ----
     const year = releaseYear(details && details.release_date, film.year);
@@ -648,6 +673,54 @@ function buildStats(upload) {
       yearMap.set(year, (yearMap.get(year) || 0) + 1);
       const start = Math.floor(year / 10) * 10;
       decadeMap.set(start, (decadeMap.get(start) || 0) + 1);
+    }
+
+    // ---- decade × score matrix ----
+    // Same score scale as the ratings widget: KinoPoisk is native 1-10,
+    // Letterboxd half-stars are doubled.
+    if (year != null && film.rating !== null && film.rating !== undefined) {
+      const score = isKpSource ? Math.round(film.rating) : Math.round(film.rating * 2);
+      if (score >= 1 && score <= 10) {
+        const start = Math.floor(year / 10) * 10;
+        let counts = decadeScoreMap.get(start);
+        if (!counts) {
+          counts = new Array(11).fill(0);
+          decadeScoreMap.set(start, counts);
+        }
+        counts[score]++;
+      }
+    }
+
+    // ---- franchises (TMDB collections) ----
+    // Only TMDB movies carry belongs_to_collection. The localized (`ru-RU`)
+    // collection name and poster are stored as-is; grouping is by collection
+    // id, so two different collections with the same display name stay apart.
+    const collection = details && details.belongs_to_collection;
+    if (collection && collection.id != null) {
+      const collectionId = Number(collection.id);
+      if (Number.isFinite(collectionId) && collectionId > 0) {
+        let franchise = franchiseMap.get(collectionId);
+        if (!franchise) {
+          franchise = {
+            collectionId,
+            name: '',
+            posterPath: null,
+            films: [],
+            ratingSum: 0,
+            ratingCount: 0,
+          };
+          franchiseMap.set(collectionId, franchise);
+        }
+        if (collection.name) franchise.name = String(collection.name);
+        if (!franchise.posterPath && collection.poster_path) {
+          franchise.posterPath = collection.poster_path;
+        }
+        franchise.films.push({ slug: film.slug, year, title: film.titleRu || film.title || '' });
+        if (film.rating !== null && film.rating !== undefined) {
+          franchise.ratingSum += film.rating;
+          franchise.ratingCount++;
+        }
+      }
     }
 
     // ---- genres ----
@@ -871,6 +944,68 @@ function buildStats(upload) {
     .map(([start, count]) => ({ label: `${start}-е`, start, count }))
     .sort((a, b) => a.start - b.start);
 
+  // Franchises: only real multi-film collections are interesting (a single
+  // film is just a TMDB metadata quirk). `films` is chronological, so the UI
+  // can open the list "by years" without another mapping.
+  const franchises = [...franchiseMap.values()]
+    .filter((franchise) => franchise.films.length >= 2)
+    .map((franchise) => {
+      const ordered = franchise.films.slice().sort((a, b) => {
+        const yearA = Number.isFinite(a.year) ? a.year : Infinity;
+        const yearB = Number.isFinite(b.year) ? b.year : Infinity;
+        if (yearA !== yearB) return yearA - yearB;
+        return String(a.title).localeCompare(String(b.title), 'ru');
+      });
+      return {
+        collectionId: franchise.collectionId,
+        name: franchise.name || `Коллекция ${franchise.collectionId}`,
+        posterPath: franchise.posterPath,
+        count: franchise.films.length,
+        avgRating: franchise.ratingCount > 0
+          ? round2(franchise.ratingSum / franchise.ratingCount)
+          : null,
+        films: ordered.map((film) => film.slug),
+      };
+    })
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
+
+  // Runtime histogram over the same filmsIndex the modal uses. Buckets are
+  // omitted when empty; `unknown` collects missing and zero runtimes.
+  const runtimeHistogramMap = new Map();
+  for (const bucket of RUNTIME_BUCKET_ORDER) {
+    runtimeHistogramMap.set(bucket, { bucket, count: 0, ratingSum: 0, ratingCount: 0 });
+  }
+  for (const entry of Object.values(filmsIndex)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const bucket = runtimeBucket(entry.runtime);
+    const item = runtimeHistogramMap.get(bucket);
+    item.count++;
+    if (entry.rating != null && Number.isFinite(Number(entry.rating))) {
+      item.ratingSum += Number(entry.rating);
+      item.ratingCount++;
+    }
+  }
+  const runtimeHistogram = RUNTIME_BUCKET_ORDER
+    .map((bucket) => runtimeHistogramMap.get(bucket))
+    .filter((item) => item.count > 0)
+    .map((item) => ({
+      bucket: item.bucket,
+      count: item.count,
+      avgRating: item.ratingCount > 0 ? round2(item.ratingSum / item.ratingCount) : null,
+    }));
+
+  // Matrix for the "decades × scores" heatmap. Every decade row carries all
+  // 10 scores (zero counts included) so the frontend renders a rectangular
+  // grid; rows without any rating remain visible but dimmed.
+  const decadeRatings = decades.map((decade) => {
+    const counts = decadeScoreMap.get(decade.start) || new Array(11).fill(0);
+    const scores = [];
+    for (let score = 1; score <= 10; score++) {
+      scores.push({ score, count: counts[score] || 0 });
+    }
+    return { decadeLabel: decade.label, scores };
+  });
+
   const years = [...yearMap.entries()]
     .map(([year, count]) => ({ year, count }))
     .sort((a, b) => a.year - b.year);
@@ -913,6 +1048,28 @@ function buildStats(upload) {
   );
 
   const unmatched = computeUnmatched(upload, job);
+  const matchedFilmCount = Math.max(0, upload.films.length - unmatched.length);
+
+  // Auteur index: unique credited directors among the matched films. The
+  // director bucket is always counted (addRole(..., true)), but filter on
+  // counted >= 1 to be robust against older payloads.
+  const creditedDirectors = persons.director.filter((person) => person.counted >= 1);
+  const directorCount = creditedDirectors.length;
+  const filmsPerDirector = directorCount > 0 ? matchedFilmCount / directorCount : null;
+  const topDirector = creditedDirectors.length > 0
+    ? creditedDirectors
+        .slice()
+        .sort((a, b) => b.counted - a.counted || a.name.localeCompare(b.name, 'ru'))[0]
+    : null;
+  const auteurIndex = {
+    directors: directorCount,
+    films: matchedFilmCount,
+    ratio: filmsPerDirector != null ? round2(filmsPerDirector) : null,
+    avgFilmsPerDirector: filmsPerDirector != null
+      ? Math.round(filmsPerDirector * 10) / 10
+      : null,
+    topAuteur: topDirector ? { name: topDirector.name, count: topDirector.counted } : null,
+  };
 
   const summary = {
     filmCount: upload.films.length,
@@ -923,6 +1080,8 @@ function buildStats(upload) {
     dateFrom: isKpSource ? (realDateFrom || upload.summary.dateFrom) : upload.summary.dateFrom,
     dateTo: isKpSource ? (realDateTo || upload.summary.dateTo) : upload.summary.dateTo,
     totalMinutes,
+    avgRuntime: runtimeCount > 0 ? Math.round(totalMinutes / runtimeCount) : null,
+    auteurIndex,
     source,
     unmatchedCount: unmatched.length,
   };
@@ -943,6 +1102,9 @@ function buildStats(upload) {
     ratings,
     genres: mergedGenres,
     decades,
+    franchises,
+    runtimeHistogram,
+    decadeRatings,
     years,
     timeline,
     watchDays,

@@ -3,7 +3,11 @@
 const { normalizeTitle } = require('./cache');
 const { getTmdbToken } = require('./config');
 
-const API_BASE = 'https://api.themoviedb.org/3';
+// `TMDB_API_BASE` lets a local backfill use TMDB's alternate API host when
+// the canonical `api.themoviedb.org` endpoint is blocked by the network.
+// Production keeps the documented default.
+const API_BASE = String(process.env.TMDB_API_BASE || 'https://api.themoviedb.org/3')
+  .replace(/\/+$/, '');
 const MAX_CONCURRENCY = 12;
 
 function readToken() {
@@ -654,6 +658,24 @@ function normalizeImdbId(value) {
   return /^tt\d{5,}$/.test(id) ? id : null;
 }
 
+/**
+ * TMDB's `belongs_to_collection` is localized by the request language (ru-RU
+ * gives "Железный человек (Коллекция)"). `null` is stored explicitly for
+ * standalone films: it is the idempotency marker for the `collections`
+ * backfill target, just like `imdb_checked` for the `imdb` target.
+ */
+function normalizeCollection(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = Number(raw.id);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  return {
+    id,
+    name: typeof raw.name === 'string' ? raw.name : '',
+    poster_path: raw.poster_path || null,
+    backdrop_path: raw.backdrop_path || null,
+  };
+}
+
 function normalizeDetailsPayload(details, credits) {
   return {
     kind: 'movie',
@@ -673,6 +695,7 @@ function normalizeDetailsPayload(details, credits) {
       production_countries: normalizeCountries(details.production_countries),
       production_companies: normalizeCompanies(details.production_companies),
       keywords: normalizeKeywords(details.keywords),
+      belongs_to_collection: normalizeCollection(details.belongs_to_collection),
     },
     credits: {
       cast: Array.isArray(credits && credits.cast)
@@ -911,6 +934,7 @@ module.exports = {
   normalizeDetailsPayload,
   normalizeTvPayload,
   normalizeImdbId,
+  normalizeCollection,
   searchMovie,
   searchTv,
   searchCatalog,

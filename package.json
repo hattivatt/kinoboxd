@@ -9,6 +9,7 @@
     "start": "node server/index.js",
     "backfill:keywords": "node server/backfill.js keywords",
     "backfill:imdb": "node server/backfill.js imdb",
+    "backfill:collections": "node server/backfill.js collections",
     "backfill:wikidata": "node server/backfill.js wikidata"
   },
   "engines": {
