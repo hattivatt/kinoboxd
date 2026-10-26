@@ -8,6 +8,7 @@
  *   npm run backfill:imdb                  # IMDb ids for deep links
  *   npm run backfill:collections           # belongs_to_collection (franchises)
  *   npm run backfill:wikidata              # P136/P462/P135/P144 tags
+ *   npm run rematch                        # re-evaluate cache/index.json
  *   BACKFILL_CONCURRENCY=4 npm run backfill:imdb   (default 8)
  *   node server/backfill.js collections
  *   BACKFILL_TARGET=imdb node server/backfill.js
@@ -57,6 +58,9 @@ function normalizeTarget(value) {
   if (raw === 'wikidata' || raw === 'wd' || raw === 'wd-tags') return 'wikidata';
   if (raw === 'collections' || raw === 'collection' || raw === 'franchises') {
     return 'collections';
+  }
+  if (raw === 'rematch' || raw === 'rematch-index' || raw === 'match') {
+    return 'rematch';
   }
   return 'keywords';
 }
@@ -295,6 +299,11 @@ async function runWikidataTarget(files, names, unreadable) {
 }
 
 async function main() {
+  if (TARGET === 'rematch') {
+    // Re-evaluate index.json only; it does not need the details scan.
+    const { runRematch } = require('./rematch');
+    return runRematch();
+  }
   const { files, names, unreadable } = await readAllFiles();
   if (TARGET === 'wikidata') {
     return runWikidataTarget(files, names, unreadable);

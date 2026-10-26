@@ -48,6 +48,10 @@ intentionally not committed. If neither is present, startup fails with
 | `KINOBOXD_PASSWORD` | Пароль для доступа к API. Если не задан/пустой — авторизация выключена, API открыто (дефолт для локальной разработки) |
 | `KINOBOXD_STATE_DIR` | Каталог состояния в Nix-сборке (по умолчанию `$XDG_STATE_HOME/kinoboxd`) |
 | `KINOBOXD_CACHE_DIR` | Переопределяет каталог кэша (по умолчанию `app/cache`). Удобно для тестов/нестандартной раскладки; изменяет и `index.json`/`details/`, и `kp/` |
+| `TMDB_API_BASE` | Альтернативный хост TMDB API (например `https://api.tmdb.org/3`), если канонический `api.themoviedb.org` недоступен |
+| `REMATCH_DRY_RUN` | `1` — показать изменения `cache/index.json` без записи |
+| `REMATCH_CONCURRENCY` | Параллельность `rematch` (по умолчанию 8, максимум 16) |
+| `DEBUG_RETRY` | `1` — логировать каждый транспортный retry TMDB (иначе только итоговые счётчики) |
 
 ### Пароль (опционально)
 
@@ -305,7 +309,39 @@ already known to the index resolve from the cache (a KinoPoisk import still
 checks the profile's newest page, see above).
 
 TMDB requests are capped at 12 concurrent; HTTP 429 is retried up to 5 times
-with `Retry-After`/exponential backoff.
+with `Retry-After`/exponential backoff. Transport failures (`fetch failed`,
+connection resets, timeouts) and 5xx responses are retried four times with a
+1/2/4/8 s backoff; `DEBUG_RETRY=1` logs each retry, otherwise only the
+aggregate counters are printed at the end of an import/backfill run. Every
+KinoPoisk import also retries its transport-failed films once after the main
+pass (`retriedSuccesses` in the `done:` line), so a flaky endpoint no longer
+leaves a tail of false negatives.
+
+### Re-matching the whole cache
+
+`npm run rematch` (or `kinoboxd-backfill rematch`) re-runs the current TMDB
+matcher over every entry in `cache/index.json`:
+
+* values like `{ "id": 123, "kind": "movie" }` are **manual matches and are
+  never touched** (they are counted as `skipped-manual` in the summary);
+* automatic integer values are searched again; `false` misses are retried;
+* a changed id is written atomically to the index and its details are fetched
+  if they are not cached yet; old details files are left in place;
+* a transport error keeps the existing value, so a flaky network cannot turn
+  a good match into `false`;
+* an existing automatic id is never downgraded to `false` just because the
+  title/year key alone yields no confident match (`unconfirmed`), and a
+  candidate more than two years outside the key's release window is ignored
+  (`year-guarded`). This keeps remakes and obscure namesakes from breaking a
+  previously correct match.
+
+The key supplies the title/year (`tv|` marks a series); cached KinoPoisk
+profiles supply the localized title and the real media kind when available.
+Useful environment variables: `REMATCH_DRY_RUN=1` (log changes without
+writing), `REMATCH_CONCURRENCY=8` and `TMDB_API_BASE` (alternate API host).
+The summary prints total keys, skipped manual entries, re-evaluated keys,
+changed/unchanged/still-failed counts, refetched details and TMDB retry
+counters.
 
 ## Wikidata
 
