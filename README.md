@@ -195,6 +195,12 @@ Merged taxonomy rules (`server/taxonomy.js`):
   year guard keeps modern noirs out of the classic period; neo-noir is its own
   category below.
 * **Нео-нуар**: TMDB keyword OR `P136 = Q2421031`.
+* **Джалло**: TMDB keyword OR `P136 = Q1332055`. Keyword and Wikidata
+  currently identify exactly the same two corpus films; `american giallo` is
+  deliberately not an alias (it would pull in Basic Instinct / Malignant).
+* **Спагетти-вестерн**: TMDB keyword `spaghetti western` (alias `italo
+  western`) OR `P136 = Q212781`. Both signals currently identify the same six
+  corpus films.
 * **Новая Голливуд**: TMDB keyword OR `P135 = Q377616`.
 * **Pre-Code Голливуд** (new period): `P135 = Q3408764`. TMDB has no matching
   keyword in this corpus.

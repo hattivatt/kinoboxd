@@ -1626,6 +1626,11 @@ img { display: block; }
   align-items: center;
   gap: 7px;
 }
+.genre-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
 .country-filter-label {
   font-size: 10.5px;
   color: var(--muted-2);

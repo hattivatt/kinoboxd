@@ -8,7 +8,7 @@ import {
   initUpload, setUploadBusy, showUploadPreview, showUploadError, clearUploadError,
   resetUpload, setHasSession, setSource, showKpError, setImportBusy,
 } from './upload.js';
-import { renderDashboard, resetYearBarsCountry } from './widgets.js';
+import { renderDashboard, resetYearBarsFilters } from './widgets.js';
 import { initAuth, setAuthUi, prepareLogin } from './auth.js';
 import { closeAllModals } from './modal.js';
 import {
@@ -668,10 +668,10 @@ function applyStats(stats, { fromCache = false, profile = null } = {}) {
     bootError(new Error('Сервер вернул пустой ответ статистики.'));
     return;
   }
-  // A different dataset means the country filter no longer applies. A stats
-  // refresh for the same upload (manual match) keeps the current choice.
+  // A different dataset means the country and genre/style filters no longer
+  // apply. A stats refresh for the same upload (manual match) keeps both.
   if (lastRenderedUploadId && state.uploadId && state.uploadId !== lastRenderedUploadId) {
-    resetYearBarsCountry();
+    resetYearBarsFilters();
   }
   lastRenderedUploadId = state.uploadId || lastRenderedUploadId;
   if (profile && profile.id) {
@@ -898,8 +898,8 @@ async function switchProfile(id) {
   }
   if (id === state.profileId && state.dashboardReady) return;
 
-  // A country filter belongs to the profile it was picked on.
-  resetYearBarsCountry();
+  // A country/genre filter belongs to the profile it was picked on.
+  resetYearBarsFilters();
 
   const flow = beginFlow();
   hideStaleBanner();

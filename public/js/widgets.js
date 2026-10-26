@@ -917,14 +917,17 @@ function renderPeriods(stats) {
    D2. views by release year
    ========================================================= */
 
-/* Country picked in the year-bars widget. null = "all countries", in which
- * case the chart is rendered straight from stats.years (no extra work).
- * The choice survives refreshStats() because renderDashboard() does not touch
- * it; main.js resets it when the profile switcher selects another profile. */
+/* Country and genre/style picked in the year-bars widget. null = "all", in
+ * which case the chart is rendered straight from stats.years (no extra work).
+ * The choices survive refreshStats() because renderDashboard() does not touch
+ * them; main.js resets both when the profile switcher selects another
+ * profile or the uploadId changes. */
 let selectedCountry = null;
+let selectedGenreKey = null;
 
-export function resetYearBarsCountry() {
+export function resetYearBarsFilters() {
   selectedCountry = null;
+  selectedGenreKey = null;
 }
 
 /** Countries of all matched films: [{ name, count }], most films first. */
@@ -942,12 +945,44 @@ function countryCounts(filmsIndex) {
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
 }
 
-/** Local aggregation by release year for one country (matched films only). */
-function yearsForCountry(filmsIndex, country) {
+/**
+ * Build the combined country + genre/style predicate over filmsIndex.
+ *
+ * TMDB genre buckets use a "genre-<id>" key and are matched against the
+ * localized genre names in filmsIndex (case-insensitive). Derived taxonomy
+ * buckets ("giallo", "spaghetti-western", "noir", …) arrive with an explicit
+ * `films` slug list, so membership is a set lookup.
+ */
+function yearBarsPredicate(country, genre) {
+  const genreName =
+    genre && /^genre-/.test(genre.key || '')
+      ? String(genre.name || '').trim().toLowerCase()
+      : '';
+  const derivedSlugs =
+    genre && !genreName
+      ? new Set((Array.isArray(genre.films) ? genre.films : []).map(String))
+      : null;
+  return (slug, entry) => {
+    if (!entry || typeof entry !== 'object') return false;
+    if (country && (!Array.isArray(entry.countries) || !entry.countries.includes(country))) {
+      return false;
+    }
+    if (genreName) {
+      const genres = Array.isArray(entry.genres) ? entry.genres : [];
+      if (!genres.some((name) => String(name || '').trim().toLowerCase() === genreName)) {
+        return false;
+      }
+    }
+    if (derivedSlugs && !derivedSlugs.has(slug)) return false;
+    return true;
+  };
+}
+
+/** Local aggregation by release year for the active filters. */
+function yearsForFilters(filmsIndex, predicate) {
   const map = new Map();
-  for (const entry of Object.values(filmsIndex || {})) {
-    if (!entry || typeof entry !== 'object') continue;
-    if (!Array.isArray(entry.countries) || !entry.countries.includes(country)) continue;
+  for (const [slug, entry] of Object.entries(filmsIndex || {})) {
+    if (!predicate(slug, entry)) continue;
     const year = toNum(entry.year);
     if (!year) continue;
     map.set(year, (map.get(year) || 0) + 1);
@@ -972,6 +1007,31 @@ function renderCountryFilter(stats, countries) {
   };
 }
 
+/** Sorted copy of the merged genre/category list (count desc). */
+function genreFilterOptions(stats) {
+  return (Array.isArray(stats.genres) ? stats.genres : [])
+    .filter((item) => item && item.key && item.name && toNum(item.count) > 0)
+    .slice()
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
+}
+
+function renderGenreFilter(stats, options) {
+  const select = $('yearbars-genre');
+  if (!select) return;
+  clear(select);
+  select.append(el('option', { value: '', text: 'Все' }));
+  for (const item of options) {
+    select.append(
+      el('option', { value: item.key, text: `${item.name} (${fmtInt(item.count)})` })
+    );
+  }
+  select.value = selectedGenreKey || '';
+  select.onchange = () => {
+    selectedGenreKey = select.value || null;
+    renderYearBarsWidget(stats);
+  };
+}
+
 function renderYearBarsWidget(stats) {
   const host = $('yearbars-chart');
   if (!host) return;
@@ -986,28 +1046,43 @@ function renderYearBarsWidget(stats) {
   if (selectedCountry && !countries.some((country) => country.name === selectedCountry)) {
     selectedCountry = null;
   }
-  renderCountryFilter(stats, countries);
 
-  const series = selectedCountry
-    ? yearsForCountry(stats.filmsIndex, selectedCountry)
+  const genreOptions = genreFilterOptions(stats);
+  // Same rule for the genre/style filter: a refresh can remove a bucket when
+  // the last film is re-matched, and a profile switch replaces the list.
+  if (selectedGenreKey && !genreOptions.some((item) => item.key === selectedGenreKey)) {
+    selectedGenreKey = null;
+  }
+  const selectedGenre = genreOptions.find((item) => item.key === selectedGenreKey) || null;
+  const filtersActive = Boolean(selectedCountry || selectedGenre);
+
+  renderCountryFilter(stats, countries);
+  renderGenreFilter(stats, genreOptions);
+
+  const series = filtersActive
+    ? yearsForFilters(stats.filmsIndex, yearBarsPredicate(selectedCountry, selectedGenre))
     : stats.years;
   const total = series.reduce((sum, item) => sum + toNum(item.count), 0);
 
   const onYearClick = (year) => openYearModal(stats, year);
 
-  if (selectedCountry && !series.length) {
+  if (filtersActive && !series.length) {
     clear(host);
-    host.append(emptyState('Нет фильмов этой страны'));
+    host.append(emptyState('Нет фильмов по выбранным фильтрам'));
   } else {
     renderYearBars(host, series, { onYearClick });
   }
 
   const note = $('yearbars-note');
   if (note) {
-    if (selectedCountry) {
+    if (filtersActive) {
+      const parts = [];
+      if (selectedCountry) parts.push(`страна: ${selectedCountry}`);
+      if (selectedGenre) parts.push(`жанр/стиль: ${selectedGenre.name}`);
+      const suffix = parts.join(' · ');
       note.textContent = total
-        ? `${fmtInt(total)} ${plural(total, ['фильм', 'фильма', 'фильмов'])} · страна: ${selectedCountry}`
-        : 'нет фильмов этой страны';
+        ? `${fmtInt(total)} ${plural(total, ['фильм', 'фильма', 'фильмов'])} · ${suffix}`
+        : `нет фильмов · ${suffix}`;
     } else {
       const years = series.slice().sort((a, b) => a.year - b.year);
       if (!years.length) note.textContent = 'нет данных';
@@ -1019,6 +1094,10 @@ function renderYearBarsWidget(stats) {
   if (typeof ResizeObserver === 'function') {
     const rerender = debounce(() => {
       if (!host.clientWidth) return;
+      // An empty filtered result is rendered as a static empty state; calling
+      // renderYearBars here would overwrite it with the chart's generic
+      // "no year data" message.
+      if (filtersActive && !series.length) return;
       renderYearBars(host, series, { onYearClick });
     }, 160);
     const observer = new ResizeObserver(rerender);
@@ -1027,16 +1106,17 @@ function renderYearBarsWidget(stats) {
   }
 }
 
-/* Year column click: films of that release year, user rating first. When a
- * country filter is active, only that country's films are listed. */
-function filmsForYear(filmsIndex, year, country = null) {
+/* Year column click: films of that release year, user rating first. The
+ * country and genre/style filters are applied together. */
+function filmsForYear(filmsIndex, year, country = null, genre = null) {
   const target = toNum(year);
   if (!target) return [];
+  const predicate = yearBarsPredicate(country, genre);
   const films = [];
   for (const [slug, entry] of Object.entries(filmsIndex || {})) {
     if (!entry || typeof entry !== 'object') continue;
     if (toNum(entry.year) !== target) continue;
-    if (country && (!Array.isArray(entry.countries) || !entry.countries.includes(country))) continue;
+    if (!predicate(slug, entry)) continue;
     films.push(filmFromEntry(slug, entry, { year: target }));
   }
   films.sort((a, b) => {
@@ -1051,19 +1131,29 @@ function filmsForYear(filmsIndex, year, country = null) {
 
 function openYearModal(stats, year) {
   const country = selectedCountry;
-  const films = filmsForYear(stats.filmsIndex, year, country);
+  const genreOptions = genreFilterOptions(stats);
+  const genre = genreOptions.find((item) => item.key === selectedGenreKey) || null;
+  const films = filmsForYear(stats.filmsIndex, year, country, genre);
   const count = films.length;
   const n = toNum(year);
-  const title = country
-    ? `${filmCountPhrase(count, n)} · ${country}`
-    : filmCountPhrase(count, n);
+  const parts = [];
+  if (country) parts.push(country);
+  if (genre) parts.push(genre.name);
+  const filters = parts.join(' · ');
+  const title = filters ? `${filmCountPhrase(count, n)} · ${filters}` : filmCountPhrase(count, n);
+  let hint = '';
+  if (country && genre) hint = `Только фильмы страны ${country} с жанром/стилем «${genre.name}».`;
+  else if (country) hint = `Только фильмы страны ${country}.`;
+  else if (genre) hint = `Только фильмы жанра/стиля «${genre.name}».`;
   openFilmListModal({
     kicker: 'Просмотры по годам проката',
     title,
-    subtitle: `${String(n)} год · ${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])}${country ? ` · ${country}` : ' в выгрузке'}`,
-    hint: country ? `Только фильмы страны ${country}.` : '',
+    subtitle: `${String(n)} год · ${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])}${filters ? ` · ${filters}` : ' в выгрузке'}`,
+    hint,
     groupLabel: String(n),
-    emptyText: country ? 'Нет фильмов этой страны за этот год' : 'Для этого года нет фильмов с карточкой TMDB',
+    emptyText: country || genre
+      ? 'Нет фильмов по выбранным фильтрам за этот год'
+      : 'Для этого года нет фильмов с карточкой TMDB',
     batch: 60,
     films,
     sortScope: 'year',

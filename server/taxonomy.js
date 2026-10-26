@@ -61,6 +61,8 @@ const WD = {
   SILENT_FILM: 'Q226730', // silent film (P136)
   FILM_NOIR: 'Q185867', // film noir (P136)
   NEO_NOIR: 'Q2421031', // neo-noir (P136)
+  GIALLO: 'Q1332055', // giallo (P136)
+  SPAGHETTI_WESTERN: 'Q212781', // Spaghetti Western (P136)
   NEW_HOLLYWOOD: 'Q377616', // New Hollywood (P135)
   PRECODE_HOLLYWOOD: 'Q3408764', // pre-Code Hollywood (P135)
 };
@@ -77,6 +79,22 @@ const CATEGORY_DEFS = [
   { key: 'musical', name: 'Мюзикл', aliases: ['musical'] },
   { key: 'film-noir', name: 'Фильм-нуар', aliases: ['film noir'] },
   { key: 'neo-noir', name: 'Нео-нуар', aliases: ['neo noir', 'neonoir'] },
+  // Italian genre cycles. The TMDB keyword is the primary signal; Wikidata
+  // P136 (Q1332055 / Q212781) is merged on top because TMDB keywords are
+  // user-contributed and some classics carry only the Wikidata genre. In the
+  // current corpus both signals identify exactly the same films.
+  {
+    key: 'giallo',
+    name: 'Джалло',
+    aliases: ['giallo'],
+    wdGenre: WD.GIALLO,
+  },
+  {
+    key: 'spaghetti-western',
+    name: 'Спагетти-вестерн',
+    aliases: ['spaghetti western', 'italo western'],
+    wdGenre: WD.SPAGHETTI_WESTERN,
+  },
   {
     key: 'arthouse',
     name: 'Артхаус',
@@ -509,6 +527,16 @@ function classifyFilm(film) {
   for (const rule of CATEGORY_RULES) {
     if (rule.def.genreBased) continue;
     if (matchesAlias(keywordSet, rule.aliases)) categories.push(rule.def.key);
+  }
+
+  // Wikidata genre additions for explicitly opted-in buckets. The keyword
+  // rules above stay authoritative; P136 can only widen a bucket, never add
+  // a keyword-only film to another category.
+  for (const rule of CATEGORY_RULES) {
+    if (!rule.def.wdGenre) continue;
+    if (!categories.includes(rule.def.key) && wd.genres.has(rule.def.wdGenre)) {
+      categories.push(rule.def.key);
+    }
   }
 
   // Wikidata additions. The black-and-white rule needs both signals: WDQS
