@@ -182,7 +182,7 @@ const PERIOD_DEFS = [
   },
   {
     key: 'new-hollywood',
-    name: 'Новая Голливуд',
+    name: 'Новый Голливуд',
     aliases: ['new hollywood', 'american new wave'],
   },
   // Pre-Code Hollywood (1929-1934) is absent from TMDB keywords; Wikidata's

@@ -18,7 +18,7 @@ import {
 import {
   initProfileSwitcher, renderProfileSwitcher, closeProfileSwitcher,
 } from './switcher.js';
-import { $, clear, toast, errorBox, shortErrorMessage, toNum, fmtInt } from './ui.js';
+import { $, clear, toast, dismissToasts, errorBox, shortErrorMessage, toNum, fmtInt } from './ui.js';
 
 const SESSION_KEY = 'kinoboxd.session.v1';
 const LEGACY_SESSION_KEY = 'boxdstats.session.v1';
@@ -45,6 +45,8 @@ const state = {
   importSource: 'letterboxd',
   importStarting: false,
   importStage: 'scrape',
+  refreshing: false,
+  refreshContext: null,
   kp: null,
   importToast: null,
   pollTimer: 0,
@@ -161,6 +163,96 @@ function renderProfiles() {
     profiles: state.profiles,
     activeId: state.profileId,
   });
+  updateProfileRefreshButton();
+}
+
+/* =========================================================
+   «Обновить профиль» — delta refresh of the active KP profile
+   ========================================================= */
+
+function activeProfileRecord() {
+  if (!state.profileId) return null;
+  return state.profiles.find((profile) => profile.id === state.profileId) || null;
+}
+
+/** The button only exists for KinoPoisk profiles that still know their URL. */
+function updateProfileRefreshButton() {
+  const button = $('profile-refresh');
+  if (!button) return;
+  const profile = activeProfileRecord();
+  const canRefresh = Boolean(profile && profile.type === 'kp' && profile.kpUrl);
+  const busy = state.refreshing;
+
+  button.hidden = !canRefresh;
+  button.disabled = busy;
+  button.classList.toggle('is-busy', busy);
+  button.setAttribute('aria-busy', busy ? 'true' : 'false');
+  button.title = busy
+    ? 'Обновление профиля идёт…'
+    : 'Проверить новые оценки на Кинопоиске';
+  button.setAttribute('aria-label', busy ? 'Обновление профиля идёт' : 'Обновить профиль Кинопоиска');
+
+  const spinner = $('profile-refresh-spinner');
+  if (spinner) spinner.hidden = !busy;
+  const glyph = button.querySelector('.profile-refresh-icon');
+  if (glyph) glyph.hidden = busy;
+}
+
+function resetProfileRefresh() {
+  if (!state.refreshing && !state.refreshContext) return;
+  state.refreshing = false;
+  state.refreshContext = null;
+  updateProfileRefreshButton();
+}
+
+function statsFilmCount(stats) {
+  const value = stats && stats.summary ? Number(stats.summary.filmCount) : NaN;
+  return Number.isFinite(value) ? value : null;
+}
+
+/** Toast + busy reset once a profile refresh finished successfully. */
+function completeProfileRefresh(stats) {
+  const ctx = state.refreshContext;
+  state.refreshing = false;
+  state.refreshContext = null;
+  updateProfileRefreshButton();
+  if (!ctx) return;
+
+  const next = statsFilmCount(stats);
+  const added = ctx.prevFilms != null && next != null
+    ? Math.max(0, Math.round(next - ctx.prevFilms))
+    : null;
+
+  let message = 'Профиль обновлён';
+  if (added != null) {
+    message += added > 0
+      ? `: +${fmtInt(added)} ${pluralFilms(added)}`
+      : ' — новых фильмов нет';
+  }
+  toast(message, 'success', { duration: 5200 });
+}
+
+/** Kick off the existing KinoPoisk import flow in delta-refresh mode. */
+async function refreshActiveProfile() {
+  if (state.refreshing) return;
+  const profile = activeProfileRecord()
+    || (state.profileId ? await getProfile(state.profileId) : null);
+  if (!profile || profile.type !== 'kp' || !profile.kpUrl) return;
+
+  state.refreshing = true;
+  state.refreshContext = {
+    profileId: profile.id,
+    prevFilms: statsFilmCount(state.stats),
+  };
+  dismissToasts();
+  updateProfileRefreshButton();
+
+  const started = await handleKinopoiskImport({
+    url: profile.kpUrl,
+    kpUserId: profile.kpUserId,
+    refresh: true,
+  });
+  if (!started) resetProfileRefresh();
 }
 
 async function ensureProfileForSession(saved) {
@@ -226,7 +318,14 @@ async function persistActiveProfile(stats) {
     let type;
     if (isKp) {
       if (!kpUserId) return;
-      id = `kp:${kpUserId}`;
+      // A delta refresh of the active profile must update that registry record
+      // in place, even if its id predates the `kp:<userId>` convention.
+      const active = state.profileId ? await getProfile(state.profileId) : null;
+      id = active
+        && active.type === 'kp'
+        && String(active.kpUserId || '') === String(kpUserId)
+        ? active.id
+        : `kp:${kpUserId}`;
       type = 'kp';
     } else {
       if (lbFileName) id = `lb:${lbFileName}`;
@@ -476,6 +575,7 @@ async function checkAuth() {
 
 function showLoginScreen({ resetInput = false } = {}) {
   stopPolling();
+  resetProfileRefresh();
   prepareLogin({ resetInput });
   showView('login');
 }
@@ -788,6 +888,7 @@ async function recoverProfile(profile, { flow = null } = {}) {
 async function switchProfile(id) {
   closeProfileSwitcher();
   if (!id) return;
+  resetProfileRefresh();
 
   const profile = await getProfile(id);
   if (!profile) {
@@ -882,6 +983,7 @@ async function deleteSavedProfile(id) {
   await removeProfile(id);
 
   if (wasActive) {
+    resetProfileRefresh();
     clearSession();
     beginFlow();
     state.uploadId = null;
@@ -987,6 +1089,7 @@ function pluralFilms(count) {
 
 function openUploadScreen() {
   closeProfileSwitcher();
+  resetProfileRefresh();
   resetUpload();
   setHasSession(Boolean(state.stats && state.dashboardReady));
   showView('upload');
@@ -994,6 +1097,7 @@ function openUploadScreen() {
 
 function newUploadFromScratch(source = 'letterboxd') {
   beginFlow();
+  resetProfileRefresh();
   dismissImportToast();
   clearSession();
   hideStaleBanner();
@@ -1346,6 +1450,8 @@ function importErrorMessage(error) {
 function showKinopoiskError(message, retry) {
   const host = $('enrich-error');
   if (!host) return;
+  // A failed refresh must leave the topbar button usable again.
+  if (state.refreshing) resetProfileRefresh();
   dismissImportToast();
   setProgressFoot('Импорт остановлен. Можно повторить попытку или выбрать ZIP-выгрузку.');
   clear(host);
@@ -1360,8 +1466,8 @@ function showKinopoiskError(message, retry) {
   host.hidden = false;
 }
 
-async function handleKinopoiskImport({ url, kpUserId } = {}) {
-  if (state.importStarting || !url) return;
+async function handleKinopoiskImport({ url, kpUserId, refresh = false } = {}) {
+  if (state.importStarting || !url) return false;
   state.importStarting = true;
   setImportBusy(true);
   beginFlow();
@@ -1385,8 +1491,13 @@ async function handleKinopoiskImport({ url, kpUserId } = {}) {
     state.stats = null;
     state.dashboardReady = false;
     state.lbFileName = null;
-    state.profileId = null;
-    setActiveId(null);
+    if (!refresh) {
+      // A brand-new import registers itself through persistActiveProfile().
+      // A refresh keeps the active profile so the registry record is updated
+      // in place instead of being replaced by a duplicate.
+      state.profileId = null;
+      setActiveId(null);
+    }
 
     saveSession();
     setHasSession(false);
@@ -1402,13 +1513,23 @@ async function handleKinopoiskImport({ url, kpUserId } = {}) {
       applyEnrichStage(data);
     }
     startKinopoiskPolling();
-    state.importToast = toast('Импорт с Кинопоиска запущен', 'info', { duration: 5000 });
+    if (!refresh) {
+      state.importToast = toast('Импорт с Кинопоиска запущен', 'info', { duration: 5000 });
+    }
+    return true;
   } catch (error) {
     setImportBusy(false);
+    if (refresh) {
+      resetProfileRefresh();
+      showView('dashboard');
+      toast(importErrorMessage(error), 'error', { duration: 7000 });
+      return false;
+    }
     showView('upload');
     setSource('kinopoisk');
     showKpError(importErrorMessage(error));
     toast('Не удалось начать импорт', 'error');
+    return false;
   } finally {
     state.importStarting = false;
   }
@@ -1669,7 +1790,11 @@ async function finishStats(attempt = 0) {
     const stats = await getStats(state.uploadId);
     if (state.view !== 'enrich') return;
     applyStats(stats);
-    toast('Статистика готова — приятного просмотра цифр.', 'success', { duration: 3400 });
+    if (state.refreshContext) {
+      completeProfileRefresh(stats);
+    } else {
+      toast('Статистика готова — приятного просмотра цифр.', 'success', { duration: 3400 });
+    }
   } catch (error) {
     if (error && error.status === 400 && attempt < 7) {
       setProgressStatus(isKinopoisk ? 'Импорт завершён, считаем статистику…' : 'TMDB закончил, считаем статистику…');
@@ -1717,6 +1842,9 @@ function bindUi() {
 
   const replace = $('replace-upload');
   if (replace) replace.addEventListener('click', openUploadScreen);
+
+  const refresh = $('profile-refresh');
+  if (refresh) refresh.addEventListener('click', () => { refreshActiveProfile(); });
 
   const staleRefresh = $('stale-refresh');
   if (staleRefresh) {

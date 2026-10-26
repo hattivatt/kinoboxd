@@ -279,6 +279,13 @@ export function toast(message, type = 'info', { duration = 5200 } = {}) {
   return dismiss;
 }
 
+/** Remove every visible toast (used before a manual profile refresh). */
+export function dismissToasts() {
+  const host = document.getElementById('toasts');
+  if (!host) return;
+  for (const node of Array.from(host.children)) node.remove();
+}
+
 /* =========================================================
    inline error block
    ========================================================= */
