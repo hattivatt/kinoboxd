@@ -110,7 +110,13 @@ function lookupInfo(lookup, parsed) {
 
 function readIndexFile() {
   const file = path.join(cache.CACHE_DIR, 'index.json');
-  const raw = fs.readFileSync(file, 'utf8');
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};
+    throw err;
+  }
   const parsed = JSON.parse(raw);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('cache/index.json is not an object');
