@@ -338,10 +338,14 @@ function parseLetterboxdZip(buffer) {
   events.push(...watchedOnlyEvents, ...diaryEvents);
 
   // Resolve final ratings and last watched date ------------------------
+  // The watched.csv `Date` is when the film was marked watched (often the
+  // export/import day), not a viewing date. Per the dashboard rule only
+  // diary.csv supplies a real watch date; films without a diary row keep
+  // `null` and the UI treats them as undated instead of inventing a day.
   for (const film of films.values()) {
     film.rating =
       film.diaryRating !== null ? film.diaryRating : film.ratingsRating;
-    film.watchedDate = film.diaryWatchedDate || film.watchedCsvDate || null;
+    film.watchedDate = film.diaryWatchedDate || null;
     delete film.diaryRating;
     delete film.diaryRatingDate;
     delete film.ratingsRating;
@@ -394,9 +398,12 @@ function parseLetterboxdZip(buffer) {
 
   const ratedFilms = [...films.values()].filter((f) => f.rating !== null).length;
 
+  // The displayed period comes from real diary viewings only. watched.csv
+  // carries the import date, which would stretch the period to the export day.
   let dateFrom = null;
   let dateTo = null;
-  for (const e of datedEvents) {
+  for (const e of events) {
+    if (e.source !== 'diary' || !e.date) continue;
     if (!dateFrom || e.date < dateFrom) dateFrom = e.date;
     if (!dateTo || e.date > dateTo) dateTo = e.date;
   }

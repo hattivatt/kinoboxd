@@ -907,6 +907,7 @@ module.exports = {
   stats,
   reloadIfChanged,
   backfill,
+  querySparql,
   // exposed for tests / diagnostics
   __internal: { imdbQuery, tmdbQuery, splitConcat, entityId },
 };

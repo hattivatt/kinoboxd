@@ -8,6 +8,7 @@
  *   npm run backfill:imdb                  # IMDb ids for deep links
  *   npm run backfill:collections           # belongs_to_collection (franchises)
  *   npm run backfill:wikidata              # P136/P462/P135/P144 tags
+ *   npm run backfill:mcu                   # MCU membership (cache/mcu.json)
  *   npm run rematch                        # re-evaluate cache/index.json
  *   BACKFILL_CONCURRENCY=4 npm run backfill:imdb   (default 8)
  *   node server/backfill.js collections
@@ -30,6 +31,10 @@
  *   TMDB-id fallback for films without an IMDb id. Results are persisted in
  *   cache/wd-tags.json after every batch. Idempotent: already checked ids are
  *   skipped; WIKIDATA_REFRESH=1 forces a refetch.
+ * - mcu: one WDQS query for the P179 membership of Q642878 (Marvel Cinematic
+ *   Universe), persisted as cache/mcu.json. stats.js merges it over the
+ *   built-in canonical film list, so a new MCU release can be picked up
+ *   without a code change. Idempotent by nature (the file is replaced).
  *
  * All targets are idempotent: a valid `imdb_id` / `imdb_checked` marker or a
  * checked Wikidata id makes the entry a skip.
@@ -56,6 +61,7 @@ function normalizeTarget(value) {
   const raw = String(value || '').trim().toLowerCase();
   if (raw === 'imdb' || raw === 'imdb_id' || raw === 'imdb-id') return 'imdb';
   if (raw === 'wikidata' || raw === 'wd' || raw === 'wd-tags') return 'wikidata';
+  if (raw === 'mcu' || raw === 'marvel') return 'mcu';
   if (raw === 'collections' || raw === 'collection' || raw === 'franchises') {
     return 'collections';
   }
@@ -303,6 +309,10 @@ async function main() {
     // Re-evaluate index.json only; it does not need the details scan.
     const { runRematch } = require('./rematch');
     return runRematch();
+  }
+  if (TARGET === 'mcu') {
+    const mcu = require('./mcu');
+    return mcu.backfill();
   }
   const { files, names, unreadable } = await readAllFiles();
   if (TARGET === 'wikidata') {

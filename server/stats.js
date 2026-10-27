@@ -2,6 +2,7 @@
 
 const cache = require('./cache');
 const attachmentStore = require('./attachment');
+const mcu = require('./mcu');
 const { getJob } = require('./enrich');
 const { buildTaxonomy, normalizeKeyword } = require('./taxonomy');
 const wikidata = require('./wikidata');
@@ -50,6 +51,31 @@ function isHiddenGenre(genre) {
   if (!genre) return false;
   if (HIDDEN_GENRE_IDS.has(Number(genre.id))) return true;
   return HIDDEN_GENRE_NAMES.has(String(genre.name || '').trim().toLowerCase());
+}
+
+/* TMDB localizes collection names as "Гарри Поттер (Коллекция)" (or
+ * "(Collection)", "(Mcu Collect)", "(Сборник)"). The suffix is distribution
+ * metadata, not part of the franchise title: strip one or more trailing
+ * bracket groups that contain a collection word. The grouping key is the
+ * collection id, so two collections that clean to the same display name stay
+ * separate. Russian endings are spelled out so "(Коллекционер)" — a film
+ * title, not a suffix — is left alone. */
+const COLLECTION_SUFFIX_RE = /\s*[\(\[\{][^\(\)\[\]\{\}]*(?:\bcollect(?:ion)?\b|коллекци[яиюей]|сборник[а-яё]*)[^\(\)\[\]\{\}]*[\)\]\}]\s*$/iu;
+const BARE_COLLECTION_SUFFIX_RE = /\s+(?:collection|collect|коллекци[яиюей]|сборник[а-яё]*)\s*$/iu;
+
+function cleanCollectionName(name) {
+  const original = String(name == null ? '' : name).trim();
+  let value = original;
+  for (let i = 0; i < 3; i++) {
+    const next = value.replace(COLLECTION_SUFFIX_RE, '').trim();
+    if (next === value) break;
+    value = next;
+  }
+  // Localized names also occur without brackets ("X Коллекция",
+  // "Шерлок Холмс (Роберт Дауни мл.) Коллекция"); the same word at the very
+  // end is distribution metadata too.
+  value = value.replace(BARE_COLLECTION_SUFFIX_RE, '').trim();
+  return value || original;
 }
 
 /* TMDB returns production_countries with an English `name` even when the
@@ -564,6 +590,7 @@ function buildStats(upload, jobOverride = null) {
   const decadeMap = new Map();
   const decadeScoreMap = new Map(); // decade start -> counts[1..10]
   const franchiseMap = new Map(); // collection id -> { id, name, posterPath, films, rating… }
+  const mcuFilms = new Map(); // slug -> { slug, year, title, rating } (parent franchise)
   const yearMap = new Map();
   const timelineMap = new Map();
   const filmsIndex = {};
@@ -634,17 +661,31 @@ function buildStats(upload, jobOverride = null) {
       if (diaryEvents && diaryEvents.length > 0) {
         appliedAttachmentTmdbIds.add(tmdbKey);
         let latest = null;
+        let applied = 0;
         for (const event of diaryEvents) {
           const watchDate = event.watchDate ? String(event.watchDate).slice(0, 10) : null;
+          // A diary row without a usable Watched Date/Date cannot be placed
+          // on the timeline; it must not suppress the ratedAt proxy below.
+          if (!watchDate || !/^\d{4}-\d{2}-\d{2}$/.test(watchDate)) continue;
+          applied++;
           addTimelineEvent(watchDate, rated, {
             slug: film.slug,
             rewatch: Boolean(event.rewatch),
           });
-          appliedEventCount++;
-          if (rated) appliedRatedEventCount++;
-          if (watchDate && (!latest || watchDate > latest)) latest = watchDate;
+          if (!latest || watchDate > latest) latest = watchDate;
         }
         if (latest) effectiveWatchedDate = latest;
+        // Diary exists but carries no usable date: fall back to the KinoPoisk
+        // proxy so watchedDate and the timeline stay consistent.
+        if (applied === 0 && effectiveWatchedDate) {
+          addTimelineEvent(effectiveWatchedDate, rated, {
+            slug: film.slug,
+            rewatch: null,
+          });
+          applied = 1;
+        }
+        appliedEventCount += applied;
+        if (rated) appliedRatedEventCount += applied;
         const rewatches = attachmentRewatchByTmdb.get(tmdbKey) || 0;
         if (rewatches > 0) rewatchBySlug.set(film.slug, rewatches);
       } else if (effectiveWatchedDate) {
@@ -730,6 +771,29 @@ function buildStats(upload, jobOverride = null) {
           franchise.ratingSum += film.rating;
           franchise.ratingCount++;
         }
+      }
+    }
+
+    // ---- MCU parent franchise ----
+    // Synthetic parent over the film-level Wikidata/static membership. It is
+    // deliberately independent of belongs_to_collection: the user can have
+    // films with no TMDB collection (Black Widow, Eternals, …) and the Sony
+    // sub-collections (Venom, Deadpool 1-2, Spider-Verse) must stay out. The
+    // sub-collection rows remain untouched; the same film can appear in both
+    // its sub-row and this parent row (that is the point of a parent).
+    if (mcu.isMcuFilm({
+      imdbId: details && details.imdb_id,
+      tmdbId,
+      kind,
+    })) {
+      const slug = String(film.slug);
+      if (!mcuFilms.has(slug)) {
+        mcuFilms.set(slug, {
+          slug,
+          year,
+          title: film.titleRu || film.title || '',
+          rating: film.rating,
+        });
       }
     }
 
@@ -968,7 +1032,8 @@ function buildStats(upload, jobOverride = null) {
       });
       return {
         collectionId: franchise.collectionId,
-        name: franchise.name || `Коллекция ${franchise.collectionId}`,
+        name: cleanCollectionName(franchise.name)
+          || `Коллекция ${franchise.collectionId}`,
         posterPath: franchise.posterPath,
         count: franchise.films.length,
         avgRating: franchise.ratingCount > 0
@@ -976,8 +1041,38 @@ function buildStats(upload, jobOverride = null) {
           : null,
         films: ordered.map((film) => film.slug),
       };
-    })
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
+    });
+
+  // Synthetic parent row. It sorts naturally by count desc and normally wins
+  // (the MCU is the largest watched franchise). `key: 'mcu'` is the stable
+  // handle; `collectionId` stays null because TMDB has no such collection.
+  if (mcuFilms.size >= 2) {
+    const ordered = [...mcuFilms.values()].sort((a, b) => {
+      const yearA = Number.isFinite(a.year) ? a.year : Infinity;
+      const yearB = Number.isFinite(b.year) ? b.year : Infinity;
+      if (yearA !== yearB) return yearA - yearB;
+      return String(a.title).localeCompare(String(b.title), 'ru');
+    });
+    let ratingSum = 0;
+    let ratingCount = 0;
+    for (const film of ordered) {
+      if (film.rating !== null && film.rating !== undefined) {
+        ratingSum += film.rating;
+        ratingCount++;
+      }
+    }
+    franchises.push({
+      collectionId: null,
+      key: 'mcu',
+      name: mcu.MCU_NAME,
+      posterPath: null,
+      count: ordered.length,
+      avgRating: ratingCount > 0 ? round2(ratingSum / ratingCount) : null,
+      films: ordered.map((film) => film.slug),
+    });
+  }
+
+  franchises.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
 
   // Runtime histogram over the same filmsIndex the modal uses. Buckets are
   // omitted when empty; `unknown` collects missing and zero runtimes.
@@ -1129,4 +1224,9 @@ function buildStats(upload, jobOverride = null) {
   };
 }
 
-module.exports = { buildStats, listUnmatched, effectiveKind };
+module.exports = {
+  buildStats,
+  listUnmatched,
+  effectiveKind,
+  __internal: { cleanCollectionName },
+};

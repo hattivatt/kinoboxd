@@ -247,6 +247,9 @@ function normalizeStats(raw) {
       .filter((item) => item.label && item.count > 0),
     franchises: array(source.franchises)
       .map((item) => ({
+        // Synthetic parent rows (the MCU) have no TMDB collection id; `key`
+        // is the stable handle for them. TMDB collections keep key=null.
+        key: item && typeof item.key === 'string' ? item.key : null,
         collectionId: toNum(item && item.collectionId),
         name: String(item && item.name ? item.name : '').trim(),
         posterPath: item && typeof item.posterPath === 'string' ? item.posterPath : null,
@@ -256,7 +259,8 @@ function normalizeStats(raw) {
           .map((slug) => String(slug))
           .filter(Boolean),
       }))
-      .filter((item) => item.collectionId > 0 && item.name && item.films.length >= 2)
+      .filter((item) => (item.collectionId > 0 || item.key === 'mcu')
+        && item.name && item.films.length >= 2)
       .sort((a, b) => b.films.length - a.films.length || a.name.localeCompare(b.name, 'ru')),
     runtimeHistogram: array(source.runtimeHistogram)
       .map((item) => ({
