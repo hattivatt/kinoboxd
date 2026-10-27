@@ -39,6 +39,12 @@ server also accepts a one-line `config/tmdb-token` file, which is
 intentionally not committed. If neither is present, startup fails with
 `TMDB-токен не найден: задай TMDB_API_TOKEN (read access token v4) в окружении`.
 
+Hardcover Personal Access Token: `HARDCOVER_API_TOKEN` in the environment
+(alias `HARDCOVER_READ_TOKEN`); the local fallback is
+`config/hardcover-token`. As with TMDB, the environment wins over the file.
+A missing Hardcover token only disables book imports/resolve — the server
+still starts.
+
 ### Переменные окружения
 
 | Переменная | Назначение |
@@ -47,7 +53,10 @@ intentionally not committed. If neither is present, startup fails with
 | `TMDB_API_TOKEN` | TMDB read access token v4 (алиас: `TMDB_READ_ACCESS_TOKEN`; локально также `config/tmdb-token`) |
 | `KINOBOXD_PASSWORD` | Пароль для доступа к API. Если не задан/пустой — авторизация выключена, API открыто (дефолт для локальной разработки) |
 | `KINOBOXD_STATE_DIR` | Каталог состояния в Nix-сборке (по умолчанию `$XDG_STATE_HOME/kinoboxd`) |
-| `KINOBOXD_CACHE_DIR` | Переопределяет каталог кэша (по умолчанию `app/cache`). Удобно для тестов/нестандартной раскладки; изменяет и `index.json`/`details/`, и `kp/` |
+| `KINOBOXD_CACHE_DIR` | Переопределяет каталог кэша фильмов. По умолчанию `cache/` рядом с `server/` в исходниках и `$KINOBOXD_STATE_DIR/app/cache` в Nix-обёртке. Изменяет и `index.json`/`details/`, и `kp/` |
+| `KINOBOXD_CACHE_BOOK_DIR` | Переопределяет каталог книжного кэша. По умолчанию `cache-book/` рядом с `cache/`, в Nix-обёртке — `$KINOBOXD_STATE_DIR/app/cache-book` |
+| `HARDCOVER_API_TOKEN` | Hardcover Personal Access Token (алиас: `HARDCOVER_READ_TOKEN`; локально также `config/hardcover-token`) |
+| `HARDCOVER_READ_TOKEN` | Алиас `HARDCOVER_API_TOKEN` |
 | `TMDB_API_BASE` | Альтернативный хост TMDB API (например `https://api.tmdb.org/3`), если канонический `api.themoviedb.org` недоступен |
 | `REMATCH_DRY_RUN` | `1` — показать изменения `cache/index.json` без записи |
 | `REMATCH_CONCURRENCY` | Параллельность `rematch` (по умолчанию 8, максимум 16) |
@@ -325,6 +334,45 @@ aggregate counters are printed at the end of an import/backfill run. Every
 KinoPoisk import also retries its transport-failed films once after the main
 pass (`retriedSuccesses` in the `done:` line), so a flaky endpoint no longer
 leaves a tail of false negatives.
+
+### Nix-сборка: штампы и канонический кэш
+
+Nix-store read-only, поэтому обёртки из `package.nix` и `flake.nix` не
+запускают сервер прямо из store. При каждом запуске создаётся **штамп** —
+записываемая копия `server/` для конкретной версии кода:
+
+```
+$KINOBOXD_STATE_DIR/app/
+  cache/                    кэш фильмов   (KINOBOXD_CACHE_DIR)
+  cache-book/               кэш книг      (KINOBOXD_CACHE_BOOK_DIR)
+  server@<store-hash>/      штамп текущей версии
+    server/                 копия server/ из store (режим u+rw)
+    public -> store/...     симлинк
+    node_modules -> store/... симлинк
+    config -> $state/app/config  симлинк (fallback config/{tmdb,hardcover}-token)
+```
+
+* Штамп принадлежит ровно одной версии и никогда не переиспользуется:
+  обновление пакета создаёт новый каталог, старый остаётся нетронутым.
+  Прежняя схема копировала `server/` прямо в `app/server` и наследовала
+  read-only режимы store (`0444`/`0555`), из-за чего следующее обновление
+  падало с
+  `cp: cannot remove '.../app/server/books/book-cache.js': Permission denied`.
+* Кэши не зависят от копии кода и переживают смену версии: обновление
+  пакета не требует миграции, сервер и `kinoboxd-backfill` всегда смотрят в
+  `$KINOBOXD_STATE_DIR/app/cache` (или в явный `KINOBOXD_CACHE_DIR`).
+* Каталог `$KINOBOXD_STATE_DIR/app/server` от старых запусков больше не
+  используется. Он безвреден, но его можно удалить (вместе со старыми
+  штампами — активный штамп пересоздастся при следующем запуске):
+
+  ```bash
+  rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/kinoboxd/app/server"
+  rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/kinoboxd/app/server@"*
+  ```
+
+  Если state принадлежит другому пользователю (сервис запускался от root),
+  те же команды — через `sudo`. Если штамп не удаётся обновить, обёртка
+  пишет в stderr подсказку с конкретным путём `rm -rf`.
 
 ### Re-matching the whole cache
 
