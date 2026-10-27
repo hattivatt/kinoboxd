@@ -22,6 +22,7 @@ const tmdb = require('./tmdb');
 const auth = require('./auth');
 const kpCompare = require('./compare');
 const { buildStats, listUnmatched } = require('./stats');
+const booksRouter = require('./books/routes');
 
 // Fail fast, before the HTTP server starts, if TMDB credentials are missing.
 // Missing config is an expected condition: print one clean line and exit 1
@@ -57,6 +58,10 @@ app.use(express.json({ limit: '1mb' }));
 app.use(auth.attachCookies);
 app.use('/api/auth', auth.router);
 app.use('/api', auth.requireAuth);
+
+// Books live in their own namespace and cache (cache-book/). Mounted after the
+// auth gate, before the film routes; the film payload is untouched.
+app.use('/api/books', booksRouter);
 
 /* ------------------------------------------------------------------ */
 /* API                                                                 */

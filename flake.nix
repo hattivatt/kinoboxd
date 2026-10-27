@@ -19,6 +19,7 @@
           in !(builtins.elem base [
             "node_modules"
             "cache"
+            "cache-book"
             "config"
             ".git"
             "result"
