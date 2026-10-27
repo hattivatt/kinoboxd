@@ -42,9 +42,13 @@ const SOURCE_MARK = { livelib: 'LL', hardcover: 'HC' };
  * Short marks only: one badge per row, the full name lives in the title. */
 const METADATA_LABEL = {
   hardcover: ['HC', 'Hardcover'],
+  litres: ['ЛР', 'Литрес'],
   googlebooks: ['GB', 'Google Books'],
   openlibrary: ['OL', 'Open Library'],
   livelib: ['LL', 'LiveLib'],
+  // The LiveLib card provider names itself `livelib-card` in details docs;
+  // it is the same LiveLib source for the reader, so it shares the LL badge.
+  'livelib-card': ['LL', 'LiveLib'],
 };
 const MANGA_STORAGE_KEY = 'kinoboxd.books.manga.v1';
 const AUTHORS_INITIAL = 20;

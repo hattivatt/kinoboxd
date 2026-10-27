@@ -3664,6 +3664,11 @@ img { display: block; }
   border-color: rgba(177, 140, 255, 0.3);
   color: #d3c2ff;
 }
+.book-meta-tag.is-litres {
+  background: rgba(255, 205, 64, 0.14);
+  border-color: rgba(255, 205, 64, 0.3);
+  color: #ffe1a0;
+}
 .book-rating { font-variant-numeric: tabular-nums; }
 
 .recent-book-tags {
