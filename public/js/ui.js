@@ -158,6 +158,7 @@ export function debounce(fn, wait = 150) {
 
 const ICONS = {
   film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+  book: '<path d="M4 5.2A2.2 2.2 0 0 1 6.2 3H20v15.4H6.5A2.5 2.5 0 0 0 4 20.9z"/><path d="M4 5.2v15.7"/><path d="M8.5 7.5h7"/>',
   star: '<path d="M12 3.6l2.6 5.2 5.8.9-4.2 4.1 1 5.7-5.2-2.7-5.2 2.7 1-5.7-4.2-4.1 5.8-.9z"/>',
   clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 1.8"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/>',
@@ -193,6 +194,8 @@ const SERVICE_GLYPHS = {
   kp: { text: 'KP', size: 9 },
   tmdb: { text: 'TMDB', size: 5.6 },
   imdb: { text: 'IMDb', size: 5.8 },
+  ll: { text: 'LL', size: 9 },
+  hc: { text: 'HC', size: 9 },
 };
 
 export function serviceIcon(service, size = 13) {

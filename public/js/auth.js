@@ -36,15 +36,18 @@ export function initAuth({ onSuccess, onLoggedOut } = {}) {
     });
   }
 
-  const logoutButton = $('logout-btn');
-  if (logoutButton) {
-    logoutButton.addEventListener('click', handleLogout);
+  for (const id of ['logout-btn', 'books-logout-btn']) {
+    const button = $(id);
+    if (button) button.addEventListener('click', handleLogout);
   }
 }
 
 export function setAuthUi({ authRequired = false } = {}) {
-  const logoutButton = $('logout-btn');
-  if (logoutButton) logoutButton.hidden = !authRequired;
+  // Both topbars (films and books) carry a logout button.
+  for (const id of ['logout-btn', 'books-logout-btn']) {
+    const button = $(id);
+    if (button) button.hidden = !authRequired;
+  }
 }
 
 /** Reset the form before showing the login view. */
@@ -122,14 +125,16 @@ async function submit() {
 }
 
 async function handleLogout() {
-  const button = $('logout-btn');
-  if (button) button.disabled = true;
+  const buttons = ['logout-btn', 'books-logout-btn']
+    .map((id) => $(id))
+    .filter(Boolean);
+  for (const button of buttons) button.disabled = true;
   try {
     await logout();
   } catch {
     // A logout failure still means the cookie is unusable for us; show login.
   } finally {
-    if (button) button.disabled = false;
+    for (const button of buttons) button.disabled = false;
   }
   if (onLogout) onLogout();
 }

@@ -21,13 +21,17 @@ import { initAttach, updateAttachButton, openAttachModal } from './attach.js';
 import {
   initCompare, openCompare, renderCompareAvailability,
 } from './compare.js';
+import { initBooks, showBooks, hideBooks, resetBooks } from './books.js';
 import { $, clear, toast, dismissToasts, errorBox, shortErrorMessage, toNum, fmtInt } from './ui.js';
 
 const SESSION_KEY = 'kinoboxd.session.v1';
 const LEGACY_SESSION_KEY = 'boxdstats.session.v1';
+const TAB_KEY = 'kinoboxd.tab.v1';
 const POLL_INTERVAL = 1000;
 
 let lastRenderedUploadId = null;
+let activeTab = 'films';
+let lastFilmView = null;
 
 const state = {
   view: 'boot',
@@ -70,7 +74,107 @@ function showView(name) {
   state.view = name;
   document.body.dataset.view = name;
   if (name !== 'enrich') stopPolling();
+  if (['dashboard', 'upload', 'enrich', 'compare'].includes(name)) lastFilmView = name;
   window.scrollTo(0, 0);
+}
+
+/* =========================================================
+   main tabs: films ↔ books
+   ========================================================= */
+
+function readTabFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('tab')) return params.get('tab') === 'books' ? 'books' : 'films';
+  } catch {
+    /* ignore malformed URLs */
+  }
+  return null;
+}
+
+function storedTab() {
+  try {
+    return window.localStorage.getItem(TAB_KEY) === 'books' ? 'books' : 'films';
+  } catch {
+    return 'films';
+  }
+}
+
+function initialTab() {
+  return readTabFromUrl() || storedTab();
+}
+
+function persistTab(tab) {
+  try {
+    window.localStorage.setItem(TAB_KEY, tab === 'books' ? 'books' : 'films');
+  } catch {
+    /* private mode — the URL still carries the tab */
+  }
+}
+
+function writeTabUrl(tab, { push = true } = {}) {
+  try {
+    const url = new URL(window.location.href);
+    if (tab === 'books') url.searchParams.set('tab', 'books');
+    else url.searchParams.delete('tab');
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    if (push) window.history.pushState({ tab }, '', next);
+    else window.history.replaceState({ tab }, '', next);
+  } catch {
+    /* history can be unavailable in exotic embeds */
+  }
+}
+
+function paintTabs() {
+  document.title = activeTab === 'books'
+    ? 'kinoboxd — твоя книжная статистика'
+    : 'kinoboxd — твоя киностатистика';
+  for (const button of document.querySelectorAll('.tab-btn[data-tab]')) {
+    const isActive = button.dataset.tab === activeTab;
+    button.classList.toggle('is-active', isActive);
+    button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  }
+}
+
+function applyTabFromLocation() {
+  activeTab = initialTab();
+  paintTabs();
+}
+
+async function switchTab(tab, { push = true } = {}) {
+  const next = tab === 'books' ? 'books' : 'films';
+  if (next === activeTab) {
+    paintTabs();
+    return;
+  }
+  activeTab = next;
+  persistTab(next);
+  if (push) writeTabUrl(next);
+  paintTabs();
+
+  if (next === 'books') {
+    closeAllModals();
+    showView('books');
+    await showBooks();
+    return;
+  }
+
+  hideBooks();
+  closeAllModals();
+  if (lastFilmView === 'enrich' && state.uploadId) {
+    showView('enrich');
+    startKinopoiskPolling();
+    return;
+  }
+  if (lastFilmView && lastFilmView !== 'boot' && lastFilmView !== 'login') {
+    showView(lastFilmView);
+    return;
+  }
+  if (state.dashboardReady) {
+    showView('dashboard');
+    return;
+  }
+  await boot();
 }
 
 function readSession() {
@@ -465,6 +569,17 @@ async function boot() {
     return;
   }
 
+  // Tab routing: books owns its own payload/flow, so the film boot is skipped
+  // entirely when the books tab is the active one.
+  applyTabFromLocation();
+  // Make the tab explicit in the URL so back/forward can always restore it.
+  if (readTabFromUrl() === null) writeTabUrl(activeTab, { push: false });
+  if (activeTab === 'books') {
+    showView('books');
+    await showBooks();
+    return;
+  }
+
   setBootMode('loading', 'Проверяем прошлую выгрузку…');
 
   const saved = readSession();
@@ -586,6 +701,8 @@ function showLoginScreen({ resetInput = false } = {}) {
 function handleLoggedOut() {
   state.authed = false;
   closeAllModals();
+  hideBooks();
+  resetBooks();
   showLoginScreen({ resetInput: true });
 }
 
@@ -1526,6 +1643,20 @@ async function finishStats(attempt = 0) {
 function bindUi() {
   initAuth({ onSuccess: boot, onLoggedOut: handleLoggedOut });
   window.addEventListener('kinoboxd:auth-required', handleAuthRequired);
+
+  initBooks({ onActivate: () => showView('books') });
+
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('.tab-btn[data-tab]');
+    if (!button) return;
+    event.preventDefault();
+    switchTab(button.dataset.tab);
+  });
+
+  window.addEventListener('popstate', () => {
+    const tab = readTabFromUrl() || (window.history.state && window.history.state.tab) || 'films';
+    switchTab(tab, { push: false });
+  });
 
   initProfileSwitcher({
     onOpen: () => { refreshProfiles(); },

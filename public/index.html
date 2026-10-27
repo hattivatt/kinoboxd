@@ -196,9 +196,25 @@
     <!-- ───────────────────────── dashboard ───────────────────────── -->
     <section class="view" data-view="dashboard" hidden>
       <header class="topbar">
-        <div class="topbar-inner">
-          <div class="brand" aria-label="kinoboxd">
-            <span class="brand-name">kino<span class="accent">boxd</span></span>
+        <div class="topbar-inner has-tabs">
+          <div class="topbar-left">
+            <div class="brand" aria-label="kinoboxd">
+              <span class="brand-name">kino<span class="accent">boxd</span></span>
+            </div>
+            <nav class="tab-switch" role="tablist" aria-label="Разделы">
+              <button type="button" class="tab-btn is-active" data-tab="films" role="tab" aria-selected="true" title="Киностатистика">
+                <span class="tab-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>
+                </span>
+                <span class="tab-label">Фильмы</span>
+              </button>
+              <button type="button" class="tab-btn" data-tab="books" role="tab" aria-selected="false" title="Книжная статистика">
+                <span class="tab-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.2A2.2 2.2 0 0 1 6.2 3H20v15.4H6.5A2.5 2.5 0 0 0 4 20.9z"/><path d="M4 5.2v15.7"/><path d="M8.5 7.5h7"/></svg>
+                </span>
+                <span class="tab-label">Книги</span>
+              </button>
+            </nav>
           </div>
           <div class="topbar-actions">
             <button type="button" class="btn btn-ghost" id="replace-upload" aria-label="Заменить выгрузку" title="Заменить выгрузку">
@@ -497,6 +513,297 @@
             <a href="https://www.themoviedb.org/" target="_blank" rel="noopener">TMDB</a>.
           </p>
         </footer>
+      </div>
+    </section>
+    <!-- ───────────────────────── books ───────────────────────── -->
+    <section class="view" data-view="books" hidden>
+      <header class="topbar">
+        <div class="topbar-inner has-tabs">
+          <div class="topbar-left">
+            <div class="brand" aria-label="kinoboxd">
+              <span class="brand-name">kino<span class="accent">boxd</span></span>
+            </div>
+            <nav class="tab-switch" role="tablist" aria-label="Разделы">
+              <button type="button" class="tab-btn" data-tab="films" role="tab" aria-selected="false" title="Киностатистика">
+                <span class="tab-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>
+                </span>
+                <span class="tab-label">Фильмы</span>
+              </button>
+              <button type="button" class="tab-btn is-active" data-tab="books" role="tab" aria-selected="true" title="Книжная статистика">
+                <span class="tab-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.2A2.2 2.2 0 0 1 6.2 3H20v15.4H6.5A2.5 2.5 0 0 0 4 20.9z"/><path d="M4 5.2v15.7"/><path d="M8.5 7.5h7"/></svg>
+                </span>
+                <span class="tab-label">Книги</span>
+              </button>
+            </nav>
+          </div>
+          <div class="topbar-actions">
+            <button type="button" class="btn btn-ghost books-refresh" id="books-refresh" hidden title="Обновить книжную статистику" aria-label="Обновить книжную статистику">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/>
+              </svg>
+              <span>Обновить</span>
+            </button>
+            <button type="button" class="btn btn-ghost" id="books-reimport" hidden title="Переимпортировать профиль чтения" aria-label="Переимпортировать профиль чтения">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+              </svg>
+              <span>Импорт</span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-logout" id="books-logout-btn" hidden title="Выйти из аккаунта" aria-label="Выйти">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h9"/>
+              </svg>
+              <span>Выйти</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="dash books-dash" id="books-app">
+        <div class="books-loading" id="books-loading" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Собираем книжную статистику…</span>
+        </div>
+        <div id="books-error" hidden></div>
+
+        <!-- empty state: two independent import cards -->
+        <section class="books-import" id="books-import" hidden>
+          <div class="dash-hero books-import-hero">
+            <div class="kicker dash-kicker">книжная полка</div>
+            <h1>Твоя книжная статистика</h1>
+            <p class="dash-sub">Профиль чтения — объединение LiveLib и Hardcover. Оценки, даты прочтения и перечитывания; метадата книг — из Hardcover.</p>
+          </div>
+
+          <div class="books-import-grid">
+            <article class="book-source-card" data-source="livelib">
+              <div class="book-source-head">
+                <span class="book-source-logo is-livelib" aria-hidden="true">LL</span>
+                <span class="book-source-copy">
+                  <span class="book-source-title">LiveLib</span>
+                  <span class="book-source-hint">Прочитанные книги, личные оценки и даты</span>
+                </span>
+              </div>
+              <form class="books-source-form" id="books-livelib-form" novalidate>
+                <label class="books-field" for="books-livelib-username">
+                  <span class="books-field-label">Имя пользователя <span>livelib.ru/reader/&lt;username&gt;</span></span>
+                  <input class="books-input" id="books-livelib-username" name="username" type="text" autocomplete="off" spellcheck="false" placeholder="Margaret">
+                </label>
+                <div class="books-source-error" id="books-livelib-error" role="alert" hidden></div>
+                <button type="submit" class="btn btn-primary books-source-submit" id="books-livelib-submit">
+                  <span class="spinner spinner-sm" id="books-livelib-spinner" hidden aria-hidden="true"></span>
+                  <span>Импорт</span>
+                </button>
+              </form>
+              <p class="book-source-note">Публичный профиль. Импорт идёт страницами по 20 книг — около 2–3 минут на 1 200 книг.</p>
+            </article>
+
+            <article class="book-source-card" data-source="hardcover">
+              <div class="book-source-head">
+                <span class="book-source-logo is-hardcover" aria-hidden="true">HC</span>
+                <span class="book-source-copy">
+                  <span class="book-source-title">Hardcover</span>
+                  <span class="book-source-hint">Журнал чтения, оценки, даты, перечитывания</span>
+                </span>
+              </div>
+              <form class="books-source-form" id="books-hardcover-form" novalidate>
+                <label class="books-field" for="books-hardcover-userid">
+                  <span class="books-field-label">ID пользователя <span>hardcover.app/@&lt;username&gt;</span></span>
+                  <input class="books-input" id="books-hardcover-userid" name="userId" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="34748" value="34748">
+                </label>
+                <div class="books-source-error" id="books-hardcover-error" role="alert" hidden></div>
+                <button type="submit" class="btn btn-primary books-source-submit" id="books-hardcover-submit">
+                  <span class="spinner spinner-sm" id="books-hardcover-spinner" hidden aria-hidden="true"></span>
+                  <span>Импорт</span>
+                </button>
+              </form>
+              <p class="book-source-note">Использует API-токен владельца. По умолчанию — профиль, к которому привязан токен (34748).</p>
+            </article>
+          </div>
+
+          <p class="books-import-note">
+            <span class="books-import-dot" aria-hidden="true"></span>
+            Можно подключить оба источника — профиль объединится, события не склеиваются. Повторный импорт обновляет данные источника.
+          </p>
+        </section>
+
+        <!-- import progress (one row per running source) -->
+        <section class="books-progress" id="books-progress" hidden>
+          <div class="progress-shell">
+            <div class="progress-card">
+              <div class="progress-top">
+                <div class="kicker" id="books-progress-kicker">LiveLib ∪ Hardcover · импорт</div>
+                <h2 id="books-progress-title">Собираем книжный профиль</h2>
+                <p class="progress-status" id="books-progress-status" aria-live="polite">Готовим запрос…</p>
+              </div>
+              <div class="books-progress-jobs" id="books-progress-jobs"></div>
+              <div id="books-progress-error" hidden></div>
+              <div class="progress-foot">
+                <span class="pulse-dot" aria-hidden="true"></span>
+                <span>Прогресс обновляется каждую секунду. Импорт идёт на сервере — вкладку можно свернуть.</span>
+              </div>
+            </div>
+            <button type="button" class="btn btn-link" id="books-progress-back">Добавить источник</button>
+          </div>
+        </section>
+
+        <!-- dashboard -->
+        <section id="books-dash" hidden>
+          <div class="dash-hero">
+            <div class="kicker dash-kicker" id="books-kicker">библиотека · сводка</div>
+            <h1>Твоя книжная статистика</h1>
+            <p class="dash-sub" id="books-sub">Собрано из профилей LiveLib и Hardcover.</p>
+          </div>
+
+          <div class="summary-strip" id="books-summary"></div>
+
+          <div class="books-filters" id="books-filters" role="group" aria-label="Фильтр по источнику">
+            <span class="books-filters-label">Источник</span>
+            <button type="button" class="source-chip is-active" data-source="" aria-pressed="true">Все</button>
+            <button type="button" class="source-chip" data-source="livelib" aria-pressed="false">LiveLib</button>
+            <button type="button" class="source-chip" data-source="hardcover" aria-pressed="false">Hardcover</button>
+            <span class="books-filters-note" id="books-filters-note">фильтр применяется ко всем виджетам</span>
+          </div>
+
+          <div class="widgets" id="books-widgets">
+            <section class="widget w-recent" id="books-recent-widget" aria-labelledby="books-recent-title" hidden>
+              <div class="widget-head recent-head">
+                <h2 class="widget-title" id="books-recent-title"><span class="w-dot green"></span>Недавно читал</h2>
+                <span class="widget-note" id="books-recent-note"></span>
+              </div>
+              <div class="recent-strip" id="books-recent-strip"></div>
+            </section>
+
+            <section class="widget w-ratings" aria-labelledby="books-ratings-title">
+              <div class="widget-head">
+                <h2 class="widget-title" id="books-ratings-title"><span class="w-dot green"></span>Оценки</h2>
+                <span class="widget-note" id="books-ratings-note"></span>
+              </div>
+              <div class="ratings-body">
+                <div class="legend-host" id="books-ratings-legend"></div>
+                <div class="donut-host" id="books-ratings-donut"></div>
+              </div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>единая 10-шкала</span>
+                <span class="chart-foot-hint">нажми на оценку, чтобы увидеть книги</span>
+              </div>
+            </section>
+
+            <section class="widget w-genres" aria-labelledby="books-genres-title">
+              <div class="widget-head">
+                <h2 class="widget-title" id="books-genres-title"><span class="w-dot green"></span>Жанры</h2>
+                <span class="widget-note" id="books-genres-note"></span>
+              </div>
+              <div class="genre-list" id="books-genres-list"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>жанры Hardcover</span>
+                <span class="chart-foot-hint">нажми на строку, чтобы увидеть книги</span>
+              </div>
+            </section>
+
+            <div class="books-side-stack">
+              <section class="widget w-books-series" id="books-series-widget" aria-labelledby="books-series-title">
+                <div class="widget-head">
+                  <h2 class="widget-title" id="books-series-title"><span class="w-dot blue"></span>Серии</h2>
+                  <span class="widget-note" id="books-series-note"></span>
+                </div>
+                <div class="genre-list" id="books-series-list"></div>
+                <div class="chart-foot">
+                  <span><i class="swatch blue"></i>книги одного цикла</span>
+                  <span class="chart-foot-hint">нажми на серию, чтобы увидеть книги</span>
+                </div>
+              </section>
+              <section class="widget w-books-publishers" id="books-publishers-widget" aria-labelledby="books-publishers-title">
+                <div class="widget-head">
+                  <h2 class="widget-title" id="books-publishers-title"><span class="w-dot blue"></span>Издательства</h2>
+                  <span class="widget-note" id="books-publishers-note"></span>
+                </div>
+                <div class="genre-list" id="books-publishers-list"></div>
+                <div class="chart-foot">
+                  <span><i class="swatch blue"></i>по книгам профиля</span>
+                  <span class="chart-foot-hint">нажми на издательство, чтобы увидеть книги</span>
+                </div>
+              </section>
+            </div>
+
+            <section class="widget w-books-authors" id="books-authors-widget" aria-labelledby="books-authors-title">
+              <div class="widget-head">
+                <h2 class="widget-title" id="books-authors-title"><span class="w-dot orange"></span>Авторы</h2>
+                <span class="widget-note" id="books-authors-note"></span>
+              </div>
+              <div class="genre-list" id="books-authors-list"></div>
+              <div class="chart-foot">
+                <span><i class="swatch orange"></i>по числу прочитанных книг</span>
+                <span class="chart-foot-hint">нажми на автора, чтобы увидеть книги</span>
+              </div>
+            </section>
+
+
+            <section class="widget w-decades" aria-labelledby="books-decades-title">
+              <div class="widget-head">
+                <h2 class="widget-title" id="books-decades-title"><span class="w-dot blue"></span>Десятилетия</h2>
+                <span class="widget-note" id="books-decades-note"></span>
+              </div>
+              <div class="split-body">
+                <div class="legend-host legend-scroll" id="books-decades-legend"></div>
+                <div class="donut-host" id="books-decades-donut"></div>
+              </div>
+              <div class="chart-foot">
+                <span><i class="swatch blue"></i>годы издания книг</span>
+                <span class="chart-foot-hint">нажми на десятилетие, чтобы увидеть годы</span>
+              </div>
+            </section>
+
+            <section class="widget w-years" aria-labelledby="books-years-title">
+              <div class="widget-head">
+                <h2 class="widget-title" id="books-years-title"><span class="w-dot orange"></span><span id="books-years-title-text">Годы</span></h2>
+                <span class="widget-note" id="books-years-note"></span>
+              </div>
+              <div class="split-body">
+                <div class="legend-host legend-scroll" id="books-years-legend"></div>
+                <div class="donut-host" id="books-years-donut"></div>
+              </div>
+              <div class="chart-foot">
+                <span><i class="swatch orange"></i>годы издания</span>
+                <span class="chart-foot-hint">нажми на год, чтобы увидеть книги</span>
+              </div>
+            </section>
+
+            <section class="widget w-timeline" aria-labelledby="books-timeline-title">
+              <div class="widget-head">
+                <h2 class="widget-title" id="books-timeline-title"><span class="w-dot orange"></span>История чтения</h2>
+                <span class="widget-note" id="books-timeline-note"></span>
+              </div>
+              <div class="chart-scroll">
+                <div id="books-timeline-chart"></div>
+              </div>
+              <div class="chart-foot">
+                <span><i class="swatch orange"></i>прочитанные книги по месяцам</span>
+                <span class="chart-foot-hint">наведи на столбик, чтобы увидеть месяц</span>
+              </div>
+            </section>
+
+            <section class="widget w-calendar" id="books-calendar-widget" aria-labelledby="books-calendar-title" hidden>
+              <div class="widget-head calendar-head">
+                <h2 class="widget-title" id="books-calendar-title"><span class="w-dot green"></span>Календарь чтения</h2>
+                <div class="streak-card" id="books-streak-card"></div>
+              </div>
+              <div class="calendar-host" id="books-calendar-host"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>книги по дням прочтения</span>
+                <span class="chart-foot-hint">нажми на день, чтобы увидеть книги</span>
+              </div>
+            </section>
+          </div>
+
+          <footer class="dash-footer">
+            <p class="dash-footer-line">
+              Оценки и даты — LiveLib и Hardcover. Метадата книг (жанры, серии, издательства) —
+              <a href="https://hardcover.app/" target="_blank" rel="noopener">Hardcover</a>.
+            </p>
+          </footer>
+        </section>
       </div>
     </section>
     <!-- ───────────────────────── compare ───────────────────────── -->
