@@ -1,0 +1,392 @@
+{
+  "owner": {
+    "id": 34748,
+    "username": "hattivatt"
+  },
+  "totals": {
+    "userBooks": 656,
+    "pages": 1
+  },
+  "events": [
+    {
+      "source": "hardcover",
+      "sourceBookId": "1075309",
+      "editionId": "31099373",
+      "sourceUrl": "https://hardcover.app/books/pet-shop-of-horrors-vol-6",
+      "workId": "hc:1075309",
+      "title": "Pet Shop of Horrors, Vol. 6",
+      "authors": [
+        "Matsuri Akino"
+      ],
+      "rating": 4,
+      "ratingScale": 5,
+      "rating10": 8,
+      "status": "read",
+      "readCount": 1,
+      "edition": {
+        "publisher": null,
+        "year": 2008,
+        "isbn": "9781591825036",
+        "language": "English"
+      },
+      "coverUrl": null,
+      "firstReadDate": null,
+      "lastReadDate": "2022-07-31",
+      "id": "hc:read:2776067",
+      "startedAt": null,
+      "finishedAt": "2022-07-31",
+      "reread": false,
+      "readIndex": 1,
+      "readEditionId": "31099373"
+    },
+    {
+      "source": "hardcover",
+      "sourceBookId": "1936756",
+      "editionId": "30600276",
+      "sourceUrl": "https://hardcover.app/books/xxxholic-vol-14",
+      "workId": "hc:1936756",
+      "title": "xxxHolic, Vol. 14",
+      "authors": [
+        "CLAMP"
+      ],
+      "rating": 5,
+      "ratingScale": 5,
+      "rating10": 10,
+      "status": "read",
+      "readCount": 1,
+      "edition": {
+        "publisher": "Ballantine Books",
+        "year": 2004,
+        "isbn": "9780345518439",
+        "language": "English"
+      },
+      "coverUrl": "https://assets.hardcover.app/edition/30600276/28599c8157078b36262a422b2c4673f747f3be08.jpeg",
+      "firstReadDate": null,
+      "lastReadDate": "2022-05-09",
+      "id": "hc:read:2776068",
+      "startedAt": null,
+      "finishedAt": "2022-05-09",
+      "reread": false,
+      "readIndex": 1,
+      "readEditionId": "30600276"
+    },
+    {
+      "source": "hardcover",
+      "sourceBookId": "682984",
+      "editionId": "30670278",
+      "sourceUrl": "https://hardcover.app/books/homunculus-10",
+      "workId": "hc:682984",
+      "title": "Homunculus 10",
+      "authors": [
+        "Hideo Yamamoto"
+      ],
+      "rating": 3,
+      "ratingScale": 5,
+      "rating10": 6,
+      "status": "read",
+      "readCount": 1,
+      "edition": {
+        "publisher": null,
+        "year": 2009,
+        "isbn": "9783770472505",
+        "language": null
+      },
+      "coverUrl": "https://assets.hardcover.app/edition/30670278/10290471._SX98_.jpg",
+      "firstReadDate": null,
+      "lastReadDate": "2021-07-12",
+      "id": "hc:read:2776066",
+      "startedAt": null,
+      "finishedAt": "2021-07-12",
+      "reread": false,
+      "readIndex": 1,
+      "readEditionId": "30670278"
+    },
+    {
+      "source": "hardcover",
+      "sourceBookId": "682986",
+      "editionId": "30670280",
+      "sourceUrl": "https://hardcover.app/books/homunculus-7",
+      "workId": "hc:682986",
+      "title": "Homunculus 7",
+      "authors": [
+        "Hideo Yamamoto"
+      ],
+      "rating": 4,
+      "ratingScale": 5,
+      "rating10": 8,
+      "status": "read",
+      "readCount": 1,
+      "edition": {
+        "publisher": null,
+        "year": 2006,
+        "isbn": "9783770470518",
+        "language": null
+      },
+      "coverUrl": "https://assets.hardcover.app/edition/30670280/10290474._SX98_.jpg",
+      "firstReadDate": null,
+      "lastReadDate": "2021-07-11",
+      "id": "hc:read:2776064",
+      "startedAt": null,
+      "finishedAt": "2021-07-11",
+      "reread": false,
+      "readIndex": 1,
+      "readEditionId": "30670280"
+    },
+    {
+      "source": "hardcover",
+      "sourceBookId": "771351",
+      "editionId": "15829756",
+      "sourceUrl": "https://hardcover.app/books/preacher-volume-1",
+      "workId": "hc:771351",
+      "title": "Preacher, Volume 1: Gone to Texas",
+      "authors": [
+        "Garth Ennis"
+      ],
+      "rating": 4,
+      "ratingScale": 5,
+      "rating10": 8,
+      "status": "read",
+      "readCount": 2,
+      "edition": {
+        "publisher": "Vertigo",
+        "year": 1996,
+        "isbn": "9781563892615",
+        "language": "English"
+      },
+      "coverUrl": "https://assets.hardcover.app/edition/15829756/bf02c433-b37e-43fd-b081-78c5178702e6.jpg",
+      "firstReadDate": null,
+      "lastReadDate": "2018-01-01",
+      "id": "hc:read:2776544",
+      "startedAt": null,
+      "finishedAt": "2021-06-08",
+      "reread": false,
+      "readIndex": 1,
+      "readEditionId": "409670"
+    },
+    {
+      "source": "hardcover",
+      "sourceBookId": "771351",
+      "editionId": "15829756",
+      "sourceUrl": "https://hardcover.app/books/preacher-volume-1",
+      "workId": "hc:771351",
+      "title": "Preacher, Volume 1: Gone to Texas",
+      "authors": [
+        "Garth Ennis"
+      ],
+      "rating": 4,
+      "ratingScale": 5,
+      "rating10": 8,
+      "status": "read",
+      "readCount": 2,
+      "edition": {
+        "publisher": "Vertigo",
+        "year": 1996,
+        "isbn": "9781563892615",
+        "language": "English"
+      },
+      "coverUrl": "https://assets.hardcover.app/edition/15829756/bf02c433-b37e-43fd-b081-78c5178702e6.jpg",
+      "firstReadDate": null,
+      "lastReadDate": "2018-01-01",
+      "id": "hc:read:2776552",
+      "startedAt": null,
+      "finishedAt": "2018-01-01",
+      "reread": true,
+      "readIndex": 2,
+      "readEditionId": "15829756"
+    }
+  ],
+  "works": [
+    {
+      "schemaVersion": 1,
+      "hcWorkId": 682986,
+      "hcEditionId": 30670280,
+      "title": "Homunculus 7",
+      "slug": "homunculus-7",
+      "authors": [
+        {
+          "hcId": 238262,
+          "name": "Hideo Yamamoto"
+        }
+      ],
+      "series": [
+        {
+          "hcId": 34240,
+          "name": "ホムンクルス [Homunculus]",
+          "position": 7
+        }
+      ],
+      "genres": [
+        "Comics",
+        "Fantasy",
+        "Science Fiction"
+      ],
+      "pages": 232,
+      "publicationYear": 2006,
+      "isbn13": "9783770470518",
+      "isbn10": "3770470516",
+      "publisher": null,
+      "editionLanguage": null,
+      "editionLanguageId": null,
+      "rating": 3.857142857142857,
+      "ratingsCount": 7,
+      "coverUrl": "https://assets.hardcover.app/edition/30670280/10290474._SX98_.jpg",
+      "partial": false,
+      "fetchedAt": "2026-10-27T12:03:05.796Z"
+    },
+    {
+      "schemaVersion": 1,
+      "hcWorkId": 771351,
+      "hcEditionId": 15829756,
+      "title": "Preacher, Volume 1: Gone to Texas",
+      "slug": "preacher-volume-1",
+      "authors": [
+        {
+          "hcId": 70731,
+          "name": "Garth Ennis"
+        }
+      ],
+      "series": [
+        {
+          "hcId": 5743,
+          "name": "Preacher",
+          "position": 0
+        },
+        {
+          "hcId": 14731,
+          "name": "Preacher (Single Issues)",
+          "position": 1
+        },
+        {
+          "hcId": 290287,
+          "name": "Preacher (9-Volume Edition)",
+          "position": 1
+        }
+      ],
+      "genres": [
+        "Comics",
+        "Fantasy",
+        "Adventure",
+        "Graphic Novels"
+      ],
+      "pages": 200,
+      "publicationYear": 1995,
+      "isbn13": "9781563892615",
+      "isbn10": "1563892618",
+      "publisher": "Vertigo",
+      "editionLanguage": "English",
+      "editionLanguageId": 1,
+      "rating": 4.064732142857143,
+      "ratingsCount": 224,
+      "coverUrl": "https://assets.hardcover.app/edition/15829756/bf02c433-b37e-43fd-b081-78c5178702e6.jpg",
+      "partial": false,
+      "fetchedAt": "2026-10-27T12:03:05.796Z"
+    },
+    {
+      "schemaVersion": 1,
+      "hcWorkId": 682984,
+      "hcEditionId": 30670278,
+      "title": "Homunculus 10",
+      "slug": "homunculus-10",
+      "authors": [
+        {
+          "hcId": 238262,
+          "name": "Hideo Yamamoto"
+        }
+      ],
+      "series": [
+        {
+          "hcId": 34240,
+          "name": "ホムンクルス [Homunculus]",
+          "position": 10
+        }
+      ],
+      "genres": [],
+      "pages": 217,
+      "publicationYear": 2009,
+      "isbn13": "9783770472505",
+      "isbn10": "3770472500",
+      "publisher": null,
+      "editionLanguage": null,
+      "editionLanguageId": null,
+      "rating": 3.857142857142857,
+      "ratingsCount": 7,
+      "coverUrl": "https://assets.hardcover.app/edition/30670278/10290471._SX98_.jpg",
+      "partial": false,
+      "fetchedAt": "2026-10-27T12:03:05.796Z"
+    },
+    {
+      "schemaVersion": 1,
+      "hcWorkId": 1075309,
+      "hcEditionId": 31099373,
+      "title": "Pet Shop of Horrors, Vol. 6",
+      "slug": "pet-shop-of-horrors-vol-6",
+      "authors": [
+        {
+          "hcId": 62864,
+          "name": "Matsuri Akino"
+        }
+      ],
+      "series": [
+        {
+          "hcId": 7333,
+          "name": "Pet Shop of Horrors",
+          "position": 6
+        }
+      ],
+      "genres": [],
+      "pages": 216,
+      "publicationYear": 2008,
+      "isbn13": "9781591825036",
+      "isbn10": "1591825032",
+      "publisher": null,
+      "editionLanguage": "English",
+      "editionLanguageId": 1,
+      "rating": 4.2,
+      "ratingsCount": 10,
+      "coverUrl": null,
+      "partial": false,
+      "fetchedAt": "2026-10-27T12:03:05.796Z"
+    },
+    {
+      "schemaVersion": 1,
+      "hcWorkId": 1936756,
+      "hcEditionId": 30600276,
+      "title": "xxxHolic, Vol. 14",
+      "slug": "xxxholic-vol-14",
+      "authors": [
+        {
+          "hcId": 121832,
+          "name": "CLAMP"
+        }
+      ],
+      "series": [
+        {
+          "hcId": 86038,
+          "name": "xxxHOLiC [XXX ホリック]",
+          "position": 14
+        }
+      ],
+      "genres": [
+        "strips",
+        "etc",
+        "Fantasy",
+        "Comics",
+        "Young Adult",
+        "Adventure",
+        "Graphic Novels"
+      ],
+      "pages": 192,
+      "publicationYear": 2004,
+      "isbn13": "9780345518439",
+      "isbn10": "0345518438",
+      "publisher": "Ballantine Books",
+      "editionLanguage": "English",
+      "editionLanguageId": 1,
+      "rating": 4.5,
+      "ratingsCount": 6,
+      "coverUrl": "https://assets.hardcover.app/edition/30600276/28599c8157078b36262a422b2c4673f747f3be08.jpeg",
+      "partial": false,
+      "fetchedAt": "2026-10-27T12:03:05.796Z"
+    }
+  ]
+}
