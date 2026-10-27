@@ -337,6 +337,8 @@ function startHardcoverImport(userId) {
     await bookCache.saveRawImport('hardcover', String(owner.id), {
       totals: journal.totals,
       eventsWithDate: journal.eventsWithDate,
+      statusFilter: journal.statusFilter,
+      keepStatusIds: journal.keepStatusIds,
       importedAt: profile.importedAt,
     });
     job.events = journal.events.length;
@@ -344,10 +346,15 @@ function startHardcoverImport(userId) {
       userBooks: journal.totals.userBooks,
       pages: journal.totals.pages,
       eventsWithDate: journal.eventsWithDate,
+      skippedNonFinished: journal.statusFilter.skippedNonFinished,
+      skippedByStatus: journal.statusFilter.byStatus,
+      keepStatusIds: journal.keepStatusIds,
     };
     console.log(
       `[books-import ${job.id}] hardcover journal saved: ${journal.events.length} events ` +
-        `(${journal.eventsWithDate} dated), ${journal.works.size} works`
+        `(${journal.eventsWithDate} dated), ${journal.works.size} works, ` +
+        `skipped=${journal.statusFilter.skippedNonFinished} ` +
+        `${JSON.stringify(journal.statusFilter.byStatus)}`
     );
 
     await resolveAllLivelibProfiles(job);

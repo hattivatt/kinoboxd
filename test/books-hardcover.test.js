@@ -100,19 +100,76 @@ test('eventsFromRow creates one event per read with chronological readIndex', ()
   assert.equal(events[1].edition.publisher, 'Penguin');
 });
 
-test('a user_book without reads yields one undated event', () => {
+test('a read user_book without reads yields one undated event', () => {
   const row = rowByWork();
   row.user_book_reads = [];
-  row.status_id = 1;
-  row.read_count = 0;
+  row.status_id = 3;
+  row.read_count = 1;
   row.rating = null;
   row.last_read_date = null;
   const events = hardcover.eventsFromRow(row);
   assert.equal(events.length, 1);
   assert.equal(events[0].id, 'hc:ub:19718676');
-  assert.equal(events[0].status, 'wish');
+  assert.equal(events[0].status, 'read');
   assert.equal(events[0].finishedAt, null);
   assert.equal(events[0].rating10, null);
+});
+
+test('shelf-only statuses (want/reading/paused) produce no events', () => {
+  for (const statusId of [1, 2, 4]) {
+    const row = rowByWork();
+    row.status_id = statusId;
+    row.user_book_reads = [];
+    row.last_read_date = null;
+    assert.deepEqual(
+      hardcover.eventsFromRow(row),
+      [],
+      `status_id ${statusId} must not become a reading event`
+    );
+  }
+});
+
+test('dnf (status 5) keeps the event but never dates it', () => {
+  const synthetic = rowByWork();
+  synthetic.status_id = 5;
+  synthetic.read_count = 1;
+  synthetic.user_book_reads = [];
+  synthetic.last_read_date = '2025-03-20';
+  const [undated] = hardcover.eventsFromRow(synthetic);
+  assert.equal(undated.id, 'hc:ub:19718676');
+  assert.equal(undated.status, 'dnf');
+  assert.equal(undated.finishedAt, null);
+  // Raw dates stay for reference, they just never reach timeline/streaks.
+  assert.equal(undated.lastReadDate, '2025-03-20');
+
+  const withReads = rowByWork();
+  withReads.status_id = 5;
+  const readEvents = hardcover.eventsFromRow(withReads);
+  assert.equal(readEvents.length, 2);
+  assert.ok(readEvents.every((event) => event.status === 'dnf'));
+  assert.ok(readEvents.every((event) => event.finishedAt === null));
+});
+
+test('non-finished rows are counted by status, one skip per user_book', () => {
+  const counter = hardcover.createStatusFilterCounter();
+  const wish = rowByWork();
+  wish.status_id = 1;
+  const reading = rowByWork();
+  reading.status_id = 2;
+  const paused = rowByWork();
+  paused.status_id = 4;
+  const read = rowByWork();
+  hardcover.eventsFromRow(wish, counter);
+  hardcover.eventsFromRow(reading, counter);
+  hardcover.eventsFromRow(paused, counter);
+  hardcover.eventsFromRow(read, counter);
+  assert.equal(counter.skippedNonFinished, 3);
+  assert.deepEqual(counter.byStatus, { '1:wish': 1, '2:reading': 1, '4:paused': 1 });
+  assert.deepEqual(hardcover.HARDCOVER_KEEP_STATUS_IDS, [3, 5]);
+  assert.equal(hardcover.keepStatus(3), true);
+  assert.equal(hardcover.keepStatus(5), true);
+  assert.equal(hardcover.keepStatus(1), false);
+  assert.equal(hardcover.HARDCOVER_STATUS_LABELS[5], 'dnf');
 });
 
 test('detailsFromBook keeps authors, genre tags only, series and publisher', () => {
@@ -164,6 +221,16 @@ test('fetchJournal paginates on a mocked endpoint and persists details', async (
         last_read_date: null,
         book: { ...rowByWork().book, id: 42, title: 'Beta' },
       },
+      {
+        ...rowByWork(),
+        id: 3,
+        book_id: 43,
+        status_id: 1,
+        read_count: 0,
+        user_book_reads: [],
+        last_read_date: null,
+        book: { ...rowByWork().book, id: 43, title: 'Gamma' },
+      },
     ];
     const rows = allRows.slice(offset, offset + limit);
     return {
@@ -172,7 +239,7 @@ test('fetchJournal paginates on a mocked endpoint and persists details', async (
       headers: new Map([['ratelimit', '"Free";r=1;t=8']]),
       json: async () => ({
         data: {
-          total: body.variables.withTotal ? { aggregate: { count: 2 } } : undefined,
+          total: body.variables.withTotal ? { aggregate: { count: 3 } } : undefined,
           rows,
         },
       }),
@@ -182,10 +249,14 @@ test('fetchJournal paginates on a mocked endpoint and persists details', async (
   try {
     hardcover.resetCaches();
     const journal = await hardcover.fetchJournal(34748, { pageSize: 1, maxPages: 5 });
-    assert.equal(calls.filter((call) => call.query.includes('JournalPage')).length, 2);
+    assert.equal(calls.filter((call) => call.query.includes('JournalPage')).length, 3);
     assert.equal(journal.events.length, 3); // 2 reads for work 377567 + 1 undated work 42
-    assert.equal(journal.totals.userBooks, 2);
-    assert.equal(journal.works.size, 2);
+    assert.equal(journal.totals.userBooks, 3);
+    assert.equal(journal.works.size, 3);
+    // A "want to read" row is skipped and reported by status.
+    assert.equal(journal.statusFilter.skippedNonFinished, 1);
+    assert.deepEqual(journal.statusFilter.byStatus, { '1:wish': 1 });
+    assert.deepEqual(journal.keepStatusIds, [3, 5]);
     // Metadata is persisted for the stats payload.
     assert.equal(bookCache.getDetails(377567).title, 'Daemon');
     assert.equal(bookCache.getDetails(42).title, 'Beta');

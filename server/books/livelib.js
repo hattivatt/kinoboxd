@@ -649,6 +649,9 @@ function buildEvent(rscRow, bulkRow) {
     ratingScale: 10,
     rating10,
     status: 'read',
+    // LiveLib is imported from the "Прочитано" shelf only (no want-to-read /
+    // reading events exist in the source), so unlike Hardcover there is no
+    // status filter here — every scraped row is a finished book.
     startedAt: null,
     finishedAt,
     readMonth: finishedAt ? null : (bulkRow && bulkRow.readMonth) || null,

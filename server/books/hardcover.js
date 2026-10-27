@@ -284,13 +284,42 @@ async function resolveUser(input) {
 /* Journal                                                             */
 /* ------------------------------------------------------------------ */
 
-const STATUS_BY_ID = {
+/**
+ * `user_books.status_id` -> internal status. Mapping is the P0 spike reading
+ * (КНИГИ-АРХИТЕКТУРА.md §2.2): 1 want, 2 reading, 3 read, 4 paused, 5 dnf.
+ */
+const HARDCOVER_STATUS_LABELS = {
   1: 'wish',
   2: 'reading',
   3: 'read',
   4: 'paused',
   5: 'dnf',
 };
+
+/**
+ * Statuses that belong to the *reading profile*: finished books (3) and books
+ * the user abandoned (5, "did not finish"). `1`/`2`/`4` are shelf state, not
+ * reading history — importing them inflated bookCount with books that were
+ * never read (user report, 27.10.2026).
+ */
+const HARDCOVER_KEEP_STATUS_IDS = [3, 5];
+
+function keepStatus(statusId) {
+  return HARDCOVER_KEEP_STATUS_IDS.includes(Number(statusId));
+}
+
+/** Fresh skip counter for one import pass: total + per-status breakdown. */
+function createStatusFilterCounter() {
+  return { skippedNonFinished: 0, byStatus: {} };
+}
+
+function recordSkipped(counter, statusId, status) {
+  if (!counter) return;
+  counter.skippedNonFinished = (counter.skippedNonFinished || 0) + 1;
+  if (!counter.byStatus) counter.byStatus = {};
+  const key = `${Number(statusId)}:${status || 'unknown'}`;
+  counter.byStatus[key] = (counter.byStatus[key] || 0) + 1;
+}
 
 const JOURNAL_PAGE_QUERY = `
 query JournalPage($userId: Int!, $limit: Int!, $offset: Int!, $withTotal: Boolean!) {
@@ -478,10 +507,22 @@ function detailsFromBook(book, edition, fetchedAt) {
 /**
  * Convert one user_books row into profile events (one per user_book_read, plus
  * a synthetic undated event when a user_book has no reads at all).
+ *
+ * Rows whose `status_id` is not in HARDCOVER_KEEP_STATUS_IDS yield no events;
+ * when `counter` is passed, the skip is recorded there (total + per status).
+ * "Did not finish" rows keep their event (it is part of the profile) but never
+ * carry `finishedAt`: an abandoned book must not enter timeline/streaks.
  */
-function eventsFromRow(row) {
+function eventsFromRow(row, counter) {
   if (!row || !row.book) return [];
-  const status = STATUS_BY_ID[Number(row.status_id)] || 'read';
+  const statusId = Number(row.status_id);
+  const status = HARDCOVER_STATUS_LABELS[statusId] || 'read';
+  if (!keepStatus(statusId)) {
+    recordSkipped(counter, statusId, status);
+    return [];
+  }
+  const dated = status !== 'dnf';
+  const finishDate = (value) => (dated ? dateOnly(value) : null);
   const rating = row.rating == null ? null : Number(row.rating);
   const bookId = String(row.book_id != null ? row.book_id : row.book.id);
   const editionId = row.edition_id == null ? null : String(row.edition_id);
@@ -519,7 +560,7 @@ function eventsFromRow(row) {
         ...base,
         id: `hc:ub:${row.id}`,
         startedAt: null,
-        finishedAt: dateOnly(row.last_read_date),
+        finishedAt: finishDate(row.last_read_date),
         reread: Number(row.read_count) > 1,
         readIndex: Number(row.read_count) > 1 ? Number(row.read_count) : 1,
       },
@@ -536,7 +577,7 @@ function eventsFromRow(row) {
     ...base,
     id: `hc:read:${read.id}`,
     startedAt: dateOnly(read.started_at),
-    finishedAt: dateOnly(read.finished_at),
+    finishedAt: finishDate(read.finished_at),
     reread: index > 0,
     readIndex: index + 1,
     readEditionId: read.edition_id == null ? null : String(read.edition_id),
@@ -546,7 +587,7 @@ function eventsFromRow(row) {
 /**
  * Fetch the whole journal and persist canonical work metadata.
  *
- * Returns { events, works, totals, pages, eventsWithDate }.
+ * Returns { events, works, totals, eventsWithDate, statusFilter, keepStatusIds }.
  * `onProgress({page,pageTotal,events})` is called after every page.
  */
 async function fetchJournal(userId, options = {}) {
@@ -559,6 +600,7 @@ async function fetchJournal(userId, options = {}) {
   const events = [];
   const works = new Map();
   const seenEventIds = new Set();
+  const statusFilter = createStatusFilterCounter();
   let offset = 0;
   let page = 0;
   let total = null;
@@ -580,11 +622,14 @@ async function fetchJournal(userId, options = {}) {
     const rows = Array.isArray(data.rows) ? data.rows : [];
 
     for (const row of rows) {
+      // Metadata is independent of the journal role: a "want to read" work can
+      // still be the canonical Hardcover work for a LiveLib event, so details
+      // are persisted even when the row yields no events (status filter).
       const details = detailsFromBook(row.book, row.edition, fetchedAt);
       if (details && !works.has(details.hcWorkId)) {
         works.set(details.hcWorkId, details);
       }
-      for (const event of eventsFromRow(row)) {
+      for (const event of eventsFromRow(row, statusFilter)) {
         if (seenEventIds.has(event.id)) continue;
         seenEventIds.add(event.id);
         if (event.finishedAt) eventsWithDate++;
@@ -595,7 +640,10 @@ async function fetchJournal(userId, options = {}) {
     if (onProgress) onProgress({ page, pageTotal: null, events: events.length, total });
     console.log(
       `[hardcover ${owner.id}] journal page ${page}: rows=${rows.length} events=${events.length}` +
-        (total == null ? '' : `/${total}`)
+        (total == null ? '' : `/${total}`) +
+        (statusFilter.skippedNonFinished
+          ? ` skipped=${statusFilter.skippedNonFinished}`
+          : '')
     );
 
     if (rows.length < limit) break;
@@ -626,6 +674,8 @@ async function fetchJournal(userId, options = {}) {
     works,
     totals: { userBooks: total, pages: page },
     eventsWithDate,
+    statusFilter,
+    keepStatusIds: [...HARDCOVER_KEEP_STATUS_IDS],
     fetchedAt,
   };
 }
@@ -647,6 +697,8 @@ function buildProfile(owner, journal, warnings) {
 module.exports = {
   HARDCOVER_URL,
   GENRE_TAG_CATEGORY_ID,
+  HARDCOVER_STATUS_LABELS,
+  HARDCOVER_KEEP_STATUS_IDS,
   HardcoverError,
   RateGate,
   gate,
@@ -657,6 +709,8 @@ module.exports = {
   fetchJournal,
   buildProfile,
   eventsFromRow,
+  createStatusFilterCounter,
+  keepStatus,
   detailsFromBook,
   authorsOf,
   genresOf,
