@@ -21,7 +21,7 @@
  */
 
 const bookCache = require('./book-cache');
-const { normalizeTitle, surnameOf } = require('./normalize');
+const { surnameOf } = require('./normalize');
 const { detectManga } = require('./providers/manga');
 
 const PAGE_BUCKETS = [
@@ -396,12 +396,31 @@ function workPrefix(workId) {
 }
 
 /**
+ * Strict title key for work dedupe. Unlike the resolve matcher it keeps
+ * volume/part numbers: "Наруто. Том 1" and "Наруто. Том 2" are different books
+ * and must not collapse into one work in the widgets.
+ */
+function dedupeTitle(title) {
+  return String(title == null ? '' : title)
+    .replace(/\u00a0/g, ' ')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(
+      /(?<![\p{L}])(?:vol(?:ume)?|том|книга|book|часть|кн)\s*\.?\s*(\d+)/giu,
+      ' vol $1 '
+    )
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Stable dedupe key: normalized title + author surnames. LiveLib (RU title)
  * and Google Books (same RU edition) can otherwise produce two works for one
  * book, double-counting it in authors/genres widgets.
  */
 function canonicalKeyOf(work) {
-  const title = normalizeTitle(work.title || work.titleRu || '');
+  const title = dedupeTitle(work.title || work.titleRu || '');
   const authors = [...new Set((work.authors || []).map((name) => surnameOf(name)).filter(Boolean))].sort();
   if (!title || authors.length === 0) return null;
   return `${title}|${authors.join(',')}`;

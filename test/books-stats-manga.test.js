@@ -255,6 +255,25 @@ test('HTTP route: includeMangaComics default off, 1 includes, invalid rejected',
   assert.equal(badBody.code, 'invalid_include_manga');
 });
 
+test('volume markers keep different books apart in the dedupe key', () => {
+  const { canonicalKeyOf } = require('../server/books/stats');
+  const base = { authors: ['Масаси Кисимото'] };
+  const volume1 = canonicalKeyOf({ ...base, title: 'Наруто. Том 1' });
+  const volume2 = canonicalKeyOf({ ...base, title: 'Наруто. Том 2' });
+  assert.notEqual(volume1, volume2);
+  const volume1en = canonicalKeyOf({ ...base, title: 'Naruto, Vol. 1' });
+  const volume1long = canonicalKeyOf({ ...base, title: 'Naruto, Volume 1' });
+  assert.equal(volume1en, volume1long);
+  assert.notEqual(
+    canonicalKeyOf({ ...base, title: 'Naruto, Volume 1' }),
+    canonicalKeyOf({ ...base, title: 'Naruto, Volume 2' })
+  );
+  assert.equal(
+    canonicalKeyOf({ title: 'Дюна', authors: ['Фрэнк Герберт'] }),
+    canonicalKeyOf({ title: 'Дюна', authors: ['Фрэнк Герберт'] })
+  );
+});
+
 test('payload schema stays compatible: old fields keep their place and meaning', () => {
   const stats = buildBooksStats({});
   for (const key of [
