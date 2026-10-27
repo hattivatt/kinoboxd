@@ -53,7 +53,7 @@ function dayNumber(date) {
 
 /** Same contract as the film calendar: `current` ends at the latest reading day. */
 function computeStreaks(readDays, field) {
-  const lastField = field || 'lastFinish';
+  const lastField = field || 'lastReadDate';
   const dates = (Array.isArray(readDays) ? readDays : [])
     .map((entry) => (entry && entry.date ? String(entry.date) : ''))
     .filter((date) => dayNumber(date) != null)
@@ -281,6 +281,19 @@ function workMetadata(workId, events) {
     }
   }
 
+  // Link menu (§6.3): LiveLib is derivable for every work with an LL event or
+  // an LL link in links.json; Hardcover needs a slug we do not store.
+  const links = {};
+  const llSourceId = String(workId).startsWith('ll:') ? String(workId).slice(3) : null;
+  if (llSourceId) links.livelib = `https://www.livelib.ru/book/${llSourceId}`;
+  if (String(workId).startsWith('hc:')) {
+    const workLink = bookCache.getWorkLink(workId);
+    const llId = workLink && Array.isArray(workLink.livelib)
+      ? workLink.livelib.map(String).find(Boolean)
+      : null;
+    if (llId && !links.livelib) links.livelib = `https://www.livelib.ru/book/${llId}`;
+  }
+
   return {
     workId,
     title: hcTitle || llTitle,
@@ -293,6 +306,7 @@ function workMetadata(workId, events) {
     pages,
     coverUrl,
     details,
+    links,
     finishedDate,
     // Option A: Hardcover priority, LiveLib fallback.
     rating10: hcWithRating ? hcWithRating.rating10 : llEvents.find((e) => e.rating10 != null)?.rating10 ?? null,
@@ -350,6 +364,13 @@ function buildBooksStats(options = {}) {
 
   const finishedEvents = events.filter((event) => event.finishedAt);
   const llEvents = events.filter((event) => event.source === 'livelib');
+  const finishedDates = finishedEvents
+    .map((event) => String(event.finishedAt))
+    .filter((date) => /^\d{4}-\d{2}-\d{2}/.test(date))
+    .sort();
+  const pagesTotal = pagesWorks.length
+    ? pagesWorks.reduce((sum, work) => sum + work.pages, 0)
+    : 0;
   const summary = {
     sources: selected,
     bookCount: works.size,
@@ -358,15 +379,17 @@ function buildBooksStats(options = {}) {
     readCount: events.filter((event) => event.status === 'read').length,
     reReadCount,
     undatedEventCount: events.filter((event) => !event.finishedAt).length,
+    // Reading period of the selected sources (film contract: dateFrom/dateTo).
+    dateFrom: finishedDates.length ? finishedDates[0].slice(0, 10) : null,
+    dateTo: finishedDates.length ? finishedDates[finishedDates.length - 1].slice(0, 10) : null,
     resolvedCount: llEvents.filter((event) => event.resolved).length,
     unresolvedCount: llEvents.filter((event) => !event.resolved).length,
     avgRating: mean(ratedWorks.map((work) => work.rating10)),
     avgPages: pagesWorks.length
       ? Math.round(pagesWorks.reduce((sum, work) => sum + work.pages, 0) / pagesWorks.length)
       : null,
-    pagesTotal: pagesWorks.length
-      ? pagesWorks.reduce((sum, work) => sum + work.pages, 0)
-      : 0,
+    pagesTotal,
+    pageCount: pagesTotal,
     authorsCount: authorSet.size,
     seriesCount: seriesSet.size,
     yearsSpan: years.length ? { from: years[0], to: years[years.length - 1] } : null,
@@ -567,7 +590,7 @@ function buildBooksStats(options = {}) {
   const readDays = [...dayMap.values()]
     .map((entry) => ({ ...entry, sources: [...entry.sources].sort() }))
     .sort((a, b) => a.date.localeCompare(b.date));
-  const streaks = computeStreaks(readDays, 'lastFinish');
+  const streaks = computeStreaks(readDays);
 
   const recentlyFinished = [...finishedEvents]
     .sort((a, b) => {
@@ -606,6 +629,7 @@ function buildBooksStats(options = {}) {
       pages: work.pages,
       year: work.year,
       coverUrl: work.coverUrl,
+      links: work.links,
       unresolved: work.unresolved,
     };
   }

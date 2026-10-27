@@ -27,7 +27,21 @@ const jobs = new Map();
 const jobOrder = [];
 const MAX_JOBS = 20;
 
+// A cached LiveLib profile is considered current for 12 hours: repeat clicks
+// reuse it instead of re-scraping the whole profile (LiveLib politeness).
+const LIVELIB_REIMPORT_TTL_MS = Number(process.env.KINOBOXD_LIVELIB_REIMPORT_TTL_MS) > 0
+  ? Number(process.env.KINOBOXD_LIVELIB_REIMPORT_TTL_MS)
+  : 12 * 60 * 60 * 1000;
+
 let importChain = Promise.resolve();
+
+/** True when `importedAt` is a valid timestamp within the reuse window. */
+function isFreshImport(importedAt) {
+  const ts = Date.parse(String(importedAt || ''));
+  if (!Number.isFinite(ts)) return false;
+  const age = Date.now() - ts;
+  return age >= 0 && age < LIVELIB_REIMPORT_TTL_MS;
+}
 
 /* ------------------------------------------------------------------ */
 /* Job bookkeeping                                                     */
@@ -133,7 +147,7 @@ async function resolveAllLivelibProfiles(job, options = {}) {
 /* LiveLib import                                                      */
 /* ------------------------------------------------------------------ */
 
-function startLivelibImport(username) {
+function startLivelibImport(username, options = {}) {
   const cleanUsername = String(username == null ? '' : username).trim().replace(/^@/, '');
   if (!/^[\w.-]{1,64}$/.test(cleanUsername)) {
     throw new livelib.LivelibError(
@@ -144,6 +158,40 @@ function startLivelibImport(username) {
 
   const running = findRunningJob('livelib', cleanUsername);
   if (running) return publicStatus(running);
+
+  // Repeat-import guard (politeness + cheap UI): a cached profile younger than
+  // LIVELIB_REIMPORT_TTL_MS is reused instead of re-scraping 20+ pages. An
+  // explicit { force: true } (or an expired profile) still performs a full
+  // import, and a Hardcover import re-runs resolve over the cached profile.
+  const force = Boolean(options.force);
+  if (!force) {
+    const cached = bookCache.getProfile('livelib', cleanUsername);
+    if (cached && isFreshImport(cached.importedAt)) {
+      const now = Date.now();
+      const reused = {
+        id: newJobId('livelib', cleanUsername),
+        source: 'livelib',
+        userKey: cleanUsername,
+        stage: 'done',
+        page: null,
+        pageTotal: null,
+        events: cached.events.length,
+        done: true,
+        reused: true,
+        cachedAt: cached.importedAt || null,
+        error: null,
+        warning: null,
+        startedAt: now,
+        finishedAt: now,
+      };
+      rememberJob(reused);
+      console.log(
+        `[books-import ${reused.id}] livelib profile reused from cache ` +
+          `(${cached.events.length} events, importedAt=${cached.importedAt})`
+      );
+      return publicStatus(reused);
+    }
+  }
 
   const job = {
     id: newJobId('livelib', cleanUsername),
@@ -282,6 +330,8 @@ function publicStatus(job) {
     pageTotal: job.pageTotal,
     events: job.events,
     done: Boolean(job.done),
+    reused: Boolean(job.reused),
+    cachedAt: job.cachedAt || null,
     error: job.error || null,
     warning: job.warning || null,
     startedAt: job.startedAt,
@@ -308,6 +358,8 @@ module.exports = {
   startHardcoverImport,
   getStatus,
   publicStatus,
+  isFreshImport,
+  LIVELIB_REIMPORT_TTL_MS,
   resolveAllLivelibProfiles,
   idle,
 };

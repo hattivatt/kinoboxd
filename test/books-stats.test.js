@@ -51,6 +51,8 @@ async function seed() {
     score: 1,
     evidence: { isbn: '9780441013593' },
   });
+  bookCache.setWorkLink('hc:100', { livelib: ['9001'] });
+  bookCache.flushLinks();
 
   await bookCache.saveProfile('hardcover', '34748', {
     schemaVersion: 1,
@@ -183,7 +185,7 @@ test('union aggregation with work dedupe and option A ratings', async () => {
     ]
   );
   assert.equal(stats.readDays.length, 3);
-  assert.equal(stats.streaks.lastFinish, '2024-04-01');
+  assert.equal(stats.streaks.lastReadDate, '2024-04-01');
   assert.equal(stats.streaks.best >= 1, true);
 
   // Widgets from Hardcover metadata.
@@ -197,6 +199,12 @@ test('union aggregation with work dedupe and option A ratings', async () => {
   assert.equal(stats.publishers.find((entry) => entry.name === 'Chilton').count, 1);
   assert.equal(stats.summary.pagesTotal, 912);
   assert.equal(stats.summary.avgPages, 456);
+  // Film-contract aliases consumed by the frontend (period card, pages tile).
+  assert.equal(stats.summary.pageCount, stats.summary.pagesTotal);
+  assert.equal(stats.summary.dateFrom, '2024-03-02');
+  assert.equal(stats.summary.dateTo, '2024-04-01');
+  // Link menu is derivable from links.json for merged works.
+  assert.equal(stats.booksIndex['hc:100'].links.livelib, 'https://www.livelib.ru/book/9001');
   assert.equal(stats.unmatchedCount, 2);
   assert.equal(stats.recentlyFinished.length, 4);
   assert.equal(stats.recentlyFinished[0].date, '2024-04-01');

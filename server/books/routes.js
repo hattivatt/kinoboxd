@@ -75,7 +75,9 @@ router.post('/import/livelib', (req, res, next) => {
     // Accept a full profile URL as a convenience: /reader/Margaret or /users/50064.
     const nameMatch = String(username).match(/\/(?:reader|users)\/([^/?#]+)/);
     const value = nameMatch ? nameMatch[1] : username;
-    const job = importJobs.startLivelibImport(value);
+    const job = importJobs.startLivelibImport(value, {
+      force: Boolean(req.body && req.body.force === true),
+    });
     res.status(202).json(job);
   } catch (err) {
     next(mapError(err));
