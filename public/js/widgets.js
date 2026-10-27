@@ -190,6 +190,7 @@ function normalizeStats(raw) {
   return {
     summary: {
       filmCount: toNum(summary.filmCount),
+      viewCount: Math.max(0, toNum(summary.viewCount)),
       ratedCount: toNum(summary.ratedCount),
       dateFrom: summary.dateFrom || null,
       dateTo: summary.dateTo || null,
@@ -303,6 +304,7 @@ function normalizeStats(raw) {
         return {
           date,
           count: Math.max(0, toNum(item && item.count)),
+          rewatchCount: Math.max(0, toNum(item && item.rewatchCount)),
           slugs: array(item && item.slugs).map((slug) => String(slug)).filter(Boolean),
         };
       })
@@ -389,9 +391,30 @@ function renderSummary(stats) {
   const totalFromRatings = stats.ratings.reduce((sum, item) => sum + item.count, 0);
   const filmCount = summary.filmCount || totalFromRatings;
   const ratedCount = summary.ratedCount || ratedFromRatings;
+  const viewCount = summary.viewCount || filmCount;
+  const rewatchFromDays = stats.watchDays
+    .reduce((sum, day) => sum + Math.max(0, toNum(day.rewatchCount)), 0);
+  const rewatchCount = rewatchFromDays || summary.rewatchCount;
   const watch = summary.totalMinutes != null ? fmtWatchTime(summary.totalMinutes) : null;
   const ratedShare = filmCount > 0 ? fmtPercent(ratedCount, filmCount) : '';
   const isKinopoisk = Boolean(summary.source && summary.source.type === 'kinopoisk');
+
+  // The film tile keeps films as its primary number ("1 376") and uses the
+  // sub-line for viewings only when viewings differ from films (attachment)
+  // or a rewatch exists, so the default look of the strip is unchanged.
+  const filmSubDefault = summary.dateFrom || summary.dateTo
+    ? (isKinopoisk ? 'по профилю Кинопоиска' : 'по данным дневника')
+    : '';
+  let filmSub = filmSubDefault;
+  if (viewCount > 0 && (viewCount !== filmCount || rewatchCount > 0)) {
+    filmSub = `${fmtInt(viewCount)} ${plural(viewCount, ['просмотр', 'просмотра', 'просмотров'])}`;
+    if (rewatchCount > 0) {
+      filmSub += ` · в т.ч. ${fmtInt(rewatchCount)} ${plural(rewatchCount, ['пересмотр', 'пересмотра', 'пересмотров'])}`;
+    }
+  }
+  const filmTitle = rewatchCount > 0
+    ? `${fmtInt(filmCount)} фильмов · ${fmtInt(viewCount)} просмотров, из них ${fmtInt(rewatchCount)} пересмотров`
+    : (viewCount !== filmCount ? `${fmtInt(filmCount)} фильмов · ${fmtInt(viewCount)} просмотров` : '');
 
   const metric = (iconName, label, valueNode, sub = '', title = '', extraClass = '') => {
     const node = el('div', { class: `metric${extraClass ? ` ${extraClass}` : ''}` });
@@ -407,9 +430,8 @@ function renderSummary(stats) {
 
   host.append(metric('film', 'всего фильмов',
     el('div', { class: 'metric-value', text: fmtInt(filmCount) }),
-    summary.dateFrom || summary.dateTo
-      ? (isKinopoisk ? 'по профилю Кинопоиска' : 'по данным дневника')
-      : '',
+    filmSub,
+    filmTitle,
   ));
 
   host.append(metric('star', 'с оценками',
@@ -1693,10 +1715,22 @@ function openMonthModal(stats, month) {
   }
   const label = monthName(prefix);
   const count = films.length;
+  const monthDays = (/^\d{4}-\d{2}$/.test(prefix) ? stats.watchDays : [])
+    .filter((day) => String(day.date).startsWith(prefix));
+  const views = monthDays.reduce((sum, day) => sum + toNum(day.count), 0);
+  const rewatches = monthDays.reduce(
+    (sum, day) => sum + Math.max(0, toNum(day.rewatchCount)), 0
+  );
+  const viewSuffix = views > count
+    ? ` · ${fmtInt(views)} ${plural(views, ['просмотр', 'просмотра', 'просмотров'])}`
+      + (rewatches > 0
+        ? ` (в т.ч. ${fmtInt(rewatches)} ${plural(rewatches, ['пересмотр', 'пересмотра', 'пересмотров'])})`
+        : '')
+    : '';
   openFilmListModal({
     kicker: 'История просмотров',
     title: `Просмотрено: ${label}`,
-    subtitle: `${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])} · ${label}`,
+    subtitle: `${fmtInt(count)} ${plural(count, ['фильм', 'фильма', 'фильмов'])} · ${label}${viewSuffix}`,
     groupLabel: label,
     emptyText: 'За этот месяц в выгрузке нет фильмов',
     films,
@@ -1937,11 +1971,15 @@ function openWatchDayModal(stats, day) {
   }
 
   const count = Math.max(toNum(day.count), films.length);
+  const rewatches = Math.max(0, toNum(day.rewatchCount));
   openFilmListModal({
     kicker: 'Календарь просмотров',
     title: fmtDayRu(day.date),
     subtitle: `${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])} · `
-      + `${fmtInt(films.length)} ${plural(films.length, ['фильм', 'фильма', 'фильмов'])}`,
+      + `${fmtInt(films.length)} ${plural(films.length, ['фильм', 'фильма', 'фильмов'])}`
+      + (rewatches > 0
+        ? ` · в т.ч. ${fmtInt(rewatches)} ${plural(rewatches, ['пересмотр', 'пересмотра', 'пересмотров'])}`
+        : ''),
     groupLabel: fmtDayRu(day.date),
     emptyText: 'За этот день нет фильмов в выгрузке',
     films,
@@ -2000,23 +2038,27 @@ function buildYearCalendar(year, byDate, stats) {
     const date = `${year}-${pad2(dateObj.getUTCMonth() + 1)}-${pad2(dateObj.getUTCDate())}`;
     const day = byDate.get(date) || null;
     const count = day ? toNum(day.count) : 0;
+    // Diary rewatches only: the KinoPoisk rating-date proxy has no flag, so
+    // `rewatchCount` is 0 there by construction.
+    const rewatch = day ? Math.max(0, toNum(day.rewatchCount)) : 0;
+    const countLabel = `${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])}`;
+    const rewatchLabel = `${fmtInt(rewatch)} ${plural(rewatch, ['пересмотр', 'пересмотра', 'пересмотров'])}`;
+    const dayTitle = count > 0
+      ? `${date} — ${countLabel}${rewatch > 0 ? ` (в т.ч. ${rewatchLabel})` : ''}`
+      : `${date} — нет просмотров`;
     const cell = el(day && count > 0 ? 'button' : 'span', {
-      class: `cal-cell cal-level-${heatLevel(count)}${count > 0 ? ' is-active' : ''}`,
-      dataset: { date, count: String(count) },
-      title: count > 0
-        ? `${date} — ${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])}`
-        : `${date} — нет просмотров`,
+      class: `cal-cell cal-level-${heatLevel(count)}${count > 0 ? ' is-active' : ''}${rewatch > 0 ? ' has-rewatch' : ''}`,
+      dataset: { date, count: String(count), rewatch: String(rewatch) },
+      title: dayTitle,
       role: 'gridcell',
-      'aria-label': count > 0
-        ? `${date}: ${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])}`
-        : `${date}: нет просмотров`,
+      'aria-label': dayTitle,
     });
     if (day && count > 0) {
       if (cell.tagName === 'BUTTON') cell.type = 'button';
       cell.addEventListener('pointerenter', (event) => {
         showTooltip(
-          `${date} — ${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])}`,
-          'нажмите, чтобы увидеть фильмы'
+          dayTitle,
+          rewatch > 0 ? 'в том числе пересмотры · нажмите, чтобы увидеть фильмы' : 'нажмите, чтобы увидеть фильмы'
         );
         moveTooltip(event);
       });
@@ -2101,9 +2143,13 @@ function renderWatchCalendar(stats) {
   }
 
   const total = days.reduce((sum, day) => sum + toNum(day.count), 0);
+  const totalRewatch = days.reduce((sum, day) => sum + Math.max(0, toNum(day.rewatchCount)), 0);
   const note = $('calendar-note');
   if (note) {
     note.textContent = `${fmtInt(days.length)} ${plural(days.length, ['день', 'дня', 'дней'])} · `
-      + `${fmtInt(total)} ${plural(total, ['просмотр', 'просмотра', 'просмотров'])}`;
+      + `${fmtInt(total)} ${plural(total, ['просмотр', 'просмотра', 'просмотров'])}`
+      + (totalRewatch > 0
+        ? ` · ${fmtInt(totalRewatch)} ${plural(totalRewatch, ['пересмотр', 'пересмотра', 'пересмотров'])}`
+        : '');
   }
 }

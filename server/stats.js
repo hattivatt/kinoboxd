@@ -600,7 +600,7 @@ function buildStats(upload, jobOverride = null) {
   // watchDays[].count is therefore always equal to sum timeline[].watched.
   // `slugs` keeps one entry per viewing (rewatches repeat the slug) so the
   // calendar can open the exact film list of a day without another endpoint.
-  const watchDayMap = new Map(); // "YYYY-MM-DD" -> { date, count, slugs }
+  const watchDayMap = new Map(); // "YYYY-MM-DD" -> { date, count, rewatchCount, slugs }
   const watchEvents = []; // { date, slug, rewatch } — one per viewing
 
   function addTimelineEvent(date, rated, event = null) {
@@ -609,21 +609,25 @@ function buildStats(upload, jobOverride = null) {
     const month = day.slice(0, 7);
     let bucket = timelineMap.get(month);
     if (!bucket) {
-      bucket = { month, watched: 0, rated: 0 };
+      bucket = { month, watched: 0, rated: 0, rewatchCount: 0 };
       timelineMap.set(month, bucket);
     }
     bucket.watched++;
     if (rated) bucket.rated++;
+    // Only diary events carry a rewatch flag; the KinoPoisk rating-date proxy
+    // has no rewatch signal and passes `null`, so it never lands here.
+    if (event && event.rewatch === true) bucket.rewatchCount++;
     if (!realDateFrom || day < realDateFrom) realDateFrom = day;
     if (!realDateTo || day > realDateTo) realDateTo = day;
 
     if (event && event.slug) {
       let watchDay = watchDayMap.get(day);
       if (!watchDay) {
-        watchDay = { date: day, count: 0, slugs: [] };
+        watchDay = { date: day, count: 0, rewatchCount: 0, slugs: [] };
         watchDayMap.set(day, watchDay);
       }
       watchDay.count++;
+      if (event.rewatch === true) watchDay.rewatchCount++;
       watchDay.slugs.push(String(event.slug));
       watchEvents.push({
         date: day,
@@ -1118,6 +1122,10 @@ function buildStats(upload, jobOverride = null) {
   const timeline = [...timelineMap.values()].sort((a, b) =>
     a.month.localeCompare(b.month)
   );
+  // Total viewings (rewatches included), i.e. exactly the sum the monthly bars
+  // and the calendar show. Without an attachment every KinoPoisk film
+  // contributes one proxy viewing, so this equals filmCount.
+  const viewCount = timeline.reduce((sum, bucket) => sum + bucket.watched, 0);
 
   // Day-level viewing history for the calendar heatmap. Sorted ascending;
   // sum(count) === sum(timeline.watched) by construction.
@@ -1179,6 +1187,9 @@ function buildStats(upload, jobOverride = null) {
   const summary = {
     filmCount: upload.films.length,
     ratedCount,
+    // One entry per viewing, so rewatches make this larger than filmCount when
+    // a Letterboxd attachment is present.
+    viewCount,
     // With an attachment the displayed period is derived from the real
     // viewing dates that actually feed the timeline (including the ratedAt
     // fallback for films without a diary event).

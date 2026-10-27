@@ -185,10 +185,20 @@ function buildModel(userId) {
 }
 
 function compareSide(userId, model) {
+  const filmCount = model.summary.filmCount;
+  const viewCount = Number.isFinite(model.summary.viewCount)
+    ? model.summary.viewCount
+    : filmCount;
+  const rewatchCount = Math.max(0, Number(model.summary.rewatchCount) || 0);
   return {
     kpUserId: String(userId),
     nick: model.nick,
-    filmCount: model.summary.filmCount,
+    filmCount,
+    // Total viewings, rewatches included. Without an attachment this is the
+    // one-viewing-per-film KinoPoisk rating-date proxy and equals filmCount.
+    viewCount,
+    rewatchCount,
+    hasAttachment: Boolean(model.summary.attachedLb),
     ratedCount: model.summary.ratedCount,
     avgRating: averageRating(model.films),
     totalMinutes: model.summary.totalMinutes,

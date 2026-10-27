@@ -117,6 +117,7 @@ when an attachment exists.
 ```json
 {
   "a": { "kpUserId": "15702206", "nick": "Axis", "filmCount": 1376,
+         "viewCount": 1377, "rewatchCount": 16, "hasAttachment": true,
          "ratedCount": 1376, "avgRating": 7.54, "totalMinutes": 147509,
          "dateFrom": "2019-01-27", "dateTo": "2026-10-25" },
   "b": { "...": "same shape" },
@@ -137,7 +138,10 @@ when an attachment exists.
   `countA - countB`, so negative values favour profile B.
 * `avgRating` is the mean KinoPoisk rating on the native 1–10 scale;
   `totalMinutes` comes from the cached TMDB runtimes (same as
-  `summary.totalMinutes` on the dashboard).
+  `summary.totalMinutes` on the dashboard). `viewCount` is the number of
+  viewings including rewatches (`summary.viewCount`); with an attachment it is
+  larger than `filmCount`, without one it is the one-viewing-per-film proxy and
+  equals `filmCount`. `rewatchCount` counts the attached diary rewatch events.
 
 The endpoint builds `kp.buildDataset()` + an ephemeral enrich map and reuses
 `stats.buildStats(upload, jobOverride)`; the override keeps the fake job out of
@@ -222,22 +226,27 @@ Stats changes for a KinoPoisk profile with an attachment:
 * `timeline` months use the real watch dates; each diary event is one viewing,
   so rewatches add extra rows. KinoPoisk films without an event contribute one
   proxy viewing in the rating month. `watched` counts every viewing;
-  `rated` counts viewings of films that have a KinoPoisk rating.
+  `rated` counts viewings of films that have a KinoPoisk rating;
+  `rewatchCount` counts only diary events with `Rewatch=true` (the rating-date
+  proxy has no rewatch signal).
+* `summary.viewCount` = `sum(timeline.watched)`, the total viewings including
+  rewatches. Without an attachment it equals `summary.filmCount`.
 * `rewatches` = `[{ slug, count }]` for KinoPoisk films with at least **two
   diary events marked `Rewatch=true`** (`count` = number of such events).
 * `summary.rewatchCount` counts all archive events with `rewatch=true`;
   `summary.attachedLb = { fileName, attachedAt, events, ratedEvents }`, where
   `events`/`ratedEvents` are the diary events actually applied to the
   KinoPoisk film set (and how many belong to rated films).
-* `watchDays = [{ date: "YYYY-MM-DD", count, slugs: [filmSlug, …] }]` is the
-  day-level view of exactly the same events that feed `timeline`:
+* `watchDays = [{ date: "YYYY-MM-DD", count, rewatchCount, slugs: [filmSlug, …] }]`
+  is the day-level view of exactly the same events that feed `timeline`:
   `sum(watchDays.count) === sum(timeline.watched)` by construction. Diary
-  events contribute one entry per viewing (a rewatch repeats the slug); a
-  KinoPoisk film without a diary event contributes one proxy viewing on its
-  rating date. Without an attachment every film contributes that proxy, so
-  the sum equals `summary.filmCount`. `slugs` is what the calendar day modal
-  lists; the array is omitted in the compact mental model above but always
-  present (one entry per viewing).
+  events contribute one entry per viewing (a rewatch repeats the slug);
+  `rewatchCount` counts the diary rewatch events of that day (0 for
+  proxy-only days). A KinoPoisk film without a diary event contributes one
+  proxy viewing on its rating date. Without an attachment every film
+  contributes that proxy, so the sum equals `summary.filmCount`. `slugs` is
+  what the calendar day modal lists; the array is omitted in the compact
+  mental model above but always present (one entry per viewing).
 * `recentlyWatched = [{ date, slug, rewatch }]` — the newest 15 viewings,
   newest first (`rewatch` is `null` for the KinoPoisk rating-date proxy).
 * `streaks = { current, best, lastWatchDate, bestDates: [from, to] }` — runs

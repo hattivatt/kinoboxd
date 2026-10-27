@@ -275,7 +275,12 @@ function niceStep(raw) {
 export function renderTimeline(host, timeline, { onMonthClick } = {}) {
   const data = (Array.isArray(timeline) ? timeline : [])
     .filter((item) => item && typeof item.month === 'string' && /^\d{4}-\d{2}$/.test(item.month))
-    .map((item) => ({ ...item, watched: Math.max(0, toNum(item.watched)), rated: Math.max(0, toNum(item.rated)) }))
+    .map((item) => ({
+      ...item,
+      watched: Math.max(0, toNum(item.watched)),
+      rated: Math.max(0, toNum(item.rated)),
+      rewatchCount: Math.max(0, toNum(item.rewatchCount)),
+    }))
     .sort((a, b) => a.month.localeCompare(b.month));
 
   clear(host);
@@ -352,8 +357,12 @@ export function renderTimeline(host, timeline, { onMonthClick } = {}) {
 
     hit.addEventListener('pointerenter', (event) => {
       bar.classList.add('is-hot');
+      const views = `${fmtInt(item.watched)} ${plural(item.watched, ['просмотр', 'просмотра', 'просмотров'])}`;
+      const rewatches = item.rewatchCount > 0
+        ? ` (в т.ч. ${fmtInt(item.rewatchCount)} ${plural(item.rewatchCount, ['пересмотр', 'пересмотра', 'пересмотров'])})`
+        : '';
       showTooltip(
-        `${monthName(item.month)} — ${fmtInt(item.watched)}`,
+        `${monthName(item.month)} — ${views}${rewatches}`,
         `${fmtInt(item.rated)} с оценкой`,
       );
       moveTooltip(event);

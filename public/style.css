@@ -1944,6 +1944,17 @@ img { display: block; }
   outline: none;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45);
 }
+/* A day with a diary rewatch keeps the heat level colour but gains a thin
+   amber inner ring, so "watched twice that day" is visible without reading
+   the tooltip. Level 4 already has an outer glow; combine both. */
+.cal-cell.has-rewatch { box-shadow: inset 0 0 0 1.5px rgba(255, 196, 120, 0.95); }
+.cal-cell.has-rewatch.cal-level-4 {
+  box-shadow: inset 0 0 0 1.5px rgba(255, 214, 150, 1), 0 0 6px rgba(0, 224, 84, 0.28);
+}
+.cal-cell.has-rewatch.is-active:hover,
+.cal-cell.has-rewatch.is-active:focus-visible {
+  box-shadow: inset 0 0 0 1.5px rgba(255, 214, 150, 1), 0 0 0 1px rgba(255, 255, 255, 0.45);
+}
 
 /* =========================================================
    persons
@@ -3085,6 +3096,7 @@ img { display: block; }
 .compare-side.is-a .compare-fact dd { color: #d9ffe7; }
 .compare-side.is-b .compare-fact dd { color: #ffe5c9; }
 .compare-fact-sub { font-size: 10.5px; font-weight: 600; color: var(--muted-2); letter-spacing: 0; }
+.compare-fact-sub-block { display: block; margin-top: 1px; white-space: nowrap; }
 .compare-vs {
   display: flex;
   align-items: center;

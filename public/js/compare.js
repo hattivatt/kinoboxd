@@ -112,6 +112,27 @@ function renderSide(profile, side) {
 
   const facts = el('dl', { class: 'compare-facts' });
   facts.append(fact('фильмов', fmtInt(profile.filmCount)));
+
+  const views = Number(profile.viewCount) || 0;
+  if (views > 0) {
+    const rewatches = Math.max(0, Number(profile.rewatchCount) || 0);
+    const viewFact = el('div', { class: 'compare-fact' });
+    viewFact.append(el('dt', { text: 'просмотров' }));
+    const viewValue = el('dd');
+    viewValue.append(document.createTextNode(fmtInt(views)));
+    const sub = profile.hasAttachment
+      ? (rewatches > 0
+        ? `вкл. ${fmtInt(rewatches)} ${plural(rewatches, ['пересмотр', 'пересмотра', 'пересмотров'])}`
+        : 'включая пересмотры')
+      : 'прокси, без архива';
+    viewValue.append(el('span', { class: 'compare-fact-sub compare-fact-sub-block', text: sub }));
+    viewFact.append(viewValue);
+    viewFact.title = profile.hasAttachment
+      ? `Просмотров с пересмотрами: ${fmtInt(views)}${rewatches > 0 ? `, из них ${fmtInt(rewatches)}` : ''}`
+      : `Letterboxd-архив не прикреплён: ${fmtInt(views)} просмотров — прокси по одной дате оценки на фильм`;
+    facts.append(viewFact);
+  }
+
   facts.append(fact('с оценками', fmtInt(profile.ratedCount)));
 
   const avg = el('div', { class: 'compare-fact' });
