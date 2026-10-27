@@ -341,3 +341,201 @@ test('in-run negative memo prevents duplicate Google Books requests', async () =
   assert.equal(report.resolved, 0);
   assert.equal(report.unmatched, 2);
 });
+
+const LITRES_ITEM = {
+  id: 8981462,
+  title: 'Игрок',
+  url: '/book/fedor-dostoevskiy/igrok-8981462/',
+  cover_url: '/pub/c/cover/8981462.jpg',
+  language_code: 'ru',
+  date_written_at: '2014-01-01',
+  persons: [{ full_name: 'Фёдор Достоевский', role: 'author' }],
+  series: [{ name: 'Русская классика', art_order: 1 }],
+};
+
+const LITRES_DETAIL = {
+  id: 8981462,
+  title: 'Игрок',
+  isbn: '978-5-699-78049-5',
+  publisher: 'АСТ',
+  publication_date: '2014-01-01',
+  genres: [{ name: 'классическая литература' }],
+  tags: [{ name: 'роман' }],
+  series: [{ name: 'Русская классика', art_order: 1 }],
+  paper_book: { pages: 256 },
+  cover_url: '/pub/c/cover/8981462.jpg',
+  url: '/book/fedor-dostoevskiy/igrok-8981462/',
+};
+
+function litresRoutes(item = LITRES_ITEM, detail = LITRES_DETAIL) {
+  return [
+    [
+      'api.litres.ru/foundation/api/search',
+      () =>
+        response({
+          body: { payload: { data: [{ type: 'text_book', instance: item }] } },
+        }),
+    ],
+    [
+      'api.litres.ru/foundation/api/arts/',
+      () => response({ body: { payload: { data: detail } } }),
+    ],
+  ];
+}
+
+test('RU title goes to litres first and its ISBN closes a Hardcover work', async () => {
+  const fetchImpl = router([
+    ...litresRoutes(),
+    ['www.googleapis.com/books', () => response({ body: { items: [] } })],
+    ['openlibrary.org', () => response({ body: {} })],
+    ['www.livelib.ru/book/', () => response({ body: cardHtml({ bookId: '4001' }) })],
+  ]);
+  const lookup = lookupStub([
+    hcEntry({
+      hcWorkId: 900,
+      isbn13: '9785699780495',
+      title: 'Игрок',
+      authors: ['Фёдор Достоевский'],
+      genres: ['Classics'],
+      pages: 320,
+      publisher: 'АСТ',
+      year: 2014,
+      slug: 'igrok',
+    }),
+  ]);
+  const report = await resolve.resolveProfile(
+    profile([event('4001', { title: 'Игрок', authors: ['Фёдор Достоевский'], isbn: null })]),
+    {
+      providers: ['hardcover', 'litres', 'googlebooks', 'openlibrary', 'livelib-card'],
+      lookupIsbns: lookup,
+      fetchImpl,
+      sleep: noSleep,
+      requestDelayMs: 0,
+      litresPauseMs: 0,
+      cardPauseMs: 0,
+    }
+  );
+
+  assert.equal(report.resolvedHardcoverFromLitres, 1);
+  assert.equal(report.resolvedLitres, 0);
+  assert.equal(report.litresBudget.used, 1);
+  assert.equal(fetchImpl.calls.filter((url) => url.includes('litres')).length, 2);
+  assert.equal(fetchImpl.calls.filter((url) => url.includes('googleapis')).length, 0);
+  assert.equal(fetchImpl.calls.filter((url) => url.includes('openlibrary')).length, 0);
+  assert.equal(fetchImpl.calls.filter((url) => url.includes('livelib')).length, 0);
+
+  const link = bookCache.getLink('4001');
+  assert.equal(link.workId, 'hc:900');
+  assert.equal(link.method, 'isbn');
+  const details = bookCache.getWorkDetails('hc:900');
+  assert.deepEqual(details.metadataSources.sort(), ['hardcover', 'litres'].sort());
+  assert.equal(details.sources.length, 2);
+  assert.equal(details.sources.find((entry) => entry.source === 'litres').url.includes('/book/'), true);
+});
+
+test('RU title without a Hardcover match becomes a litres work', async () => {
+  const item = {
+    ...LITRES_ITEM,
+    id: 515151,
+    title: 'Преступление и наказание',
+    url: '/book/fedor-dostoevskiy/prestuplenie-515151/',
+  };
+  const detail = {
+    ...LITRES_DETAIL,
+    id: 515151,
+    title: 'Преступление и наказание',
+    isbn: '978-5-17-090155-0',
+    series: [{ name: 'Русская классика', art_order: 2 }],
+    url: '/book/fedor-dostoevskiy/prestuplenie-515151/',
+  };
+  const fetchImpl = router([
+    ...litresRoutes(item, detail),
+    ['www.googleapis.com/books', () => response({ body: { items: [] } })],
+    ['openlibrary.org', () => response({ body: {} })],
+  ]);
+  const report = await resolve.resolveProfile(
+    profile([
+      event('4002', {
+        title: 'Преступление и наказание',
+        authors: ['Фёдор Достоевский'],
+        isbn: null,
+      }),
+    ]),
+    {
+      providers: ['litres', 'googlebooks', 'openlibrary'],
+      lookupIsbns: lookupStub([]),
+      fetchImpl,
+      sleep: noSleep,
+      requestDelayMs: 0,
+      litresPauseMs: 0,
+    }
+  );
+
+  assert.equal(report.resolvedLitres, 1);
+  assert.equal(report.resolved, 1);
+  assert.equal(report.unmatched, 0);
+
+  const link = bookCache.getLink('4002');
+  assert.equal(link.workId, 'lr:515151');
+  assert.equal(link.method, 'litres-title');
+
+  const details = bookCache.getWorkDetails('lr:515151');
+  assert.equal(details.schemaVersion, 2);
+  assert.equal(details.isbn13, '9785170901550');
+  assert.equal(details.pages, 256);
+  assert.deepEqual(details.genres, ['классическая литература']);
+  assert.deepEqual(details.metadataSources, ['litres']);
+  assert.equal(details.sources[0].source, 'litres');
+});
+
+test('Latin titles never call litres', async () => {
+  const fetchImpl = router([
+    ...litresRoutes(),
+    ['www.googleapis.com/books', () => response({ body: { items: [] } })],
+    ['openlibrary.org', () => response({ body: {} })],
+  ]);
+  await resolve.resolveProfile(
+    profile([event('4003', { title: 'Dune', authors: ['Frank Herbert'], isbn: null })]),
+    {
+      providers: ['litres', 'googlebooks', 'openlibrary'],
+      lookupIsbns: lookupStub([]),
+      fetchImpl,
+      sleep: noSleep,
+      requestDelayMs: 0,
+      litresPauseMs: 0,
+    }
+  );
+  assert.equal(fetchImpl.calls.filter((url) => url.includes('litres')).length, 0);
+});
+
+test('litres breaker stops the rest of the RU batch', async () => {
+  let litresCalls = 0;
+  const fetchImpl = router([
+    [
+      'api.litres.ru/foundation/api/search',
+      () => {
+        litresCalls++;
+        return response({ status: 403, body: '<html>blocked</html>' });
+      },
+    ],
+  ]);
+  const report = await resolve.resolveProfile(
+    profile([
+      event('4004', { title: 'Бесы', authors: ['Фёдор Достоевский'], isbn: null }),
+      event('4005', { title: 'Подросток', authors: ['Фёдор Достоевский'], isbn: null }),
+    ]),
+    {
+      providers: ['litres'],
+      lookupIsbns: lookupStub([]),
+      fetchImpl,
+      sleep: noSleep,
+      requestDelayMs: 0,
+      litresPauseMs: 0,
+    }
+  );
+  assert.equal(litresCalls, 1);
+  assert.equal(report.providerChain.litres.errors, 1);
+  assert.equal(report.providerChain.litres.skipped, 1);
+  assert.equal(report.litresBudget.used, 1);
+  assert.equal(report.unmatched, 2);
+});

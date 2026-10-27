@@ -274,6 +274,44 @@ test('volume markers keep different books apart in the dedupe key', () => {
   );
 });
 
+test('litres works are metadata-resolved and outrank Google/OL in dedupe', async () => {
+  const { workMetadata, mergeWorkGroup } = require('../server/books/stats');
+  await details('lr:500', {
+    title: 'Игрок',
+    authors: [{ name: 'Фёдор Достоевский' }],
+    genres: ['классическая литература'],
+    series: [],
+    pages: 256,
+    publicationYear: 2014,
+    publisher: 'АСТ',
+    metadataSources: ['litres'],
+    sources: [{ source: 'litres', sourceId: '500', url: 'https://www.litres.ru/book/igrok-500/' }],
+    mangaComics: false,
+  });
+  const meta = workMetadata('lr:500', [
+    {
+      id: 'll:500',
+      source: 'livelib',
+      sourceBookId: '500',
+      workId: 'lr:500',
+      title: 'Игрок',
+      authors: ['Фёдор Достоевский'],
+      rating10: 9,
+      ratingScale: 10,
+      finishedAt: '2024-05-01',
+    },
+  ]);
+  assert.equal(meta.unresolved, false);
+  assert.deepEqual(meta.metadataSources, ['litres']);
+  assert.equal(meta.links.litres, 'https://www.litres.ru/book/igrok-500/');
+  assert.equal(meta.mangaComics, false);
+  assert.equal(meta.pages, 256);
+
+  const gb = { workId: 'gb:1', title: 'Игрок', authors: ['Фёдор Достоевский'], unresolved: false };
+  const lr = { workId: 'lr:500', title: 'Игрок', authors: ['Фёдор Достоевский'], unresolved: false };
+  assert.equal(mergeWorkGroup([gb, lr]).workId, 'lr:500');
+});
+
 test('payload schema stays compatible: old fields keep their place and meaning', () => {
   const stats = buildBooksStats({});
   for (const key of [

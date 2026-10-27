@@ -44,6 +44,7 @@ const {
 } = require('./hardcover-editions');
 const providers = require('./providers');
 const livelibCard = require('./providers/livelib-card');
+const litres = require('./providers/litres');
 
 const FUZZY_ACCEPT = 0.9;
 const FUZZY_GUARDED = 0.8;
@@ -247,7 +248,8 @@ function corpusCandidates(corpus, title) {
 /* Multi-source provider chain                                         */
 /* ------------------------------------------------------------------ */
 
-const CHAIN_NAMES = ['hardcover', 'googlebooks', 'openlibrary', 'livelib-card'];
+const CHAIN_NAMES = ['hardcover', 'litres', 'googlebooks', 'openlibrary', 'livelib-card'];
+const CYRILLIC_TITLE = /[а-яё]/i;
 
 function createChainReport(providerList) {
   const report = {};
@@ -295,7 +297,7 @@ function providerOptionsFor(options, provider) {
         ? options.negativeMemo[provider.NAME]
         : null,
     lookupIsbns: options.lookupIsbns,
-    budget: options.cardBudget,
+    budget: provider.NAME === 'litres' ? options.litresBudget : options.cardBudget,
     cardPauseMs: options.cardPauseMs,
     requestDelayMs: options.requestDelayMs,
     onProgress: options.onProgress,
@@ -340,6 +342,7 @@ function countResolution(report, result) {
   if (result.source === 'googlebooks') report.resolvedGoogle++;
   else if (result.source === 'openlibrary') report.resolvedOpenLibrary++;
   else if (result.source === 'hardcover') report.resolvedHardcoverCard++;
+  else if (result.source === 'litres') report.resolvedLitres++;
 }
 
 async function saveProviderWork(merged, now) {
@@ -399,9 +402,10 @@ async function saveCardMetadata(event, card, now) {
  *
  * Returns a report:
  *   { total, cached, resolvedIsbn, resolvedTitle, resolvedGoogle,
- *     resolvedOpenLibrary, resolvedLivelibCard, resolvedHardcoverCard,
- *     enriched, withMetadata, ambiguous, unmatched, requests, corpusSize,
- *     resolvedWorkIds, providerChain, cardBudget }
+ *     resolvedOpenLibrary, resolvedLitres, resolvedLivelibCard,
+ *     resolvedHardcoverCard, resolvedHardcoverFromLitres, enriched,
+ *     withMetadata, ambiguous, unmatched, requests, corpusSize,
+ *     resolvedWorkIds, providerChain, cardBudget, litresBudget }
  */
 async function resolveProfile(llProfile, options = {}) {
   const force = Boolean(options.force);
@@ -409,9 +413,11 @@ async function resolveProfile(llProfile, options = {}) {
   const events = Array.isArray(llProfile && llProfile.events) ? llProfile.events : [];
   const now = options.now || new Date().toISOString();
   const cardBudget = options.cardBudget || livelibCard.budgetFromEnv();
+  const litresBudget = options.litresBudget || litres.budgetFromEnv();
   const negativeMemo = options.negativeMemo || {
     googlebooks: new Map(),
     openlibrary: new Map(),
+    litres: new Map(),
   };
   const lookupFn = options.lookupIsbns || lookupIsbns;
 
@@ -422,8 +428,10 @@ async function resolveProfile(llProfile, options = {}) {
     resolvedTitle: 0,
     resolvedGoogle: 0,
     resolvedOpenLibrary: 0,
+    resolvedLitres: 0,
     resolvedLivelibCard: 0,
     resolvedHardcoverCard: 0,
+    resolvedHardcoverFromLitres: 0,
     enriched: 0,
     withMetadata: 0,
     ambiguous: 0,
@@ -434,6 +442,7 @@ async function resolveProfile(llProfile, options = {}) {
     methods: {},
     providerChain: {},
     cardBudget: { limit: cardBudget.limit, used: 0, remaining: cardBudget.limit },
+    litresBudget: { limit: litresBudget.limit, used: 0, remaining: litresBudget.limit },
   };
 
   // 1. Existing positive links.
@@ -553,12 +562,80 @@ async function resolveProfile(llProfile, options = {}) {
   const providerList = providers.selectProviders(options.providers);
   const chain = createChainReport(providerList);
   const chainByName = new Map(providerList.map((provider) => [provider.NAME, provider]));
-  const chainOptions = { ...options, cardBudget, negativeMemo };
+  const chainOptions = { ...options, cardBudget, litresBudget, negativeMemo };
   const cardProvider = chainByName.get('livelib-card');
+  const litresProvider = chainByName.get('litres');
   const googleProvider = chainByName.get('googlebooks');
   const openLibraryProvider = chainByName.get('openlibrary');
+  const hardcoverProvider = require('./providers/hardcover');
+  let remaining = pending.filter((event) => !links.has(String(event.sourceBookId)));
 
-  const remaining = pending.filter((event) => !links.has(String(event.sourceBookId)));
+  // 4. Litres first for Cyrillic titles: Hardcover does not know RU editions,
+  // but the litres card returns an ISBN that can still close a Hardcover work.
+  if (litresProvider) {
+    const ruEvents = remaining.filter((event) => CYRILLIC_TITLE.test(String(event.title || '')));
+    const litresByBook = new Map();
+    for (const event of ruEvents) {
+      const bookId = String(event.sourceBookId);
+      const result = await tryProvider(litresProvider, chainInput(event), chainOptions, chain);
+      if (result) litresByBook.set(bookId, result);
+    }
+
+    const litresIsbns = new Set();
+    for (const result of litresByBook.values()) {
+      const isbn = normalizeIsbn(result.isbn13) || normalizeIsbn(result.isbn10);
+      if (isbn) litresIsbns.add(isbn);
+    }
+    const hardcoverByLitresIsbn = new Map();
+    if (litresIsbns.size > 0 && chainByName.has('hardcover')) {
+      const lookup = await lookupFn([...litresIsbns], { onProgress });
+      report.requests += lookup.requests;
+      for (const [isbn, entry] of lookup.byIsbn) hardcoverByLitresIsbn.set(isbn, entry);
+      for (const details of lookup.works.values()) {
+        await bookCache.saveDetails(details.hcWorkId, details);
+      }
+    }
+
+    for (const event of ruEvents) {
+      const bookId = String(event.sourceBookId);
+      if (links.has(bookId)) continue;
+      const litresResult = litresByBook.get(bookId);
+      if (!litresResult) continue;
+      const isbn =
+        normalizeIsbn(litresResult.isbn13) || normalizeIsbn(litresResult.isbn10);
+
+      // ISBN feedback: the paper ISBN from litres may exist in Hardcover even
+      // when the LiveLib ISBN did not.
+      if (isbn && hardcoverByLitresIsbn.has(isbn)) {
+        const entry = hardcoverByLitresIsbn.get(isbn);
+        const hcResult = hardcoverProvider.normalizeDetails(entry.details, entry.editionId);
+        if (hcResult) {
+          const merged = providers.mergeResults(hcResult, [litresResult]);
+          const saved = await saveProviderWork(merged, now);
+          if (saved) {
+            links.set(bookId, makeLink(bookId, merged, now));
+            report.resolvedHardcoverFromLitres++;
+            continue;
+          }
+        }
+      }
+
+      // Litres is the RU canonical card; GB/OL may only fill missing fields.
+      const extraInput = isbn
+        ? chainInput(event, { isbn13: isbn, isbn10: isbn10Of(isbn) })
+        : chainInput(event);
+      let extra = await tryProvider(googleProvider, extraInput, chainOptions, chain);
+      if (!extra) extra = await tryProvider(openLibraryProvider, extraInput, chainOptions, chain);
+      const merged = providers.mergeResults(litresResult, extra ? [extra] : []);
+      const saved = await saveProviderWork(merged, now);
+      if (saved) {
+        links.set(bookId, makeLink(bookId, merged, now));
+        report.resolvedLitres++;
+      }
+    }
+  }
+
+  remaining = pending.filter((event) => !links.has(String(event.sourceBookId)));
   const withIsbn = [];
   const withoutIsbn = [];
   for (const event of remaining) {
@@ -594,8 +671,6 @@ async function resolveProfile(llProfile, options = {}) {
       await bookCache.saveDetails(details.hcWorkId, details);
     }
   }
-
-  const hardcoverProvider = require('./providers/hardcover');
 
   for (const event of withoutIsbn) {
     const bookId = String(event.sourceBookId);
@@ -700,6 +775,11 @@ async function resolveProfile(llProfile, options = {}) {
     used: cardBudget.used,
     remaining: cardBudget.remaining,
   };
+  report.litresBudget = {
+    limit: litresBudget.limit,
+    used: litresBudget.used,
+    remaining: litresBudget.remaining,
+  };
 
   // 5. Persist links + index + links.json.
   for (const [bookId, link] of links) {
@@ -732,7 +812,8 @@ async function resolveProfile(llProfile, options = {}) {
   ).size;
   report.resolved =
     report.cached + report.resolvedIsbn + report.resolvedTitle +
-    report.resolvedGoogle + report.resolvedOpenLibrary + report.resolvedHardcoverCard;
+    report.resolvedGoogle + report.resolvedOpenLibrary + report.resolvedLitres +
+    report.resolvedHardcoverCard + report.resolvedHardcoverFromLitres;
   report.withMetadata = report.resolved + report.enriched;
   report.unmatched = pending.filter((event) => {
     const bookId = String(event.sourceBookId);
@@ -749,9 +830,11 @@ async function resolveProfile(llProfile, options = {}) {
     `[resolve] ${report.withMetadata}/${report.total} livelib event(s) with metadata ` +
       `(cached=${report.cached}, isbn=${report.resolvedIsbn}, title=${report.resolvedTitle}, ` +
       `google=${report.resolvedGoogle}, openlibrary=${report.resolvedOpenLibrary}, ` +
+      `litres=${report.resolvedLitres}, litres-hc=${report.resolvedHardcoverFromLitres}, ` +
       `card=${report.resolvedLivelibCard}, hc-card=${report.resolvedHardcoverCard}, ` +
       `ambiguous=${report.ambiguous}, unmatched=${report.unmatched}, requests=${report.requests}) ` +
-      `[${providerSummary}] card-budget=${cardBudget.used}/${cardBudget.limit}`
+      `[${providerSummary}] card-budget=${cardBudget.used}/${cardBudget.limit} ` +
+      `litres-budget=${litresBudget.used}/${litresBudget.limit}`
   );
   return report;
 }
@@ -765,9 +848,11 @@ module.exports = {
   ISBN_BATCH_SIZE,
   ISBN_QUERY,
   CHAIN_NAMES,
+  CYRILLIC_TITLE,
   providers,
   createChainReport,
   createCardBudget: livelibCard.createBudget,
+  createLitresBudget: litres.createBudget,
   normalizeTitle,
   tokensOf,
   tokenJaccard,

@@ -301,7 +301,10 @@ function workMetadata(workId, events) {
     (displayEvent && displayEvent.edition && Number(displayEvent.edition.year)) ||
     null;
   const year = saneYear(rawYear);
-  const pages = details && Number.isFinite(Number(details.pages)) ? Number(details.pages) : null;
+  const pages =
+    details && details.pages != null && Number.isFinite(Number(details.pages)) && Number(details.pages) > 0
+      ? Number(details.pages)
+      : null;
   const genres = details && Array.isArray(details.genres) ? [...details.genres] : [];
   const series = detailsSeries(details);
   const coverUrl =
@@ -389,7 +392,7 @@ function workMetadata(workId, events) {
 /* Cross-source work dedupe                                            */
 /* ------------------------------------------------------------------ */
 
-const SOURCE_PRIORITY = { hc: 4, gb: 3, ol: 2, ll: 1 };
+const SOURCE_PRIORITY = { hc: 4, lr: 3.5, gb: 3, ol: 2, ll: 1 };
 
 function workPrefix(workId) {
   return String(workId || '').split(':')[0];

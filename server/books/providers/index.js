@@ -17,18 +17,20 @@
  */
 
 const hardcover = require('./hardcover');
+const litres = require('./litres');
 const googlebooks = require('./googlebooks');
 const openlibrary = require('./openlibrary');
 const livelibCard = require('./livelib-card');
 
 const REGISTRY = {
   hardcover,
+  litres,
   googlebooks,
   openlibrary,
   'livelib-card': livelibCard,
 };
 
-const PRIORITY = ['hardcover', 'googlebooks', 'openlibrary', 'livelib-card'];
+const PRIORITY = ['hardcover', 'litres', 'googlebooks', 'openlibrary', 'livelib-card'];
 
 function listProviders() {
   return PRIORITY.map((name) => REGISTRY[name]);
@@ -151,8 +153,18 @@ function resultToDetails(result, options = {}) {
     authors,
     series,
     genres: Array.isArray(result.genres) ? [...result.genres] : [],
-    pages: Number.isFinite(Number(result.pages)) ? Number(result.pages) : null,
-    publicationYear: Number.isFinite(Number(result.year)) ? Number(result.year) : null,
+    pages:
+      result.pages == null || result.pages === ''
+        ? null
+        : Number.isFinite(Number(result.pages))
+        ? Number(result.pages)
+        : null,
+    publicationYear:
+      result.year == null || result.year === ''
+        ? null
+        : Number.isFinite(Number(result.year))
+        ? Number(result.year)
+        : null,
     isbn13: result.isbn13 || null,
     isbn10: result.isbn10 || null,
     publisher: result.publisher || null,

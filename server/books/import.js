@@ -114,6 +114,7 @@ async function resolveAllLivelibProfiles(job, options = {}) {
   const reports = [];
   const profiles = bookCache.listProfiles().filter((profile) => profile.source === 'livelib');
   const cardBudget = resolve.createCardBudget(process.env.BOOKS_LIVELIB_CARD_BUDGET);
+  const litresBudget = resolve.createLitresBudget(process.env.BOOKS_LITRES_BUDGET);
   job.stage = 'resolve';
   job.page = 0;
   job.pageTotal = profiles.length;
@@ -124,6 +125,7 @@ async function resolveAllLivelibProfiles(job, options = {}) {
     const report = await resolve.resolveProfile(data, {
       force: Boolean(options.force),
       cardBudget,
+      litresBudget,
       onProgress: (progress) => {
         job.resolved = progress.resolved;
         job.resolveTotal = progress.total;
@@ -158,6 +160,11 @@ async function resolveAllLivelibProfiles(job, options = {}) {
     title: reports.reduce((sum, report) => sum + report.resolvedTitle, 0),
     google: reports.reduce((sum, report) => sum + report.resolvedGoogle, 0),
     openlibrary: reports.reduce((sum, report) => sum + report.resolvedOpenLibrary, 0),
+    litres: reports.reduce((sum, report) => sum + report.resolvedLitres, 0),
+    hardcoverFromLitres: reports.reduce(
+      (sum, report) => sum + report.resolvedHardcoverFromLitres,
+      0
+    ),
     livelibCard: reports.reduce((sum, report) => sum + report.resolvedLivelibCard, 0),
     hardcoverCard: reports.reduce((sum, report) => sum + report.resolvedHardcoverCard, 0),
     enriched: reports.reduce((sum, report) => sum + report.enriched, 0),
@@ -166,6 +173,11 @@ async function resolveAllLivelibProfiles(job, options = {}) {
     requests: reports.reduce((sum, report) => sum + report.requests, 0),
     providerChain,
     cardBudget: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
+    litresBudget: {
+      limit: litresBudget.limit,
+      used: litresBudget.used,
+      remaining: litresBudget.remaining,
+    },
     reports,
   };
   return job.resolve;

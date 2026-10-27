@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const googlebooks = require('../server/books/providers/googlebooks');
 const openlibrary = require('../server/books/providers/openlibrary');
 const livelibCard = require('../server/books/providers/livelib-card');
+const litres = require('../server/books/providers/litres');
 const { detectManga } = require('../server/books/providers/manga');
 const providers = require('../server/books/providers');
 
@@ -96,6 +97,7 @@ function cardHtml(overrides = {}) {
 test.beforeEach(() => {
   googlebooks.resetBreaker();
   livelibCard.resetBreaker();
+  litres.resetBreaker();
 });
 
 test('googlebooks normalizes an ISBN hit', async () => {
@@ -410,6 +412,193 @@ test('negative memo prevents duplicate provider requests inside one run', async 
     { isbn13: '9780000000001' },
     { fetchImpl, sleep: noSleep, requestDelayMs: 0, negativeMemo: memo }
   );
+  assert.equal(second, null);
+  assert.equal(fetchImpl.calls.length, 1);
+});
+
+const LITRES_ITEM = {
+  id: 8981462,
+  title: 'Аннигиляция',
+  url: '/book/dzheff-vandermeer/annigilyaciya-8981462/',
+  cover_url: '/pub/c/cover/8981462.jpg',
+  language_code: 'ru',
+  date_written_at: '2014-01-01',
+  symbols_count: 266345,
+  persons: [
+    { full_name: 'Джефф Вандермеер', role: 'author' },
+    { full_name: 'Михаил Молчанов', role: 'translator' },
+  ],
+  rating: { rated_avg: 4.35 },
+  series: [{ name: 'Зона Икс', art_order: 1 }],
+};
+
+function litresDetail(overrides = {}) {
+  return {
+    id: 8981462,
+    title: 'Аннигиляция',
+    isbn: overrides.isbn === undefined ? '978-5-699-78049-5' : overrides.isbn,
+    publisher: overrides.publisher === undefined ? null : overrides.publisher,
+    publication_date: '2014-01-01',
+    genres: overrides.genres || [
+      { name: 'научная фантастика' },
+      { name: 'зарубежная фантастика' },
+    ],
+    tags: overrides.tags || [{ name: 'хоррор' }],
+    series: overrides.series || [{ name: 'Зона Икс', art_order: 1 }],
+    paper_book: overrides.paper_book === undefined ? { pages: 256 } : overrides.paper_book,
+    cover_url: '/pub/c/cover/8981462.jpg',
+    url: '/book/dzheff-vandermeer/annigilyaciya-8981462/',
+  };
+}
+
+function litresFetch({ items = [LITRES_ITEM], detail = litresDetail(), detailStatus = 200 } = {}) {
+  return gbFetch((url) => {
+    if (url.includes('/foundation/api/search')) {
+      return response({ body: { payload: { data: items.map((item) => ({ type: 'text_book', instance: item })) } } });
+    }
+    if (url.includes('/foundation/api/arts/')) {
+      if (detailStatus !== 200) return response({ status: detailStatus, body: {} });
+      return response({ body: { payload: { data: detail } } });
+    }
+    return response({ status: 404, body: {} });
+  });
+}
+
+test('litres normalizes a RU search hit with art detail', async () => {
+  const fetchImpl = litresFetch();
+  const result = await litres.getWork(
+    { title: 'Аннигиляция', authors: ['Джефф Вандермеер'] },
+    { fetchImpl, sleep: noSleep, litresPauseMs: 0 }
+  );
+  assert.ok(result);
+  assert.equal(result.source, 'litres');
+  assert.equal(result.workId, 'lr:8981462');
+  assert.equal(result.title, 'Аннигиляция');
+  assert.deepEqual(result.authors, ['Джефф Вандермеер']);
+  assert.equal(result.isbn13, '9785699780495');
+  assert.equal(result.isbn10, '5699780491');
+  assert.equal(result.year, 2014);
+  assert.deepEqual(result.genres, ['научная фантастика', 'зарубежная фантастика']);
+  assert.deepEqual(result.series, { name: 'Зона Икс', position: 1 });
+  assert.equal(result.pages, 256);
+  assert.equal(result.cover, 'https://www.litres.ru/pub/c/cover/8981462.jpg');
+  assert.equal(
+    result.links.pageUrl,
+    'https://www.litres.ru/book/dzheff-vandermeer/annigilyaciya-8981462/'
+  );
+  assert.equal(result.confidence, 0.95);
+  assert.equal(result.mangaComics, false);
+  assert.equal(fetchImpl.calls.length, 2);
+});
+
+test('litres keeps the search card when the art detail fails', async () => {
+  const fetchImpl = litresFetch({ detailStatus: 500 });
+  const result = await litres.getWork(
+    { title: 'Аннигиляция', authors: ['Джефф Вандермеер'] },
+    { fetchImpl, sleep: noSleep, litresPauseMs: 0 }
+  );
+  assert.ok(result);
+  assert.equal(result.isbn13, null);
+  assert.deepEqual(result.genres, []);
+  assert.equal(result.pages, null);
+  assert.equal(result.links.pageUrl.includes('/book/dzheff-vandermeer/'), true);
+});
+
+test('litres search-only cards keep unknown pages/year as null', () => {
+  const normalized = litres.normalizeLitres(
+    LITRES_ITEM,
+    null,
+    { title: 'Аннигиляция', authors: ['Джефф Вандермеер'] },
+    { exact: true, score: 1, titleSim: 1, authorHit: true }
+  );
+  assert.equal(normalized.pages, null);
+  assert.deepEqual(normalized.genres, []);
+  assert.equal(normalized.year, 2014);
+  const doc = providers.resultToDetails(normalized, { now: '2026-10-27T00:00:00.000Z' });
+  assert.equal(doc.pages, null);
+  assert.equal(doc.publicationYear, 2014);
+});
+
+test('litres strips format suffixes and prefers text editions', () => {
+  assert.equal(litres.cleanTitle('Игрок (epub)'), 'Игрок');
+  assert.equal(litres.cleanTitle('Игрок (fb2, pdf)'), 'Игрок');
+  assert.equal(litres.cleanTitle('Игрок (покетбук)'), 'Игрок (покетбук)');
+});
+
+test('litres rejects a candidate with a different author', async () => {
+  const wrong = {
+    ...LITRES_ITEM,
+    persons: [{ full_name: 'Другой Автор', role: 'author' }],
+  };
+  const fetchImpl = litresFetch({ items: [wrong] });
+  const result = await litres.getWork(
+    { title: 'Аннигиляция', authors: ['Джефф Вандермеер'] },
+    { fetchImpl, sleep: noSleep, litresPauseMs: 0 }
+  );
+  assert.equal(result, null);
+  assert.equal(fetchImpl.calls.length, 1);
+});
+
+test('litres 403 trips the 30 min breaker', async () => {
+  const fetchImpl = gbFetch(() => response({ status: 403, body: '<html>blocked</html>' }));
+  const budget = litres.createBudget(10);
+  await assert.rejects(
+    () =>
+      litres.getWork(
+        { title: 'Аннигиляция', authors: ['Джефф Вандермеер'] },
+        { fetchImpl, sleep: noSleep, litresPauseMs: 0, budget }
+      ),
+    /HTTP 403/
+  );
+  assert.equal(litres.isBreakerOpen(), true);
+  const callsAfter = fetchImpl.calls.length;
+  const second = await litres.getWork(
+    { title: 'Игрок', authors: ['Фёдор Достоевский'] },
+    { fetchImpl, sleep: noSleep, litresPauseMs: 0, budget }
+  );
+  assert.equal(second, null);
+  assert.equal(fetchImpl.calls.length, callsAfter);
+  assert.equal(budget.used, 1);
+});
+
+test('litres budget caps book lookups per run', async () => {
+  const fetchImpl = litresFetch();
+  const budget = litres.createBudget(1);
+  const options = { fetchImpl, sleep: noSleep, litresPauseMs: 0, budget };
+  const first = await litres.getWork(
+    { title: 'Аннигиляция', authors: ['Джефф Вандермеер'] },
+    options
+  );
+  assert.ok(first);
+  const second = await litres.getWork(
+    { title: 'Игрок', authors: ['Фёдор Достоевский'] },
+    options
+  );
+  assert.equal(second, null);
+  assert.equal(budget.used, 1);
+  assert.equal(fetchImpl.calls.length, 2);
+});
+
+test('litres detects manga via its genre names', async () => {
+  const fetchImpl = litresFetch({
+    items: [{ ...LITRES_ITEM, title: 'Наруто. Том 1', persons: [{ full_name: 'Масаси Кисимото', role: 'author' }] }],
+    detail: litresDetail({ genres: [{ name: 'манга' }, { name: 'фэнтези' }] }),
+  });
+  const result = await litres.getWork(
+    { title: 'Наруто. Том 1', authors: ['Масаси Кисимото'] },
+    { fetchImpl, sleep: noSleep, litresPauseMs: 0 }
+  );
+  assert.ok(result);
+  assert.equal(result.mangaComics, true);
+});
+
+test('litres negative memo avoids duplicate searches in one run', async () => {
+  const fetchImpl = litresFetch({ items: [] });
+  const memo = new Map();
+  const options = { fetchImpl, sleep: noSleep, litresPauseMs: 0, negativeMemo: memo };
+  const first = await litres.getWork({ title: 'Неизвестная книга' }, options);
+  assert.equal(first, null);
+  const second = await litres.getWork({ title: 'Неизвестная книга' }, options);
   assert.equal(second, null);
   assert.equal(fetchImpl.calls.length, 1);
 });
