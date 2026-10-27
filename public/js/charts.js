@@ -443,9 +443,21 @@ export function renderTimeline(host, timeline, { onMonthClick } = {}) {
  *
  * @param {HTMLElement} host
  * @param {Array<{year:number,count:number}>} years
- * @param {{onYearClick?: (year:number)=>void}} [opts]
+ * @param {object} [opts]
+ * @param {(year:number)=>void} [opts.onYearClick]
+ * @param {string[]|null} [opts.unitForms] plural forms of the unit ("книга"/"фильм");
+ *        when set the tooltip names it, otherwise the film wording stays compact
+ * @param {string} [opts.shareLabel] suffix of the percentage line ("всех фильмов")
+ * @param {string} [opts.emptyText] empty-state message
+ * @param {string} [opts.ariaLabel] accessible chart description
  */
-export function renderYearBars(host, years, { onYearClick } = {}) {
+export function renderYearBars(host, years, {
+  onYearClick,
+  unitForms = null,
+  shareLabel = 'всех фильмов',
+  emptyText = 'Нет данных по годам выпуска',
+  ariaLabel = '',
+} = {}) {
   const counts = new Map();
   for (const item of Array.isArray(years) ? years : []) {
     const year = Math.round(toNum(item && item.year));
@@ -455,7 +467,7 @@ export function renderYearBars(host, years, { onYearClick } = {}) {
 
   clear(host);
   if (!counts.size) {
-    host.append(el('div', { class: 'empty-state', text: 'Нет данных по годам выпуска' }));
+    host.append(el('div', { class: 'empty-state', text: emptyText }));
     return;
   }
 
@@ -488,7 +500,7 @@ export function renderYearBars(host, years, { onYearClick } = {}) {
     viewBox: `0 0 ${width} ${height}`,
     class: 'timeline-svg yearbars-svg',
     role: 'img',
-    'aria-label': `Просмотры по годам выпуска: ${minYear} — ${maxYear}`,
+    'aria-label': ariaLabel || `Просмотры по годам выпуска: ${minYear} — ${maxYear}`,
   });
 
   // horizontal grid + y labels
@@ -536,9 +548,12 @@ export function renderYearBars(host, years, { onYearClick } = {}) {
 
     hit.addEventListener('pointerenter', (event) => {
       bar.classList.add('is-hot');
+      const primary = unitForms
+        ? `${item.year} — ${fmtInt(item.count)} ${plural(item.count, unitForms)}`
+        : `${item.year} — ${fmtInt(item.count)}`;
       showTooltip(
-        `${item.year} — ${fmtInt(item.count)}`,
-        `${fmtPercent(item.count, total)} всех фильмов`,
+        primary,
+        `${fmtPercent(item.count, total)} ${shareLabel}`,
       );
       moveTooltip(event);
     });
@@ -552,7 +567,9 @@ export function renderYearBars(host, years, { onYearClick } = {}) {
       hit.classList.add('is-clickable');
       hit.setAttribute('role', 'button');
       hit.setAttribute('tabindex', '0');
-      hit.setAttribute('aria-label', `${item.year}: ${fmtInt(item.count)} ${plural(item.count, ['фильм', 'фильма', 'фильмов'])} — открыть список`);
+      const forms = unitForms || ['фильм', 'фильма', 'фильмов'];
+      hit.setAttribute('aria-label',
+        `${item.year}: ${fmtInt(item.count)} ${plural(item.count, forms)} — открыть список`);
       const activate = () => {
         hideTooltip();
         onYearClick(item.year);

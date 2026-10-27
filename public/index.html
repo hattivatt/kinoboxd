@@ -663,6 +663,12 @@
             <button type="button" class="source-chip is-active" data-source="" aria-pressed="true">Все</button>
             <button type="button" class="source-chip" data-source="livelib" aria-pressed="false">LiveLib</button>
             <button type="button" class="source-chip" data-source="hardcover" aria-pressed="false">Hardcover</button>
+            <label class="manga-toggle" id="books-manga-toggle-wrap" for="books-manga-toggle" title="Манга и комиксы не входят в книжную статистику, пока переключатель выключен">
+              <input type="checkbox" class="manga-toggle-input" id="books-manga-toggle">
+              <span class="manga-toggle-track" aria-hidden="true"><span class="manga-toggle-thumb"></span></span>
+              <span class="manga-toggle-label">Включать мангу и комиксы</span>
+            </label>
+            <span class="books-filters-note" id="books-manga-note" hidden></span>
             <span class="books-filters-note" id="books-filters-note">фильтр применяется ко всем виджетам</span>
           </div>
 
@@ -733,6 +739,11 @@
                 <span class="widget-note" id="books-authors-note"></span>
               </div>
               <div class="genre-list" id="books-authors-list"></div>
+              <div class="persons-search books-authors-search" id="books-authors-search-wrap" hidden>
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/></svg>
+                <input type="search" id="books-authors-search" class="search-input" placeholder="Поиск по имени" autocomplete="off">
+              </div>
+              <div class="persons-more" id="books-authors-more"></div>
               <div class="chart-foot">
                 <span><i class="swatch orange"></i>по числу прочитанных книг</span>
                 <span class="chart-foot-hint">нажми на автора, чтобы увидеть книги</span>
@@ -767,6 +778,20 @@
               <div class="chart-foot">
                 <span><i class="swatch orange"></i>годы издания</span>
                 <span class="chart-foot-hint">нажми на год, чтобы увидеть книги</span>
+              </div>
+            </section>
+
+            <section class="widget w-books-yearbars" id="books-yearbars-widget" aria-labelledby="books-yearbars-title">
+              <div class="widget-head">
+                <h2 class="widget-title" id="books-yearbars-title"><span class="w-dot orange"></span>Книги по годам издания</h2>
+                <span class="widget-note" id="books-yearbars-note"></span>
+              </div>
+              <div class="chart-scroll">
+                <div id="books-yearbars-chart"></div>
+              </div>
+              <div class="chart-foot">
+                <span><i class="swatch orange"></i>прочитанные книги по году издания</span>
+                <span class="chart-foot-hint">нажми на столбик, чтобы увидеть книги</span>
               </div>
             </section>
 
