@@ -16,3 +16,10 @@ tmp/
 # nix build output (symlink to the store)
 result
 result-*
+
+# book cache (cache-book/ namespace, never committed)
+cache-book/
+
+# worktree-only symlinks to the main tree (never content)
+/cache
+/node_modules
