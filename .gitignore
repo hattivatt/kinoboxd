@@ -1,6 +1,7 @@
 node_modules/
 cache/
 config/tmdb-token
+config/hardcover-token
 
 *.token
 .env
