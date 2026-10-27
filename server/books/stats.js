@@ -314,10 +314,29 @@ function metadataSourcesOf(details) {
   return details.hcWorkId != null ? ['hardcover'] : [];
 }
 
+/**
+ * Effective provider-level flag for one work.
+ *
+ * The detector is re-run on every read over the full persisted corpus
+ * (`mangaTexts`, `tags`) instead of trusting a stale `details.mangaComics`
+ * boolean: a cache written before the detector learned new keywords/publishers
+ * must start filtering without a full re-import. The stored boolean stays as an
+ * additive `true` (a provider may have known a signal we cannot reconstruct)
+ * and as the fallback when the current corpus has no classification fields.
+ */
 function mangaOfDetails(details, genres, series, publisher) {
-  if (details && typeof details.mangaComics === 'boolean') return details.mangaComics;
   if (!details) return null;
-  return detectManga({ genres, series, publisher });
+  const detected = detectManga({
+    genres,
+    tags: Array.isArray(details.tags) ? details.tags : [],
+    texts: Array.isArray(details.mangaTexts) ? details.mangaTexts : [],
+    series,
+    publisher,
+  });
+  if (detected === true) return true;
+  if (details.mangaComics === true) return true;
+  if (detected === false) return false;
+  return typeof details.mangaComics === 'boolean' ? details.mangaComics : null;
 }
 
 function workMetadata(workId, events) {
@@ -614,6 +633,10 @@ function normalizeSeriesName(name) {
     .normalize('NFKC')
     .toLowerCase()
     .replace(/ё/g, 'е')
+    // Hardcover splits one series into several ids with display suffixes:
+    // "Crossed", "Crossed (Collected Editions)", "Crossed (Single Issues)"
+    // share the same shelf. The suffix is presentation, not identity.
+    .replace(/\s*\([^()]*\)\s*$/u, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -622,10 +645,10 @@ function seriesKeysOf(work) {
   const keys = [];
   for (const entry of work.series || []) {
     if (!entry) continue;
-    if (entry.hcId != null && entry.hcId !== '') {
-      keys.push(`id:${entry.hcId}`);
-      continue;
-    }
+    if (entry.hcId != null && entry.hcId !== '') keys.push(`id:${entry.hcId}`);
+    // Keep the name key even when an id is present: the same series arrives
+    // with different Hardcover ids ("Crossed" 4443 vs "Crossed (Collected
+    // Editions)" 14693), and an id-only join leaves those volumes behind.
     const name = normalizeSeriesName(entry.name);
     if (name) keys.push(`name:${name}`);
   }
@@ -682,6 +705,46 @@ function propagateSeriesManga(works) {
 }
 
 /**
+ * Per-work manual override, applied last: after provider detection and after
+ * series propagation, before any aggregation. It is the user's word over the
+ * detector's, in both directions:
+ *   - `mangaComics: true`  hides a work even if all genres look clean;
+ *   - `mangaComics: false` keeps a work that the detector/series calls comics
+ *     ("показать снова").
+ *
+ * Dedupe may merge a LiveLib stub into a Hardcover work; an override stored on
+ * any of the merged ids applies to the combined work.
+ *
+ * Returns `Map<workId, {mangaComics, previous}>` for the summary counters.
+ */
+function applyManualMangaFlags(works, flags) {
+  const applied = new Map();
+  if (!flags || typeof flags !== 'object') return applied;
+  for (const work of works.values()) {
+    const ids =
+      Array.isArray(work.mergedWorkIds) && work.mergedWorkIds.length
+        ? work.mergedWorkIds
+        : [work.workId];
+    let entry = null;
+    for (const id of ids) {
+      const candidate = flags[id];
+      if (candidate && typeof candidate.mangaComics === 'boolean') {
+        entry = candidate;
+        break;
+      }
+    }
+    if (!entry) continue;
+    const previous = work.mangaComics;
+    work.mangaComics = entry.mangaComics;
+    work.mangaComicsSource = 'manual';
+    work.mangaComicsOverride = entry.mangaComics;
+    work.mangaComicsUpdatedAt = entry.updatedAt || null;
+    applied.set(work.workId, { mangaComics: entry.mangaComics, previous });
+  }
+  return applied;
+}
+
+/**
  * Build the whole /api/books/stats payload. `options.sources` is the raw
  * `?sources=` value (string or array); `options.now` is injectable for tests.
  */
@@ -715,8 +778,15 @@ function buildBooksStats(options = {}) {
   // its own flag is true *or* any volume of the same series is comics
   // (series-level propagation above); `null` still survives on its own.
   const mangaFromSeries = propagateSeriesManga(works);
+  // Manual override dominates everything above, including an explicit `true`.
+  const manualManga = applyManualMangaFlags(works, bookCache.getMangaFlags());
   let mangaExcluded = 0;
   let mangaSeriesExcluded = 0;
+  let mangaManualExcluded = 0;
+  let mangaManualRestored = 0;
+  for (const [, entry] of manualManga) {
+    if (entry.mangaComics === false && entry.previous === true) mangaManualRestored++;
+  }
   if (!includeMangaComics) {
     const excluded = new Set();
     for (const [workId, work] of works) {
@@ -725,6 +795,7 @@ function buildBooksStats(options = {}) {
         works.delete(workId);
         mangaExcluded++;
         if (mangaFromSeries.has(workId)) mangaSeriesExcluded++;
+        if (manualManga.has(workId)) mangaManualExcluded++;
       }
     }
     if (excluded.size > 0) events = events.filter((event) => !excluded.has(event.workId));
@@ -790,6 +861,12 @@ function buildBooksStats(options = {}) {
     // volume of the same series (their own flag was false or null).
     mangaSeriesExcluded,
     mangaSeriesPropagated: mangaFromSeries.size,
+    // Manual override bookkeeping: `hidden` = excluded by a manual `true`,
+    // `restored` = a work whose detector/series flag was true but the user
+    // explicitly asked to show it again (`false`).
+    mangaManualExcluded,
+    mangaManualRestored,
+    mangaOverrides: manualManga.size,
     // Events dropped at aggregation time because their Hardcover journal
     // status is not part of the reading profile (wish/reading/paused).
     hardcoverStatusExcluded: prepared.statusFilter.excluded,
@@ -1044,6 +1121,10 @@ function buildBooksStats(options = {}) {
       metadataSources: work.metadataSources,
       mangaComics: work.mangaComics,
       ...(work.mangaComicsSource ? { mangaComicsSource: work.mangaComicsSource } : {}),
+      ...(typeof work.mangaComicsOverride === 'boolean'
+        ? { mangaComicsOverride: work.mangaComicsOverride }
+        : {}),
+      ...(work.mangaComicsUpdatedAt ? { mangaComicsUpdatedAt: work.mangaComicsUpdatedAt } : {}),
       ...(work.mergedWorkIds && work.mergedWorkIds.length > 1
         ? { mergedWorkIds: work.mergedWorkIds }
         : {}),
@@ -1147,6 +1228,7 @@ module.exports = {
   dedupeWorks,
   mergeWorkGroup,
   propagateSeriesManga,
+  applyManualMangaFlags,
   buildBooksStats,
   listUnmatched,
 };

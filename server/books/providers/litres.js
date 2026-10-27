@@ -15,7 +15,7 @@
  */
 
 const { fetchJson } = require('./http');
-const { detectManga } = require('./manga');
+const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
 const { normalizeIsbn, isbn10Of } = require('../normalize');
 
@@ -231,6 +231,11 @@ function normalizeLitres(item, detail, input, scored) {
       authorHit: scored ? scored.authorHit : null,
     },
     mangaComics: detectManga({
+      genres: genres.concat(tags),
+      series: series ? [series] : [],
+      publisher,
+    }),
+    mangaTexts: collectMangaTexts({
       genres: genres.concat(tags),
       series: series ? [series] : [],
       publisher,

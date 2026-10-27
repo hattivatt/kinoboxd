@@ -150,6 +150,46 @@ router.get('/stats', (req, res, next) => {
   }
 });
 
+/**
+ * POST /api/books/work/flag { workId, mangaComics }
+ * Upsert the per-work manual manga/comics override. The body is intentionally
+ * strict: `true` = hide as manga/comics, `false` = show again.
+ */
+router.post('/work/flag', async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const workId = typeof body.workId === 'string' ? body.workId.trim() : '';
+    if (!workId) {
+      throw new HttpError(400, 'Body must contain "workId".', 'work_id_required');
+    }
+    if (typeof body.mangaComics !== 'boolean') {
+      throw new HttpError(
+        400,
+        'Body must contain "mangaComics" as a boolean (true = hide, false = show).',
+        'manga_flag_required'
+      );
+    }
+    const entry = await bookCache.setMangaFlag(workId, body.mangaComics);
+    res.status(200).json({ workId, ...entry });
+  } catch (err) {
+    next(mapError(err));
+  }
+});
+
+/** DELETE /api/books/work/flag?workId=… — remove the override (idempotent). */
+router.delete('/work/flag', async (req, res, next) => {
+  try {
+    const workId = typeof req.query.workId === 'string' ? req.query.workId.trim() : '';
+    if (!workId) {
+      throw new HttpError(400, 'Query parameter "workId" is required.', 'work_id_required');
+    }
+    const removed = await bookCache.clearMangaFlag(workId);
+    res.status(200).json({ workId, removed });
+  } catch (err) {
+    next(mapError(err));
+  }
+});
+
 /** GET /api/books/unmatched?sources=livelib */
 router.get('/unmatched', (req, res, next) => {
   try {

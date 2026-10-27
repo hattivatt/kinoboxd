@@ -25,6 +25,7 @@
 
 const config = require('../config');
 const bookCache = require('./book-cache');
+const { collectMangaTexts } = require('./providers/manga');
 
 const HARDCOVER_URL = 'https://api.hardcover.app/v1/graphql';
 
@@ -452,6 +453,26 @@ function genresOf(book) {
   return genres;
 }
 
+/**
+ * All tag names of a book, regardless of tag category. Hardcover keeps manga
+ * and comics markers outside the Genre category often enough that the Genre
+ * list alone produces `null` for an obvious comic.
+ */
+function tagsOf(book) {
+  const taggings = Array.isArray(book && book.taggings) ? book.taggings : [];
+  const seen = new Set();
+  const tags = [];
+  for (const entry of taggings) {
+    const tag = entry && entry.tag;
+    if (!tag) continue;
+    const name = String(tag.tag || '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    tags.push(name);
+  }
+  return tags;
+}
+
 function seriesOf(book) {
   const rows = Array.isArray(book && book.book_series) ? book.book_series : [];
   const series = [];
@@ -474,6 +495,10 @@ function seriesOf(book) {
 function detailsFromBook(book, edition, fetchedAt) {
   if (!book || !book.id) return null;
   const authors = authorsOf(book);
+  const genres = genresOf(book);
+  const tags = tagsOf(book);
+  const series = seriesOf(book);
+  const publisher = (edition && edition.publisher && edition.publisher.name) || null;
   return {
     schemaVersion: 1,
     hcWorkId: Number(book.id),
@@ -481,8 +506,13 @@ function detailsFromBook(book, edition, fetchedAt) {
     title: book.title || null,
     slug: book.slug || null,
     authors,
-    series: seriesOf(book),
-    genres: genresOf(book),
+    series,
+    genres,
+    // Full tag list + the flattened detection corpus. `genres` stays the clean
+    // display list; detection at stats-read time uses `tags`/`mangaTexts`, so
+    // a re-import is not required after the detector improves.
+    tags,
+    mangaTexts: collectMangaTexts({ genres, tags, series, publisher }),
     pages: Number.isFinite(Number(book.pages))
       ? Number(book.pages)
       : edition && Number.isFinite(Number(edition.pages))
@@ -491,8 +521,7 @@ function detailsFromBook(book, edition, fetchedAt) {
     publicationYear: yearOf(book.release_year, book.release_date, edition && edition.release_year, edition && edition.release_date),
     isbn13: (edition && edition.isbn_13) || null,
     isbn10: (edition && edition.isbn_10) || null,
-    publisher:
-      (edition && edition.publisher && edition.publisher.name) || null,
+    publisher,
     editionLanguage:
       (edition && edition.language && edition.language.language) || null,
     editionLanguageId: edition && edition.language_id != null ? Number(edition.language_id) : null,
@@ -719,6 +748,7 @@ module.exports = {
   detailsFromBook,
   authorsOf,
   genresOf,
+  tagsOf,
   seriesOf,
   yearOf,
   dateOnly,

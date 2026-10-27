@@ -9,7 +9,7 @@
 
 const hardcover = require('../hardcover');
 const editions = require('../hardcover-editions');
-const { detectManga } = require('./manga');
+const { detectManga, collectMangaTexts } = require('./manga');
 const { normalizeIsbn } = require('../normalize');
 
 const NAME = 'hardcover';
@@ -21,6 +21,7 @@ function normalizeDetails(details, editionId) {
     ? { name: details.series[0].name || null, position: details.series[0].position ?? null }
     : null;
   const genres = Array.isArray(details.genres) ? details.genres.filter(Boolean) : [];
+  const tags = Array.isArray(details.tags) ? details.tags.filter(Boolean) : [];
   const authors = (Array.isArray(details.authors) ? details.authors : [])
     .map((author) => (author && typeof author === 'object' ? author.name : author))
     .filter(Boolean);
@@ -48,6 +49,15 @@ function normalizeDetails(details, editionId) {
     match: { method: 'isbn', titleSim: 1, exact: true, authorHit: null },
     mangaComics: detectManga({
       genres,
+      tags,
+      texts: details.mangaTexts,
+      series: details.series || [],
+      publisher: details.publisher || null,
+    }),
+    mangaTexts: collectMangaTexts({
+      genres,
+      tags,
+      texts: details.mangaTexts,
       series: details.series || [],
       publisher: details.publisher || null,
     }),

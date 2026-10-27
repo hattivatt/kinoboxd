@@ -19,6 +19,7 @@
  *     links/{livelibBookId}.json         livelib -> hardcover resolve result
  *     index.json                         matching keys -> workId | false
  *     links.json                         workId -> per-site links
+ *     flags/book-flags.json              workId -> manual manga/comics override
  *     match-log.jsonl                    audit of broad matches (append-only)
  *     imports/{source}-{userKey}-{ts}.json  raw import payload (debug)
  *
@@ -39,11 +40,13 @@ const PROFILES_DIR = path.join(BOOK_CACHE_DIR, 'profiles');
 const DETAILS_DIR = path.join(BOOK_CACHE_DIR, 'details');
 const LINKS_DIR = path.join(BOOK_CACHE_DIR, 'links');
 const IMPORTS_DIR = path.join(BOOK_CACHE_DIR, 'imports');
+const FLAGS_DIR = path.join(BOOK_CACHE_DIR, 'flags');
 const INDEX_PATH = path.join(BOOK_CACHE_DIR, 'index.json');
 const LINKS_JSON_PATH = path.join(BOOK_CACHE_DIR, 'links.json');
+const FLAGS_PATH = path.join(FLAGS_DIR, 'book-flags.json');
 const MATCH_LOG_PATH = path.join(BOOK_CACHE_DIR, 'match-log.jsonl');
 
-for (const dir of [PROFILES_DIR, DETAILS_DIR, LINKS_DIR, IMPORTS_DIR]) {
+for (const dir of [PROFILES_DIR, DETAILS_DIR, LINKS_DIR, IMPORTS_DIR, FLAGS_DIR]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -459,6 +462,119 @@ function flushLinks() {
 }
 
 /* ------------------------------------------------------------------ */
+/* flags/book-flags.json: manual manga/comics override per workId       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Flat document, one key per work:
+ *   { "hc:123": { "mangaComics": true, "updatedAt": "2026-10-27T…" },
+ *     "hc:456": { "mangaComics": false, "updatedAt": "…" } }
+ *
+ * The file is the user's decision, not provider metadata: the stats builder
+ * applies it after provider detection and series propagation, and it wins even
+ * against an explicit `true` (true -> false is a valid "show again" override).
+ * Same freshness contract as links.json: one stat() per read, an external edit
+ * is visible without a restart, writes are atomic and serialised per process.
+ */
+
+let flags = {};
+let flagsFingerprint = null;
+let flagsSaving = Promise.resolve();
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sanitizeFlags(raw) {
+  const out = {};
+  if (!isPlainObject(raw)) return out;
+  for (const [workId, value] of Object.entries(raw)) {
+    if (!workId || !isPlainObject(value)) continue;
+    if (typeof value.mangaComics !== 'boolean') continue;
+    out[workId] = {
+      mangaComics: value.mangaComics,
+      updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : null,
+    };
+  }
+  return out;
+}
+
+{
+  const found = readJsonWithFingerprint(FLAGS_PATH);
+  if (found) flags = sanitizeFlags(found.data);
+  flagsFingerprint = fingerprintOf(FLAGS_PATH);
+}
+
+/** Reload the file when another process replaced it. */
+function refreshFlagsIfChanged() {
+  const current = fingerprintOf(FLAGS_PATH);
+  if (current === flagsFingerprint) return false;
+  if (current === null) {
+    flags = {};
+    flagsFingerprint = null;
+    return true;
+  }
+  const found = readJsonWithFingerprint(FLAGS_PATH);
+  flags = found ? sanitizeFlags(found.data) : {};
+  flagsFingerprint = current;
+  return true;
+}
+
+/** Whole override map (live copy; callers must not mutate). */
+function getMangaFlags() {
+  refreshFlagsIfChanged();
+  return flags;
+}
+
+/** One override entry or null. */
+function getMangaFlag(workId) {
+  refreshFlagsIfChanged();
+  const key = String(workId == null ? '' : workId);
+  return Object.prototype.hasOwnProperty.call(flags, key) ? flags[key] : null;
+}
+
+/** Serialise writes so two concurrent toggles cannot lose each other. */
+function enqueueFlagsWrite(task) {
+  const run = flagsSaving.then(task);
+  flagsSaving = run.catch(() => {});
+  return run;
+}
+
+/** Upsert `{ mangaComics: boolean, updatedAt }` for one work. */
+function setMangaFlag(workId, mangaComics) {
+  const key = String(workId == null ? '' : workId).trim();
+  if (!key) return Promise.reject(new Error('workId is required'));
+  if (typeof mangaComics !== 'boolean') {
+    return Promise.reject(new Error('mangaComics must be a boolean'));
+  }
+  return enqueueFlagsWrite(async () => {
+    refreshFlagsIfChanged();
+    const entry = { mangaComics, updatedAt: new Date().toISOString() };
+    const next = Object.assign({}, flags, { [key]: entry });
+    const fingerprint = await writeJsonAtomic(FLAGS_PATH, next);
+    flags = next;
+    flagsFingerprint = fingerprint;
+    return entry;
+  });
+}
+
+/** Remove an override (idempotent); resolves to true when something changed. */
+function clearMangaFlag(workId) {
+  const key = String(workId == null ? '' : workId).trim();
+  if (!key) return Promise.reject(new Error('workId is required'));
+  return enqueueFlagsWrite(async () => {
+    refreshFlagsIfChanged();
+    if (!Object.prototype.hasOwnProperty.call(flags, key)) return false;
+    const next = Object.assign({}, flags);
+    delete next[key];
+    const fingerprint = await writeJsonAtomic(FLAGS_PATH, next);
+    flags = next;
+    flagsFingerprint = fingerprint;
+    return true;
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Import snapshots + match audit log                                  */
 /* ------------------------------------------------------------------ */
 
@@ -490,6 +606,9 @@ function clearMemory() {
   links = {};
   linksFingerprint = null;
   linksPending.clear();
+  flags = {};
+  flagsFingerprint = null;
+  flagsSaving = Promise.resolve();
 }
 
 module.exports = {
@@ -501,6 +620,8 @@ module.exports = {
   INDEX_PATH,
   LINKS_JSON_PATH,
   MATCH_LOG_PATH,
+  FLAGS_DIR,
+  FLAGS_PATH,
   fingerprintOf,
   readJsonWithFingerprint,
   writeJsonAtomic,
@@ -525,6 +646,11 @@ module.exports = {
   getWorkLink,
   setWorkLink,
   flushLinks,
+  refreshFlagsIfChanged,
+  getMangaFlags,
+  getMangaFlag,
+  setMangaFlag,
+  clearMangaFlag,
   saveRawImport,
   appendMatchLog,
   clearMemory,

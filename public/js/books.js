@@ -19,6 +19,7 @@
 
 import {
   getBooksStats, startBooksImportLivelib, startBooksImportHardcover, getBooksImportStatus,
+  setBookMangaFlag, clearBookMangaFlag,
 } from './api.js';
 import {
   $, el, clear, fmtInt, fmtPercent, fmtRating, fmtPeriod, plural, icon, serviceIcon,
@@ -111,6 +112,7 @@ const state = {
   accounts: {},
   pollTimer: 0,
   pollSeq: 0,
+  mangaBusy: false,
   onActivate: null,
 };
 
@@ -315,6 +317,11 @@ function normalizeEntry(workId, raw) {
   // (older payload) normalises to null too, so every consumer must treat
   // "no field" and "unknown" the same way instead of crashing.
   const mangaComics = entry.mangaComics === true ? true : entry.mangaComics === false ? false : null;
+  const mangaComicsOverride = entry.mangaComicsOverride === true
+    ? true
+    : entry.mangaComicsOverride === false
+    ? false
+    : null;
   return {
     workId: text(workId),
     title: firstString(entry.titleRu, entry.title) || text(workId),
@@ -333,6 +340,7 @@ function normalizeEntry(workId, raw) {
       : Object.keys(normalizeRatingsBySource(entry.ratingsBySource)),
     metadataSources: normalizeMetadataSources(entry.metadataSources),
     mangaComics,
+    mangaComicsOverride,
     finishedDate: /^\d{4}-\d{2}-\d{2}/.test(text(entry.finishedDate)) ? text(entry.finishedDate).slice(0, 10) : null,
     reReadCount: Math.max(0, toNum(entry.reReadCount)),
     links,
@@ -2286,17 +2294,80 @@ function closeBookMenu() {
 }
 
 /**
- * Kebab menu with the known source links. Books MVP has no manual re-match,
- * so unlike renderFilmMenu() there is no "Исправить матч" item at all.
+ * Manual manga/comics override: hide a stubborn work or bring a wrongly
+ * detected one back. The request is per workId, persists on the server in
+ * `cache-book/flags/book-flags.json`, and the dashboard is refetched so every
+ * widget (counts, calendar, authors) reflects the change at once.
+ */
+async function setMangaOverride(book, mangaComics, message) {
+  if (!book || !book.workId || state.mangaBusy) return;
+  state.mangaBusy = true;
+  try {
+    await setBookMangaFlag(book.workId, mangaComics);
+    toast(message, 'success');
+    await loadStats({ force: true, silent: true });
+  } catch (error) {
+    toast(shortErrorMessage(error), 'error', { duration: 7000 });
+  } finally {
+    state.mangaBusy = false;
+  }
+}
+
+async function clearMangaOverride(book) {
+  if (!book || !book.workId || state.mangaBusy) return;
+  state.mangaBusy = true;
+  try {
+    await clearBookMangaFlag(book.workId);
+    toast('Ручная метка сброшена: снова решает детектор', 'info');
+    await loadStats({ force: true, silent: true });
+  } catch (error) {
+    toast(shortErrorMessage(error), 'error', { duration: 7000 });
+  } finally {
+    state.mangaBusy = false;
+  }
+}
+
+/**
+ * Kebab menu with the known source links and the manual manga/comics toggle.
+ * Books MVP has no manual re-match, so unlike renderFilmMenu() there is no
+ * "Исправить матч" item at all.
  */
 export function renderBookMenu(book) {
   if (!book) return null;
   const items = [];
   if (book.links && book.links.livelib) {
-    items.push({ service: 'll', label: 'LiveLib', href: book.links.livelib });
+    items.push({ kind: 'link', service: 'll', label: 'LiveLib', href: book.links.livelib });
   }
   if (book.links && book.links.hardcover) {
-    items.push({ service: 'hc', label: 'Hardcover', href: book.links.hardcover });
+    items.push({ kind: 'link', service: 'hc', label: 'Hardcover', href: book.links.hardcover });
+  }
+  if (book.workId) {
+    // `mangaComics` is the effective flag (detector ∪ series ∪ manual);
+    // `mangaComicsOverride` is only the user's own decision.
+    if (book.mangaComics !== true) {
+      items.push({
+        kind: 'action',
+        icon: 'book',
+        label: 'Скрыть как манга/комикс',
+        action: () => setMangaOverride(book, true, 'Скрыто как манга/комикс'),
+      });
+    }
+    if (book.mangaComics === true) {
+      items.push({
+        kind: 'action',
+        icon: 'check',
+        label: 'Показать снова',
+        action: () => setMangaOverride(book, false, 'Книга снова в статистике'),
+      });
+    }
+    if (book.mangaComicsOverride != null) {
+      items.push({
+        kind: 'action',
+        icon: 'refresh',
+        label: 'Сбросить ручную метку',
+        action: () => clearMangaOverride(book),
+      });
+    }
   }
   if (!items.length) return null;
 
@@ -2359,6 +2430,22 @@ export function renderBookMenu(book) {
       'aria-label': `Ссылки: ${book.title || 'книга'}`,
     });
     for (const item of items) {
+      if (item.kind === 'action') {
+        const button = el('button', {
+          type: 'button',
+          class: 'film-menu-item',
+          role: 'menuitem',
+        },
+          el('span', { class: 'film-menu-icon', html: icon(item.icon || 'book', 14) }),
+          el('span', { class: 'film-menu-label', text: item.label }),
+        );
+        button.addEventListener('click', () => {
+          closeBookMenu();
+          item.action();
+        });
+        popup.append(button);
+        continue;
+      }
       const anchor = el('a', {
         class: 'film-menu-item',
         role: 'menuitem',

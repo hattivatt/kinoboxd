@@ -154,6 +154,27 @@ export function getBooksStats({ sources = '', includeMangaComics = null, signal 
   return request(`/api/books/stats${query ? `?${query}` : ''}`, { signal });
 }
 
+/**
+ * Per-work manual manga/comics override.
+ * `mangaComics: true` hides the work, `false` shows it again.
+ */
+export function setBookMangaFlag(workId, mangaComics, { signal } = {}) {
+  return request('/api/books/work/flag', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workId, mangaComics: Boolean(mangaComics) }),
+    signal,
+  });
+}
+
+/** Drop the override so the detector decides again. */
+export function clearBookMangaFlag(workId, { signal } = {}) {
+  return request(`/api/books/work/flag?workId=${encodeURIComponent(workId)}`, {
+    method: 'DELETE',
+    signal,
+  });
+}
+
 export function startBooksImportLivelib(username, { signal } = {}) {
   return request('/api/books/import/livelib', {
     method: 'POST',

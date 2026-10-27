@@ -12,7 +12,7 @@
  */
 
 const { fetchJson } = require('./http');
-const { detectManga } = require('./manga');
+const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
 const { normalizeIsbn, isbn10Of, normalizeTitle, surnameOf } = require('../normalize');
 
@@ -85,9 +85,12 @@ function normalizeEdition(record, input) {
   if (!record || !record.title) return null;
   const key = record.key || null;
   const ids = isbnPair(record.identifiers);
+  // Display genres stay capped; detection reads every usable subject.
   const genres = subjectsOf(record.subjects);
+  const allSubjects = subjectsOf(record.subjects, Number.POSITIVE_INFINITY);
   const publisher = namesOf(record.publishers)[0] || null;
   const authors = namesOf(record.authors);
+  const mangaTexts = collectMangaTexts({ subjects: allSubjects, publisher });
   return {
     source: NAME,
     sourceId: sourceIdOf(key),
@@ -106,7 +109,8 @@ function normalizeEdition(record, input) {
     language: null,
     confidence: 0.94,
     match: { method: 'isbn', titleSim: 1, exact: true, authorHit: null },
-    mangaComics: detectManga({ genres, publisher }),
+    mangaComics: detectManga({ genres, subjects: allSubjects, publisher }),
+    mangaTexts,
   };
 }
 
@@ -117,6 +121,7 @@ function normalizeSearchDoc(doc, query) {
   if (!scored) return null;
   const publisher = namesOf(doc.publisher)[0] || null;
   const genres = subjectsOf(doc.subject);
+  const allSubjects = subjectsOf(doc.subject, Number.POSITIVE_INFINITY);
   const key = doc.key || null;
   const isbns = Array.isArray(doc.isbn) ? doc.isbn.map(normalizeIsbn).filter(Boolean) : [];
   return {
@@ -144,7 +149,8 @@ function normalizeSearchDoc(doc, query) {
       exact: scored.exact,
       authorHit: scored.authorHit,
     },
-    mangaComics: detectManga({ genres, publisher }),
+    mangaComics: detectManga({ genres, subjects: allSubjects, publisher }),
+    mangaTexts: collectMangaTexts({ subjects: allSubjects, publisher }),
   };
 }
 

@@ -14,7 +14,7 @@
  */
 
 const { fetchJson } = require('./http');
-const { detectManga } = require('./manga');
+const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
 const { normalizeIsbn, isbn10Of, normalizeTitle, surnameOf } = require('../normalize');
 
@@ -117,6 +117,7 @@ function normalizeVolume(item, query, method, options = {}) {
       confidence: Number((0.6 + scored.score * 0.28).toFixed(2)),
       match: { method, titleSim: scored.titleSim, exact: scored.exact, authorHit: scored.authorHit },
       mangaComics: detectManga({ genres, publisher: volume.publisher || null }),
+      mangaTexts: collectMangaTexts({ genres, publisher: volume.publisher || null }),
     };
   }
 
@@ -139,6 +140,7 @@ function normalizeVolume(item, query, method, options = {}) {
     confidence: 0.96,
     match: { method: 'isbn', titleSim: 1, exact: true, authorHit: null },
     mangaComics: detectManga({ genres, publisher: volume.publisher || null }),
+    mangaTexts: collectMangaTexts({ genres, publisher: volume.publisher || null }),
   };
 }
 

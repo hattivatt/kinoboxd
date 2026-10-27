@@ -13,6 +13,7 @@
     "backfill:wikidata": "node server/backfill.js wikidata",
     "backfill:mcu": "node server/backfill.js mcu",
     "rematch": "node server/backfill.js rematch",
+    "backfill:manga": "node server/books/manga-backfill.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {

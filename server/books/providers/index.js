@@ -21,6 +21,7 @@ const litres = require('./litres');
 const googlebooks = require('./googlebooks');
 const openlibrary = require('./openlibrary');
 const livelibCard = require('./livelib-card');
+const { detectManga } = require('./manga');
 
 const REGISTRY = {
   hardcover,
@@ -83,6 +84,18 @@ function mergedManga(entries) {
   return null;
 }
 
+/** Union of every provider's detection corpus (subjects/categories/tags/…). */
+function mergedMangaTexts(entries) {
+  const out = [];
+  for (const entry of entries) {
+    for (const value of Array.isArray(entry && entry.mangaTexts) ? entry.mangaTexts : []) {
+      const text = String(value == null ? '' : value).trim();
+      if (text && !out.includes(text)) out.push(text);
+    }
+  }
+  return out;
+}
+
 /**
  * Merge a primary result with enrichment results (no extra requests; used when
  * a LiveLib card identifies a book that Hardcover/Google/OL also knows).
@@ -102,6 +115,11 @@ function mergeResults(primary, extras = []) {
       });
     }
   }
+  const mangaTexts = mergedMangaTexts([primary, ...others]);
+  const genres = firstList(primary, others, 'genres');
+  // A clean primary plus a comics signal in an extra's subject list must not
+  // stay `false`: re-run the detector over the merged corpus.
+  const detectedManga = detectManga({ genres, texts: mangaTexts });
   return {
     source: primary.source,
     sourceId: primary.sourceId == null ? null : String(primary.sourceId),
@@ -111,7 +129,7 @@ function mergeResults(primary, extras = []) {
     year: firstValue(primary, others, 'year'),
     publisher: firstValue(primary, others, 'publisher'),
     series: firstValue(primary, others, 'series'),
-    genres: firstList(primary, others, 'genres'),
+    genres,
     pages: firstValue(primary, others, 'pages'),
     isbn13: firstValue(primary, others, 'isbn13'),
     isbn10: firstValue(primary, others, 'isbn10'),
@@ -123,7 +141,9 @@ function mergeResults(primary, extras = []) {
       ...others.map((entry) => Number(entry.confidence) || 0)
     ),
     match: primary.match || null,
-    mangaComics: mergedManga([primary, ...others]),
+    mangaComics:
+      detectedManga === true ? true : mergedManga([primary, ...others]),
+    mangaTexts,
     metadataSources: [...new Set(sources.map((entry) => entry.source))],
     sources,
     hardcover: primary.hardcover || others.find((entry) => entry.hardcover)?.hardcover || null,
@@ -171,6 +191,9 @@ function resultToDetails(result, options = {}) {
     editionLanguage: result.language || null,
     coverUrl: result.cover || null,
     mangaComics: result.mangaComics == null ? null : Boolean(result.mangaComics),
+    // Flattened text corpus for re-detection at stats-read time. It keeps OL
+    // subjects / HC taggings that never became display `genres`.
+    mangaTexts: Array.isArray(result.mangaTexts) ? [...result.mangaTexts] : [],
     metadataSources: Array.isArray(result.metadataSources)
       ? [...result.metadataSources]
       : [result.source],
@@ -207,5 +230,7 @@ module.exports = {
   getProvider,
   selectProviders,
   mergeResults,
+  mergedManga,
+  mergedMangaTexts,
   resultToDetails,
 };

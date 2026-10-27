@@ -16,7 +16,7 @@
 const cheerio = require('cheerio');
 
 const livelib = require('../livelib');
-const { detectManga } = require('./manga');
+const { detectManga, collectMangaTexts } = require('./manga');
 const { cleanText, normalizeIsbn, isbn10Of } = require('../normalize');
 
 const NAME = 'livelib-card';
@@ -120,7 +120,12 @@ function parseCardHtml(html, input = {}) {
   const $ = cheerio.load(String(html || ''));
   const rows = readDetailRows($);
   const book = readJsonLd($);
-  const genreValues = $('section[class*="ShortInfoGenres"] a[href*="/genre/"]')
+  // Two shapes exist on LiveLib cards: the `ShortInfoGenres` link block and
+  // `td.genre-card` cells on older layouts. Both are cheap to read; neither
+  // replaces the other across the whole site.
+  const genreValues = $(
+    'section[class*="ShortInfoGenres"] a[href*="/genre/"], td.genre-card, .genre-card'
+  )
     .map((_, element) => cleanText($(element).text()))
     .get()
     .filter(Boolean);
@@ -164,6 +169,7 @@ function parseCardHtml(html, input = {}) {
     confidence: 1,
     match: { method: 'card', titleSim: 1, exact: true, authorHit: true },
     mangaComics: detectManga({ genres, series: seriesName ? [seriesName] : [], publisher }),
+    mangaTexts: collectMangaTexts({ genres, series: seriesName ? [seriesName] : [], publisher }),
   };
 }
 

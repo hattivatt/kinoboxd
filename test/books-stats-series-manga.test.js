@@ -58,7 +58,6 @@ test.before(async () => {
     genres: ['Fantasy', 'Adventure'],
     series: [{ hcId: 2700, name: 'Fables', position: 14 }],
     mangaComics: false,
-    publisher: 'Vertigo',
   });
   await details('hc:703', {
     title: 'Fables, Vol. 22',
