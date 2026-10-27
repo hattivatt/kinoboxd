@@ -192,6 +192,23 @@ function detailsPath(hcWorkId) {
   return path.join(DETAILS_DIR, `${safeKey(hcWorkId)}.json`);
 }
 
+/**
+ * File-key for a work id: Hardcover keeps the legacy bare numeric key
+ * (`details/100.json`), other providers use the prefixed id (`gb-...`,
+ * `ol-...`, `ll-...`) so a LiveLib card enrichment never overwrites the
+ * canonical Hardcover document.
+ */
+function detailsKeyForWork(workId) {
+  const value = String(workId == null ? '' : workId);
+  const hc = /^hc:(\d+)$/.exec(value);
+  if (hc) return hc[1];
+  return safeKey(value.replace(':', '-'));
+}
+
+function getWorkDetails(workId) {
+  return getDetails(detailsKeyForWork(workId));
+}
+
 function getDetails(hcWorkId) {
   const key = String(hcWorkId);
   const filePath = detailsPath(key);
@@ -489,6 +506,8 @@ module.exports = {
   getDetails,
   hasDetails,
   saveDetails,
+  detailsKeyForWork,
+  getWorkDetails,
   linkPath,
   getLink,
   saveLink,

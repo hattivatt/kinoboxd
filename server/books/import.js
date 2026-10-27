@@ -113,6 +113,7 @@ function enqueue(job, task) {
 async function resolveAllLivelibProfiles(job, options = {}) {
   const reports = [];
   const profiles = bookCache.listProfiles().filter((profile) => profile.source === 'livelib');
+  const cardBudget = resolve.createCardBudget(process.env.BOOKS_LIVELIB_CARD_BUDGET);
   job.stage = 'resolve';
   job.page = 0;
   job.pageTotal = profiles.length;
@@ -122,6 +123,7 @@ async function resolveAllLivelibProfiles(job, options = {}) {
     job.page++;
     const report = await resolve.resolveProfile(data, {
       force: Boolean(options.force),
+      cardBudget,
       onProgress: (progress) => {
         job.resolved = progress.resolved;
         job.resolveTotal = progress.total;
@@ -129,15 +131,41 @@ async function resolveAllLivelibProfiles(job, options = {}) {
     });
     reports.push({ userKey: meta.userKey, ...report });
   }
+  const providerChain = {};
+  for (const report of reports) {
+    for (const [name, stat] of Object.entries(report.providerChain || {})) {
+      if (!providerChain[name]) {
+        providerChain[name] = { ...stat, methods: { ...(stat.methods || {}) } };
+        continue;
+      }
+      const target = providerChain[name];
+      target.calls += stat.calls;
+      target.hits += stat.hits;
+      target.errors += stat.errors;
+      target.skipped += stat.skipped;
+      for (const [method, count] of Object.entries(stat.methods || {})) {
+        target.methods[method] = (target.methods[method] || 0) + count;
+      }
+      target.lastError = stat.lastError || target.lastError;
+    }
+  }
   job.resolve = {
     profiles: reports.length,
     resolved: reports.reduce((sum, report) => sum + report.resolved, 0),
+    withMetadata: reports.reduce((sum, report) => sum + report.withMetadata, 0),
     total: reports.reduce((sum, report) => sum + report.total, 0),
     isbn: reports.reduce((sum, report) => sum + report.resolvedIsbn, 0),
     title: reports.reduce((sum, report) => sum + report.resolvedTitle, 0),
+    google: reports.reduce((sum, report) => sum + report.resolvedGoogle, 0),
+    openlibrary: reports.reduce((sum, report) => sum + report.resolvedOpenLibrary, 0),
+    livelibCard: reports.reduce((sum, report) => sum + report.resolvedLivelibCard, 0),
+    hardcoverCard: reports.reduce((sum, report) => sum + report.resolvedHardcoverCard, 0),
+    enriched: reports.reduce((sum, report) => sum + report.enriched, 0),
     ambiguous: reports.reduce((sum, report) => sum + report.ambiguous, 0),
     unmatched: reports.reduce((sum, report) => sum + report.unmatched, 0),
     requests: reports.reduce((sum, report) => sum + report.requests, 0),
+    providerChain,
+    cardBudget: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
     reports,
   };
   return job.resolve;

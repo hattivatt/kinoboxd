@@ -75,11 +75,12 @@ function cleanText(value) {
 
 /** Fetch with transport retries; refuses 403/429 loudly instead of retrying. */
 async function request(url, options = {}, label = url) {
+  const fetchImpl = options.fetchImpl || fetch;
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     let response;
     try {
-      response = await fetch(url, {
+      response = await fetchImpl(url, {
         method: options.method || 'GET',
         headers: options.headers,
         body: options.body,

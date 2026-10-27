@@ -185,7 +185,7 @@ test('resolveProfile matches by ISBN and by title, keeps negatives uncached', as
   };
 
   try {
-    const report = await resolve.resolveProfile(llProfile);
+    const report = await resolve.resolveProfile(llProfile, { providers: [] });
     assert.equal(report.total, 3);
     assert.equal(report.resolvedIsbn, 1);
     assert.equal(report.resolvedTitle, 1);
@@ -209,7 +209,7 @@ test('resolveProfile matches by ISBN and by title, keeps negatives uncached', as
 
     // Running again reuses positive links and re-queries only the negative.
     hardcover.graphql = async () => ({ editions: [] });
-    const second = await resolve.resolveProfile(llProfile);
+    const second = await resolve.resolveProfile(llProfile, { providers: [] });
     assert.equal(second.cached, 2);
     assert.equal(second.unmatched, 1);
   } finally {
