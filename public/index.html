@@ -539,11 +539,12 @@
             </nav>
           </div>
           <div class="topbar-actions">
-            <button type="button" class="btn btn-ghost books-refresh" id="books-refresh" hidden title="Обновить книжную статистику" aria-label="Обновить книжную статистику">
+            <button type="button" class="btn btn-ghost books-refresh" id="books-refresh" hidden title="Полная проверка Hardcover (всегда, ~10 с) и LiveLib (полный скан всех страниц, ~3 мин)" aria-label="Обновить профиль из Hardcover и LiveLib">
+              <span class="spinner spinner-sm" id="books-refresh-spinner" hidden aria-hidden="true"></span>
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/>
               </svg>
-              <span>Обновить</span>
+              <span id="books-refresh-label">Обновить профиль</span>
             </button>
             <button type="button" class="btn btn-ghost" id="books-reimport" hidden title="Переимпортировать профиль чтения" aria-label="Переимпортировать профиль чтения">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -641,7 +642,7 @@
               <div id="books-progress-error" hidden></div>
               <div class="progress-foot">
                 <span class="pulse-dot" aria-hidden="true"></span>
-                <span>Прогресс обновляется каждую секунду. Импорт идёт на сервере — вкладку можно свернуть.</span>
+                <span id="books-progress-foot-note">Прогресс обновляется каждую секунду. Импорт идёт на сервере — вкладку можно свернуть.</span>
               </div>
             </div>
             <button type="button" class="btn btn-link" id="books-progress-back">Добавить источник</button>

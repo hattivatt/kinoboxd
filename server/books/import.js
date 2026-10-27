@@ -76,6 +76,22 @@ function findRunningJob(source, userKey) {
   return null;
 }
 
+/**
+ * Hardcover coalescing is slightly looser than LiveLib: `me` and the resolved
+ * numeric owner id name the same profile, so a click on the books refresh
+ * button (numeric userId) joins an import started from the import screen
+ * (`me`) instead of queueing a second journal fetch.
+ */
+function findRunningHardcoverJob(requested) {
+  const direct = findRunningJob('hardcover', requested);
+  if (direct) return direct;
+  for (const job of jobs.values()) {
+    if (job.source !== 'hardcover' || job.done || job.stage === 'failed') continue;
+    if (requested === 'me' || String(job.userKey) === 'me') return job;
+  }
+  return null;
+}
+
 function enqueue(job, task) {
   importChain = importChain
     .then(task)
@@ -218,6 +234,7 @@ function startLivelibImport(username, options = {}) {
         events: cached.events.length,
         done: true,
         reused: true,
+        force: false,
         cachedAt: cached.importedAt || null,
         error: null,
         warning: null,
@@ -242,6 +259,8 @@ function startLivelibImport(username, options = {}) {
     pageTotal: null,
     events: 0,
     done: false,
+    reused: false,
+    force,
     error: null,
     warning: null,
     startedAt: Date.now(),
@@ -308,7 +327,7 @@ function startHardcoverImport(userId) {
   }
 
   const requested = userId == null || String(userId).trim() === '' ? 'me' : String(userId).trim();
-  const running = findRunningJob('hardcover', requested);
+  const running = findRunningHardcoverJob(requested);
   if (running) return publicStatus(running);
 
   const job = {
@@ -320,6 +339,9 @@ function startHardcoverImport(userId) {
     pageTotal: null,
     events: 0,
     done: false,
+    reused: false,
+    // Hardcover has no reuse path: every job re-fetches the journal.
+    force: true,
     error: null,
     warning: null,
     startedAt: Date.now(),
@@ -386,6 +408,7 @@ function publicStatus(job) {
     events: job.events,
     done: Boolean(job.done),
     reused: Boolean(job.reused),
+    force: Boolean(job.force),
     cachedAt: job.cachedAt || null,
     error: job.error || null,
     warning: job.warning || null,

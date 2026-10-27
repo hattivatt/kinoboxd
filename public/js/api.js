@@ -175,11 +175,15 @@ export function clearBookMangaFlag(workId, { signal } = {}) {
   });
 }
 
-export function startBooksImportLivelib(username, { signal } = {}) {
+export function startBooksImportLivelib(username, { force = false, signal } = {}) {
+  const body = { username };
+  // `force: true` deliberately skips the 12 h LiveLib reuse window and
+  // re-scrapes every page. Only the manual "Обновить профиль" button sets it.
+  if (force) body.force = true;
   return request('/api/books/import/livelib', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username }),
+    body: JSON.stringify(body),
     signal,
   });
 }
@@ -191,6 +195,15 @@ export function startBooksImportHardcover(userId, { signal } = {}) {
     body: JSON.stringify(userId != null && userId !== '' ? { userId } : {}),
     signal,
   });
+}
+
+/**
+ * Connected book sources + their cache keys. The manual refresh needs the
+ * LiveLib username / Hardcover userId even when the UI was opened in a new
+ * browser and `localStorage` has no remembered account anymore.
+ */
+export function getBooksProfiles({ signal } = {}) {
+  return request('/api/books/profiles', { signal });
 }
 
 export async function getBooksImportStatus(jobId, { source = '', signal } = {}) {

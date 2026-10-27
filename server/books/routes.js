@@ -61,7 +61,28 @@ router.get('/profiles', (req, res) => {
   });
 });
 
-/** POST /api/books/import/livelib { username } */
+/**
+ * `force` for the LiveLib re-import is accepted either as a JSON boolean in
+ * the body (`{ force: true }`) or as a query flag (`?force=1`). Anything else
+ * is a client bug and must not silently turn into a full profile scrape.
+ */
+function parseForce(bodyValue, queryValue) {
+  if (bodyValue != null && typeof bodyValue !== 'boolean') {
+    throw new HttpError(400, 'Body field "force" must be a boolean.', 'invalid_force');
+  }
+  if (bodyValue === true) return true;
+  if (queryValue == null || String(queryValue).trim() === '') return false;
+  const value = String(queryValue).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(value)) return true;
+  if (['0', 'false', 'no', 'off'].includes(value)) return false;
+  throw new HttpError(
+    400,
+    'Query parameter "force" must be 1 or 0 (default 0).',
+    'invalid_force'
+  );
+}
+
+/** POST /api/books/import/livelib { username, force? } (?force=1) */
 router.post('/import/livelib', (req, res, next) => {
   try {
     const username = req.body && req.body.username;
@@ -75,9 +96,8 @@ router.post('/import/livelib', (req, res, next) => {
     // Accept a full profile URL as a convenience: /reader/Margaret or /users/50064.
     const nameMatch = String(username).match(/\/(?:reader|users)\/([^/?#]+)/);
     const value = nameMatch ? nameMatch[1] : username;
-    const job = importJobs.startLivelibImport(value, {
-      force: Boolean(req.body && req.body.force === true),
-    });
+    const force = parseForce(req.body && req.body.force, req.query && req.query.force);
+    const job = importJobs.startLivelibImport(value, { force });
     res.status(202).json(job);
   } catch (err) {
     next(mapError(err));

@@ -19,7 +19,7 @@
 
 import {
   getBooksStats, startBooksImportLivelib, startBooksImportHardcover, getBooksImportStatus,
-  setBookMangaFlag, clearBookMangaFlag,
+  getBooksProfiles, setBookMangaFlag, clearBookMangaFlag,
 } from './api.js';
 import {
   $, el, clear, fmtInt, fmtPercent, fmtRating, fmtPeriod, plural, icon, serviceIcon,
@@ -32,6 +32,7 @@ import {
   renderBooksTimeline, renderReadingCalendar, renderStreaks, normalizeStreaks,
   fmtDayRu, fmtDayShortRu,
 } from './books-charts.js';
+import { snapshotCounts, refreshToastMessage } from './books-refresh.js';
 
 /* =========================================================
    constants
@@ -108,6 +109,8 @@ const state = {
   connected: [],
   selectedDecade: null,
   jobs: {}, // source -> { jobId, status, failed, account }
+  refresh: null, // { before, sources, failures, startedAt } while "Обновить профиль" runs
+  refreshStarting: false, // guards the profile fetch/baseline window before state.refresh exists
   starting: {},
   accounts: {},
   pollTimer: 0,
@@ -529,6 +532,38 @@ function normalizeBooks(raw) {
    view switching inside the books section
    ========================================================= */
 
+function connectedSources() {
+  const list = Array.isArray(state.connected) ? state.connected : [];
+  return [...new Set(list)]
+    .map((source) => text(source).toLowerCase())
+    .filter((source) => SOURCE_LABEL[source]);
+}
+
+/**
+ * Topbar refresh button visibility/busy state.
+ *
+ * Visible only on the books tab (the whole section is hidden on Films anyway)
+ * when at least one source profile is connected, and during its own progress
+ * screen so the user still sees the spinner they started.
+ */
+function updateRefreshButton() {
+  const refresh = $('books-refresh');
+  if (!refresh) return;
+  const busy = Boolean(state.refresh || state.refreshStarting);
+  const connected = connectedSources().length > 0;
+  const viewAllows = state.view === 'dashboard' || (state.view === 'progress' && busy);
+  refresh.hidden = !(connected && viewAllows);
+  refresh.disabled = busy;
+  refresh.classList.toggle('is-busy', busy);
+  refresh.setAttribute('aria-busy', busy ? 'true' : 'false');
+  const spinner = $('books-refresh-spinner');
+  if (spinner) spinner.hidden = !busy;
+  const label = $('books-refresh-label');
+  if (label) label.textContent = busy ? 'Обновляем…' : 'Обновить профиль';
+  const reimport = $('books-reimport');
+  if (reimport) reimport.hidden = state.view !== 'dashboard' || busy;
+}
+
 function showScreen(name) {
   state.view = name;
   const screens = {
@@ -539,10 +574,9 @@ function showScreen(name) {
   for (const [key, node] of Object.entries(screens)) {
     if (node) node.hidden = key !== name;
   }
-  const refresh = $('books-refresh');
-  if (refresh) refresh.hidden = name !== 'dashboard';
-  const reimport = $('books-reimport');
-  if (reimport) reimport.hidden = name !== 'dashboard';
+  updateRefreshButton();
+  const back = $('books-progress-back');
+  if (back) back.hidden = Boolean(state.refresh);
   if (state.active && state.onActivate) state.onActivate();
 }
 
@@ -612,6 +646,7 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
     if (seq !== state.seq) return;
     state.data = normalizeBooks(raw);
     state.connected = state.data.connected;
+    updateRefreshButton();
     state.loaded = true;
     state.selectedDecade = null;
     if (!state.data.summary.eventCount && !state.data.connected.length) {
@@ -830,6 +865,31 @@ function stageText(source, job) {
   return STAGE_LABEL[stage] || (stage ? `Этап: ${stage}` : 'Импорт идёт…');
 }
 
+function refreshStageText(source, job) {
+  if (job && job.failed) return 'Обновление прервалось';
+  const status = job && job.status;
+  if (!status) return 'Запускаем…';
+  if (status.error) return text(status.error);
+  if (status.done || status.stage === 'done') return 'Готово';
+  const page = numOrNull(status.page ?? status.current ?? status.batch ?? status.batchIndex);
+  const pageTotal = numOrNull(
+    status.pageTotal ?? status.totalPages ?? status.pagesTotal ?? status.batchTotal ?? status.batchesTotal
+  );
+  if (source === 'hardcover') {
+    return page != null && page > 0 ? `Читаем журнал ${fmtInt(page)}/${pageTotal ? fmtInt(pageTotal) : '?'}` : 'Читаем журнал';
+  }
+  if (source === 'livelib') {
+    return page != null && page > 0 ? `LiveLib страница ${fmtInt(page)}/${pageTotal ? fmtInt(pageTotal) : '?'}` : 'LiveLib: полный скан';
+  }
+  return STAGE_LABEL[text(status.stage).toLowerCase()] || 'Обновляем…';
+}
+
+function refreshMeta(status) {
+  if (!status) return '';
+  const events = Array.isArray(status.events) ? status.events.length : numOrNull(status.events);
+  return events != null ? `${fmtInt(events)} ${plural(events, ['событие', 'события', 'событий'])}` : '';
+}
+
 function renderProgress() {
   const host = $('books-progress-jobs');
   const statusNode = $('books-progress-status');
@@ -838,13 +898,19 @@ function renderProgress() {
   if (!host) return;
   clear(host);
 
+  const refreshing = Boolean(state.refresh);
   const jobs = jobList();
   if (kicker) {
-    kicker.textContent = jobs
-      .map(([source]) => SOURCE_LABEL[source])
-      .join(' ∪ ') || 'книжный импорт';
+    const names = jobs.map(([source]) => SOURCE_LABEL[source]).join(' ∪ ') || 'книжный импорт';
+    kicker.textContent = refreshing ? `проверка источников · ${names}` : names;
   }
-  if (title) title.textContent = 'Собираем книжный профиль';
+  if (title) title.textContent = refreshing ? 'Проверяем книжные профили' : 'Собираем книжный профиль';
+  const footNote = $('books-progress-foot-note');
+  if (footNote) {
+    footNote.textContent = refreshing
+      ? 'Обновление идёт на сервере — можно перейти на вкладку «Фильмы», прогресс не потеряется.'
+      : 'Прогресс обновляется каждую секунду. Импорт идёт на сервере — вкладку можно свернуть.';
+  }
 
   let totalEvents = 0;
   for (const [source, job] of jobs) {
@@ -863,7 +929,7 @@ function renderProgress() {
     head.append(copy);
     head.append(el('span', {
       class: `books-job-stage${job.failed ? ' is-error' : done ? ' is-done' : ''}`,
-      text: stageText(source, job),
+      text: refreshing ? refreshStageText(source, job) : stageText(source, job),
     }));
     row.append(head);
 
@@ -880,7 +946,7 @@ function renderProgress() {
     bar.append(fill);
     row.append(bar);
 
-    const meta = statusMeta(status);
+    const meta = refreshing ? refreshMeta(status) : statusMeta(status);
     if (meta) row.append(el('div', { class: 'books-job-meta', text: meta }));
     totalEvents += Array.isArray(status.events) ? status.events.length : Math.max(0, toNum(status.events));
     host.append(row);
@@ -889,9 +955,15 @@ function renderProgress() {
   if (statusNode) {
     const failed = jobs.filter(([, job]) => job.failed || (job.status && job.status.error));
     if (failed.length) {
-      statusNode.textContent = 'Часть импорта не удалась — можно повторить или открыть то, что уже собрано.';
-    } else if (jobs.every(([, job]) => job.status && (job.status.done || job.status.stage === 'done'))) {
-      statusNode.textContent = 'Импорт завершён — считаем статистику…';
+      statusNode.textContent = refreshing
+        ? 'Часть источников не обновилась — второй источник и сохранённые данные в порядке.'
+        : 'Часть импорта не удалась — можно повторить или открыть то, что уже собрано.';
+    } else if (jobs.length && jobs.every(([, job]) => job.status && (job.status.done || job.status.stage === 'done'))) {
+      statusNode.textContent = refreshing
+        ? 'Проверка завершена — пересчитываем статистику…'
+        : 'Импорт завершён — считаем статистику…';
+    } else if (refreshing) {
+      statusNode.textContent = 'Полная проверка: Hardcover читается заново, LiveLib — все страницы (до 3 минут).';
     } else {
       statusNode.textContent = totalEvents > 0
         ? `Собрано ${fmtInt(totalEvents)} ${plural(totalEvents, ['событие', 'события', 'событий'])}…`
@@ -914,6 +986,17 @@ function renderProgressError(jobs) {
   const message = failed
     .map(([source, job]) => `${sourceLabel(source)}: ${job.failed || job.status.error}`)
     .join(' · ');
+  if (state.refresh) {
+    // Refresh is best-effort per source: the flow finalises itself and the
+    // consolidated toast (success + failure) is the only action needed.
+    host.append(errorBox({
+      title: 'Часть источников не обновилась',
+      message: `${message}. Остальные данные и статистика будут пересчитаны.`,
+      actions: [],
+    }));
+    host.hidden = false;
+    return;
+  }
   host.append(errorBox({
     title: 'Импорт не удался',
     message,
@@ -952,12 +1035,18 @@ function stopPolling() {
 
 function startPolling() {
   stopPolling();
-  if (!state.active || state.view !== 'progress') return;
+  if (state.view !== 'progress') return;
+  // A profile refresh keeps polling after the user switches to Films: the
+  // server job must not be abandoned just because the tab is hidden.
+  if (!state.active && !state.refresh) return;
   pollOnce(state.pollSeq);
 }
 
 async function pollOnce(pollId) {
-  if (!state.active || state.view !== 'progress' || pollId !== state.pollSeq) return;
+  const stillPolling = () => pollId === state.pollSeq &&
+    state.view === 'progress' &&
+    (state.active || Boolean(state.refresh));
+  if (!stillPolling()) return;
   const jobs = jobList();
   if (!jobs.length) {
     await finishImport();
@@ -965,7 +1054,7 @@ async function pollOnce(pollId) {
   }
 
   const results = await Promise.allSettled(jobs.map(([source, job]) => getBooksImportStatus(job.jobId, { source })));
-  if (!state.active || state.view !== 'progress' || pollId !== state.pollSeq) return;
+  if (!stillPolling()) return;
 
   let changed = false;
   results.forEach((result, index) => {
@@ -985,16 +1074,19 @@ async function pollOnce(pollId) {
     const status = result.value && typeof result.value === 'object' ? result.value : {};
     job.status = status;
     if (status.error) job.failed = text(status.error);
+    if (status.done || status.stage === 'done') job.failed = null;
     changed = true;
   });
 
   if (changed) saveJobs();
-  if (!state.active || state.view !== 'progress') return;
+  if (!stillPolling()) return;
   renderProgress();
 
   const pending = jobList().filter(([, job]) => !job.failed && !(job.status && (job.status.done || job.status.stage === 'done')));
   const failed = jobList().some(([, job]) => job.failed);
-  if (!pending.length && !failed) {
+  // Manual refresh is best-effort per source: one failed source must not stop
+  // the stats reload of the other one. Imports still wait for a manual retry.
+  if (!pending.length && (!failed || state.refresh)) {
     await finishImport();
     return;
   }
@@ -1004,6 +1096,11 @@ async function pollOnce(pollId) {
 
 async function finishImport() {
   stopPolling();
+  const refresh = state.refresh;
+  if (refresh) {
+    await finishRefresh(refresh);
+    return;
+  }
   const jobs = jobList();
   const failed = jobs.some(([, job]) => job.failed);
   if (failed) {
@@ -1016,6 +1113,180 @@ async function finishImport() {
   if (state.view === 'dashboard' && names.length) {
     toast(`Импорт завершён: ${names.join(' ∪ ')}`, 'success', { duration: 4600 });
   }
+}
+
+/* =========================================================
+   manual profile refresh (both sources, force LiveLib)
+   ========================================================= */
+
+function profileUserKey(profiles, source) {
+  const list = profiles && Array.isArray(profiles.profiles) ? profiles.profiles : [];
+  const entry = list.find((item) => item && item.source === source);
+  return entry ? text(entry.userKey) : '';
+}
+
+function refreshJobId(response) {
+  return text(response && (response.id || response.jobId || response.job_id || (response.job && response.job.id)));
+}
+
+function attachRefreshJob(source, response, account) {
+  const jobId = refreshJobId(response);
+  if (!jobId) {
+    // Hardcover always opens a job; LiveLib with { force: true } never takes
+    // the reuse path. A done-without-id answer here means a contract drift.
+    if (response && (response.done || response.stage === 'done')) return;
+    throw new Error('Сервер не вернул идентификатор задачи обновления.');
+  }
+  state.jobs[source] = {
+    jobId,
+    account: account || '',
+    status: response && typeof response === 'object' ? response : null,
+    failed: null,
+    startedAt: Date.now(),
+  };
+}
+
+function refreshJobFailure(job) {
+  return job.failed || (job.status && job.status.error) || 'источник недоступен';
+}
+
+function refreshErrorMessage(error) {
+  const message = error && typeof error.message === 'string' ? error.message.trim() : '';
+  return message || shortErrorMessage(error);
+}
+
+async function finishRefresh(refresh) {
+  const failures = { ...(refresh.failures || {}) };
+  for (const [source, job] of jobList()) {
+    if (job.failed || (job.status && job.status.error)) failures[source] = refreshJobFailure(job);
+  }
+  const sources = refresh.sources.slice();
+  const hadFailures = Object.keys(failures).length > 0;
+
+  hideJobs();
+  if (state.view === 'progress') showScreen('dashboard');
+
+  let afterPayload = null;
+  try {
+    afterPayload = await getBooksStats({ includeMangaComics: state.includeManga });
+  } catch {
+    /* fall back to whatever loadStats renders below */
+  }
+  await loadStats({ force: true });
+  state.refresh = null;
+  updateRefreshButton();
+  const after = snapshotCounts(afterPayload || state.data);
+  if (!afterPayload && !state.data) {
+    toast('Не удалось пересчитать статистику после обновления', 'error', { duration: 8000 });
+    return;
+  }
+  const message = refreshToastMessage(refresh.before, after, { sources, failures });
+  toast(message, hadFailures ? 'error' : 'success', { duration: hadFailures ? 10000 : 6000 });
+}
+
+/**
+ * "↻ Обновить профиль": a real two-source check.
+ *
+ *  - Hardcover: `/api/books/import/hardcover` has no reuse TTL — every click
+ *    re-fetches the whole journal (~8 GraphQL requests).
+ *  - LiveLib: `{ force: true }` skips the 12 h reuse window and re-scrapes all
+ *    pages (63+ polite requests, ~2–3 min). This is a user-initiated action,
+ *    not a background poll.
+ *
+ * Both jobs are started through the same endpoints as the import screen and
+ * coalesce server-side when an import is already running. The jobs run on the
+ * server while the user may switch to Films; polling keeps going.
+ */
+async function refreshProfiles() {
+  if (state.refresh || state.refreshStarting || state.loading ||
+      state.starting.hardcover || state.starting.livelib) return;
+  state.refreshStarting = true;
+  updateRefreshButton();
+  try {
+    await runRefreshProfiles();
+  } finally {
+    state.refreshStarting = false;
+    updateRefreshButton();
+  }
+}
+
+async function runRefreshProfiles() {
+  let profiles = null;
+  try {
+    profiles = await getBooksProfiles();
+  } catch (error) {
+    if (error && error.status === 401) return;
+    toast(shortErrorMessage(error), 'error', { duration: 7000 });
+    return;
+  }
+  const fromProfiles = profiles && Array.isArray(profiles.connected)
+    ? profiles.connected.map((source) => text(source).toLowerCase()).filter((source) => SOURCE_LABEL[source])
+    : [];
+  const sources = fromProfiles.length ? [...new Set(fromProfiles)] : connectedSources();
+  if (!sources.length) {
+    toast('Нет подключённых книжных источников — сначала импортируйте профиль', 'info', { duration: 6000 });
+    return;
+  }
+
+  // Baseline for the toast diff: always the unfiltered payload, so a source
+  // chip cannot hide the other source's delta.
+  let baseline = null;
+  try {
+    baseline = await getBooksStats({ includeMangaComics: state.includeManga });
+  } catch {
+    /* state.data below is still a usable (possibly filtered) snapshot */
+  }
+
+  state.refresh = {
+    before: snapshotCounts(baseline || state.data),
+    sources,
+    failures: {},
+    startedAt: Date.now(),
+  };
+  state.jobs = {};
+  saveJobs();
+  stopPolling();
+  updateRefreshButton();
+  showScreen('progress');
+  renderProgress();
+
+  if (sources.includes('hardcover')) {
+    const userId = state.accounts.hardcover || profileUserKey(profiles, 'hardcover') || '34748';
+    state.accounts.hardcover = userId;
+    try {
+      const response = await startBooksImportHardcover(userId);
+      attachRefreshJob('hardcover', response, userId);
+    } catch (error) {
+      if (error && error.status === 401) return;
+      state.refresh.failures.hardcover = refreshErrorMessage(error);
+    }
+  }
+
+  if (sources.includes('livelib')) {
+    const username = state.accounts.livelib || profileUserKey(profiles, 'livelib');
+    if (!username) {
+      state.refresh.failures.livelib = 'не найден username LiveLib';
+    } else {
+      state.accounts.livelib = username;
+      try {
+        const response = await startBooksImportLivelib(username, { force: true });
+        attachRefreshJob('livelib', response, username);
+      } catch (error) {
+        if (error && error.status === 401) return;
+        state.refresh.failures.livelib = refreshErrorMessage(error);
+      }
+    }
+  }
+  saveAccounts();
+  saveJobs();
+
+  if (!state.refresh) return; // 401 tore the view down
+  if (!jobList().length) {
+    await finishRefresh(state.refresh);
+    return;
+  }
+  renderProgress();
+  startPolling();
 }
 
 /* =========================================================
@@ -2568,10 +2839,9 @@ export function initBooks({ onActivate } = {}) {
 
   const refresh = $('books-refresh');
   if (refresh) {
-    refresh.addEventListener('click', () => {
-      if (state.loading) return;
-      refresh.classList.add('is-busy');
-      loadStats({ force: true }).finally(() => refresh.classList.remove('is-busy'));
+    refresh.addEventListener('click', (event) => {
+      event.preventDefault();
+      refreshProfiles();
     });
   }
 
@@ -2601,6 +2871,15 @@ export function initBooks({ onActivate } = {}) {
  */
 export async function showBooks() {
   state.active = true;
+  if (state.refresh) {
+    // The refresh keeps running while the user visits Films; returning to the
+    // tab must re-attach the progress view, not load stale stats.
+    if (state.onActivate) state.onActivate();
+    showScreen('progress');
+    renderProgress();
+    startPolling();
+    return;
+  }
   if (state.view === 'dashboard' && state.data) {
     if (state.onActivate) state.onActivate();
     return;
@@ -2628,7 +2907,9 @@ export async function showBooks() {
 /** Called by main.js when another tab takes over. */
 export function hideBooks() {
   state.active = false;
-  stopPolling();
+  // A manual refresh continues on the server and in the background poller;
+  // only idle/import polling is paused while the tab is hidden.
+  if (!state.refresh) stopPolling();
   closeBookMenu();
 }
 
@@ -2639,6 +2920,8 @@ export function resetBooks() {
   state.loaded = false;
   state.data = null;
   state.jobs = {};
+  state.refresh = null;
+  state.refreshStarting = false;
   state.source = '';
   state.selectedDecade = null;
   authorsState.visible = AUTHORS_INITIAL;
