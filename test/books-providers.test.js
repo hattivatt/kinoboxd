@@ -95,6 +95,7 @@ function cardHtml(overrides = {}) {
 
 test.beforeEach(() => {
   googlebooks.resetBreaker();
+  livelibCard.resetBreaker();
 });
 
 test('googlebooks normalizes an ISBN hit', async () => {
@@ -276,6 +277,28 @@ test('livelib card marks manga genres', async () => {
     { fetchImpl, sleep: noSleep, cardPauseMs: 0 }
   );
   assert.equal(result.mangaComics, true);
+});
+
+test('livelib card 403 trips a run breaker instead of retrying every book', async () => {
+  const fetchImpl = gbFetch(() => response({ status: 403, body: '<html>DDoS-Guard</html>' }));
+  const budget = livelibCard.createBudget(10);
+  await assert.rejects(
+    () =>
+      livelibCard.getWork(
+        { llBookId: '1' },
+        { fetchImpl, sleep: noSleep, cardPauseMs: 0, budget }
+      ),
+    /ограничил доступ/
+  );
+  assert.equal(livelibCard.isBreakerOpen(), true);
+  const callsAfterBlock = fetchImpl.calls.length;
+  const second = await livelibCard.getWork(
+    { llBookId: '2' },
+    { fetchImpl, sleep: noSleep, cardPauseMs: 0, budget }
+  );
+  assert.equal(second, null);
+  assert.equal(fetchImpl.calls.length, callsAfterBlock);
+  assert.equal(budget.used, 1);
 });
 
 test('manga detection is tri-state', () => {

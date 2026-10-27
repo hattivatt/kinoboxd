@@ -306,6 +306,10 @@ async function tryProvider(provider, input, options, chain) {
   if (!provider) return null;
   const stat = chain[provider.NAME];
   if (!stat) return null;
+  if (typeof provider.isBreakerOpen === 'function' && provider.isBreakerOpen()) {
+    stat.skipped++;
+    return null;
+  }
   stat.calls++;
   try {
     const result = await provider.getWork(input, providerOptionsFor(options, provider));
@@ -320,7 +324,7 @@ async function tryProvider(provider, input, options, chain) {
   } catch (err) {
     stat.errors++;
     stat.lastError = (err && err.code) || 'provider_error';
-    if (typeof provider.noteError === 'function' && provider.noteError(err)) stat.skipped++;
+    if (typeof provider.noteError === 'function') provider.noteError(err);
     return null;
   }
 }
@@ -567,8 +571,11 @@ async function resolveProfile(llProfile, options = {}) {
   const cardByBook = new Map();
   if (cardProvider) {
     for (const event of withoutIsbn) {
+      const bookId = String(event.sourceBookId);
+      // Positive card metadata is persisted at ll:{bookId}; never re-fetch it.
+      if (!force && bookCache.getWorkDetails(`ll:${bookId}`)) continue;
       const card = await tryProvider(cardProvider, chainInput(event), chainOptions, chain);
-      if (card) cardByBook.set(String(event.sourceBookId), card);
+      if (card) cardByBook.set(bookId, card);
     }
   }
 
@@ -593,6 +600,11 @@ async function resolveProfile(llProfile, options = {}) {
   for (const event of withoutIsbn) {
     const bookId = String(event.sourceBookId);
     if (links.has(bookId)) continue;
+    if (!force && bookCache.getWorkDetails(`ll:${bookId}`)) {
+      report.enriched++;
+      report.resolvedLivelibCard++;
+      continue;
+    }
     const card = cardByBook.get(bookId) || null;
     const isbn = card ? normalizeIsbn(card.isbn13) || normalizeIsbn(card.isbn10) : null;
 
@@ -654,6 +666,11 @@ async function resolveProfile(llProfile, options = {}) {
   for (const event of withIsbn) {
     const bookId = String(event.sourceBookId);
     if (links.has(bookId)) continue;
+    if (!force && bookCache.getWorkDetails(`ll:${bookId}`)) {
+      report.enriched++;
+      report.resolvedLivelibCard++;
+      continue;
+    }
     const isbnInput = chainInput(event);
     let result = await tryProvider(googleProvider, isbnInput, chainOptions, chain);
     if (!result) result = await tryProvider(openLibraryProvider, isbnInput, chainOptions, chain);

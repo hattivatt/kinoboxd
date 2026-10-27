@@ -264,6 +264,27 @@ test('card-only book keeps its LiveLib work id but gets cache metadata', async (
   assert.equal(details.pages, 256);
 });
 
+test('saved card metadata is reused without another LiveLib request', async () => {
+  const fetchImpl = router([
+    ['www.livelib.ru/book/', () => response({ body: cardHtml({ bookId: '1003' }) })],
+  ]);
+  const report = await resolve.resolveProfile(
+    profile([event('1003', { title: 'Пикник на обочине', authors: ['Аркадий Стругацкий'] })]),
+    {
+      providers: ['livelib-card'],
+      lookupIsbns: lookupStub([]),
+      fetchImpl,
+      sleep: noSleep,
+      requestDelayMs: 0,
+      cardPauseMs: 0,
+    }
+  );
+  assert.equal(fetchImpl.calls.filter((url) => url.includes('www.livelib.ru')).length, 0);
+  assert.equal(report.enriched, 1);
+  assert.equal(report.unmatched, 0);
+  assert.equal(report.cardBudget.used, 0);
+});
+
 test('card budget caps requests per run and leaves the rest unresolved', async () => {
   const fetchImpl = router([
     ['www.livelib.ru/book/', () => response({ body: cardHtml({ bookId: '9' }) })],

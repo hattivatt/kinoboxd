@@ -22,8 +22,19 @@ const { cleanText, normalizeIsbn, isbn10Of } = require('../normalize');
 const NAME = 'livelib-card';
 const DEFAULT_PAUSE_MS = 2000;
 const DEFAULT_BUDGET = 300;
+const BLOCK_BREAKER_MS = 30 * 60 * 1000;
+
+let blockedUntil = 0;
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isBreakerOpen(now = Date.now()) {
+  return now < blockedUntil;
+}
+
+function resetBreaker() {
+  blockedUntil = 0;
+}
 
 function createBudget(limit) {
   const parsed = Number(limit);
@@ -163,6 +174,7 @@ function parseCardHtml(html, input = {}) {
 async function getWork(input = {}, options = {}) {
   const bookId = input.llBookId || input.sourceBookId;
   if (!bookId) return null;
+  if (isBreakerOpen()) return null;
   const budget = options.budget || null;
   if (budget && typeof budget.take === 'function' && !budget.take()) return null;
 
@@ -171,11 +183,24 @@ async function getWork(input = {}, options = {}) {
   if (pause > 0) await sleep(pause);
 
   const url = `${livelib.LIVELIB_ORIGIN}/book/${encodeURIComponent(bookId)}`;
-  const response = await livelib.request(
-    url,
-    { headers: { accept: 'text/html' }, fetchImpl: options.fetchImpl },
-    `card ${bookId}`
-  );
+  let response;
+  try {
+    response = await livelib.request(
+      url,
+      {
+        headers: { accept: 'text/html', 'User-Agent': livelib.USER_AGENT },
+        fetchImpl: options.fetchImpl,
+      },
+      `card ${bookId}`
+    );
+  } catch (err) {
+    // DDoS-Guard answers 403 the same way as a real rate limit: stop the whole
+    // run instead of retrying 900+ cards against a blocked IP.
+    if (err && (err.code === 'livelib_blocked' || err.code === 'livelib_http_error')) {
+      blockedUntil = Date.now() + BLOCK_BREAKER_MS;
+    }
+    throw err;
+  }
   return parseCardHtml(response.text, { ...input, llBookId: String(bookId) });
 }
 
@@ -183,10 +208,13 @@ module.exports = {
   NAME,
   DEFAULT_BUDGET,
   DEFAULT_PAUSE_MS,
+  BLOCK_BREAKER_MS,
   createBudget,
   budgetFromEnv,
   parseCardHtml,
   readDetailRows,
   readJsonLd,
   getWork,
+  isBreakerOpen,
+  resetBreaker,
 };

@@ -223,6 +223,38 @@ test('the same book via LiveLib links + Google Books dedupes into one work', () 
   }
 });
 
+test('HTTP route: includeMangaComics default off, 1 includes, invalid rejected', async (t) => {
+  const express = require('express');
+  const routes = require('../server/books/routes');
+  const app = express();
+  app.use(express.json());
+  app.use('/api/books', routes);
+  app.use((err, req, res, next) => {
+    res.status(err.status || err.statusCode || 500).json({ code: err.code, error: err.message });
+  });
+  const server = app.listen(5811);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = 'http://127.0.0.1:5811/api/books/stats';
+
+  const off = await fetch(base);
+  assert.equal(off.status, 200);
+  const offBody = await off.json();
+  assert.equal(offBody.summary.includeMangaComics, false);
+  assert.equal(offBody.summary.mangaExcluded, 1);
+  assert.equal(offBody.booksIndex['gb:vol-naruto'], undefined);
+
+  const on = await fetch(`${base}?includeMangaComics=1`);
+  assert.equal(on.status, 200);
+  const onBody = await on.json();
+  assert.equal(onBody.summary.includeMangaComics, true);
+  assert.ok(onBody.booksIndex['gb:vol-naruto']);
+
+  const bad = await fetch(`${base}?includeMangaComics=2`);
+  assert.equal(bad.status, 400);
+  const badBody = await bad.json();
+  assert.equal(badBody.code, 'invalid_include_manga');
+});
+
 test('payload schema stays compatible: old fields keep their place and meaning', () => {
   const stats = buildBooksStats({});
   for (const key of [

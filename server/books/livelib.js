@@ -782,6 +782,7 @@ module.exports = {
   LIVELIB_ORIGIN,
   LivelibError,
   BULK_PER_PAGE,
+  USER_AGENT,
   flightFromHtml,
   parseRscHtml,
   parseBulkContent,

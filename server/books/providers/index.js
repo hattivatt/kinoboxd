@@ -187,81 +187,6 @@ function resultToDetails(result, options = {}) {
   return doc;
 }
 
-/**
- * Enrich an existing details doc (typically Hardcover) with a provider result
- * without replacing canonical content. Only missing scalar fields are filled.
- */
-function enrichDetails(existing, result, options = {}) {
-  if (!existing) return resultToDetails(result, options);
-  const merged = mergeResults(
-    {
-      source: 'hardcover',
-      sourceId: existing.hcWorkId == null ? existing.workId : String(existing.hcWorkId),
-      workId: existing.workId || (existing.hcWorkId ? `hc:${existing.hcWorkId}` : null),
-      title: existing.title,
-      authors: (existing.authors || []).map((author) =>
-        author && typeof author === 'object' ? author.name : author
-      ),
-      year: existing.publicationYear,
-      publisher: existing.publisher,
-      series: Array.isArray(existing.series) && existing.series.length ? existing.series[0] : null,
-      genres: existing.genres,
-      pages: existing.pages,
-      isbn13: existing.isbn13,
-      isbn10: existing.isbn10,
-      cover: existing.coverUrl,
-      language: existing.editionLanguage,
-      links: { pageUrl: existing.slug ? `https://hardcover.app/books/${existing.slug}` : null },
-      confidence: 1,
-      mangaComics:
-        existing.mangaComics == null
-          ? require('./manga').detectManga({
-              genres: existing.genres,
-              series: existing.series,
-              publisher: existing.publisher,
-            })
-          : existing.mangaComics,
-      hardcover: {
-        hcWorkId: existing.hcWorkId,
-        hcEditionId: existing.hcEditionId,
-        slug: existing.slug,
-        rating: existing.rating,
-        ratingsCount: existing.ratingsCount,
-      },
-    },
-    [result]
-  );
-  const doc = resultToDetails(merged, options);
-  // Preserve fields that the normalized result does not carry.
-  for (const field of ['hcWorkId', 'hcEditionId', 'slug', 'rating', 'ratingsCount', 'editionLanguageId']) {
-    if (existing[field] != null && doc[field] == null) doc[field] = existing[field];
-  }
-  const priorSources = Array.isArray(existing.sources)
-    ? existing.sources
-    : existing.hcWorkId != null
-    ? [
-        {
-          source: 'hardcover',
-          sourceId: String(existing.hcWorkId),
-          url: existing.slug ? `https://hardcover.app/books/${existing.slug}` : null,
-          confidence: 1,
-        },
-      ]
-    : [];
-  const sources = [...priorSources];
-  for (const entry of doc.sources || []) {
-    if (!sources.some((value) => value.source === entry.source && value.sourceId === entry.sourceId)) {
-      sources.push(entry);
-    }
-  }
-  doc.sources = sources;
-  doc.metadataSources = [...new Set(sources.map((entry) => entry.source))];
-  doc.schemaVersion = 2;
-  doc.partial = false;
-  doc.fetchedAt = options.now || new Date().toISOString();
-  return doc;
-}
-
 module.exports = {
   REGISTRY,
   PRIORITY,
@@ -271,5 +196,4 @@ module.exports = {
   selectProviders,
   mergeResults,
   resultToDetails,
-  enrichDetails,
 };
