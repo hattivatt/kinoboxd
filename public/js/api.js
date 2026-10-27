@@ -142,9 +142,16 @@ export function getKinopoiskStatus(uploadId, { signal } = {}) {
  * Aggregated book payload. `sources` is the server-side source filter
  * ("livelib", "hardcover" or a comma-separated list); omitted = all connected.
  */
-export function getBooksStats({ sources = '', signal } = {}) {
-  const query = sources ? `?sources=${encodeURIComponent(sources)}` : '';
-  return request(`/api/books/stats${query}`, { signal });
+export function getBooksStats({ sources = '', includeMangaComics = null, signal } = {}) {
+  const params = new URLSearchParams();
+  if (sources) params.set('sources', sources);
+  // Always spelled out: the backend default is "exclude", but sending it
+  // explicitly keeps the toggle, the chips and the request in one state.
+  if (includeMangaComics != null) {
+    params.set('includeMangaComics', includeMangaComics ? '1' : '0');
+  }
+  const query = params.toString();
+  return request(`/api/books/stats${query ? `?${query}` : ''}`, { signal });
 }
 
 export function startBooksImportLivelib(username, { signal } = {}) {

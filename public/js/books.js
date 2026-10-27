@@ -25,7 +25,7 @@ import {
   monthName, monthShort, toNum, emptyState, errorBox, showTooltip, moveTooltip, hideTooltip,
   debounce, toast, shortErrorMessage,
 } from './ui.js';
-import { renderDonut } from './charts.js';
+import { renderDonut, renderYearBars } from './charts.js';
 import { openModal } from './modal.js';
 import {
   renderBooksTimeline, renderReadingCalendar, renderStreaks, normalizeStreaks,
@@ -38,6 +38,18 @@ import {
 
 const SOURCE_LABEL = { livelib: 'LiveLib', hardcover: 'Hardcover' };
 const SOURCE_MARK = { livelib: 'LL', hardcover: 'HC' };
+/* Bibliographic metadata providers carried by `booksIndex[].metadataSources`.
+ * Short marks only: one badge per row, the full name lives in the title. */
+const METADATA_LABEL = {
+  hardcover: ['HC', 'Hardcover'],
+  googlebooks: ['GB', 'Google Books'],
+  openlibrary: ['OL', 'Open Library'],
+  livelib: ['LL', 'LiveLib'],
+};
+const MANGA_STORAGE_KEY = 'kinoboxd.books.manga.v1';
+const AUTHORS_INITIAL = 20;
+const AUTHORS_BATCH = 60;
+const AUTHORS_SEARCH_MIN = 30;
 const JOBS_KEY = 'kinoboxd.books.jobs.v1';
 const ACCOUNTS_KEY = 'kinoboxd.books.accounts.v1';
 const SORT_KEY = 'kinoboxd.books.sort.';
@@ -84,6 +96,7 @@ const state = {
   loaded: false,
   view: 'import', // import | progress | dashboard
   source: '', // '' (all) | livelib | hardcover
+  includeManga: false, // ?includeMangaComics=0|1, default off
   data: null,
   error: null,
   seq: 0,
@@ -99,6 +112,11 @@ const state = {
 
 let openBookMenuClose = null;
 let bookModalSeq = 0;
+let inflightLoad = null;
+
+/* Authors widget paging/search. Kept outside the payload so a refetch (source
+ * chip or manga toggle) does not silently drop the user's query. */
+const authorsState = { visible: AUTHORS_INITIAL, expanded: false, query: '' };
 
 /* =========================================================
    small helpers
@@ -268,6 +286,15 @@ function normalizeRatingsBySource(raw) {
   return out;
 }
 
+function normalizeMetadataSources(raw) {
+  const out = [];
+  for (const item of arr(raw)) {
+    const source = text(typeof item === 'object' && item ? (item.source || item.name) : item).toLowerCase();
+    if (METADATA_LABEL[source] && !out.includes(source)) out.push(source);
+  }
+  return out;
+}
+
 function normalizeEntry(workId, raw) {
   const entry = raw && typeof raw === 'object' ? raw : {};
   const sources = arr(entry.sources)
@@ -280,6 +307,10 @@ function normalizeEntry(workId, raw) {
     .map((item) => text(typeof item === 'object' && item ? (item.name || item.author) : item))
     .filter(Boolean);
   const links = normalizeLinks(entry.links, workId);
+  // `mangaComics` is tri-state: true / false / null (unknown). A missing field
+  // (older payload) normalises to null too, so every consumer must treat
+  // "no field" and "unknown" the same way instead of crashing.
+  const mangaComics = entry.mangaComics === true ? true : entry.mangaComics === false ? false : null;
   return {
     workId: text(workId),
     title: firstString(entry.titleRu, entry.title) || text(workId),
@@ -296,6 +327,8 @@ function normalizeEntry(workId, raw) {
     sources: sources.length
       ? sources
       : Object.keys(normalizeRatingsBySource(entry.ratingsBySource)),
+    metadataSources: normalizeMetadataSources(entry.metadataSources),
+    mangaComics,
     finishedDate: /^\d{4}-\d{2}-\d{2}/.test(text(entry.finishedDate)) ? text(entry.finishedDate).slice(0, 10) : null,
     reReadCount: Math.max(0, toNum(entry.reReadCount)),
     links,
@@ -329,6 +362,14 @@ function normalizeBooks(raw) {
   const bySourceRaw = ratingsRaw.bySource && typeof ratingsRaw.bySource === 'object'
     ? ratingsRaw.bySource
     : {};
+  const booksIndexRaw = source.booksIndex && typeof source.booksIndex === 'object'
+    ? source.booksIndex
+    : {};
+  // Compatibility probe: a payload from before the manga/comics round has no
+  // `mangaComics` key at all. The toggle still renders, but its note says that
+  // this import carries no such field instead of claiming "0 excluded".
+  const hasMangaField = Object.values(booksIndexRaw)
+    .some((entry) => entry && typeof entry === 'object' && Object.prototype.hasOwnProperty.call(entry, 'mangaComics'));
   const booksIndex = normalizeBooksIndex(source.booksIndex);
 
   const genres = arr(source.genres).map((item) => ({
@@ -436,6 +477,7 @@ function normalizeBooks(raw) {
     avgRating: numOrNull(summaryRaw.avgRating),
     dateFrom: text(summaryRaw.dateFrom) || null,
     dateTo: text(summaryRaw.dateTo) || null,
+    mangaExcluded: Math.max(0, toNum(summaryRaw.mangaExcluded)),
   };
   if (!summary.eventCount) summary.eventCount = summary.finishedCount;
   if (!summary.bookCount) summary.bookCount = Object.keys(booksIndex).length;
@@ -466,6 +508,7 @@ function normalizeBooks(raw) {
     streaks: normalizeStreaks(source.streaks, readDays),
     recentlyFinished,
     booksIndex,
+    hasMangaField,
     sourceBreakdown,
   };
 }
@@ -520,7 +563,28 @@ function showError(error, options = {}) {
    ========================================================= */
 
 async function loadStats({ force = false, silent = false } = {}) {
-  if (state.loading) return;
+  if (state.loading) {
+    if (!force) return;
+    // A forced reload (source chip / manga toggle) must not be swallowed by an
+    // in-flight request: wait for it, then re-run with the newest state.
+    if (inflightLoad) {
+      try {
+        await inflightLoad;
+      } catch {
+        /* the inner run reports its own errors */
+      }
+    }
+  }
+  const run = loadStatsRun({ force, silent });
+  inflightLoad = run;
+  try {
+    return await run;
+  } finally {
+    if (inflightLoad === run) inflightLoad = null;
+  }
+}
+
+async function loadStatsRun({ force = false, silent = false } = {}) {
   if (state.loaded && !force && !silent) return;
   const seq = ++state.seq;
   state.loading = true;
@@ -529,7 +593,10 @@ async function loadStats({ force = false, silent = false } = {}) {
   if (!silent && state.view !== 'dashboard') showLoading(true);
 
   try {
-    const raw = await getBooksStats({ sources: state.source });
+    const raw = await getBooksStats({
+      sources: state.source,
+      includeMangaComics: state.includeManga,
+    });
     if (seq !== state.seq) return;
     state.data = normalizeBooks(raw);
     state.connected = state.data.connected;
@@ -967,6 +1034,7 @@ function renderDashboardBooks(data) {
   renderPublishers(data);
   renderDecades(data);
   renderYears(data);
+  renderYearBarsWidget(data);
   renderTimeline(data);
   renderCalendar(data);
 }
@@ -1119,6 +1187,59 @@ function renderFilters(data) {
       ? `только ${sourceLabel(state.source)} · фильтр на сервере применяется ко всем виджетам`
       : 'фильтр применяется ко всем виджетам';
   }
+  syncMangaToggle(data);
+}
+
+/** Keep the manga switch, its note and the request state in sync. */
+function syncMangaToggle(data = state.data) {
+  const input = $('books-manga-toggle');
+  if (input) input.checked = state.includeManga;
+  const wrap = $('books-manga-toggle-wrap');
+  if (wrap) wrap.classList.toggle('is-on', state.includeManga);
+
+  const note = $('books-manga-note');
+  if (!note) return;
+  let label = '';
+  let hint = '';
+  if (data && !state.includeManga && data.summary.mangaExcluded > 0) {
+    const excluded = data.summary.mangaExcluded;
+    label = `без манги и комиксов (−${fmtInt(excluded)} ${plural(excluded, ['книга', 'книги', 'книг'])})`;
+    hint = `${fmtInt(excluded)} ${plural(excluded, ['работа', 'работы', 'работ'])} `
+      + 'манги/комиксов исключены сервером. Включите переключатель, чтобы вернуть их в статистику.';
+  } else if (data && !data.hasMangaField) {
+    label = 'в этом импорте поля нет';
+    hint = 'Сервер не отдал mangaComics: профиль собран до разметки манги и комиксов. '
+      + 'Переключатель безопасен, но пока ничего не фильтрует.';
+  }
+  note.textContent = label;
+  note.hidden = !label;
+  note.title = hint;
+}
+
+async function setIncludeManga(next) {
+  const value = Boolean(next);
+  if (state.includeManga === value) {
+    syncMangaToggle();
+    return;
+  }
+  const previous = state.includeManga;
+  state.includeManga = value;
+  state.loaded = false;
+  state.selectedDecade = null;
+  const host = $('books-filters');
+  if (host) host.classList.add('is-busy');
+  try {
+    await loadStats({ force: true, silent: true });
+  } finally {
+    if (host) host.classList.remove('is-busy');
+  }
+  if (!state.loaded) {
+    // A failed refetch keeps the old dashboard: put the switch back where the
+    // rendered payload actually is instead of lying about the scope.
+    state.includeManga = previous;
+  }
+  if (state.data) renderFilters(state.data);
+  else syncMangaToggle();
 }
 
 async function setSource(source) {
@@ -1181,6 +1302,18 @@ function sourceTags(sources) {
     }));
   }
   return wrap;
+}
+
+/** One short badge for the bibliographic metadata provider of the work. */
+function metadataTag(sources) {
+  const key = arr(sources).find((item) => METADATA_LABEL[item]);
+  if (!key) return null;
+  const [mark, label] = METADATA_LABEL[key];
+  return el('span', {
+    class: `book-meta-tag is-${key}`,
+    text: mark,
+    title: `Метадата: ${label}`,
+  });
 }
 
 function bookFromEntry(workId, entry) {
@@ -1531,25 +1664,78 @@ function renderSeries(data) {
 }
 
 function renderAuthors(data) {
-  renderBarList({
-    hostId: 'books-authors-list',
-    noteId: 'books-authors-note',
-    items: data.authors,
-    emptyText: 'Авторы появятся после импорта',
-    kindLabel: 'автор',
-    unitLabel: ['автор', 'автора', 'авторов'],
-    limit: 20,
-    onClick: (item) => {
-      const avg = item.avgRating != null ? ` · средняя ${fmtRating(item.avgRating)}` : '';
-      openWorksModal({
-        workIds: item.works,
-        kicker: 'Автор',
-        title: item.name,
-        subtitle: `${fmtInt(item.count)} ${plural(item.count, ['книга', 'книги', 'книг'])}${avg}`,
-        groupLabel: item.name,
-      });
-    },
+  const host = $('books-authors-list');
+  const note = $('books-authors-note');
+  const searchWrap = $('books-authors-search-wrap');
+  const search = $('books-authors-search');
+  const moreHost = $('books-authors-more');
+  if (!host) return;
+
+  const all = data.authors.slice().sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
+  const query = authorsState.query.trim().toLowerCase();
+  const filtered = query ? all.filter((item) => item.name.toLowerCase().includes(query)) : all;
+
+  if (note) {
+    if (!all.length) note.textContent = '';
+    else if (query) note.textContent = `${fmtInt(filtered.length)} из ${fmtInt(all.length)}`;
+    else {
+      const truncated = !authorsState.expanded && all.length > AUTHORS_INITIAL;
+      note.textContent = `${fmtInt(all.length)} ${plural(all.length, ['автор', 'автора', 'авторов'])}`
+        + (truncated ? ` · топ-${AUTHORS_INITIAL}` : '');
+    }
+  }
+
+  // Search is only worth the space on a long author list; below the threshold
+  // the top-20 list is already scannable and the note stays compact.
+  if (searchWrap) searchWrap.hidden = all.length <= AUTHORS_SEARCH_MIN;
+  if (search && search.value !== authorsState.query) search.value = authorsState.query;
+
+  clear(host);
+  if (moreHost) clear(moreHost);
+
+  if (!filtered.length) {
+    host.append(emptyState(all.length
+      ? 'Никого не нашли — попробуйте другой запрос'
+      : 'Авторы появятся после импорта'));
+    return;
+  }
+
+  const visible = query ? Math.max(AUTHORS_BATCH, authorsState.visible) : authorsState.visible;
+  const shown = filtered.slice(0, visible);
+  const max = Math.max(1, ...shown.map((item) => item.count));
+  shown.forEach((item, index) => {
+    renderBarRow(host, item, max, {
+      kindLabel: 'автор',
+      rank: index + 1,
+      onOpen: (rowItem) => {
+        const avg = rowItem.avgRating != null ? ` · средняя ${fmtRating(rowItem.avgRating)}` : '';
+        openWorksModal({
+          workIds: rowItem.works,
+          kicker: 'Автор',
+          title: rowItem.name,
+          subtitle: `${fmtInt(rowItem.count)} ${plural(rowItem.count, ['книга', 'книги', 'книг'])}${avg}`,
+          groupLabel: rowItem.name,
+        });
+      },
+    });
   });
+
+  if (moreHost && shown.length < filtered.length) {
+    const remaining = filtered.length - shown.length;
+    const button = el('button', {
+      type: 'button',
+      class: 'btn btn-ghost',
+      text: !authorsState.expanded && !query
+        ? `Показать всех (${fmtInt(filtered.length)})`
+        : `Показать ещё ${fmtInt(Math.min(AUTHORS_BATCH, remaining))}`,
+    });
+    button.addEventListener('click', () => {
+      authorsState.expanded = true;
+      authorsState.visible = shown.length + AUTHORS_BATCH;
+      if (state.data) renderAuthors(state.data);
+    });
+    moreHost.append(button);
+  }
 }
 
 function renderPublishers(data) {
@@ -1704,6 +1890,56 @@ function openYearModal(year) {
     subtitle: `${fmtInt(books.length)} ${plural(books.length, ['книга', 'книги', 'книг'])} издано в ${target} году`,
     groupLabel: String(target),
   });
+}
+
+/* ---------------- publication-year bars (full width) ---------------- */
+
+/**
+ * Full-width bar chart of read books by publication year.
+ *
+ * The data is the server-aggregated `years` array, so the source chips and the
+ * manga toggle apply automatically: the payload arrives already filtered and
+ * the frontend only paints it. films reuse the same chart primitive with the
+ * film wording kept by default.
+ */
+function renderYearBarsWidget(data) {
+  const host = $('books-yearbars-chart');
+  const note = $('books-yearbars-note');
+  if (!host) return;
+
+  if (host._booksYearResize) {
+    host._booksYearResize.disconnect();
+    host._booksYearResize = null;
+  }
+
+  const years = data.years.slice().sort((a, b) => a.year - b.year);
+  const options = {
+    onYearClick: openYearModal,
+    unitForms: ['книга', 'книги', 'книг'],
+    shareLabel: 'всех книг',
+    emptyText: 'Нет данных по годам издания',
+    ariaLabel: years.length
+      ? `Книги по годам издания: ${years[0].year} — ${years[years.length - 1].year}`
+      : 'Книги по годам издания',
+  };
+  renderYearBars(host, years, options);
+
+  if (note) {
+    const total = years.reduce((sum, item) => sum + item.count, 0);
+    if (!years.length) note.textContent = 'нет данных';
+    else if (years.length === 1) note.textContent = `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}`;
+    else note.textContent = `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}`;
+  }
+
+  if (typeof ResizeObserver === 'function') {
+    const rerender = debounce(() => {
+      if (!host.clientWidth) return;
+      renderYearBars(host, years, options);
+    }, 160);
+    const observer = new ResizeObserver(rerender);
+    observer.observe(host);
+    host._booksYearResize = observer;
+  }
 }
 
 /* ---------------- timeline ---------------- */
@@ -1919,6 +2155,11 @@ function bookRow(entry) {
 
   const meta = el('div', { class: 'film-char book-meta' });
   if (entry.sources.length) meta.append(sourceTags(entry.sources));
+  const metaTag = metadataTag(entry.metadataSources);
+  if (metaTag) meta.append(metaTag);
+  if (entry.mangaComics === true) {
+    meta.append(el('span', { class: 'book-meta-item', text: 'манга/комикс' }));
+  }
   if (entry.publisher) meta.append(el('span', { class: 'book-meta-item', text: entry.publisher }));
   if (entry.pages) meta.append(el('span', { class: 'book-meta-item', text: `${fmtInt(entry.pages)} стр.` }));
   if (entry.reReadHint) meta.append(el('span', { class: 'tag recent-rewatch', text: 'перечитано' }));
@@ -2161,6 +2402,7 @@ export function renderBookMenu(book) {
  */
 export function initBooks({ onActivate } = {}) {
   state.onActivate = typeof onActivate === 'function' ? onActivate : null;
+  state.includeManga = readJson(MANGA_STORAGE_KEY, false) === true;
   readAccounts();
 
   const livelibForm = $('books-livelib-form');
@@ -2199,6 +2441,25 @@ export function initBooks({ onActivate } = {}) {
       const button = event.target.closest('.source-chip');
       if (!button || button.disabled) return;
       setSource(button.dataset.source || '');
+    });
+  }
+
+  const mangaToggle = $('books-manga-toggle');
+  if (mangaToggle) {
+    mangaToggle.checked = state.includeManga;
+    mangaToggle.addEventListener('change', () => {
+      safeStorageSet(MANGA_STORAGE_KEY, mangaToggle.checked ? 'true' : 'false');
+      setIncludeManga(mangaToggle.checked);
+    });
+  }
+
+  const authorSearch = $('books-authors-search');
+  if (authorSearch) {
+    authorSearch.addEventListener('input', () => {
+      authorsState.query = authorSearch.value.trim();
+      if (authorsState.query) authorsState.visible = Math.max(authorsState.visible, AUTHORS_BATCH);
+      else if (!authorsState.expanded) authorsState.visible = AUTHORS_INITIAL;
+      if (state.data) renderAuthors(state.data);
     });
   }
 
@@ -2277,6 +2538,9 @@ export function resetBooks() {
   state.jobs = {};
   state.source = '';
   state.selectedDecade = null;
+  authorsState.visible = AUTHORS_INITIAL;
+  authorsState.expanded = false;
+  authorsState.query = '';
   state.view = 'import';
   state.seq += 1; // abort any in-flight render
   saveJobs();
