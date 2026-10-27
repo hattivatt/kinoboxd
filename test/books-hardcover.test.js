@@ -96,6 +96,11 @@ test('eventsFromRow creates one event per read with chronological readIndex', ()
   assert.equal(events[1].ratingScale, 5);
   assert.equal(events[1].rating10, 8);
   assert.equal(events[1].status, 'read');
+  // Raw journal keys travel with the event so stats can re-filter a persisted
+  // profile without a network round-trip.
+  assert.equal(events[1].statusId, 3);
+  assert.equal(events[1].userBookId, 19718676);
+  assert.equal(events[0].statusId, 3);
   assert.equal(events[1].edition.isbn, '9781101007518');
   assert.equal(events[1].edition.publisher, 'Penguin');
 });

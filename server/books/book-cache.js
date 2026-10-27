@@ -167,15 +167,22 @@ function listProfiles() {
     const found = readJsonWithFingerprint(filePath);
     if (!found || !found.data || !found.data.source) continue;
     const data = found.data;
+    const events = Array.isArray(data.events) ? data.events : [];
+    // Persisted profiles written before `statusId` was recorded cannot be
+    // re-filtered by the raw journal key; flag them for a Hardcover re-import.
+    const missingStatusId =
+      data.source === 'hardcover'
+        ? events.filter((event) => event && event.statusId == null).length
+        : 0;
     result.push({
       source: data.source,
       userKey: data.userKey,
       sourceUserId: data.sourceUserId == null ? null : data.sourceUserId,
       importedAt: data.importedAt || null,
-      eventCount: Array.isArray(data.events) ? data.events.length : 0,
-      finishedCount: Array.isArray(data.events)
-        ? data.events.filter((event) => event && event.finishedAt).length
-        : 0,
+      eventCount: events.length,
+      finishedCount: events.filter((event) => event && event.finishedAt).length,
+      missingStatusId,
+      needsReimport: data.source === 'hardcover' && missingStatusId > 0,
       status: 'ok',
     });
   }

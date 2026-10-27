@@ -1159,14 +1159,26 @@ function renderSourcesMetric(data) {
       ? `${sourceLabel(source)}: ${fmtInt(item.events)}`
       : sourceLabel(source);
   });
-  node.append(el('div', { class: 'metric-sub', text: subParts.join(' · ') || 'LiveLib ∪ Hardcover' }));
+  // A Hardcover profile imported before the journal schema carried
+  // `statusId`: the label fallback keeps the numbers honest, but a re-import
+  // refreshes the stored events (the import button always re-fetches HC).
+  const staleHardcover = (Array.isArray(data.meta && data.meta.profiles) ? data.meta.profiles : [])
+    .filter((profile) => profile && profile.source === 'hardcover' && profile.needsReimport);
+  const subText = subParts.join(' · ') || 'LiveLib ∪ Hardcover';
+  node.append(el('div', {
+    class: 'metric-sub',
+    text: staleHardcover.length ? `${subText} · ⚑ переимпорт HC` : subText,
+  }));
 
   node.addEventListener('pointerenter', (event) => {
     const primary = data.connected.map(sourceLabel).join(' ∪ ') || 'Источники не подключены';
-    const secondary = breakdown.length
+    const details = breakdown.length
       ? breakdown.map((item) => `${sourceLabel(item.source)}: ${fmtInt(item.events)} событий, ${fmtInt(item.books)} книг${item.avgRating != null ? `, средняя ${fmtRating(item.avgRating)}` : ''}`).join(' · ')
       : 'Импортируйте профиль LiveLib и/или Hardcover';
-    showTooltip(primary, secondary);
+    const statusNote = staleHardcover.length
+      ? ' ⚑ Профиль Hardcover сохранён без statusId: статусы пересчитаны по меткам, повторный импорт Hardcover обновит схему событий.'
+      : '';
+    showTooltip(primary, `${details}${statusNote}`);
     moveTooltip(event);
   });
   node.addEventListener('pointermove', moveTooltip);

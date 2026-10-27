@@ -284,6 +284,14 @@ function startLivelibImport(username, options = {}) {
 /* Hardcover import                                                    */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Hardcover import.
+ *
+ * Deliberately has no reuse TTL: every click re-fetches the journal (~7 pages,
+ * a few seconds) so a profile written by an older schema gets `statusId` for
+ * every event. LiveLib is the opposite trade-off (20+ polite requests, 12 h
+ * reuse) — see `startLivelibImport`.
+ */
 function startHardcoverImport(userId) {
   // Fail before creating a job when the token is absent: the UI needs a clear
   // "token not configured" state, not a failed background job.

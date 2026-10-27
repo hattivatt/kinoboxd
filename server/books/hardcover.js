@@ -547,6 +547,11 @@ function eventsFromRow(row, counter) {
     ratingScale: 5,
     rating10: rating == null ? null : Math.round(rating * 2),
     status,
+    // Raw journal keys: stats re-applies the status filter to persisted
+    // profiles, so an event must carry enough data to be filtered again
+    // without a network call (`status` alone is a presentation label).
+    statusId: Number.isFinite(statusId) ? statusId : null,
+    userBookId: Number.isFinite(Number(row.id)) ? Number(row.id) : null,
     readCount: Number(row.read_count) || 0,
     edition: editionPayload,
     coverUrl: imageUrl(row.book.cached_image),

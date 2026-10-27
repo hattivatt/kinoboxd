@@ -150,13 +150,74 @@ function laterDate(a, b) {
   return a >= b ? a : b;
 }
 
+/**
+ * Hardcover journal statuses that belong to the reading profile: 3 = read,
+ * 5 = dnf ("did not finish"). Mirrors `HARDCOVER_KEEP_STATUS_IDS` from
+ * `hardcover.js`; kept local so a persisted profile can be re-filtered without
+ * loading the network module.
+ */
+const HARDCOVER_PROFILE_STATUS_IDS = [3, 5];
+const HARDCOVER_PROFILE_STATUS_LABELS = ['read', 'dnf'];
+
+function statusIdOf(event) {
+  if (!event || event.statusId == null || event.statusId === '') return null;
+  const value = Number(event.statusId);
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Status filter at the aggregation level. Imports made before the import-time
+ * filter (commit ca6efc1) persisted wish/reading/paused events; counting them
+ * inflated bookCount/series/timeline (Dresden Files showed 17 instead of 9).
+ *
+ * Priority:
+ *   1. `statusId` (new profiles) — keep only 3/5;
+ *   2. legacy profiles without `statusId` — fall back to the `status` label
+ *      ('read'/'dnf'), so old stale events are dropped without waiting for a
+ *      re-import;
+ *   3. neither key — keep (unknown schema must not hide data).
+ */
+function keepHardcoverProfileEvent(event) {
+  const statusId = statusIdOf(event);
+  if (statusId != null) return HARDCOVER_PROFILE_STATUS_IDS.includes(statusId);
+  const label = String((event && event.status) || '').trim().toLowerCase();
+  if (!label) return true;
+  return HARDCOVER_PROFILE_STATUS_LABELS.includes(label);
+}
+
+function emptyStatusFilter() {
+  return { excluded: 0, byStatus: {}, missingStatusId: 0 };
+}
+
+function recordStatusExclusion(filter, event) {
+  const statusId = statusIdOf(event);
+  const label = String((event && event.status) || 'unknown');
+  const key = statusId != null ? `${statusId}:${label}` : `legacy:${label}`;
+  filter.excluded++;
+  filter.byStatus[key] = (filter.byStatus[key] || 0) + 1;
+  if (statusId == null) filter.missingStatusId++;
+}
+
 /** Attach workId / reread flags to raw profile events. */
 function prepareEvents(profiles) {
   const events = [];
+  const statusFilter = emptyStatusFilter();
+  const profileStatus = new Map();
   for (const profile of profiles) {
     const source = profile.source;
+    const profileAudit = { kept: 0, excluded: 0, missingStatusId: 0 };
+    profileStatus.set(`${source}:${profile.userKey}`, profileAudit);
     for (const raw of profile.events) {
       if (!raw) continue;
+      const legacyStatus = statusIdOf(raw) == null;
+      if (source === 'hardcover' && !keepHardcoverProfileEvent(raw)) {
+        recordStatusExclusion(statusFilter, raw);
+        profileAudit.excluded++;
+        if (legacyStatus) profileAudit.missingStatusId++;
+        continue;
+      }
+      if (legacyStatus && source === 'hardcover') profileAudit.missingStatusId++;
+      profileAudit.kept++;
       const sourceBookId = String(raw.sourceBookId || '');
       let workId = raw.workId || null;
       if (!workId && source === 'livelib' && sourceBookId) {
@@ -209,7 +270,7 @@ function prepareEvents(profiles) {
     reReadCounts.set(key, Math.max(group.length - 1, explicit - 1, 0));
   }
 
-  return { events, reReadCounts };
+  return { events, reReadCounts, statusFilter, profileStatus };
 }
 
 function detailsAuthors(details) {
@@ -530,6 +591,97 @@ function dedupeWorks(works) {
 }
 
 /**
+ * Series-level manga/comics propagation.
+ *
+ * The per-work flag is derived from that work's own genres/series/publisher.
+ * Hardcover tags are inconsistent across volumes of the same series: "Fables"
+ * has volumes with "Graphic Novels" (flag true) next to volumes tagged only
+ * "Fantasy, Adventure" (flag false), and "Homunculus" has volumes with
+ * "Comics" next to volumes with no genres at all (null). The user reads one
+ * series, so a single comic volume marks the whole series as comics.
+ *
+ * Rules:
+ *   - a work may belong to several series entries (LiveLib name + Hardcover id);
+ *     those keys are unioned, so "Fables" and "Fables +" stay one series;
+ *   - `true` from any volume wins over per-work `false`/`null`;
+ *   - `false` never propagates (an explicit clean genre list says nothing
+ *     about the sibling volume).
+ * The change is applied to the aggregation copy only (`work.mangaComics`);
+ * persisted details files are untouched.
+ */
+function normalizeSeriesName(name) {
+  return String(name == null ? '' : name)
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function seriesKeysOf(work) {
+  const keys = [];
+  for (const entry of work.series || []) {
+    if (!entry) continue;
+    if (entry.hcId != null && entry.hcId !== '') {
+      keys.push(`id:${entry.hcId}`);
+      continue;
+    }
+    const name = normalizeSeriesName(entry.name);
+    if (name) keys.push(`name:${name}`);
+  }
+  return [...new Set(keys)];
+}
+
+/** Mark every work whose series contains a comics volume; returns the ids. */
+function propagateSeriesManga(works) {
+  const parent = new Map();
+  const find = (key) => {
+    let root = key;
+    while (parent.has(root) && parent.get(root) !== root) root = parent.get(root);
+    // Path compression keeps repeated lookups cheap on long series lists.
+    let cursor = key;
+    while (parent.has(cursor) && parent.get(cursor) !== cursor) {
+      const next = parent.get(cursor);
+      parent.set(cursor, root);
+      cursor = next;
+    }
+    return root;
+  };
+  const union = (left, right) => {
+    const a = find(left);
+    const b = find(right);
+    if (a === b) return;
+    parent.set(a, b);
+  };
+
+  const keysByWork = new Map();
+  for (const work of works.values()) {
+    const keys = seriesKeysOf(work);
+    keysByWork.set(work.workId, keys);
+    for (const key of keys) if (!parent.has(key)) parent.set(key, key);
+    for (let i = 1; i < keys.length; i++) union(keys[0], keys[i]);
+  }
+
+  const mangaSeries = new Set();
+  for (const work of works.values()) {
+    if (work.mangaComics !== true) continue;
+    for (const key of keysByWork.get(work.workId) || []) mangaSeries.add(find(key));
+  }
+
+  const propagated = new Set();
+  if (mangaSeries.size === 0) return propagated;
+  for (const work of works.values()) {
+    if (work.mangaComics === true) continue;
+    const hit = (keysByWork.get(work.workId) || []).some((key) => mangaSeries.has(find(key)));
+    if (!hit) continue;
+    work.mangaComics = true;
+    work.mangaComicsSource = 'series';
+    propagated.add(work.workId);
+  }
+  return propagated;
+}
+
+/**
  * Build the whole /api/books/stats payload. `options.sources` is the raw
  * `?sources=` value (string or array); `options.now` is injectable for tests.
  */
@@ -559,8 +711,12 @@ function buildBooksStats(options = {}) {
     }
   }
 
-  // Manga/comics filter (default OFF = manga excluded). `null` survives.
+  // Manga/comics filter (default OFF = manga excluded). A work is comics when
+  // its own flag is true *or* any volume of the same series is comics
+  // (series-level propagation above); `null` still survives on its own.
+  const mangaFromSeries = propagateSeriesManga(works);
   let mangaExcluded = 0;
+  let mangaSeriesExcluded = 0;
   if (!includeMangaComics) {
     const excluded = new Set();
     for (const [workId, work] of works) {
@@ -568,6 +724,7 @@ function buildBooksStats(options = {}) {
         excluded.add(workId);
         works.delete(workId);
         mangaExcluded++;
+        if (mangaFromSeries.has(workId)) mangaSeriesExcluded++;
       }
     }
     if (excluded.size > 0) events = events.filter((event) => !excluded.has(event.workId));
@@ -629,6 +786,13 @@ function buildBooksStats(options = {}) {
     unresolvedCount: llEvents.length - llResolved,
     canonicalResolvedCount: llCanonical,
     mangaExcluded,
+    // Subset of mangaExcluded: works flagged comics only through a sibling
+    // volume of the same series (their own flag was false or null).
+    mangaSeriesExcluded,
+    mangaSeriesPropagated: mangaFromSeries.size,
+    // Events dropped at aggregation time because their Hardcover journal
+    // status is not part of the reading profile (wish/reading/paused).
+    hardcoverStatusExcluded: prepared.statusFilter.excluded,
     includeMangaComics,
     avgRating: mean(ratedWorks.map((work) => work.rating10)),
     avgPages: pagesWorks.length
@@ -879,6 +1043,7 @@ function buildBooksStats(options = {}) {
       isbn10: work.isbn10,
       metadataSources: work.metadataSources,
       mangaComics: work.mangaComics,
+      ...(work.mangaComicsSource ? { mangaComicsSource: work.mangaComicsSource } : {}),
       ...(work.mergedWorkIds && work.mergedWorkIds.length > 1
         ? { mergedWorkIds: work.mergedWorkIds }
         : {}),
@@ -925,12 +1090,33 @@ function buildBooksStats(options = {}) {
     unmatched,
     meta: {
       buildMs: Number(elapsedMs.toFixed(1)),
-      profiles: profiles.map((profile) => ({
-        source: profile.source,
-        userKey: profile.userKey,
-        importedAt: profile.importedAt || null,
-        events: profile.events.length,
-      })),
+      statusFilter: {
+        excluded: prepared.statusFilter.excluded,
+        byStatus: prepared.statusFilter.byStatus,
+        keepStatusIds: HARDCOVER_PROFILE_STATUS_IDS,
+        legacyExcluded: prepared.statusFilter.missingStatusId,
+      },
+      profiles: profiles.map((profile) => {
+        const audit = prepared.profileStatus.get(`${profile.source}:${profile.userKey}`) || {
+          kept: profile.events.length,
+          excluded: 0,
+          missingStatusId: 0,
+        };
+        return {
+          source: profile.source,
+          userKey: profile.userKey,
+          importedAt: profile.importedAt || null,
+          events: profile.events.length,
+          keptEvents: audit.kept,
+          statusExcluded: audit.excluded,
+          // Events without `statusId` come from imports made before the
+          // journal schema learned the raw status; a Hardcover re-import
+          // refresh is advised (the label fallback keeps the numbers honest
+          // in the meantime).
+          missingStatusId: audit.missingStatusId,
+          needsReimport: profile.source === 'hardcover' && audit.missingStatusId > 0,
+        };
+      }),
     },
   };
 }
@@ -947,17 +1133,20 @@ function listUnmatched(options = {}) {
 
 module.exports = {
   PAGE_BUCKETS,
+  HARDCOVER_PROFILE_STATUS_IDS,
   round2,
   mean,
   dayNumber,
   computeStreaks,
   connectedProfiles,
   selectProfiles,
+  keepHardcoverProfileEvent,
   prepareEvents,
   workMetadata,
   canonicalKeyOf,
   dedupeWorks,
   mergeWorkGroup,
+  propagateSeriesManga,
   buildBooksStats,
   listUnmatched,
 };
