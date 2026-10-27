@@ -7,22 +7,45 @@
  * the canonical work namespace (`books.id` = work id, `hc:{id}`). Matching is
  * deliberately asymmetric — hardcover events need no matching at all.
  *
- * Order (КНИГИ-АРХИТЕКТУРА.md §4.0):
+ * Order (КНИГИ-АРХИТЕКТУРА.md §4.0, v2 multi-source chain):
  *   1. cached link `links/{livelibBookId}.json` (positive results only);
- *   2. ISBN-13/ISBN-10 bulk lookup against `editions` (batches of 100);
- *   3. strict title + first-author surname + year (±1);
+ *   2. ISBN-13/ISBN-10 bulk lookup against Hardcover `editions` (batches of 100);
+ *   3. strict title + first-author surname + year (±1) over the local corpus;
  *   4. fuzzy token-Jaccard with the film-lesson guards
  *      (author hit mandatory, 0.80-0.90 needs year ±1 and ratings_count >= 50);
- *   5. otherwise unmatched (NOT cached: a later Hardcover import may resolve it).
+ *   5. provider chain for the rest: Google Books ISBN -> Open Library ISBN ->
+ *      LiveLib card (genres/ISBN/pages for RU editions);
+ *   6. events without an ISBN start with the LiveLib card (it supplies the
+ *      ISBN), then the card's ISBN goes through the Hardcover bulk lookup,
+ *      then Google Books/Open Library;
+ *   7. otherwise unmatched (NOT cached: a later import may resolve it).
  *
- * All broad decisions are appended to match-log.jsonl. Negatives are never
- * cached, which avoids the "unmatched forever" trap of the film rematch flow.
+ * Provider negatives are memoised per run only (soft TTL, no disk cache) so a
+ * growing source is queried again on the next run. All broad decisions are
+ * appended to match-log.jsonl.
  */
 
 const hardcover = require('./hardcover');
 const bookCache = require('./book-cache');
+const {
+  cleanText,
+  normalizeTitle,
+  tokensOf,
+  tokenJaccard,
+  surnameOf,
+  normalizeIsbn,
+  isbn10to13,
+  isbn10Of,
+} = require('./normalize');
+const {
+  ISBN_BATCH_SIZE,
+  ISBN_QUERY,
+  lookupIsbns,
+} = require('./hardcover-editions');
+const providers = require('./providers');
+const livelibCard = require('./providers/livelib-card');
+const litres = require('./providers/litres');
 
-const ISBN_BATCH_SIZE = 100;
 const FUZZY_ACCEPT = 0.9;
 const FUZZY_GUARDED = 0.8;
 const RATINGS_FLOOR = 50;
@@ -38,62 +61,8 @@ const AUTHOR_ALIASES = {
 /* ------------------------------------------------------------------ */
 /* Normalisation                                                       */
 /* ------------------------------------------------------------------ */
-
-function cleanText(value) {
-  return String(value == null ? '' : value)
-    .replace(/\u00a0/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/** Normalize a title for comparison (display keeps the original). */
-function normalizeTitle(title) {
-  let value = cleanText(title).toLowerCase();
-  value = value.replace(/ё/g, 'е');
-  value = value.replace(/[«»“”„"']/g, ' ');
-  value = value.replace(/[—–]/g, '-');
-  // Series/volume markers that are not part of the work title.
-  value = value.replace(/\((?:[^()]*?(?:#\s*\d+|кн\.?\s*\d+|том\s*\d+|book\s*\d+)[^()]*?)\)/g, ' ');
-  value = value.replace(
-    /(?<![\p{L}])(?:кн\.?|том|часть|книга|book|vol(?:ume)?)\s*\d+/giu,
-    ' '
-  );
-  value = value.replace(/#\s*\d+\b/g, ' ');
-  // Subtitle after ":" / " - " only when the main part is substantial,
-  // otherwise "Дюна: Мессия" would collapse into "Дюна".
-  const split = value.split(/\s*:\s*|\s+-\s+/);
-  if (split.length > 1 && split[0].trim().split(/\s+/).filter(Boolean).length >= 3) {
-    value = split[0];
-  }
-  value = value.replace(/[^\p{L}\p{N}]+/gu, ' ');
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-function tokensOf(value) {
-  return normalizeTitle(value).split(' ').filter(Boolean);
-}
-
-/** Token Jaccard similarity of two normalized titles. */
-function tokenJaccard(left, right) {
-  const a = new Set(tokensOf(left));
-  const b = new Set(tokensOf(right));
-  if (a.size === 0 || b.size === 0) return 0;
-  let intersection = 0;
-  for (const token of a) if (b.has(token)) intersection++;
-  const union = a.size + b.size - intersection;
-  return union === 0 ? 0 : intersection / union;
-}
-
-/** Surname = last token ("Джефф Вандермеер" -> "вандермеер", "J. K. Rowling" -> "rowling"). */
-function surnameOf(name) {
-  const tokens = cleanText(name)
-    .toLowerCase()
-    .replace(/ё/g, 'е')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .split(' ')
-    .filter(Boolean);
-  return tokens.length ? tokens[tokens.length - 1] : '';
-}
+/* cleanText/normalizeTitle/tokenJaccard/surnameOf/ISBN helpers live in
+ * ./normalize so providers can reuse them without a require-cycle. */
 
 function authorKeySet(names) {
   const keys = new Set();
@@ -119,35 +88,6 @@ function authorsOverlap(llAuthors, hcAuthors) {
     if (left.has(key)) return true;
   }
   return false;
-}
-
-function normalizeIsbn(value) {
-  const digits = String(value == null ? '' : value).replace(/[^\dXx]/g, '').toUpperCase();
-  if (digits.length === 13) return digits;
-  if (digits.length === 10) return isbn10to13(digits) || digits;
-  return null;
-}
-
-/** ISBN-10 -> ISBN-13 (978 prefix only); returns null for invalid input. */
-function isbn10to13(isbn10) {
-  const value = String(isbn10 == null ? '' : isbn10).replace(/[^\dXx]/g, '').toUpperCase();
-  if (value.length !== 10) return null;
-  const core = `978${value.slice(0, 9)}`;
-  if (!/^\d{12}$/.test(core)) return null;
-  let sum = 0;
-  for (let i = 0; i < 12; i++) sum += Number(core[i]) * (i % 2 === 0 ? 1 : 3);
-  const check = (10 - (sum % 10)) % 10;
-  return `${core}${check}`;
-}
-
-function isbn10Of(isbn13) {
-  const value = String(isbn13 || '');
-  if (!/^978\d{10}$/.test(value)) return null;
-  const core = value.slice(3, 12);
-  let sum = 0;
-  for (let i = 0; i < 9; i++) sum += Number(core[i]) * (10 - i);
-  const check = (11 - (sum % 11)) % 11;
-  return `${core}${check === 10 ? 'X' : check}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -305,90 +245,152 @@ function corpusCandidates(corpus, title) {
 }
 
 /* ------------------------------------------------------------------ */
-/* ISBN bulk lookup                                                    */
+/* Multi-source provider chain                                         */
 /* ------------------------------------------------------------------ */
 
-const ISBN_QUERY = `
-query IsbnBatch($isbns: [String!]!) {
-  editions(
-    where: { _or: [{ isbn_13: { _in: $isbns } }, { isbn_10: { _in: $isbns } }] }
-    order_by: { id: asc }
-    limit: 500
-  ) {
-    id
-    book_id
-    isbn_13
-    isbn_10
-    language_id
-    pages
-    publisher_id
-    release_year
-    release_date
-    book {
-      id
-      title
-      slug
-      pages
-      release_date
-      release_year
-      rating
-      ratings_count
-      cached_image
-      contributions { author { id name } contribution }
-      book_series { position series { id name } }
-      taggings(limit: 30) { tag { id tag slug tag_category_id } }
-    }
-    publisher { id name }
-    language { id language }
-  }
-}`;
+const CHAIN_NAMES = ['hardcover', 'litres', 'googlebooks', 'openlibrary', 'livelib-card'];
+const CYRILLIC_TITLE = /[а-яё]/i;
 
-/**
- * Resolve a set of normalized ISBNs to hardcover works.
- * Returns { byIsbn: Map<isbn, {details, editionId}>, queries }.
- */
-async function lookupIsbns(isbns, options = {}) {
-  const byIsbn = new Map();
-  const works = new Map();
-  const queries = [];
-  let requestCount = 0;
-  const unique = [...new Set(isbns.filter(Boolean))];
-  for (let i = 0; i < unique.length; i += ISBN_BATCH_SIZE) {
-    const batch = unique.slice(i, i + ISBN_BATCH_SIZE);
-    const isbn10s = batch.map(isbn10Of).filter(Boolean);
-    const queryValues = [...new Set([...batch, ...isbn10s])];
-    requestCount++;
-    if (typeof options.onProgress === 'function') {
-      options.onProgress({ batch: requestCount, queries: Math.ceil(unique.length / ISBN_BATCH_SIZE) });
-    }
-    const data = await hardcover.graphql(
-      ISBN_QUERY,
-      { isbns: queryValues },
-      { label: `isbn batch ${requestCount}` }
-    );
-    const editions = Array.isArray(data.editions) ? data.editions : [];
-    for (const edition of editions) {
-      if (!edition || !edition.book) continue;
-      const details = hardcover.detailsFromBook(edition.book, edition);
-      if (!details) continue;
-      works.set(details.hcWorkId, details);
-      const keys = new Set();
-      for (const raw of [edition.isbn_13, edition.isbn_10]) {
-        const normalized = normalizeIsbn(raw);
-        if (normalized) keys.add(normalized);
-      }
-      for (const key of keys) {
-        if (batch.includes(key)) {
-          byIsbn.set(key, { details, editionId: edition.id ? Number(edition.id) : null });
-        }
-      }
-    }
-    queries.push({ batch: batch.length, editions: editions.length });
-    console.log(
-      `[resolve] isbn batch ${requestCount}: ${batch.length} isbn(s) -> ${editions.length} edition(s)`
-    );
+function createChainReport(providerList) {
+  const report = {};
+  for (const provider of providerList) {
+    report[provider.NAME] = {
+      name: provider.NAME,
+      calls: 0,
+      hits: 0,
+      errors: 0,
+      skipped: 0,
+      methods: {},
+      lastError: null,
+    };
   }
-  return { byIsbn, works, queries, requests: requestCount };
+  return report;
+}
+
+function isbnOfEvent(event) {
+  return normalizeIsbn(event && event.edition && event.edition.isbn);
+}
+
+function chainInput(event, extra) {
+  const isbn = isbnOfEvent(event);
+  return {
+    isbn13: isbn,
+    isbn10: isbn ? isbn10Of(isbn) : null,
+    title: (event && event.title) || null,
+    authors: Array.isArray(event && event.authors) ? event.authors : [],
+    year:
+      event && event.edition && Number.isFinite(Number(event.edition.year))
+        ? Number(event.edition.year)
+        : null,
+    llBookId: event && event.sourceBookId ? String(event.sourceBookId) : null,
+    coverUrl: (event && event.coverUrl) || null,
+    ...(extra || {}),
+  };
+}
+
+function providerOptionsFor(options, provider) {
+  return {
+    fetchImpl: options.fetchImpl,
+    sleep: options.sleep,
+    negativeMemo:
+      options.negativeMemo && options.negativeMemo[provider.NAME]
+        ? options.negativeMemo[provider.NAME]
+        : null,
+    lookupIsbns: options.lookupIsbns,
+    budget: provider.NAME === 'litres' ? options.litresBudget : options.cardBudget,
+    cardPauseMs: options.cardPauseMs,
+    requestDelayMs: options.requestDelayMs,
+    onProgress: options.onProgress,
+  };
+}
+
+async function tryProvider(provider, input, options, chain) {
+  if (!provider) return null;
+  const stat = chain[provider.NAME];
+  if (!stat) return null;
+  if (typeof provider.isBreakerOpen === 'function' && provider.isBreakerOpen()) {
+    stat.skipped++;
+    return null;
+  }
+  stat.calls++;
+  try {
+    const result = await provider.getWork(input, providerOptionsFor(options, provider));
+    if (result) {
+      stat.hits++;
+      const method = (result.match && result.match.method) || 'unknown';
+      stat.methods[method] = (stat.methods[method] || 0) + 1;
+    } else if (typeof provider.isBreakerOpen === 'function' && provider.isBreakerOpen()) {
+      stat.skipped++;
+    }
+    return result;
+  } catch (err) {
+    stat.errors++;
+    stat.lastError = (err && err.code) || 'provider_error';
+    if (typeof provider.noteError === 'function') provider.noteError(err);
+    return null;
+  }
+}
+
+function linkMethodFor(result) {
+  if (result.source === 'hardcover') return 'isbn';
+  const method = result.match && result.match.method;
+  if (method === 'title') return `${result.source}-title`;
+  return `${result.source}-isbn`;
+}
+
+function countResolution(report, result) {
+  if (result.source === 'googlebooks') report.resolvedGoogle++;
+  else if (result.source === 'openlibrary') report.resolvedOpenLibrary++;
+  else if (result.source === 'hardcover') report.resolvedHardcoverCard++;
+  else if (result.source === 'litres') report.resolvedLitres++;
+}
+
+async function saveProviderWork(merged, now) {
+  const details = providers.resultToDetails(merged, { now });
+  if (!details) return null;
+  const workId = merged.workId || `${merged.source}:${merged.sourceId}`;
+  await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), details);
+  return { workId, details };
+}
+
+function makeLink(bookId, merged, now) {
+  const workId = merged.workId || `${merged.source}:${merged.sourceId}`;
+  return {
+    schemaVersion: 2,
+    livelibBookId: bookId,
+    workId,
+    method: linkMethodFor(merged),
+    score: Number(merged.confidence) || 0.5,
+    evidence: {
+      provider: merged.source,
+      sourceId: merged.sourceId == null ? null : String(merged.sourceId),
+      isbn: merged.isbn13 || merged.isbn10 || null,
+      match: merged.match || null,
+    },
+    resolvedAt: now,
+  };
+}
+
+async function saveCardMetadata(event, card, now) {
+  const bookId = String(event.sourceBookId);
+  const doc = providers.resultToDetails(
+    {
+      ...card,
+      workId: `ll:${bookId}`,
+      metadataSources: ['livelib-card'],
+      sources: [
+        {
+          source: 'livelib-card',
+          sourceId: bookId,
+          url: (card.links && card.links.pageUrl) || null,
+          confidence: 1,
+        },
+      ],
+    },
+    { now }
+  );
+  await bookCache.saveDetails(bookCache.detailsKeyForWork(`ll:${bookId}`), doc);
+  return doc;
 }
 
 /* ------------------------------------------------------------------ */
@@ -399,26 +401,48 @@ async function lookupIsbns(isbns, options = {}) {
  * Resolve all livelib events of one profile.
  *
  * Returns a report:
- *   { total, cached, resolvedIsbn, resolvedTitle, ambiguous, unmatched,
- *     requests, corpusSize, resolvedWorkIds }
+ *   { total, cached, resolvedIsbn, resolvedTitle, resolvedGoogle,
+ *     resolvedOpenLibrary, resolvedLitres, resolvedLivelibCard,
+ *     resolvedHardcoverCard, resolvedHardcoverFromLitres, enriched,
+ *     withMetadata, ambiguous, unmatched, requests, corpusSize,
+ *     resolvedWorkIds, providerChain, cardBudget, litresBudget }
  */
 async function resolveProfile(llProfile, options = {}) {
   const force = Boolean(options.force);
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const events = Array.isArray(llProfile && llProfile.events) ? llProfile.events : [];
-  const now = new Date().toISOString();
+  const now = options.now || new Date().toISOString();
+  const cardBudget = options.cardBudget || livelibCard.budgetFromEnv();
+  const litresBudget = options.litresBudget || litres.budgetFromEnv();
+  const negativeMemo = options.negativeMemo || {
+    googlebooks: new Map(),
+    openlibrary: new Map(),
+    litres: new Map(),
+  };
+  const lookupFn = options.lookupIsbns || lookupIsbns;
 
   const report = {
     total: events.length,
     cached: 0,
     resolvedIsbn: 0,
     resolvedTitle: 0,
+    resolvedGoogle: 0,
+    resolvedOpenLibrary: 0,
+    resolvedLitres: 0,
+    resolvedLivelibCard: 0,
+    resolvedHardcoverCard: 0,
+    resolvedHardcoverFromLitres: 0,
+    enriched: 0,
+    withMetadata: 0,
     ambiguous: 0,
     unmatched: 0,
     requests: 0,
     corpusSize: 0,
     resolvedWorkIds: 0,
     methods: {},
+    providerChain: {},
+    cardBudget: { limit: cardBudget.limit, used: 0, remaining: cardBudget.limit },
+    litresBudget: { limit: litresBudget.limit, used: 0, remaining: litresBudget.limit },
   };
 
   // 1. Existing positive links.
@@ -447,14 +471,14 @@ async function resolveProfile(llProfile, options = {}) {
   // 2. ISBN bulk lookup (only events that have an ISBN and no cached link).
   const isbnToBookIds = new Map();
   for (const event of pending) {
-    const isbn = normalizeIsbn(event.edition && event.edition.isbn);
+    const isbn = isbnOfEvent(event);
     if (!isbn) continue;
     if (!isbnToBookIds.has(isbn)) isbnToBookIds.set(isbn, new Set());
     isbnToBookIds.get(isbn).add(String(event.sourceBookId));
   }
 
   if (isbnToBookIds.size > 0) {
-    const lookup = await lookupIsbns([...isbnToBookIds.keys()], { onProgress });
+    const lookup = await lookupFn([...isbnToBookIds.keys()], { onProgress });
     report.requests += lookup.requests;
     for (const [isbn, entry] of lookup.byIsbn) {
       const workId = `hc:${entry.details.hcWorkId}`;
@@ -488,15 +512,9 @@ async function resolveProfile(llProfile, options = {}) {
     const bookId = String(event.sourceBookId);
     if (links.has(bookId)) continue;
     const candidates = corpusCandidates(corpus, event.title);
-    if (candidates.length === 0) {
-      report.unmatched++;
-      continue;
-    }
+    if (candidates.length === 0) continue;
     const best = bestCandidate(event, candidates);
-    if (!best) {
-      report.unmatched++;
-      continue;
-    }
+    if (!best) continue;
     if (best.ambiguous) {
       report.ambiguous++;
       bookCache.appendMatchLog({
@@ -540,14 +558,248 @@ async function resolveProfile(llProfile, options = {}) {
     }
   }
 
-  // 4. Persist links + index + links.json.
+  // 4. Provider chain for everything still unresolved.
+  const providerList = providers.selectProviders(options.providers);
+  const chain = createChainReport(providerList);
+  const chainByName = new Map(providerList.map((provider) => [provider.NAME, provider]));
+  const chainOptions = { ...options, cardBudget, litresBudget, negativeMemo };
+  const cardProvider = chainByName.get('livelib-card');
+  const litresProvider = chainByName.get('litres');
+  const googleProvider = chainByName.get('googlebooks');
+  const openLibraryProvider = chainByName.get('openlibrary');
+  const hardcoverProvider = require('./providers/hardcover');
+  let remaining = pending.filter((event) => !links.has(String(event.sourceBookId)));
+
+  // 4. Litres first for Cyrillic titles: Hardcover does not know RU editions,
+  // but the litres card returns an ISBN that can still close a Hardcover work.
+  if (litresProvider) {
+    const ruEvents = remaining.filter((event) => CYRILLIC_TITLE.test(String(event.title || '')));
+    const litresByBook = new Map();
+    for (const event of ruEvents) {
+      const bookId = String(event.sourceBookId);
+      const result = await tryProvider(litresProvider, chainInput(event), chainOptions, chain);
+      if (result) litresByBook.set(bookId, result);
+    }
+
+    const litresIsbns = new Set();
+    for (const result of litresByBook.values()) {
+      const isbn = normalizeIsbn(result.isbn13) || normalizeIsbn(result.isbn10);
+      if (isbn) litresIsbns.add(isbn);
+    }
+    const hardcoverByLitresIsbn = new Map();
+    if (litresIsbns.size > 0 && chainByName.has('hardcover')) {
+      const lookup = await lookupFn([...litresIsbns], { onProgress });
+      report.requests += lookup.requests;
+      for (const [isbn, entry] of lookup.byIsbn) hardcoverByLitresIsbn.set(isbn, entry);
+      for (const details of lookup.works.values()) {
+        await bookCache.saveDetails(details.hcWorkId, details);
+      }
+    }
+
+    for (const event of ruEvents) {
+      const bookId = String(event.sourceBookId);
+      if (links.has(bookId)) continue;
+      const litresResult = litresByBook.get(bookId);
+      if (!litresResult) continue;
+      const isbn =
+        normalizeIsbn(litresResult.isbn13) || normalizeIsbn(litresResult.isbn10);
+
+      // ISBN feedback: the paper ISBN from litres may exist in Hardcover even
+      // when the LiveLib ISBN did not.
+      if (isbn && hardcoverByLitresIsbn.has(isbn)) {
+        const entry = hardcoverByLitresIsbn.get(isbn);
+        const hcResult = hardcoverProvider.normalizeDetails(entry.details, entry.editionId);
+        if (hcResult) {
+          const merged = providers.mergeResults(hcResult, [litresResult]);
+          const saved = await saveProviderWork(merged, now);
+          if (saved) {
+            links.set(bookId, makeLink(bookId, merged, now));
+            report.resolvedHardcoverFromLitres++;
+            continue;
+          }
+        }
+      }
+
+      // Litres is the RU canonical card; GB/OL may only fill missing fields.
+      const extraInput = isbn
+        ? chainInput(event, { isbn13: isbn, isbn10: isbn10Of(isbn) })
+        : chainInput(event);
+      let extra = await tryProvider(googleProvider, extraInput, chainOptions, chain);
+      if (!extra) extra = await tryProvider(openLibraryProvider, extraInput, chainOptions, chain);
+      const merged = providers.mergeResults(litresResult, extra ? [extra] : []);
+      const saved = await saveProviderWork(merged, now);
+      if (saved) {
+        links.set(bookId, makeLink(bookId, merged, now));
+        report.resolvedLitres++;
+      }
+    }
+  }
+
+  remaining = pending.filter((event) => !links.has(String(event.sourceBookId)));
+  const withIsbn = [];
+  const withoutIsbn = [];
+  for (const event of remaining) {
+    if (isbnOfEvent(event)) withIsbn.push(event);
+    else withoutIsbn.push(event);
+  }
+
+  // 4a. No ISBN: the LiveLib card supplies the ISBN + RU metadata. The card is
+  // budgeted (default 300/run) and pauses 2 s between requests.
+  const cardByBook = new Map();
+  if (cardProvider) {
+    for (const event of withoutIsbn) {
+      const bookId = String(event.sourceBookId);
+      // Positive card metadata is persisted at ll:{bookId}; never re-fetch it.
+      if (!force && bookCache.getWorkDetails(`ll:${bookId}`)) continue;
+      const card = await tryProvider(cardProvider, chainInput(event), chainOptions, chain);
+      if (card) cardByBook.set(bookId, card);
+    }
+  }
+
+  // 4b. Card-derived ISBNs -> one batched Hardcover lookup.
+  const cardIsbns = new Set();
+  for (const card of cardByBook.values()) {
+    const isbn = normalizeIsbn(card.isbn13) || normalizeIsbn(card.isbn10);
+    if (isbn) cardIsbns.add(isbn);
+  }
+  const hardcoverByIsbn = new Map();
+  if (cardIsbns.size > 0 && chainByName.has('hardcover')) {
+    const lookup = await lookupFn([...cardIsbns], { onProgress });
+    report.requests += lookup.requests;
+    for (const [isbn, entry] of lookup.byIsbn) hardcoverByIsbn.set(isbn, entry);
+    for (const details of lookup.works.values()) {
+      await bookCache.saveDetails(details.hcWorkId, details);
+    }
+  }
+
+  for (const event of withoutIsbn) {
+    const bookId = String(event.sourceBookId);
+    if (links.has(bookId)) continue;
+    if (!force && bookCache.getWorkDetails(`ll:${bookId}`)) {
+      report.enriched++;
+      report.resolvedLivelibCard++;
+      continue;
+    }
+    const card = cardByBook.get(bookId) || null;
+    const isbn = card ? normalizeIsbn(card.isbn13) || normalizeIsbn(card.isbn10) : null;
+
+    if (isbn && hardcoverByIsbn.has(isbn)) {
+      const entry = hardcoverByIsbn.get(isbn);
+      const hcResult = hardcoverProvider.normalizeDetails(entry.details, entry.editionId);
+      if (hcResult) {
+        const merged = providers.mergeResults(hcResult, card ? [card] : []);
+        const saved = await saveProviderWork(merged, now);
+        if (saved) {
+          links.set(bookId, makeLink(bookId, merged, now));
+          report.resolvedHardcoverCard++;
+          continue;
+        }
+      }
+    }
+
+    let result = null;
+    if (isbn) {
+      const isbnInput = chainInput(event, { isbn13: isbn, isbn10: isbn10Of(isbn) });
+      result = await tryProvider(googleProvider, isbnInput, chainOptions, chain);
+      if (!result) result = await tryProvider(openLibraryProvider, isbnInput, chainOptions, chain);
+    }
+    if (!result) {
+      result = await tryProvider(googleProvider, chainInput(event), chainOptions, chain);
+      if (!result) result = await tryProvider(openLibraryProvider, chainInput(event), chainOptions, chain);
+    }
+    if (result) {
+      const merged = providers.mergeResults(result, card ? [card] : []);
+      const saved = await saveProviderWork(merged, now);
+      if (saved) {
+        links.set(bookId, makeLink(bookId, merged, now));
+        countResolution(report, merged);
+        continue;
+      }
+    }
+
+    if (card) {
+      await saveCardMetadata(event, card, now);
+      report.enriched++;
+      report.resolvedLivelibCard++;
+      continue;
+    }
+
+    // No chain hit: leave the event unresolved (negatives are not persisted).
+    if (isbn && isbnToBookIds.size > 0) {
+      bookCache.appendMatchLog({
+        ts: now,
+        source: 'livelib',
+        livelibBookId: bookId,
+        query: event.title,
+        decision: 'provider-miss',
+        evidence: { isbn, providers: chainNamesOf(providerList) },
+      });
+    }
+  }
+
+  // 4c. Events with an ISBN: Google Books -> Open Library -> LiveLib card.
+  for (const event of withIsbn) {
+    const bookId = String(event.sourceBookId);
+    if (links.has(bookId)) continue;
+    if (!force && bookCache.getWorkDetails(`ll:${bookId}`)) {
+      report.enriched++;
+      report.resolvedLivelibCard++;
+      continue;
+    }
+    const isbnInput = chainInput(event);
+    let result = await tryProvider(googleProvider, isbnInput, chainOptions, chain);
+    if (!result) result = await tryProvider(openLibraryProvider, isbnInput, chainOptions, chain);
+    if (result) {
+      const merged = providers.mergeResults(result, []);
+      const saved = await saveProviderWork(merged, now);
+      if (saved) {
+        links.set(bookId, makeLink(bookId, merged, now));
+        countResolution(report, merged);
+        continue;
+      }
+    }
+    if (cardProvider) {
+      const card = await tryProvider(cardProvider, chainInput(event), chainOptions, chain);
+      if (card) {
+        await saveCardMetadata(event, card, now);
+        report.enriched++;
+        report.resolvedLivelibCard++;
+        continue;
+      }
+    }
+  }
+
+  report.providerChain = chain;
+  report.cardBudget = {
+    limit: cardBudget.limit,
+    used: cardBudget.used,
+    remaining: cardBudget.remaining,
+  };
+  report.litresBudget = {
+    limit: litresBudget.limit,
+    used: litresBudget.used,
+    remaining: litresBudget.remaining,
+  };
+
+  // 5. Persist links + index + links.json.
   for (const [bookId, link] of links) {
     const previous = bookCache.getLink(bookId);
-    if (previous && previous.workId === link.workId && !force) continue;
+    if (previous && previous.workId === link.workId && !force) {
+      // Still record the method of an already-cached link for the report.
+      report.methods[link.method] = (report.methods[link.method] || 0) + 1;
+      continue;
+    }
     await bookCache.saveLink(bookId, link);
-    bookCache.setIndexValue(`ll:${bookId}`, link.workId ? Number(link.workId.replace('hc:', '')) : false);
-    if (link.method === 'isbn' && link.evidence && link.evidence.isbn) {
-      bookCache.setIndexValue(`isbn:${link.evidence.isbn}`, Number(link.workId.replace('hc:', '')));
+    const hcNumeric = /^hc:(\d+)$/.exec(String(link.workId || ''));
+    if (hcNumeric) {
+      bookCache.setIndexValue(`ll:${bookId}`, Number(hcNumeric[1]));
+      if (link.method === 'isbn' && link.evidence && link.evidence.isbn) {
+        bookCache.setIndexValue(`isbn:${link.evidence.isbn}`, Number(hcNumeric[1]));
+      }
+    } else if (link.workId) {
+      bookCache.setIndexValue(`ll:${bookId}`, link.workId);
+    } else {
+      bookCache.setIndexValue(`ll:${bookId}`, false);
     }
     bookCache.setWorkLink(link.workId, { livelib: [bookId] });
     report.methods[link.method] = (report.methods[link.method] || 0) + 1;
@@ -558,22 +810,49 @@ async function resolveProfile(llProfile, options = {}) {
   report.resolvedWorkIds = new Set(
     [...links.values()].filter((link) => link.workId).map((link) => link.workId)
   ).size;
-  report.resolved = report.cached + report.resolvedIsbn + report.resolvedTitle;
+  report.resolved =
+    report.cached + report.resolvedIsbn + report.resolvedTitle +
+    report.resolvedGoogle + report.resolvedOpenLibrary + report.resolvedLitres +
+    report.resolvedHardcoverCard + report.resolvedHardcoverFromLitres;
+  report.withMetadata = report.resolved + report.enriched;
+  report.unmatched = pending.filter((event) => {
+    const bookId = String(event.sourceBookId);
+    return !links.has(bookId) && !bookCache.getWorkDetails(`ll:${bookId}`);
+  }).length;
 
   if (onProgress) {
-    onProgress({ stage: 'resolve', resolved: report.resolved, total: report.total });
+    onProgress({ stage: 'resolve', resolved: report.withMetadata, total: report.total });
   }
+  const providerSummary = Object.values(chain)
+    .map((stat) => `${stat.name}=${stat.hits}/${stat.calls}${stat.errors ? `e${stat.errors}` : ''}`)
+    .join(' ');
   console.log(
-    `[resolve] ${report.resolved}/${report.total} livelib event(s) resolved ` +
+    `[resolve] ${report.withMetadata}/${report.total} livelib event(s) with metadata ` +
       `(cached=${report.cached}, isbn=${report.resolvedIsbn}, title=${report.resolvedTitle}, ` +
-      `ambiguous=${report.ambiguous}, unmatched=${report.unmatched}, requests=${report.requests})`
+      `google=${report.resolvedGoogle}, openlibrary=${report.resolvedOpenLibrary}, ` +
+      `litres=${report.resolvedLitres}, litres-hc=${report.resolvedHardcoverFromLitres}, ` +
+      `card=${report.resolvedLivelibCard}, hc-card=${report.resolvedHardcoverCard}, ` +
+      `ambiguous=${report.ambiguous}, unmatched=${report.unmatched}, requests=${report.requests}) ` +
+      `[${providerSummary}] card-budget=${cardBudget.used}/${cardBudget.limit} ` +
+      `litres-budget=${litresBudget.used}/${litresBudget.limit}`
   );
   return report;
+}
+
+function chainNamesOf(providerList) {
+  return providerList.map((provider) => provider.NAME);
 }
 
 module.exports = {
   AUTHOR_ALIASES,
   ISBN_BATCH_SIZE,
+  ISBN_QUERY,
+  CHAIN_NAMES,
+  CYRILLIC_TITLE,
+  providers,
+  createChainReport,
+  createCardBudget: livelibCard.createBudget,
+  createLitresBudget: litres.createBudget,
   normalizeTitle,
   tokensOf,
   tokenJaccard,

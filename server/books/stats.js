@@ -21,6 +21,8 @@
  */
 
 const bookCache = require('./book-cache');
+const { surnameOf } = require('./normalize');
+const { detectManga } = require('./providers/manga');
 
 const PAGE_BUCKETS = [
   { key: '<100', min: 0, max: 99 },
@@ -169,7 +171,9 @@ function prepareEvents(profiles) {
         source,
         userKey: profile.userKey,
         workId,
-        resolved: String(workId).startsWith('hc:'),
+        // `resolved` here means "points at a canonical (non-LiveLib-stub) work";
+        // metadata may also come from a LiveLib card, which is checked later.
+        resolved: !String(workId).startsWith('ll:'),
         rating10: ratingOf(raw),
         finishedAt: raw.finishedAt || null,
         reread: Boolean(raw.reread),
@@ -208,13 +212,57 @@ function prepareEvents(profiles) {
   return { events, reReadCounts };
 }
 
+function detailsAuthors(details) {
+  if (!details || !Array.isArray(details.authors)) return [];
+  const names = [];
+  for (const author of details.authors) {
+    const name = author && typeof author === 'object' ? author.name : author;
+    if (name && !names.includes(String(name))) names.push(String(name));
+  }
+  return names;
+}
+
+function detailsSeries(details) {
+  if (!details || !Array.isArray(details.series)) return [];
+  const out = [];
+  for (const entry of details.series) {
+    if (!entry) continue;
+    if (typeof entry === 'string') {
+      if (entry.trim()) out.push({ hcId: null, name: entry.trim(), position: null });
+      continue;
+    }
+    if (entry.name) {
+      out.push({
+        hcId: entry.hcId == null ? null : entry.hcId,
+        name: entry.name,
+        position: entry.position == null ? null : entry.position,
+      });
+    }
+  }
+  return out;
+}
+
+function metadataSourcesOf(details) {
+  if (!details) return [];
+  if (Array.isArray(details.metadataSources) && details.metadataSources.length) {
+    return [...new Set(details.metadataSources.filter(Boolean))];
+  }
+  if (Array.isArray(details.sources) && details.sources.length) {
+    return [...new Set(details.sources.map((entry) => entry && entry.source).filter(Boolean))];
+  }
+  return details.hcWorkId != null ? ['hardcover'] : [];
+}
+
+function mangaOfDetails(details, genres, series, publisher) {
+  if (details && typeof details.mangaComics === 'boolean') return details.mangaComics;
+  if (!details) return null;
+  return detectManga({ genres, series, publisher });
+}
+
 function workMetadata(workId, events) {
   const hcEvents = events.filter((event) => event.source === 'hardcover');
   const llEvents = events.filter((event) => event.source === 'livelib');
-  let details = null;
-  if (String(workId).startsWith('hc:')) {
-    details = bookCache.getDetails(String(workId).replace('hc:', ''));
-  }
+  const details = bookCache.getWorkDetails(workId);
 
   const latest = (list, field) =>
     list.reduce((best, event) => laterDate(best, event[field]), null);
@@ -228,14 +276,14 @@ function workMetadata(workId, events) {
     .sort((a, b) => String(b.finishedAt || '').localeCompare(String(a.finishedAt || '')))[0];
   const displayEvent = hcWithRating || hcEvents[0] || llWithRating || llEvents[0] || null;
 
-  const hcTitle = (details && details.title) || (hcEvents[0] && hcEvents[0].title) || null;
+  const detailTitle = details && details.title ? details.title : null;
+  const hcTitle = detailTitle || (hcEvents[0] && hcEvents[0].title) || null;
   const llTitle = (llEvents.find((event) => event.title) || {}).title || null;
 
   const authors = [];
-  if (details && Array.isArray(details.authors) && details.authors.length) {
-    for (const author of details.authors) {
-      if (author && author.name) authors.push(author.name);
-    }
+  const detailAuthors = detailsAuthors(details);
+  if (detailAuthors.length) {
+    for (const name of detailAuthors) authors.push(name);
   } else {
     for (const event of hcEvents.concat(llEvents)) {
       for (const name of event.authors || []) {
@@ -253,9 +301,12 @@ function workMetadata(workId, events) {
     (displayEvent && displayEvent.edition && Number(displayEvent.edition.year)) ||
     null;
   const year = saneYear(rawYear);
-  const pages = details && Number.isFinite(Number(details.pages)) ? Number(details.pages) : null;
+  const pages =
+    details && details.pages != null && Number.isFinite(Number(details.pages)) && Number(details.pages) > 0
+      ? Number(details.pages)
+      : null;
   const genres = details && Array.isArray(details.genres) ? [...details.genres] : [];
-  const series = details && Array.isArray(details.series) ? details.series : [];
+  const series = detailsSeries(details);
   const coverUrl =
     (details && details.coverUrl) ||
     (displayEvent && displayEvent.coverUrl) ||
@@ -282,7 +333,7 @@ function workMetadata(workId, events) {
   }
 
   // Link menu (§6.3): LiveLib is derivable for every work with an LL event or
-  // an LL link in links.json; Hardcover needs a slug we do not store.
+  // an LL link in links.json; provider page URLs come from the details doc.
   const links = {};
   const llSourceId = String(workId).startsWith('ll:') ? String(workId).slice(3) : null;
   if (llSourceId) links.livelib = `https://www.livelib.ru/book/${llSourceId}`;
@@ -293,6 +344,19 @@ function workMetadata(workId, events) {
       : null;
     if (llId && !links.livelib) links.livelib = `https://www.livelib.ru/book/${llId}`;
   }
+  if (details) {
+    const providerLinks = Array.isArray(details.sources) ? details.sources : [];
+    for (const entry of providerLinks) {
+      if (!entry || !entry.url) continue;
+      const key = entry.source === 'livelib-card' ? 'livelib' : entry.source;
+      if (!links[key]) links[key] = entry.url;
+    }
+    if (details.slug && !links.hardcover) {
+      links.hardcover = `https://hardcover.app/books/${details.slug}`;
+    }
+  }
+
+  const metadataSources = metadataSourcesOf(details);
 
   return {
     workId,
@@ -305,6 +369,10 @@ function workMetadata(workId, events) {
     year: Number.isFinite(Number(year)) ? Number(year) : null,
     pages,
     coverUrl,
+    isbn13: (details && details.isbn13) || null,
+    isbn10: (details && details.isbn10) || null,
+    metadataSources,
+    mangaComics: mangaOfDetails(details, genres, series, publisher),
     details,
     links,
     finishedDate,
@@ -312,7 +380,7 @@ function workMetadata(workId, events) {
     rating10: hcWithRating ? hcWithRating.rating10 : llEvents.find((e) => e.rating10 != null)?.rating10 ?? null,
     ratingsBySource,
     sources: [...new Set(events.map((event) => event.source))].sort(),
-    unresolved: !String(workId).startsWith('hc:'),
+    unresolved: !details,
   };
 }
 
@@ -320,23 +388,190 @@ function workMetadata(workId, events) {
 /* Payload                                                             */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Cross-source work dedupe                                            */
+/* ------------------------------------------------------------------ */
+
+const SOURCE_PRIORITY = { hc: 4, lr: 3.5, gb: 3, ol: 2, ll: 1 };
+
+function workPrefix(workId) {
+  return String(workId || '').split(':')[0];
+}
+
+/**
+ * Strict title key for work dedupe. Unlike the resolve matcher it keeps
+ * volume/part numbers: "Наруто. Том 1" and "Наруто. Том 2" are different books
+ * and must not collapse into one work in the widgets.
+ */
+function dedupeTitle(title) {
+  return String(title == null ? '' : title)
+    .replace(/\u00a0/g, ' ')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(
+      /(?<![\p{L}])(?:vol(?:ume)?|том|книга|book|часть|кн)\s*\.?\s*(\d+)/giu,
+      ' vol $1 '
+    )
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Stable dedupe key: normalized title + author surnames. LiveLib (RU title)
+ * and Google Books (same RU edition) can otherwise produce two works for one
+ * book, double-counting it in authors/genres widgets.
+ */
+function canonicalKeyOf(work) {
+  const title = dedupeTitle(work.title || work.titleRu || '');
+  const authors = [...new Set((work.authors || []).map((name) => surnameOf(name)).filter(Boolean))].sort();
+  if (!title || authors.length === 0) return null;
+  return `${title}|${authors.join(',')}`;
+}
+
+function unionBy(list, keyOf) {
+  const seen = new Map();
+  for (const entry of list) {
+    if (!entry) continue;
+    const key = keyOf(entry);
+    if (key == null) continue;
+    if (!seen.has(key)) seen.set(key, entry);
+  }
+  return [...seen.values()];
+}
+
+function mergeWorkGroup(list) {
+  const rank = (work) => (work.unresolved ? 0 : 10) + (SOURCE_PRIORITY[workPrefix(work.workId)] || 0);
+  const ordered = [...list].sort((a, b) => {
+    const delta = rank(b) - rank(a);
+    if (delta !== 0) return delta;
+    return String(a.workId) < String(b.workId) ? -1 : 1;
+  });
+  const primary = ordered[0];
+  const pick = (field) => {
+    for (const work of ordered) {
+      if (work[field] != null && work[field] !== '') return work[field];
+    }
+    return null;
+  };
+  const titles = [...new Set(ordered.map((work) => work.title).filter(Boolean))];
+  const authors = unionBy(ordered.flatMap((work) => work.authors || []), (name) => name);
+  const genres = unionBy(ordered.flatMap((work) => work.genres || []), (name) => name);
+  const series = unionBy(
+    ordered.flatMap((work) => work.series || []),
+    (entry) => `${entry.hcId == null ? '' : entry.hcId}|${entry.name || ''}`
+  );
+  const metadataSources = [
+    ...new Set(ordered.flatMap((work) => work.metadataSources || [])),
+  ];
+  const links = {};
+  for (const work of [...ordered].reverse()) Object.assign(links, work.links || {});
+  const ratingsBySource = {};
+  for (const source of ['livelib', 'hardcover']) {
+    const entry = ordered.map((work) => work.ratingsBySource && work.ratingsBySource[source]).find(Boolean);
+    if (entry) ratingsBySource[source] = entry;
+  }
+  const mangaValues = ordered.map((work) => work.mangaComics);
+  const mangaComics = mangaValues.includes(true)
+    ? true
+    : mangaValues.includes(false)
+    ? false
+    : null;
+  const finishedDates = ordered.map((work) => work.finishedDate).filter(Boolean).sort();
+
+  return {
+    ...primary,
+    workId: primary.workId,
+    mergedWorkIds: ordered.map((work) => work.workId),
+    title: pick('title'),
+    titleRu: titles.find((title) => title !== primary.title) || primary.title || pick('titleRu'),
+    authors,
+    genres,
+    series,
+    publisher: pick('publisher'),
+    year: pick('year'),
+    pages: pick('pages'),
+    coverUrl: pick('coverUrl'),
+    isbn13: pick('isbn13'),
+    isbn10: pick('isbn10'),
+    metadataSources,
+    mangaComics,
+    links,
+    finishedDate: finishedDates.length ? finishedDates[finishedDates.length - 1] : null,
+    rating10: pick('rating10'),
+    ratingsBySource,
+    sources: [...new Set(ordered.flatMap((work) => work.sources || []))].sort(),
+    unresolved: primary.unresolved,
+    details: primary.details,
+  };
+}
+
+/** Merge works that share a canonical title+authors key; return the remap. */
+function dedupeWorks(works) {
+  const groups = new Map();
+  for (const work of works.values()) {
+    const key = canonicalKeyOf(work);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(work);
+  }
+  const merged = new Map(works);
+  const remap = new Map();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const combined = mergeWorkGroup(group);
+    for (const work of group) {
+      remap.set(work.workId, combined.workId);
+      if (work.workId !== combined.workId) merged.delete(work.workId);
+    }
+    merged.set(combined.workId, combined);
+  }
+  return { works: merged, remap };
+}
+
 /**
  * Build the whole /api/books/stats payload. `options.sources` is the raw
  * `?sources=` value (string or array); `options.now` is injectable for tests.
  */
 function buildBooksStats(options = {}) {
   const startedAt = process.hrtime.bigint();
+  const includeMangaComics = options.includeMangaComics === true;
   const { connected, selected, profiles } = selectProfiles(options.sources);
-  const { events: allEvents, reReadCounts } = prepareEvents(profiles);
-  const events = allEvents.filter((event) => selected.includes(event.source));
+  const prepared = prepareEvents(profiles);
+  const reReadCounts = prepared.reReadCounts;
+  let events = prepared.events.filter((event) => selected.includes(event.source));
 
   const byWork = new Map();
   for (const event of events) {
     if (!byWork.has(event.workId)) byWork.set(event.workId, []);
     byWork.get(event.workId).push(event);
   }
-  const works = new Map();
+  let works = new Map();
   for (const [workId, list] of byWork) works.set(workId, workMetadata(workId, list));
+
+  // Cross-source dedupe: one book can arrive via LiveLib + Google Books.
+  const deduped = dedupeWorks(works);
+  works = deduped.works;
+  if (deduped.remap.size > 0) {
+    for (const event of events) {
+      const target = deduped.remap.get(event.workId);
+      if (target) event.workId = target;
+    }
+  }
+
+  // Manga/comics filter (default OFF = manga excluded). `null` survives.
+  let mangaExcluded = 0;
+  if (!includeMangaComics) {
+    const excluded = new Set();
+    for (const [workId, work] of works) {
+      if (work.mangaComics === true) {
+        excluded.add(workId);
+        works.delete(workId);
+        mangaExcluded++;
+      }
+    }
+    if (excluded.size > 0) events = events.filter((event) => !excluded.has(event.workId));
+  }
 
   // Event-level re-read flag from the per-book group counts.
   for (const event of events) {
@@ -358,12 +593,20 @@ function buildBooksStats(options = {}) {
   for (const work of works.values()) for (const entry of work.series) seriesSet.add(entry.hcId || entry.name);
 
   let reReadCount = 0;
-  for (const [key, count] of reReadCounts) {
-    if (selected.includes(key.split(':')[0])) reReadCount += count;
+  const reReadKeys = new Set(
+    events.map((event) => `${event.source}:${event.userKey}:${event.sourceBookId}`)
+  );
+  for (const key of reReadKeys) {
+    reReadCount += reReadCounts.get(key) || 0;
   }
 
   const finishedEvents = events.filter((event) => event.finishedAt);
   const llEvents = events.filter((event) => event.source === 'livelib');
+  const llResolved = llEvents.filter((event) => {
+    const work = works.get(event.workId);
+    return Boolean(work && !work.unresolved);
+  }).length;
+  const llCanonical = llEvents.filter((event) => event.resolved).length;
   const finishedDates = finishedEvents
     .map((event) => String(event.finishedAt))
     .filter((date) => /^\d{4}-\d{2}-\d{2}/.test(date))
@@ -382,8 +625,11 @@ function buildBooksStats(options = {}) {
     // Reading period of the selected sources (film contract: dateFrom/dateTo).
     dateFrom: finishedDates.length ? finishedDates[0].slice(0, 10) : null,
     dateTo: finishedDates.length ? finishedDates[finishedDates.length - 1].slice(0, 10) : null,
-    resolvedCount: llEvents.filter((event) => event.resolved).length,
-    unresolvedCount: llEvents.filter((event) => !event.resolved).length,
+    resolvedCount: llResolved,
+    unresolvedCount: llEvents.length - llResolved,
+    canonicalResolvedCount: llCanonical,
+    mangaExcluded,
+    includeMangaComics,
     avgRating: mean(ratedWorks.map((work) => work.rating10)),
     avgPages: pagesWorks.length
       ? Math.round(pagesWorks.reduce((sum, work) => sum + work.pages, 0) / pagesWorks.length)
@@ -629,6 +875,13 @@ function buildBooksStats(options = {}) {
       pages: work.pages,
       year: work.year,
       coverUrl: work.coverUrl,
+      isbn13: work.isbn13,
+      isbn10: work.isbn10,
+      metadataSources: work.metadataSources,
+      mangaComics: work.mangaComics,
+      ...(work.mergedWorkIds && work.mergedWorkIds.length > 1
+        ? { mergedWorkIds: work.mergedWorkIds }
+        : {}),
       links: work.links,
       unresolved: work.unresolved,
     };
@@ -702,6 +955,9 @@ module.exports = {
   selectProfiles,
   prepareEvents,
   workMetadata,
+  canonicalKeyOf,
+  dedupeWorks,
+  mergeWorkGroup,
   buildBooksStats,
   listUnmatched,
 };

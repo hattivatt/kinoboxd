@@ -112,7 +112,7 @@ router.get('/import/status', (req, res, next) => {
   }
 });
 
-/** GET /api/books/stats?sources=livelib,hardcover */
+/** GET /api/books/stats?sources=livelib,hardcover&includeMangaComics=0|1 */
 router.get('/stats', (req, res, next) => {
   try {
     const raw = req.query.sources;
@@ -129,7 +129,20 @@ router.get('/stats', (req, res, next) => {
         );
       }
     }
-    const stats = buildBooksStats({ sources: raw });
+    const includeMangaRaw = req.query.includeMangaComics;
+    let includeMangaComics = false;
+    if (includeMangaRaw != null && String(includeMangaRaw).trim() !== '') {
+      const value = String(includeMangaRaw).trim().toLowerCase();
+      if (['1', 'true', 'yes', 'on'].includes(value)) includeMangaComics = true;
+      else if (!['0', 'false', 'no', 'off'].includes(value)) {
+        throw new HttpError(
+          400,
+          'Query parameter "includeMangaComics" must be 0 or 1 (default 0).',
+          'invalid_include_manga'
+        );
+      }
+    }
+    const stats = buildBooksStats({ sources: raw, includeMangaComics });
     res.set('X-Books-Build-Ms', String(stats.meta.buildMs));
     res.status(200).json(stats);
   } catch (err) {
