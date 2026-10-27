@@ -363,11 +363,15 @@ $KINOBOXD_STATE_DIR/app/
   `$KINOBOXD_STATE_DIR/app/cache` (или в явный `KINOBOXD_CACHE_DIR`).
 * Каталог `$KINOBOXD_STATE_DIR/app/server` от старых запусков больше не
   используется. Он безвреден, но его можно удалить (вместе со старыми
-  штампами — активный штамп пересоздастся при следующем запуске):
+  штампами — активный штамп пересоздастся при следующем запуске). Файлы в
+  старом дереве скопированы из store с режимами `0444`/`0555`, поэтому
+  сначала нужно вернуть себе право записи:
 
   ```bash
-  rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/kinoboxd/app/server"
-  rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/kinoboxd/app/server@"*
+  state="${XDG_STATE_HOME:-$HOME/.local/state}/kinoboxd"
+  chmod -R u+w "$state/app/server" 2>/dev/null || true
+  rm -rf "$state/app/server"
+  rm -rf "$state/app/server@"*
   ```
 
   Если state принадлежит другому пользователю (сервис запускался от root),
