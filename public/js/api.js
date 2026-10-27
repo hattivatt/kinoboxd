@@ -135,3 +135,48 @@ export function startKinopoiskImport(url, { signal } = {}) {
 export function getKinopoiskStatus(uploadId, { signal } = {}) {
   return request(`/api/import/kinopoisk/status?uploadId=${encodeURIComponent(uploadId)}`, { signal });
 }
+
+/* ---------------- books ---------------- */
+
+/**
+ * Aggregated book payload. `sources` is the server-side source filter
+ * ("livelib", "hardcover" or a comma-separated list); omitted = all connected.
+ */
+export function getBooksStats({ sources = '', signal } = {}) {
+  const query = sources ? `?sources=${encodeURIComponent(sources)}` : '';
+  return request(`/api/books/stats${query}`, { signal });
+}
+
+export function startBooksImportLivelib(username, { signal } = {}) {
+  return request('/api/books/import/livelib', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username }),
+    signal,
+  });
+}
+
+export function startBooksImportHardcover(userId, { signal } = {}) {
+  return request('/api/books/import/hardcover', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(userId != null && userId !== '' ? { userId } : {}),
+    signal,
+  });
+}
+
+export async function getBooksImportStatus(jobId, { source = '', signal } = {}) {
+  try {
+    return await request(`/api/books/import/status?id=${encodeURIComponent(jobId)}&jobId=${encodeURIComponent(jobId)}`, { signal });
+  } catch (error) {
+    // The architecture doc describes per-source status routes; the unified
+    // route is the agreed contract. Fall back once if only the former exists.
+    if (source && error && error.status === 404) {
+      return request(
+        `/api/books/import/${encodeURIComponent(source)}/status?id=${encodeURIComponent(jobId)}&jobId=${encodeURIComponent(jobId)}`,
+        { signal },
+      );
+    }
+    throw error;
+  }
+}
