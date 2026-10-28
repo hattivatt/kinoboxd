@@ -110,7 +110,7 @@ test('exact-identical rows of one book id are dropped, rows without ids are volu
   assert.equal(volumes.stats.exactDuplicateRows, 0);
 });
 
-test('a Литрес catalogue tag does not become a series without an order or a file match', async () => {
+test('a Литрес catalogue tag does not become a series, even when the file column names it', async () => {
   await bookCache.saveDetails(7101, {
     schemaVersion: 2,
     hcWorkId: 7101,
@@ -149,7 +149,13 @@ test('a Литрес catalogue tag does not become a series without an order or 
   ]);
   await bookCache.saveProfile('livelib', 'FileSeries', withFileSeriesProfile);
   const withFileSeries = buildBooksStats({ profile: 'livelib-FileSeries', includeMangaComics: true });
-  assert.deepEqual(withFileSeries.series.map((entry) => entry.name), ['Книга на все времена']);
+  // 28.10.2026 (user decision): the export column is the authority for a
+  // bibliographic *value*, not for the *kind* of the value. This is a
+  // publisher's tag, so the blacklist removes it even when the file names it
+  // (series-blacklist.js).
+  assert.deepEqual(withFileSeries.series.map((entry) => entry.name), []);
+  assert.equal(withFileSeries.summary.seriesTagsFiltered, 1);
+  assert.equal(withFileSeries.summary.seriesCount, 0);
 
   await bookCache.saveDetails(7101, {
     schemaVersion: 2,

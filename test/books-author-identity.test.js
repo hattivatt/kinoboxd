@@ -104,8 +104,9 @@ test('authors.json is written and re-read (manual edits preserved)', async () =>
 
 test('the Wikidata bridge merges an exonym by QID and respects 429', async () => {
   const responses = new Map();
-  const fetchImpl = async (url) => {
-    const decoded = decodeURIComponent(url);
+  const fetchImpl = async (url, init) => {
+    // The bridge POSTs the query (a 450-label batch does not fit a URL).
+    const decoded = decodeURIComponent(String((init && init.body) || url)).replace(/\+/g, ' ');
     if (/VALUES \?label/.test(decoded)) {
       responses.searches = (responses.searches || 0) + 1;
       return {

@@ -15,6 +15,7 @@ const multer = require('multer');
 const { HttpError } = require('../upload');
 const config = require('../config');
 const bookCache = require('./book-cache');
+const authorsBridge = require('./authors-bridge');
 const importJobs = require('./import');
 const livelibFile = require('./livelib-file');
 const {
@@ -602,6 +603,10 @@ router.get('/stats', (req, res, next) => {
       profileScope: scope,
       includeMangaComics,
       resolveState: importJobs.getResolveState(selected.source, selected.userKey),
+      // Default-on author bridge: a fresh deployment stops showing duplicated
+      // authors after the first payload, without a manual backfill
+      // (`authors-bridge.js`; never blocks this response).
+      authorBridge: authorsBridge.kickAuthorsWikidata,
     });
     res.set('X-Books-Build-Ms', String(stats.meta.buildMs));
     res.status(200).json(stats);

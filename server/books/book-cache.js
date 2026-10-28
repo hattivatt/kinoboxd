@@ -591,20 +591,46 @@ function clearMangaFlag(workId) {
  * is the place where a manual decision lives forever:
  *
  *   {
- *     schemaVersion: 1,
+ *     schemaVersion: 2,
  *     fingerprint: "агата кристи|...",     // corpus that produced `canonical`
  *     canonical: { "нормализованное имя": "Отображаемое имя" },
- *     manual:    { "нормализованное имя": "Отображаемое имя" }
+ *     manual:    { "нормализованное имя": "Отображаемое имя" },
+ *     wikidata: {
+ *       checkedAt: "2026-10-28T…",         // last successful Wikidata pass
+ *       checked: { "нормализованное имя": true },  // already asked from WDQS
+ *       disabledUntil: null                // cooldown after 429/403/network
+ *     }
  *   }
  *
  * `canonical` is applied on every stats build; `manual` is never overwritten
- * by an automatic rebuild.
+ * by an automatic rebuild. `wikidata.checked` is what makes the Wikidata bridge
+ * default-on without hammering WDQS: a name is asked once, and a repeat stats
+ * build with a full map issues zero requests.
  */
 let authorsMap = null;
 let authorsMapFingerprint = null;
 
 function emptyAuthorsMap() {
-  return { schemaVersion: 1, fingerprint: null, canonical: {}, manual: {} };
+  return {
+    schemaVersion: 2,
+    fingerprint: null,
+    canonical: {},
+    manual: {},
+    wikidata: { checkedAt: null, checked: {}, disabledUntil: null },
+  };
+}
+
+function normalizeWikidataState(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const checked =
+    source.checked && typeof source.checked === 'object' && !Array.isArray(source.checked)
+      ? { ...source.checked }
+      : {};
+  return {
+    checkedAt: source.checkedAt == null ? null : String(source.checkedAt),
+    checked,
+    disabledUntil: source.disabledUntil == null ? null : String(source.disabledUntil),
+  };
 }
 
 function refreshAuthorsMapIfChanged() {
@@ -618,7 +644,7 @@ function refreshAuthorsMapIfChanged() {
   }
   const data = found.data;
   authorsMap = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     fingerprint: data.fingerprint == null ? null : String(data.fingerprint),
     canonical:
       data.canonical && typeof data.canonical === 'object' && !Array.isArray(data.canonical)
@@ -628,6 +654,7 @@ function refreshAuthorsMapIfChanged() {
       data.manual && typeof data.manual === 'object' && !Array.isArray(data.manual)
         ? { ...data.manual }
         : {},
+    wikidata: normalizeWikidataState(data.wikidata),
   };
   authorsMapFingerprint = found.fingerprint;
   return true;
@@ -636,27 +663,43 @@ function refreshAuthorsMapIfChanged() {
 function getAuthorsMap() {
   refreshAuthorsMapIfChanged();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     fingerprint: authorsMap.fingerprint,
     canonical: { ...authorsMap.canonical },
     manual: { ...authorsMap.manual },
+    wikidata: normalizeWikidataState(authorsMap.wikidata),
   };
 }
 
 /**
  * Persist the table. `canonical` is merged over the stored one (an older
  * profile's aliases stay valid); `manual` is preserved unless passed
- * explicitly. Resolves to the map that is now effective.
+ * explicitly. `wikidata.checked` is unioned (a name asked once is never asked
+ * again); `disabledUntil` is only written when passed. Resolves to the map that
+ * is now effective.
  */
 async function saveAuthorsMap(next = {}) {
   refreshAuthorsMapIfChanged();
+  const storedWikidata = normalizeWikidataState(authorsMap.wikidata);
+  const nextWikidata = normalizeWikidataState(
+    next.wikidata === undefined ? storedWikidata : { ...storedWikidata, ...next.wikidata }
+  );
   const merged = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     fingerprint: next.fingerprint === undefined ? authorsMap.fingerprint : next.fingerprint,
     canonical: { ...authorsMap.canonical, ...(next.canonical || {}) },
     manual: next.manual === undefined
       ? { ...authorsMap.manual }
       : { ...authorsMap.manual, ...(next.manual || {}) },
+    wikidata: {
+      checkedAt: nextWikidata.checkedAt,
+      checked: { ...storedWikidata.checked, ...nextWikidata.checked },
+      // A cooldown is sticky until a later successful pass clears it: passing
+      // `wikidata.disabledUntil = null` explicitly is the clear.
+      disabledUntil: next.wikidata && next.wikidata.disabledUntil !== undefined
+        ? nextWikidata.disabledUntil
+        : storedWikidata.disabledUntil,
+    },
   };
   const fingerprint = await writeJsonAtomic(AUTHORS_PATH, merged);
   authorsMap = merged;

@@ -1,30 +1,30 @@
 'use strict';
 
 /**
- * Author-alias backfill (optional, bounded).
+ * Author-alias backfill (manual entry point).
  *
- *   node server/books/authors-backfill.js --profile=livelib-Margaret [--wikidata] [--limit=100]
+ *   node server/books/authors-backfill.js --profile=livelib-Margaret [--wikidata] [--recheck] [--limit=100]
  *
  * Without `--wikidata` it only reports the groups the offline rule (normalise +
- * transliteration + author ids) would merge. With `--wikidata` it asks WDQS for
- * the *unresolved* spellings and persists the result into
- * `cache-book/authors.json`; the stats payload then applies the table on every
- * read without any network request.
+ * transliteration + author ids) would merge. With `--wikidata` it runs the same
+ * bridge the server now runs on its own (`authors-bridge.js`): the *unresolved*
+ * spellings go to WDQS and the result is persisted into `cache-book/authors.json`.
  *
- * The bridge is opt-in on purpose: WDQS is rate-limited and the offline rule is
- * enough for most pairs. Tests mock `fetch`; this script is the only place that
- * would ever talk to Wikidata.
+ * Since 28.10.2026 the bridge is DEFAULT-ON in `/api/books/stats`, so this
+ * script is a diagnostic/manual tool, not a required deployment step. `--recheck`
+ * forgets the "already asked" set and asks for every candidate again.
  */
 
 const bookCache = require('./book-cache');
 const authors = require('./authors');
-const wd = require('./authors-wikidata');
+const bridge = require('./authors-bridge');
 
 function parseArgs(argv) {
-  const out = { profile: null, wikidata: false, limit: null, dryRun: false };
+  const out = { profile: null, wikidata: false, limit: null, dryRun: false, recheck: false };
   for (const arg of argv) {
     if (arg === '--wikidata') out.wikidata = true;
     else if (arg === '--dry-run') out.dryRun = true;
+    else if (arg === '--recheck') out.recheck = true;
     else if (arg.startsWith('--profile=')) out.profile = arg.slice('--profile='.length);
     else if (arg.startsWith('--limit=')) out.limit = Number(arg.slice('--limit='.length)) || null;
   }
@@ -92,28 +92,36 @@ async function main() {
   }
 
   if (!options.wikidata) {
-    console.log('[authors] Wikidata bridge not requested (pass --wikidata to opt in).');
+    console.log(
+      '[authors] Wikidata bridge is default-on in the server; pass --wikidata here for a manual pass.'
+    );
     return;
   }
 
-  const wikidata = await wd.resolveWikidataAliases(entries, {
+  // `--recheck` forgets what was already asked; `--limit` bounds one pass.
+  if (options.recheck) {
+    for (const key of Object.keys(persisted.wikidata.checked || {})) delete persisted.wikidata.checked[key];
+  }
+  const report = await bridge.resolveAuthorsWikidata(entries, {
     persisted,
-    limit: options.limit,
+    force: true,
+    persist: !options.dryRun,
+    maxNames: options.limit == null ? undefined : options.limit,
   });
-  console.log(`[authors] Wikidata queries=${wikidata.queries} merged=${wikidata.merged.length}`);
-  for (const item of wikidata.merged.slice(0, 40)) {
+  console.log(
+    `[authors] Wikidata pending=${report.pending} queries=${report.queries} ` +
+      `merged=${report.merged} checked=${report.checked}` +
+      (report.skipped ? ` skipped=${report.skipped}` : '') +
+      (report.reason ? ` reason=${report.reason}` : '')
+  );
+  for (const item of (report.names || []).slice(0, 40)) {
     console.log(`  ${item.name} (${item.qid})  <-  ${item.aliases.join(' / ')}`);
   }
   if (options.dryRun) {
     console.log('[authors] dry run: authors.json not written.');
     return;
   }
-  const canonical = { ...Object.fromEntries(base.canonicalOf), ...wikidata.canonical };
-  await bookCache.saveAuthorsMap({
-    fingerprint: authors.fingerprintOfNames(entries.map((entry) => entry.name)),
-    canonical,
-  });
-  console.log(`[authors] saved ${Object.keys(canonical).length} aliases to ${bookCache.AUTHORS_PATH}`);
+  console.log(`[authors] aliases now in ${bookCache.AUTHORS_PATH}`);
 }
 
 if (require.main === module) {

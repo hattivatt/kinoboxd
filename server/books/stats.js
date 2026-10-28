@@ -28,6 +28,7 @@
 
 const bookCache = require('./book-cache');
 const authors = require('./authors');
+const { filterBlacklistedSeries } = require('./series-blacklist');
 const { surnameOf } = require('./normalize');
 const { detectManga } = require('./providers/manga');
 
@@ -823,10 +824,16 @@ function workMetadata(workId, events) {
     details && Array.isArray(details.genres) ? details.genres : [],
     fileMeta.genres
   );
-  const series = mergeSeriesLists(
+  const mergedSeries = mergeSeriesLists(
     filterDetailsSeries(details, fileMeta.series.map((entry) => entry.name)),
     fileMeta.series
   );
+  // Catalogue tags («Книга на все времена») are not series (series-blacklist.js).
+  // The filter runs on the merged list, *after* the file column has had its
+  // say, so a tag that the user's own export carries is still dropped — and it
+  // runs before counting/manga detection, so neither sees the tag.
+  const seriesFilter = filterBlacklistedSeries(mergedSeries);
+  const series = seriesFilter.list;
   const coverUrl =
     (details && details.coverUrl) ||
     (displayEvent && displayEvent.coverUrl) ||
@@ -883,6 +890,7 @@ function workMetadata(workId, events) {
     authors,
     genres,
     series,
+    seriesTagsFiltered: seriesFilter.removed,
     publisher,
     year: year == null ? null : Number(year),
     pages,
@@ -1358,6 +1366,23 @@ function buildBooksStats(options = {}) {
       .catch(() => {});
   }
 
+  // Wikidata bridge (default-on, authors-bridge.js): only the spellings the
+  // offline rule could not connect, fire-and-forget. `/api/books/stats` never
+  // waits for WDQS — the merge lands in authors.json and the next payload (the
+  // UI refresh after an import) applies it. Tests pass no bridge, so the
+  // payload path never touches the network.
+  if (typeof options.authorBridge === 'function') {
+    try {
+      const pass = options.authorBridge(authorEntries, {
+        persisted: persistedAuthors,
+        groups: authorMerge.groups,
+      });
+      if (pass && typeof pass.catch === 'function') pass.catch(() => {});
+    } catch (err) {
+      // A bridge must never break the payload.
+    }
+  }
+
   /* ---------------- summary ---------------- */
   const ratedWorks = [...works.values()].filter((work) => work.rating10 != null);
   const pagesWorks = [...works.values()].filter((work) => work.pages != null);
@@ -1445,6 +1470,13 @@ function buildBooksStats(options = {}) {
     authorsCount: authorSet.size,
     authorsMergedCount: authorMerge.mergedGroups,
     seriesCount: seriesSet.size,
+    // Works that had a blacklisted catalogue tag («Книга на все времена»)
+    // removed from their series list (series-blacklist.js); reported instead of
+    // the tag itself.
+    seriesTagsFiltered: [...works.values()].reduce(
+      (sum, work) => sum + (Number(work.seriesTagsFiltered) || 0),
+      0
+    ),
     ancientBookCount: [...works.values()].filter(
       (work) => Number.isFinite(work.year) && work.year < 1000
     ).length,
