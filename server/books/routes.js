@@ -63,7 +63,7 @@ function hardcoverTokenInfo() {
  * GET /api/books/profiles — cached source profiles for the switcher/badges.
  *
  * Each entry carries:
- *   - `key`       — the exact `?profiles=` token (`livelib-Margaret`),
+ *   - `key`       — the exact `?profile=` token (`livelib-Margaret`),
  *   - `sourceKey` — the minimal provider-qualified key for docs
  *                   (`livelib/Margaret`, `hardcover/34748`),
  *   - `summary`   — compact aggregates (books/events/dates/avgRating),

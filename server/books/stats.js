@@ -105,7 +105,7 @@ function connectedProfiles() {
   return bookCache.listProfiles();
 }
 
-/** Canonical profile key, the same token `?profiles=` accepts. */
+/** Canonical profile key, the same token `?profile=` accepts. */
 function profileKeyOf(profile) {
   return `${profile.source}-${profile.userKey}`;
 }
