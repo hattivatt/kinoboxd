@@ -39,7 +39,7 @@ import {
   removeProfile as removeBooksProfile, getProfile as getRegistryProfile, setActiveId as setActiveBooksProfileId,
   migrateLegacyAccounts, adoptServerProfiles, normalizeProfile, profileQuery,
   profileSources, profileSourceNames, profileSummary, sourceAccount, withSource,
-  normalizeSource, isValidLivelibUsername, isValidHardcoverUser,
+  normalizeSource, isValidLivelibUsername, isValidHardcoverUser, scopeSourceNames,
   sanitizeCookieHeader, isLivelibBlocked,
 } from './books-profiles.js';
 
@@ -386,6 +386,10 @@ function normalizeBooks(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const summaryRaw = source.summary && typeof source.summary === 'object' ? source.summary : {};
   const connected = normalizeSources(source, summaryRaw);
+  // Which profile documents did the server actually scope to? Kept separate
+  // from `connected` (every profile cached on the server) so the header and the
+  // sources metric describe *this* profile, not the whole cache.
+  const profileSourcesScoped = scopeSourceNames(source.sources && source.sources.profiles);
   const ratingsRaw = source.ratings && typeof source.ratings === 'object' ? source.ratings : {};
   const bySourceRaw = ratingsRaw.bySource && typeof ratingsRaw.bySource === 'object'
     ? ratingsRaw.bySource
@@ -523,6 +527,7 @@ function normalizeBooks(raw) {
       ? connected
       : [...new Set([...sourceBreakdown.map((item) => item.source), ...Object.keys(bySourceRaw)])]
         .filter((item) => SOURCE_LABEL[item]),
+    profileSources: profileSourcesScoped,
     summary,
     ratings,
     genres,
@@ -1933,7 +1938,12 @@ function renderDashboardBooks(data) {
 }
 
 function renderHead(data) {
-  const activeSources = state.source ? [state.source] : data.connected;
+  // Scope = the profile's sources when the server said which documents it
+  // used; `connected` (everything cached) is only a fallback for old payloads.
+  const scoped = Array.isArray(data.profileSources) && data.profileSources.length
+    ? data.profileSources
+    : data.connected;
+  const activeSources = state.source ? [state.source] : scoped;
   const kicker = $('books-kicker');
   if (kicker) {
     const scope = activeSources.length
@@ -1952,8 +1962,12 @@ function renderHead(data) {
     const scopeNote = state.profile
       ? `Профиль «${state.profile.label}»: ${profileSummary(state.profile)}.`
       : '';
+    // One source in the profile: say so instead of claiming the union.
+    const single = !state.source && scoped.length === 1 ? scoped[0] : null;
     const sourceNote = state.source
       ? `${scopeNote} Показан только источник ${sourceLabel(state.source)}.`
+      : single
+      ? `${scopeNote} Оценки и даты — ${sourceLabel(single)}, метадата — Hardcover.`
       : `${scopeNote} Оценки и даты — LiveLib ∪ Hardcover, метадата — Hardcover.`;
     sub.textContent = parts.length
       ? `${parts.join(' · ')}${reReads}. ${sourceNote}`
@@ -2032,8 +2046,13 @@ function renderSourcesMetric(data) {
   labelNode.append(document.createTextNode('источники'));
   node.append(labelNode);
 
+  // Badges describe the active profile's sources, not every source cached on
+  // the server (an Hardcover-only profile must not show a LiveLib plate).
+  const sources = Array.isArray(data.profileSources) && data.profileSources.length
+    ? data.profileSources
+    : data.connected;
   const value = el('div', { class: 'metric-value' });
-  for (const source of data.connected) {
+  for (const source of sources) {
     const plate = el('span', { class: `book-source-plate is-${source}` });
     plate.append(el('span', { class: 'book-source-mark', text: SOURCE_MARK[source] }));
     const account = profileAccount(source);
@@ -2042,11 +2061,11 @@ function renderSourcesMetric(data) {
     }
     value.append(plate);
   }
-  if (!data.connected.length) value.append(el('span', { class: 'src-empty', text: 'не подключены' }));
+  if (!sources.length) value.append(el('span', { class: 'src-empty', text: 'не подключены' }));
   node.append(value);
 
   const breakdown = data.sourceBreakdown;
-  const subParts = data.connected.map((source) => {
+  const subParts = sources.map((source) => {
     const item = breakdown.find((entry) => entry.source === source);
     return item
       ? `${sourceLabel(source)}: ${fmtInt(item.events)}`
@@ -2064,9 +2083,9 @@ function renderSourcesMetric(data) {
   }));
 
   node.addEventListener('pointerenter', (event) => {
-    const primary = data.connected.map(sourceLabel).join(' ∪ ') || 'Источники не подключены';
+    const primary = sources.map(sourceLabel).join(' ∪ ') || 'Источники не подключены';
     const details = breakdown.length
-      ? breakdown.map((item) => `${sourceLabel(item.source)}: ${fmtInt(item.events)} событий, ${fmtInt(item.books)} книг${item.avgRating != null ? `, средняя ${fmtRating(item.avgRating)}` : ''}`).join(' · ')
+      ? breakdown.filter((item) => sources.includes(item.source)).map((item) => `${sourceLabel(item.source)}: ${fmtInt(item.events)} событий, ${fmtInt(item.books)} книг${item.avgRating != null ? `, средняя ${fmtRating(item.avgRating)}` : ''}`).join(' · ')
       : 'Импортируйте профиль LiveLib и/или Hardcover';
     const statusNote = staleHardcover.length
       ? ' ⚑ Профиль Hardcover сохранён без statusId: статусы пересчитаны по меткам, повторный импорт Hardcover обновит схему событий.'

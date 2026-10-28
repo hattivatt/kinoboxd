@@ -16,7 +16,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  normalizeProfile, profileKeys, profileQuery, profileSources, profileSummary,
+  normalizeProfile, profileKeys, profileQuery, profileSources, profileSummary, scopeSourceNames,
   withSource, sourceAccount, migrateLegacyAccounts, adoptServerProfiles,
   isValidLivelibUsername, isValidHardcoverUser, sanitizeCookieHeader,
   looksLikeCookieHeader, isLivelibBlocked, normalizeSource, MAX_PROFILES,
@@ -131,6 +131,21 @@ test('adoptServerProfiles prefers the latest import when a source has two accoun
     { source: 'hardcover', userKey: '34748', importedAt: '2026-10-25T10:00:00.000Z' },
   ]);
   assert.deepEqual(profileKeys(adopted), ['livelib-readingwitch', 'hardcover-34748']);
+});
+
+test('scopeSourceNames reads the server profile scope, tolerates legacy payloads', () => {
+  assert.deepEqual(
+    scopeSourceNames({ selected: ['livelib-Margaret', 'hardcover-34748'] }),
+    ['livelib', 'hardcover'],
+  );
+  // an Hardcover-only profile must not inherit LiveLib from the cache
+  assert.deepEqual(scopeSourceNames({ selected: ['hardcover-34748'] }), ['hardcover']);
+  // a dashed username stays one token (source is the first segment only)
+  assert.deepEqual(scopeSourceNames({ selected: ['livelib-my-reader'] }), ['livelib']);
+  assert.deepEqual(scopeSourceNames({ selected: ['livelib-A', 'livelib-B'] }), ['livelib']);
+  assert.deepEqual(scopeSourceNames({ selected: ['storygraph-x'] }), []);
+  assert.deepEqual(scopeSourceNames(null), []);
+  assert.deepEqual(scopeSourceNames({}), []);
 });
 
 test('sanitizeCookieHeader strips the prefix, folds line breaks, rejects junk', () => {

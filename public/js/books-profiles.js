@@ -106,6 +106,26 @@ export function profileSourceNames(profile) {
   return profileSources(profile).map((entry) => entry.source);
 }
 
+/**
+ * Sources that the server actually scoped a stats payload to
+ * (`payload.sources.profiles.selected`, e.g. `["livelib-Margaret"]`).
+ * The dashboard header must talk about the *profile*, not about every source
+ * cached on the server, otherwise an Hardcover-only profile still claims
+ * «LiveLib ∪ Hardcover». Returns [] when the payload carries no scope (legacy
+ * server) so callers can fall back to `connected`.
+ */
+export function scopeSourceNames(profilesBlock) {
+  const list = profilesBlock && Array.isArray(profilesBlock.selected)
+    ? profilesBlock.selected
+    : [];
+  const names = [];
+  for (const token of list) {
+    const source = trim(token).split('-')[0].toLowerCase();
+    if (SOURCES.includes(source) && !names.includes(source)) names.push(source);
+  }
+  return names;
+}
+
 /** Human summary for the switcher: «LiveLib @Margaret · Hardcover 34748». */
 export function profileSummary(profile) {
   const parts = profileSources(profile).map((entry) => (
