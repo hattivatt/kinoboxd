@@ -550,5 +550,9 @@ module.exports = {
   isFreshImport,
   LIVELIB_REIMPORT_TTL_MS,
   resolveAllLivelibProfiles,
+  /** True when an import for this `(source, userKey)` is still in flight. */
+  isRunning(source, userKey) {
+    return Boolean(findRunningJob(source, String(userKey == null ? '' : userKey).trim()));
+  },
   idle,
 };

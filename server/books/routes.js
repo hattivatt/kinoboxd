@@ -158,6 +158,68 @@ router.post('/import/hardcover', (req, res, next) => {
   }
 });
 
+/**
+ * DELETE /api/books/import/livelib/cookies?userKey=Margaret
+ *
+ * The counterpart of the cookie paste: the stored header is a secret the user
+ * handed us for one retry, so it must be removable without shell access to the
+ * cache directory. Semantics:
+ *
+ *   - `userKey` (alias `sourceUserKey`) is the LiveLib reader name, validated
+ *     with the same shape the store uses (`[\w.-]{1,120}`) — no path tricks;
+ *   - no stored header -> 404 `cookies_not_found` (the caller can tell "already
+ *     gone" from "wrong userKey"); a successful delete -> 200 with the masked
+ *     `{ present: false, savedAt: null, count: 0 }` block;
+ *   - a delete during a running import of that profile is 409
+ *     `livelib_import_running` — that job already holds its own copy of the
+ *     header, and reporting "deleted" while the job still reports
+ *     `cookies.present: true` would be a lie;
+ *   - the response never echoes the header or its cookie names.
+ */
+router.delete('/import/livelib/cookies', async (req, res, next) => {
+  try {
+    const raw = req.query.userKey != null ? req.query.userKey : req.query.sourceUserKey;
+    const userKey = typeof raw === 'string' ? raw.trim() : '';
+    if (!userKey) {
+      throw new HttpError(
+        400,
+        'Query parameter "userKey" is required (LiveLib reader name).',
+        'user_key_required'
+      );
+    }
+    if (!/^[\w.-]{1,120}$/.test(userKey)) {
+      throw new HttpError(
+        400,
+        'Query parameter "userKey" must be 1-120 chars of letters, digits, ".", "_" or "-".',
+        'invalid_user_key'
+      );
+    }
+    if (importJobs.isRunning('livelib', userKey)) {
+      throw new HttpError(
+        409,
+        'A LiveLib import of this profile is running — wait for it to finish before removing the cookies.',
+        'livelib_import_running'
+      );
+    }
+    const removed = await livelibCookies.clearCookies('livelib', userKey);
+    if (!removed) {
+      throw new HttpError(
+        404,
+        `No stored LiveLib cookies for "${userKey}".`,
+        'cookies_not_found'
+      );
+    }
+    res.status(200).json({
+      source: 'livelib',
+      userKey,
+      removed: true,
+      cookies: livelibCookies.cookieStatus('livelib', userKey),
+    });
+  } catch (err) {
+    next(mapError(err));
+  }
+});
+
 /** GET /api/books/import/status?id=... */
 router.get('/import/status', (req, res, next) => {
   try {

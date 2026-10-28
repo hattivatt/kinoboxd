@@ -231,6 +231,118 @@ test('startLivelibImport: a cookie paste forces a fresh job and is stored masked
   );
 });
 
+/**
+ * DELETE /api/books/import/livelib/cookies — the other half of plan B.
+ *
+ * The stored header is a secret the user lent us for one retry, so it must be
+ * removable through the API (no shell into the cache dir). Pinned here:
+ *   - 200 + masked `{present:false}` after a delete, file really gone,
+ *     `/profiles` reports `cookies.present === false`;
+ *   - a second delete is a 404 `cookies_not_found` (not a silent 200);
+ *   - a missing/odd `userKey` is a 400 and touches nothing;
+ *   - a delete during a running import of that profile is 409 rather than a
+ *     claim the job would contradict;
+ *   - the response never echoes the header value or cookie names.
+ */
+test('DELETE cookies: removes the file, 404 when absent, 400 on junk, 409 while importing', async (t) => {
+  const express = require('express');
+  const routes = require('../server/books/routes');
+  const app = express();
+  app.use(express.json());
+  app.use('/api/books', routes);
+  app.use((err, req, res, next) => {
+    res.status(err.status || err.statusCode || 500).json({ code: err.code, error: err.message });
+  });
+  const server = app.listen(6313);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = 'http://127.0.0.1:6313/api/books';
+
+  await cookies.saveCookies('livelib', 'Deletable', '__ddg1_=secret1; __ddg2_=secret2', {
+    now: '2026-10-28T11:00:00.000Z',
+  });
+  // The profile document is what /profiles lists; cookies are a side store.
+  await bookCache.saveProfile('livelib', 'Deletable', {
+    schemaVersion: 1,
+    source: 'livelib',
+    userKey: 'Deletable',
+    importedAt: new Date().toISOString(),
+    events: [{ id: 'll:1', sourceBookId: '1', title: 'One', status: 'read', finishedAt: '2024-01-01' }],
+    warnings: [],
+  });
+  const filePath = cookies.cookiePath('livelib', 'Deletable');
+  assert.equal(fs.existsSync(filePath), true);
+
+  const removed = await fetch(`${base}/import/livelib/cookies?userKey=Deletable`, {
+    method: 'DELETE',
+  });
+  assert.equal(removed.status, 200);
+  const removedBody = await removed.json();
+  assert.equal(removedBody.removed, true);
+  assert.equal(removedBody.source, 'livelib');
+  assert.equal(removedBody.userKey, 'Deletable');
+  assert.deepEqual(removedBody.cookies, { present: false, savedAt: null, count: 0 });
+  assert.equal(JSON.stringify(removedBody).includes('secret1'), false);
+  assert.equal(JSON.stringify(removedBody).includes('__ddg'), false);
+  assert.equal(fs.existsSync(filePath), false);
+  // In-memory entry is gone too (no stale re-read).
+  assert.equal(cookies.getCookies('livelib', 'Deletable'), null);
+
+  // The profile survives, its cookie flag does not.
+  const profiles = await (await fetch(`${base}/profiles`)).json();
+  const entry = profiles.profiles.find((profile) => profile.key === 'livelib-Deletable');
+  assert.ok(entry, 'profile document must not be deleted together with its cookies');
+  assert.deepEqual(entry.cookies, { present: false, savedAt: null, count: 0 });
+
+  // Second delete: explicitly 404, so the UI can tell "already gone".
+  const again = await fetch(`${base}/import/livelib/cookies?userKey=Deletable`, {
+    method: 'DELETE',
+  });
+  assert.equal(again.status, 404);
+  assert.equal((await again.json()).code, 'cookies_not_found');
+
+  // Missing / malformed userKey: 400, and the store of another profile is intact.
+  await cookies.saveCookies('livelib', 'Untouched', '__ddg1_=keepme');
+  const missing = await fetch(`${base}/import/livelib/cookies`, { method: 'DELETE' });
+  assert.equal(missing.status, 400);
+  assert.equal((await missing.json()).code, 'user_key_required');
+  for (const junk of ['../../etc/passwd', 'a b', 'x'.repeat(121)]) {
+    const bad = await fetch(
+      `${base}/import/livelib/cookies?userKey=${encodeURIComponent(junk)}`,
+      { method: 'DELETE' }
+    );
+    assert.equal(bad.status, 400, `userKey ${JSON.stringify(junk)}`);
+    assert.equal((await bad.json()).code, 'invalid_user_key');
+  }
+  assert.equal(cookies.cookieStatus('livelib', 'Untouched').present, true);
+
+  // A delete while this profile's import is in flight is a 409.
+  await cookies.saveCookies('livelib', 'Deleting', '__ddg1_=busy');
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  livelib.importLivelib = async () => {
+    await gate;
+    throw new livelib.LivelibError('LiveLib ограничил доступ (HTTP 403).', 'livelib_blocked');
+  };
+  const job = importJobs.startLivelibImport('Deleting', { force: true });
+  assert.equal(job.done, false);
+  const conflict = await fetch(`${base}/import/livelib/cookies?userKey=Deleting`, {
+    method: 'DELETE',
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).code, 'livelib_import_running');
+  assert.equal(cookies.cookieStatus('livelib', 'Deleting').present, true);
+
+  release();
+  await importJobs.idle();
+  assert.equal(importJobs.getStatus(job.id).stage, 'failed');
+  // …and after the job finished the delete goes through.
+  const after = await fetch(`${base}/import/livelib/cookies?userKey=Deleting`, { method: 'DELETE' });
+  assert.equal(after.status, 200);
+  assert.equal(cookies.cookieStatus('livelib', 'Deleting').present, false);
+});
+
 test('startLivelibImport rejects a malformed paste synchronously', () => {
   assert.throws(
     () => importJobs.startLivelibImport('Broken', { cookieHeader: 'no-equals-sign' }),
