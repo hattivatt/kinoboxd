@@ -10,11 +10,13 @@
  */
 
 const express = require('express');
+const multer = require('multer');
 
 const { HttpError } = require('../upload');
 const config = require('../config');
 const bookCache = require('./book-cache');
 const importJobs = require('./import');
+const livelibFile = require('./livelib-file');
 const {
   buildBooksStats,
   listUnmatched,
@@ -31,6 +33,9 @@ const router = express.Router();
 function mapError(err) {
   if (err instanceof HttpError) return err;
   if (err instanceof livelibCookies.CookieError) {
+    return new HttpError(400, err.message, err.code);
+  }
+  if (err instanceof livelibFile.LivelibFileError) {
     return new HttpError(400, err.message, err.code);
   }
   if (err instanceof LivelibError) {
@@ -181,6 +186,192 @@ router.post('/import/hardcover', (req, res, next) => {
     next(mapError(err));
   }
 });
+
+/* ------------------------------------------------------------------ */
+/* LiveLib export FILE import (livelib-backup)                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Multipart limits: one file. A `livelib-backup` export of 1 245 books with
+ * every column ticked is ~2–4 MB of JSON, so 24 MB leaves plenty of room while
+ * still refusing an accidental database dump.
+ */
+const FILE_IMPORT_MAX_BYTES = 24 * 1024 * 1024;
+const fileUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: FILE_IMPORT_MAX_BYTES, files: 1 },
+});
+
+/** Accept `Margaret`, `@Margaret`, `/reader/Margaret` or `livelib-Margaret`. */
+function parseImportUserKey(body) {
+  const raw = body && (body.username || body.userKey || body.profileKey);
+  let value = typeof raw === 'string' ? raw.trim() : '';
+  if (!value) return '';
+  const fromUrl = /\/(?:reader|users)\/([^/?#]+)/.exec(value);
+  if (fromUrl) value = fromUrl[1];
+  value = value.replace(/^@/, '');
+  const fromKey = /^livelib-(.+)$/i.exec(value);
+  if (fromKey) value = fromKey[1];
+  return value.trim();
+}
+
+/**
+ * POST /api/books/import/livelib-file — multipart
+ *
+ *   file      required  JSON (or CSV) export of livelib-backup
+ *   username  required when the profile is new; LiveLib reader name
+ *             (aliases: `userKey`, `profileKey` = `livelib-<name>`)
+ *   shelf     read|dnf|reading|wish (RU labels accepted); sniffed from the
+ *             filename (`livelib-margaret-read-28.10.2026.json`) when omitted
+ *   resolve   1 = also run the metadata chain (network, optional)
+ *
+ * **No request ever leaves the server for livelib.ru**: this is the safe path
+ * (see §9 «ban risk»). The parsed rows are merged into
+ * `profiles/livelib-{userKey}.json` with `origin: 'livelib-file'`; an event
+ * never loses a date it already had, and a shelf upload is additive, so the
+ * four pages can be imported in any order.
+ *
+ * The response is single-shot (no job to poll): counts, shelf tallies and the
+ * parser warnings. `resolve: 1` starts the usual background enrichment job,
+ * whose progress the dashboard already shows as «Метадата: N%».
+ */
+router.post('/import/livelib-file', (req, res, next) => {
+  fileUpload.single('file')(req, res, (uploadError) => {
+    if (uploadError) {
+      if (uploadError.code === 'LIMIT_FILE_SIZE') {
+        return next(
+          new HttpError(
+            413,
+            `Файл больше ${Math.round(FILE_IMPORT_MAX_BYTES / (1024 * 1024))} МБ.`,
+            'file_too_large'
+          )
+        );
+      }
+      return next(
+        new HttpError(400, `Не удалось принять файл: ${uploadError.message}`, 'upload_failed')
+      );
+    }
+    handleLivelibFileImport(req, res).catch((err) => next(mapError(err)));
+  });
+});
+
+async function handleLivelibFileImport(req, res) {
+  const file = req.file;
+  if (!file || !file.buffer || file.buffer.length === 0) {
+    throw new HttpError(
+      400,
+      'Форма должна содержать файл экспорта в поле "file" (.json или .csv).',
+      'file_required'
+    );
+  }
+
+  const body = req.body || {};
+  const userKey = parseImportUserKey(body);
+  if (!userKey) {
+    throw new HttpError(
+      400,
+      'Укажите имя пользователя LiveLib (поле "username"), чтобы файл попал в нужный профиль.',
+      'username_required'
+    );
+  }
+  if (!/^[\w.-]{1,64}$/.test(userKey)) {
+    throw new HttpError(
+      400,
+      'Имя пользователя LiveLib: латиница, цифры, «_», «.», «-» (до 64 символов).',
+      'invalid_user_key'
+    );
+  }
+
+  const shelfField = typeof body.shelf === 'string' ? body.shelf.trim() : '';
+  let shelf = null;
+  if (shelfField) {
+    shelf = livelibFile.shelfOf(shelfField);
+    if (!shelf) {
+      throw new HttpError(
+        400,
+        `Неизвестная полка "${shelfField}". Допустимо: ${livelibFile.SHELVES.join(', ')} ` +
+          'или «Прочитал»/«Не дочитал»/«Читаю сейчас»/«Хочу прочитать».',
+        'invalid_shelf'
+      );
+    }
+  }
+
+  if (importJobs.isRunning('livelib', userKey)) {
+    throw new HttpError(
+      409,
+      'Импорт этого профиля с сайта уже выполняется — дождитесь завершения, чтобы файл и скрап не перезаписывали друг друга.',
+      'livelib_import_running'
+    );
+  }
+
+  // Pure parsing: `livelib-file.js` makes no network request.
+  const parsed = livelibFile.parseExportFile(file.buffer, {
+    filename: file.originalname,
+    shelf,
+  });
+  const resolvedShelf = parsed.shelf || shelf;
+  if (!resolvedShelf) {
+    throw new HttpError(
+      400,
+      'Не удалось определить полку файла. Передайте поле "shelf" ' +
+        `(${livelibFile.SHELVES.join('|')}) — сервис экспортирует одну страницу за раз, ` +
+        'и в самом файле её названия нет.',
+      'shelf_required'
+    );
+  }
+
+  const existing = bookCache.getProfile('livelib', userKey);
+  const merged = livelibFile.mergeFileIntoProfile(existing, {
+    userKey,
+    books: parsed.books,
+    shelf: resolvedShelf,
+    format: parsed.format,
+    filename: file.originalname,
+  });
+
+  await bookCache.saveProfile('livelib', userKey, merged.profile);
+  await bookCache.saveRawImport('livelib', userKey, {
+    totals: parsed.stats,
+    shelf: resolvedShelf,
+    format: parsed.format,
+    origin: livelibFile.ORIGIN,
+    added: merged.added,
+    enriched: merged.enriched,
+    skipped: merged.skipped,
+    importedAt: merged.profile.importedAt,
+  });
+
+  const resolveJob = body.resolve === true || ['1', 'true', 'yes', 'on'].includes(
+    String(body.resolve || '').trim().toLowerCase()
+  )
+    ? importJobs.startResolveJob()
+    : null;
+
+  console.log(
+    `[books-import livelib-file] ${userKey}/${resolvedShelf}: ${parsed.books.length} rows, ` +
+      `+${merged.added} new, ${merged.enriched} enriched, ${merged.skipped} unchanged ` +
+      `(${parsed.format}, ${parsed.stats.withIsbn} isbn)`
+  );
+
+  res.status(201).json({
+    ok: true,
+    source: 'livelib',
+    userKey,
+    profileKey: `livelib-${userKey}`,
+    origin: livelibFile.ORIGIN,
+    shelf: resolvedShelf,
+    format: parsed.format,
+    imported: parsed.books.length,
+    added: merged.added,
+    enriched: merged.enriched,
+    skipped: merged.skipped,
+    events: merged.profile.events.length,
+    shelves: merged.profile.shelves,
+    stats: parsed.stats,
+    warnings: parsed.warnings,
+    resolve: resolveJob ? { jobId: resolveJob.id, stage: resolveJob.stage } : null,
+  });
+}
 
 /**
  * DELETE /api/books/import/livelib/cookies?userKey=Margaret

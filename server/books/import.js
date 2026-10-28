@@ -22,6 +22,7 @@ const bookCache = require('./book-cache');
 const hardcover = require('./hardcover');
 const livelib = require('./livelib');
 const livelibCookies = require('./livelib-cookies');
+const livelibFile = require('./livelib-file');
 const resolve = require('./resolve');
 
 const jobs = new Map();
@@ -403,6 +404,16 @@ function startLivelibImport(username, options = {}) {
       });
 
       profile = result.profile;
+      // A scrape rebuilds the document from the «Прочитал» page only. Keep the
+      // plan/abandoned shelves a file import contributed (they are never
+      // scraped) and the file-import audit trail.
+      const carried = livelibFile.preserveFileState(cached, profile);
+      if (carried.preserved > 0) {
+        profile = carried.profile;
+        console.log(
+          `[books-import ${job.id}] kept ${carried.preserved} file-import event(s) of plan shelves`
+        );
+      }
       await bookCache.saveProfile('livelib', cleanUsername, profile);
       await bookCache.saveRawImport('livelib', cleanUsername, {
         totals: result.totals,
@@ -666,6 +677,51 @@ function startHardcoverImport(userId) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Resolve-only job (file import enrichment)                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Optional metadata enrichment for a `livelib-file` import.
+ *
+ * Importing the export file itself is pure parsing — zero network requests is
+ * the whole point. The user may still ask for the metadata chain (Hardcover →
+ * Литрес → GB → OL → LiveLib card) so a work gets a canonical `hc:` id,
+ * series/author ids and pages. That pass is the same one a scraped import runs,
+ * so it reuses `resolveAllLivelibProfiles` and the regular job bookkeeping
+ * (`getResolveState` drives the «Метадата: N%» badge while it runs).
+ */
+function startResolveJob() {
+  const running = [...jobs.values()].find(
+    (job) => job && job.source === 'livelib' && !job.done && job.stage === 'resolve'
+  );
+  if (running) return publicStatus(running);
+
+  const job = {
+    id: newJobId('resolve', 'livelib'),
+    source: 'livelib',
+    userKey: 'all',
+    stage: 'queued',
+    page: 0,
+    pageTotal: null,
+    events: 0,
+    done: false,
+    reused: false,
+    force: false,
+    error: null,
+    warning: null,
+    startedAt: Date.now(),
+  };
+  rememberJob(job);
+
+  enqueue(job, async () => {
+    const report = await resolveAllLivelibProfiles(job, {});
+    job.events = report.total || 0;
+  });
+
+  return publicStatus(job);
+}
+
+/* ------------------------------------------------------------------ */
 /* Status                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -762,6 +818,7 @@ function getResolveState(source, userKey) {
 module.exports = {
   startLivelibImport,
   startHardcoverImport,
+  startResolveJob,
   getStatus,
   publicStatus,
   maskSession,

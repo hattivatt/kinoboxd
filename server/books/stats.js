@@ -289,8 +289,32 @@ function keepHardcoverProfileEvent(event) {
   return HARDCOVER_PROFILE_STATUS_LABELS.includes(label);
 }
 
+/**
+ * Does this raw event carry a shelf (`read`/`dnf`/`reading`/`wish`)?
+ *
+ * File imports (`livelib-file`) keep the shelf the user exported: «Прочитал»
+ * and «Не дочитал» are reading history, «Читаю сейчас»/«Хочу прочитать» are
+ * plans and never join the read statistics. Scraped LiveLib events have no
+ * shelf at all (the source only exposes the "read" collection), so they are
+ * never filtered — that is why the filter key is the event, not the source.
+ */
+const SHELF_LABELS = ['read', 'dnf', 'reading', 'wish'];
+const READ_SHELF_LABELS = ['read', 'dnf'];
+
+function shelfOfEvent(event) {
+  const shelf = String((event && event.shelf) || '').trim().toLowerCase();
+  return SHELF_LABELS.includes(shelf) ? shelf : null;
+}
+
+/** Keep only reading-history shelves (read/dnf); plans are not statistics. */
+function keepShelfProfileEvent(event) {
+  const shelf = shelfOfEvent(event);
+  if (!shelf) return true;
+  return READ_SHELF_LABELS.includes(shelf);
+}
+
 function emptyStatusFilter() {
-  return { excluded: 0, byStatus: {}, missingStatusId: 0 };
+  return { excluded: 0, byStatus: {}, missingStatusId: 0, shelfExcluded: 0, byShelf: {} };
 }
 
 function recordStatusExclusion(filter, event) {
@@ -318,6 +342,18 @@ function prepareEvents(profiles) {
         recordStatusExclusion(statusFilter, raw);
         profileAudit.excluded++;
         if (legacyStatus) profileAudit.missingStatusId++;
+        continue;
+      }
+      // File import: «Читаю сейчас» / «Хочу прочитать» are plans, not history.
+      // The events stay in the profile file (a future watchlist UI reads them)
+      // but never reach bookCount/genres/timeline.
+      if (!keepShelfProfileEvent(raw)) {
+        const shelf = shelfOfEvent(raw);
+        statusFilter.excluded++;
+        statusFilter.shelfExcluded++;
+        statusFilter.byShelf[shelf || 'unknown'] = (statusFilter.byShelf[shelf || 'unknown'] || 0) + 1;
+        profileAudit.excluded++;
+        profileAudit.shelfExcluded = (profileAudit.shelfExcluded || 0) + 1;
         continue;
       }
       if (legacyStatus && source === 'hardcover') profileAudit.missingStatusId++;
@@ -443,10 +479,65 @@ function mangaOfDetails(details, genres, series, publisher) {
   return typeof details.mangaComics === 'boolean' ? details.mangaComics : null;
 }
 
+/** Per-shelf counts of a profile document (read/dnf/reading/wish). */
+function profileShelfCounts(events) {
+  const counts = { read: 0, dnf: 0, reading: 0, wish: 0 };
+  const list = Array.isArray(events) ? events : [];
+  for (const event of list) {
+    if (!event) continue;
+    const shelf = shelfOfEvent(event);
+    if (shelf) counts[shelf]++;
+    else counts.read++;
+  }
+  return counts;
+}
+
+/**
+ * Metadata carried by `livelib-backup` file events themselves.
+ *
+ * The export can include «Жанры», «Издатель», «Дата издания», «Язык»,
+ * «Серия», «ISBN» — the same fields the resolve chain would fetch. When they
+ * are present they are used directly: a file-imported profile renders genres,
+ * series and publishers without a single network request (the point of the
+ * safe path). The chain still wins when a details document exists, and
+ * `metadataSources` says which one it was.
+ */
+function fileMetadataOf(events) {
+  const empty = { present: false, genres: [], series: [], isbn13: null, isbn10: null, language: null };
+  const rows = (events || []).filter((event) => event && event.origin === 'livelib-file');
+  if (!rows.length) return empty;
+
+  const genres = [];
+  const series = [];
+  let isbn13 = null;
+  let isbn10 = null;
+  let language = null;
+  for (const event of rows) {
+    for (const name of Array.isArray(event.genres) ? event.genres : []) {
+      const clean = String(name || '').trim();
+      if (clean && !genres.includes(clean)) genres.push(clean);
+    }
+    const edition = event.edition && typeof event.edition === 'object' ? event.edition : {};
+    const seriesName = String(edition.series || '').trim();
+    if (seriesName && !series.some((entry) => entry.name === seriesName)) {
+      series.push({ hcId: null, name: seriesName, position: null });
+    }
+    if (!isbn13 && edition.isbn13) isbn13 = String(edition.isbn13);
+    if (!isbn13 && edition.isbn) isbn13 = String(edition.isbn);
+    if (!isbn10 && edition.isbn10) isbn10 = String(edition.isbn10);
+    if (!language && edition.language) language = String(edition.language);
+  }
+  return { present: true, genres, series, isbn13, isbn10, language };
+}
+
 function workMetadata(workId, events) {
   const hcEvents = events.filter((event) => event.source === 'hardcover');
   const llEvents = events.filter((event) => event.source === 'livelib');
   const details = bookCache.getWorkDetails(workId);
+  // Bibliographic columns of a `livelib-backup` file export (genres,
+  // publisher, series, language, ISBN) are already in the file, so a
+  // file-imported profile does not have to wait for the metadata chain.
+  const fileMeta = fileMetadataOf(events);
 
   const latest = (list, field) =>
     list.reduce((best, event) => laterDate(best, event[field]), null);
@@ -489,8 +580,10 @@ function workMetadata(workId, events) {
     details && details.pages != null && Number.isFinite(Number(details.pages)) && Number(details.pages) > 0
       ? Number(details.pages)
       : null;
-  const genres = details && Array.isArray(details.genres) ? [...details.genres] : [];
-  const series = detailsSeries(details);
+  const genres = details && Array.isArray(details.genres) && details.genres.length
+    ? [...details.genres]
+    : fileMeta.genres;
+  const series = detailsSeries(details).length ? detailsSeries(details) : fileMeta.series;
   const coverUrl =
     (details && details.coverUrl) ||
     (displayEvent && displayEvent.coverUrl) ||
@@ -526,6 +619,7 @@ function workMetadata(workId, events) {
   }
 
   const metadataSources = metadataSourcesOf(details);
+  if (!metadataSources.length && fileMeta.present) metadataSources.push('livelib-file');
 
   return {
     workId,
@@ -538,8 +632,9 @@ function workMetadata(workId, events) {
     year: Number.isFinite(Number(year)) ? Number(year) : null,
     pages,
     coverUrl,
-    isbn13: (details && details.isbn13) || null,
-    isbn10: (details && details.isbn10) || null,
+    isbn13: (details && details.isbn13) || fileMeta.isbn13 || null,
+    isbn10: (details && details.isbn10) || fileMeta.isbn10 || null,
+    language: (details && details.editionLanguage) || fileMeta.language || null,
     metadataSources,
     mangaComics: mangaOfDetails(details, genres, series, publisher),
     details,
@@ -549,7 +644,9 @@ function workMetadata(workId, events) {
     // simply the rating of the profile's own event(s).
     rating10: hcWithRating ? hcWithRating.rating10 : llEvents.find((e) => e.rating10 != null)?.rating10 ?? null,
     sources: [...new Set(events.map((event) => event.source))].sort(),
-    unresolved: !details,
+    // "Unresolved" means "no metadata at all": a details document from the
+    // chain or the columns of a file export both count.
+    unresolved: !details && !fileMeta.present,
   };
 }
 
@@ -971,7 +1068,12 @@ function buildBooksStats(options = {}) {
     mangaOverrides: manualManga.size,
     // Events dropped at aggregation time because their Hardcover journal
     // status is not part of the reading profile (wish/reading/paused).
-    hardcoverStatusExcluded: prepared.statusFilter.excluded,
+    hardcoverStatusExcluded: prepared.statusFilter.excluded - prepared.statusFilter.shelfExcluded,
+    // File import (`livelib-backup`): «Читаю сейчас»/«Хочу прочитать» are plans,
+    // not history. They stay in the profile file for a future watchlist UI.
+    shelfExcluded: prepared.statusFilter.shelfExcluded,
+    // What the profile document holds per shelf (after the filter above).
+    shelves: profileShelfCounts(profile.events),
     includeMangaComics,
     avgRating: mean(ratedWorks.map((work) => work.rating10)),
     avgPages: pagesWorks.length
@@ -1266,6 +1368,9 @@ function buildBooksStats(options = {}) {
         key: profileKeyOf(profile),
         source: profile.source,
         userKey: profile.userKey,
+        // How the profile was acquired: `livelib` (scrape) or `livelib-file`
+        // (livelib-backup export). Same key contract either way.
+        origin: profile.origin || profile.source,
         importedAt: profile.importedAt || null,
         eventCount: profile.events.length,
       },
@@ -1297,21 +1402,29 @@ function buildBooksStats(options = {}) {
         byStatus: prepared.statusFilter.byStatus,
         keepStatusIds: HARDCOVER_PROFILE_STATUS_IDS,
         legacyExcluded: prepared.statusFilter.missingStatusId,
+        // Plan shelves of a file import (reading/wish) — excluded from the
+        // reading statistics on purpose, kept in the profile document.
+        shelfExcluded: prepared.statusFilter.shelfExcluded,
+        byShelf: prepared.statusFilter.byShelf,
+        keepShelves: READ_SHELF_LABELS,
       },
       profiles: profiles.map((entry) => {
         const audit = prepared.profileStatus.get(`${entry.source}:${entry.userKey}`) || {
           kept: entry.events.length,
           excluded: 0,
           missingStatusId: 0,
+          shelfExcluded: 0,
         };
         return {
           key: `${entry.source}-${entry.userKey}`,
           source: entry.source,
           userKey: entry.userKey,
+          origin: entry.origin || entry.source,
           importedAt: entry.importedAt || null,
           events: entry.events.length,
           keptEvents: audit.kept,
           statusExcluded: audit.excluded,
+          shelfExcluded: audit.shelfExcluded || 0,
           // Events without `statusId` come from imports made before the
           // journal schema learned the raw status; a Hardcover re-import
           // refresh is advised (the label fallback keeps the numbers honest
@@ -1413,6 +1526,9 @@ module.exports = {
   resolveProfileScope,
   selectProfiles,
   keepHardcoverProfileEvent,
+  keepShelfProfileEvent,
+  shelfOfEvent,
+  READ_SHELF_LABELS,
   prepareEvents,
   workMetadata,
   canonicalKeyOf,

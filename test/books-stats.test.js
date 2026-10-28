@@ -162,6 +162,8 @@ test('a LiveLib profile aggregates only its own events (metadata may come from H
     key: 'livelib-tester',
     source: 'livelib',
     userKey: 'tester',
+    // Acquisition path: a scraped profile reports its source as origin.
+    origin: 'livelib',
     importedAt: '2026-10-27T00:00:00.000Z',
     eventCount: 3,
   });

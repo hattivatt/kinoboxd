@@ -180,10 +180,16 @@ function listProfiles() {
     result.push({
       source: data.source,
       userKey: data.userKey,
+      // Acquisition path of the document: `livelib` (scrape) or
+      // `livelib-file` (livelib-backup export). Same profile key either way.
+      origin: data.origin || data.source,
       sourceUserId: data.sourceUserId == null ? null : data.sourceUserId,
       importedAt: data.importedAt || null,
       eventCount: events.length,
       finishedCount: events.filter((event) => event && event.finishedAt).length,
+      // Per-shelf counts of a file import (read/dnf/reading/wish).
+      shelves: data.shelves || null,
+      fileImports: Array.isArray(data.fileImports) ? data.fileImports.length : 0,
       missingStatusId,
       needsReimport: data.source === 'hardcover' && missingStatusId > 0,
       status: 'ok',
