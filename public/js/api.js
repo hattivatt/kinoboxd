@@ -222,18 +222,19 @@ export function startBooksImportHardcover(userId, { signal } = {}) {
  *
  * Multipart, single shot: the server parses the file and merges it into
  * `livelib-{username}`, returning `201 { added, enriched, skipped, shelves,
- * warnings }`. Nothing is scraped, so there is no job to poll.
+ * warnings, resolve }`. Nothing is scraped — no request goes to livelib.ru.
  *
  * `shelf` is `read`/`dnf`/`reading`/`wish`; when empty the server sniffs it from
  * the file name (`livelib-{user}-{pagename}-{date}.json`).
- * `resolve: true` additionally starts the metadata chain in the background —
- * off by default, because the point of the file is "no network".
+ * `resolve` defaults to TRUE: the metadata chain (Hardcover → Литрес → GB → OL)
+ * runs in the background, so pages/series/editions arrive without a second
+ * click. `resolve: false` sends an explicit `resolve=0` — the offline opt-out.
  */
-export function importBooksLivelibFile({ file, username, shelf = '', resolve = false, signal } = {}) {
+export function importBooksLivelibFile({ file, username, shelf = '', resolve = true, signal } = {}) {
   const body = new FormData();
   body.append('username', username == null ? '' : String(username));
   if (shelf) body.append('shelf', String(shelf));
-  if (resolve) body.append('resolve', '1');
+  body.append('resolve', resolve ? '1' : '0');
   // A File object keeps its name (used for the shelf sniffing and the audit).
   body.append('file', file, file && file.name ? file.name : 'livelib-export.json');
   return request('/api/books/import/livelib-file', { method: 'POST', body, signal });

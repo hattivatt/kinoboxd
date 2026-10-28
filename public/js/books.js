@@ -1421,10 +1421,12 @@ function renderFileImportResult(result) {
 }
 
 /**
- * Upload one exported shelf. Multipart, one shot: the server parses the file,
- * merges it into `livelib-{username}` and answers 201 with the counts. Nothing
- * is scraped, so there is no job/progress screen — the dashboard simply
- * refreshes from the merged profile.
+ * Upload one exported shelf. Multipart, one shot for the parse: the server
+ * merges the file into `livelib-{username}` and answers 201 with the counts.
+ * Nothing is scraped from livelib.ru, but the metadata chain (Hardcover /
+ * Литрес / GB / OL) starts automatically after the merge — the same background
+ * resolve job a scraped import runs. Its progress is the «Метадата: N%» badge,
+ * and the stats poller re-renders quietly while it is alive.
  */
 async function submitFileImport() {
   if (state.fileImport.busy) return;
@@ -1471,7 +1473,9 @@ async function submitFileImport() {
       file,
       username,
       shelf: text(shelfInput && shelfInput.value),
-      resolve: Boolean(resolveInput && resolveInput.checked),
+      // Default ON (the file import always enriches); the checkbox is the
+      // explicit opt-out for an offline import.
+      resolve: !resolveInput || resolveInput.checked,
     });
     renderFileImportResult(result);
     // The browser registry owns the switcher entry; the server owns the events.
