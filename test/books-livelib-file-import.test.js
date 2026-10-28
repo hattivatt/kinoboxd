@@ -263,3 +263,134 @@ test('livelib-file import: explicit 400/409 instead of a silent ignore', async (
   await importJobs.idle();
   assert.equal(importJobs.getStatus(job.id).stage, 'failed');
 });
+
+/**
+ * «Обновить» for a LiveLib profile is a re-upload, so the interesting case is a
+ * *changed* export: new rows appear, and the events that are already there keep
+ * their resolved work link, exact date and curated columns. A second upload of
+ * the same document must stay a no-op (`added: 0`), which is what makes the
+ * button safe to press twice.
+ */
+test('livelib-file refresh: a newer export adds rows without touching resolved events', async () => {
+  const rows = JSON.parse(jsonFixture.toString('utf8'));
+  const first = await fetch(`${base}/import/livelib-file`, {
+    method: 'POST',
+    body: form({ username: 'RefreshProbe', file: Buffer.from(JSON.stringify(rows), 'utf8') }),
+  });
+  assert.equal(first.status, 201);
+  assert.equal((await first.json()).added, 3);
+
+  // Simulate the resolve pass: the first book is linked to a work and got an
+  // exact reading day from an older scrape.
+  const before = bookCache.getProfile('livelib', 'RefreshProbe');
+  const annihilation = before.events.find((event) => event.title === 'Аннигиляция');
+  annihilation.workId = 'hc:777';
+  annihilation.finishedAt = '2026-09-14';
+  annihilation.rating10 = 9;
+  await bookCache.saveProfile('livelib', 'RefreshProbe', before);
+
+  // The user reads two more books and exports again: same three rows + 2 new.
+  const newer = rows.concat([
+    {
+      title: 'Пикник на обочине (переиздание)',
+      bookHref: 'https://www.livelib.ru/book/1000999999-piknik-pereizdanie',
+      readDate: "Октябрь 2026 г.",
+      rating: { overall: '8.0', user: '4' },
+      authors: [{ name: 'Аркадий Стругацкий' }],
+    },
+    {
+      title: 'Трудно быть богом',
+      bookHref: 'https://www.livelib.ru/book/1000999998-trudno-byt-bogom',
+      readDate: '2019 г.',
+      rating: { overall: '9.0', user: '5' },
+      authors: [{ name: 'Аркадий Стругацкий' }],
+    },
+  ]);
+  const refresh = await fetch(`${base}/import/livelib-file`, {
+    method: 'POST',
+    body: form({
+      username: 'RefreshProbe',
+      file: Buffer.from(JSON.stringify(newer), 'utf8'),
+      filename: 'livelib-refreshprobe-read-29.10.2026.json',
+    }),
+  });
+  assert.equal(refresh.status, 201);
+  const refreshBody = await refresh.json();
+  assert.equal(refreshBody.imported, 5);
+  assert.deepEqual(
+    { added: refreshBody.added, skipped: refreshBody.skipped },
+    { added: 2, skipped: 3 }
+  );
+  assert.equal(refreshBody.events, 5);
+
+  const after = bookCache.getProfile('livelib', 'RefreshProbe');
+  const kept = after.events.find((event) => event.title === 'Аннигиляция');
+  assert.equal(kept.workId, 'hc:777', 'the resolved link must survive a refresh');
+  assert.equal(kept.finishedAt, '2026-09-14', 'an exact day must not be replaced by a month');
+  assert.equal(kept.rating10, 9);
+  assert.equal(after.fileImports.length, 2);
+  assert.equal(after.events.filter((event) => event.shelf === 'read').length, 5);
+
+  /* The same file again: nothing duplicates. */
+  const repeat = await fetch(`${base}/import/livelib-file`, {
+    method: 'POST',
+    body: form({
+      username: 'RefreshProbe',
+      file: Buffer.from(JSON.stringify(newer), 'utf8'),
+      filename: 'livelib-refreshprobe-read-29.10.2026.json',
+    }),
+  });
+  assert.equal(repeat.status, 201);
+  const repeatBody = await repeat.json();
+  assert.deepEqual(
+    { added: repeatBody.added, skipped: repeatBody.skipped },
+    { added: 0, skipped: 5 }
+  );
+  assert.equal(bookCache.getProfile('livelib', 'RefreshProbe').events.length, 5);
+});
+
+/**
+ * Two overlapping uploads of ONE profile must not both merge: the second write
+ * would drop the first upload's rows. The route answers 409 instead.
+ */
+test('livelib-file refresh: a concurrent upload of the same profile is a 409', async (t) => {
+  const realSave = bookCache.saveProfile;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  bookCache.saveProfile = async (...args) => {
+    if (args[1] === 'ConcurrentProbe') await gate;
+    return realSave.apply(bookCache, args);
+  };
+  t.after(() => {
+    bookCache.saveProfile = realSave;
+    release();
+  });
+
+  const slow = fetch(`${base}/import/livelib-file`, {
+    method: 'POST',
+    body: form({ username: 'ConcurrentProbe' }),
+  });
+  // Give the first request time to pass validation and reach the merge lock.
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  const second = await fetch(`${base}/import/livelib-file`, {
+    method: 'POST',
+    body: form({ username: 'ConcurrentProbe' }),
+  });
+  assert.equal(second.status, 409);
+  assert.equal((await second.json()).code, 'livelib_import_running');
+
+  release();
+  const first = await slow;
+  assert.equal(first.status, 201);
+  assert.equal((await first.json()).added, 3);
+  // The lock is released: the next upload is accepted, not stuck behind it.
+  const third = await fetch(`${base}/import/livelib-file`, {
+    method: 'POST',
+    body: form({ username: 'ConcurrentProbe' }),
+  });
+  assert.equal(third.status, 201);
+  assert.equal((await third.json()).added, 0);
+});

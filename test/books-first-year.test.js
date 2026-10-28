@@ -421,15 +421,83 @@ test('the unknown bucket sits after every real decade and sane bounds are enforc
 
 function fakeProvider(source, result) {
   const calls = [];
+  const options = [];
   return {
     NAME: source,
     calls,
-    async getWork(input) {
+    options,
+    async getWork(input, opts) {
       calls.push(input);
+      options.push(opts || {});
       return typeof result === 'function' ? result(input) : result;
     },
   };
 }
+
+test('the backfill asks Hardcover only for a work-level first-publication claim', async () => {
+  // Legacy schema-1 document: only an edition year. The loose normaliser used by
+  // the resolve pass bridges it for display; the backfill must not.
+  assert.equal(
+    hardcoverProvider.normalizeDetails({ hcWorkId: 7, title: 'Legacy', publicationYear: 2013 }, null)
+      .firstPublishedYear,
+    2013
+  );
+  assert.equal(
+    hardcoverProvider.normalizeDetails(
+      { hcWorkId: 7, title: 'Legacy', publicationYear: 2013 },
+      null,
+      { requireWorkClaim: true }
+    ).firstPublishedYear,
+    null
+  );
+  assert.equal(
+    hardcoverProvider.normalizeDetails(
+      { hcWorkId: 8, title: 'Fresh', publicationYear: 2013, firstPublishedYear: 1909 },
+      null,
+      { requireWorkClaim: true }
+    ).firstPublishedYear,
+    1909
+  );
+
+  await bookCache.saveDetails(bookCache.detailsKeyForWork('lr:9600'), {
+    schemaVersion: 2,
+    workId: 'lr:9600',
+    title: 'Издание без первоисточника',
+    publicationYear: 2013,
+  });
+  const fakeHc = fakeProvider('hardcover', null);
+  await yearsBackfill.backfill({
+    ids: ['lr:9600'],
+    hardcoverProvider: fakeHc,
+    litresProvider: fakeProvider('litres', null),
+    openlibraryProvider: fakeProvider('openlibrary', null),
+    log: () => {},
+    sleep: noSleep,
+    pause: 0,
+  });
+  // No ISBN on this document, but a Cyrillic title: Литрес is asked, Hardcover
+  // is skipped (no ISBN). The strict flag is asserted where it is passed.
+  assert.equal(fakeHc.calls.length, 0);
+
+  await bookCache.saveDetails(bookCache.detailsKeyForWork('lr:9700'), {
+    schemaVersion: 2,
+    workId: 'lr:9700',
+    title: 'With isbn',
+    publicationYear: 2013,
+    isbn13: '9785000000123',
+  });
+  const strictHc = fakeProvider('hardcover', null);
+  await yearsBackfill.backfill({
+    ids: ['lr:9700'],
+    hardcoverProvider: strictHc,
+    litresProvider: fakeProvider('litres', null),
+    openlibraryProvider: fakeProvider('openlibrary', null),
+    log: () => {},
+    sleep: noSleep,
+    pause: 0,
+  });
+  assert.equal(strictHc.options[0].requireWorkClaim, true);
+});
 
 test('the backfill fills the missing year and leaves everything else intact', async () => {
   const doc = {
@@ -526,4 +594,112 @@ test('the backfill skips documents that already claim a year, and --dry-run writ
   assert.equal(dry.resolved[0].year, 1611);
   const untouched = bookCache.getWorkDetails('lr:9300');
   assert.equal(untouched.firstPublishedYear, undefined);
+});
+
+/**
+ * Idempotency of the metadata backfill.
+ *
+ * A book nobody knows a year for must not cost three provider requests on every
+ * run: the hopeless verdict is cached in the document itself
+ * (`firstPublishedYearCheckedAt`), and the next run is a pure cache scan. This
+ * is what makes the systemd oneshot safe to run repeatedly (and what the
+ * AGENTS.md politeness rules require).
+ */
+test('the backfill remembers a hopeless verdict and the next run asks nobody', async () => {
+  await bookCache.saveDetails(bookCache.detailsKeyForWork('lr:9400'), {
+    schemaVersion: 2,
+    workId: 'lr:9400',
+    title: 'Безымянная рукопись',
+    publicationYear: 2020,
+    isbn13: '9785000000000',
+  });
+  const silent = () => fakeProvider('silent', null);
+  const firstOl = silent();
+  const firstLitres = silent();
+  const firstHc = silent();
+  const firstRun = await yearsBackfill.backfill({
+    ids: ['lr:9400'],
+    openlibraryProvider: firstOl,
+    litresProvider: firstLitres,
+    hardcoverProvider: firstHc,
+    log: () => {},
+    sleep: noSleep,
+    pause: 0,
+    now: '2026-10-28T00:00:00.000Z',
+  });
+  assert.equal(firstRun.resolved.length, 0);
+  assert.equal(firstRun.unknown.length, 1);
+  assert.equal(firstLitres.calls.length, 1, 'the first run still asks Литрес');
+  const marked = bookCache.getWorkDetails('lr:9400');
+  assert.equal(marked.firstPublishedYear, undefined);
+  assert.equal(marked.firstPublishedYearCheckedAt, '2026-10-28T00:00:00.000Z');
+  assert.equal(marked.firstPublishedYearCheckedBy, 'none');
+
+  // Re-run a day later: the document is inside the recheck window, so not a
+  // single provider is called and the report says so.
+  const secondOl = silent();
+  const secondLitres = silent();
+  const secondHc = silent();
+  const secondRun = await yearsBackfill.backfill({
+    openlibraryProvider: secondOl,
+    litresProvider: secondLitres,
+    hardcoverProvider: secondHc,
+    log: () => {},
+    sleep: noSleep,
+    pause: 0,
+    now: '2026-10-29T00:00:00.000Z',
+  });
+  assert.equal(secondRun.skippedChecked >= 1, true);
+  const asked = [...secondLitres.calls, ...secondOl.calls, ...secondHc.calls]
+    .filter((input) => input && input.title === 'Безымянная рукопись');
+  assert.equal(asked.length, 0, 'a marked document must not reach a provider');
+
+  // `--force` (and an explicit `--ids`) is the operator's override.
+  await yearsBackfill.backfill({
+    ids: ['lr:9400'],
+    openlibraryProvider: silent(),
+    litresProvider: silent(),
+    hardcoverProvider: silent(),
+    log: () => {},
+    sleep: noSleep,
+    pause: 0,
+    now: '2026-10-29T00:00:00.000Z',
+  });
+
+  // After the window expires the document becomes a candidate again.
+  await yearsBackfill.backfill({
+    openlibraryProvider: silent(),
+    litresProvider: silent(),
+    hardcoverProvider: silent(),
+    log: () => {},
+    sleep: noSleep,
+    pause: 0,
+    recheckDays: 1,
+    now: '2026-11-30T00:00:00.000Z',
+  });
+  const stale = bookCache.getWorkDetails('lr:9400');
+  assert.equal(stale.firstPublishedYearCheckedAt, '2026-11-30T00:00:00.000Z');
+});
+
+test('the backfill dry run writes no negative marker', async () => {
+  await bookCache.saveDetails(bookCache.detailsKeyForWork('lr:9500'), {
+    schemaVersion: 2,
+    workId: 'lr:9500',
+    title: 'Черновик',
+    publicationYear: 2010,
+  });
+  const dry = await yearsBackfill.backfill({
+    ids: ['lr:9500'],
+    dryRun: true,
+    openlibraryProvider: fakeProvider('openlibrary', null),
+    litresProvider: fakeProvider('litres', null),
+    hardcoverProvider: fakeProvider('hardcover', null),
+    log: () => {},
+    sleep: noSleep,
+    pause: 0,
+    now: '2026-10-28T00:00:00.000Z',
+  });
+  assert.equal(dry.unknown.length, 1);
+  const doc = bookCache.getWorkDetails('lr:9500');
+  assert.equal(doc.firstPublishedYearCheckedAt, undefined);
 });

@@ -15,7 +15,7 @@ const { normalizeIsbn } = require('../normalize');
 const NAME = 'hardcover';
 
 /** Normalise a details document (journal/cache schema 1 or 2) to a provider result. */
-function normalizeDetails(details, editionId) {
+function normalizeDetails(details, editionId, options = {}) {
   if (!details) return null;
   const series = Array.isArray(details.series) && details.series.length
     ? { name: details.series[0].name || null, position: details.series[0].position ?? null }
@@ -47,10 +47,15 @@ function normalizeDetails(details, editionId) {
     // schema-1 documents have no such field; their `publicationYear` also
     // prefers `book.release_year` over the edition, so it is the same value —
     // used as a fallback only until the document is refreshed.
+    //
+    // `requireWorkClaim: true` is the strict mode the year backfill uses: the
+    // product rule is "first publication or «год неизвестен»", so a document
+    // that only has an edition year must contribute nothing at all instead of
+    // smuggling that edition year into the chart.
     firstPublishedYear:
       details.firstPublishedYear != null
         ? Number(details.firstPublishedYear)
-        : details.publicationYear == null
+        : options.requireWorkClaim === true || details.publicationYear == null
         ? null
         : Number(details.publicationYear),
     publisher: details.publisher || null,
@@ -104,7 +109,9 @@ async function getWork(input = {}, options = {}) {
   if (!found || !(found.byIsbn instanceof Map)) return null;
   const entry = found.byIsbn.get(isbn) || [...found.byIsbn.values()][0];
   if (!entry || !entry.details) return null;
-  return normalizeDetails(entry.details, entry.editionId);
+  return normalizeDetails(entry.details, entry.editionId, {
+    requireWorkClaim: options.requireWorkClaim === true,
+  });
 }
 
 module.exports = {

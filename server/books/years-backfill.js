@@ -30,6 +30,13 @@
  *   BOOKS_LITRES_BUDGET=40 node server/books/years-backfill.js --limit 20 --dry-run
  *   BOOKS_LITRES_BUDGET=40 node server/books/years-backfill.js --limit 20
  *   node server/books/years-backfill.js --ids lr:73939817,ol:OL37431263W
+ *
+ * Negative cache: a document nobody could answer for is marked with
+ * `firstPublishedYearCheckedAt` (+ `firstPublishedYearCheckedBy`), and the next
+ * run inside `DEFAULT_RECHECK_DAYS` skips it without a single request. Without
+ * that marker a re-run would re-ask Hardcover/Литрес/OL for every hopeless book
+ * forever — the same "repeat the run" idempotency the film backfills have.
+ * `--force` (or `--ids`, an explicit request) bypasses the marker.
  */
 
 const fs = require('fs');
@@ -43,11 +50,31 @@ const hardcover = require('./providers/hardcover');
 
 const DEFAULT_LIMIT = 20;
 const DEFAULT_PAUSE_MS = 2000; // Литрес politeness (AGENTS.md)
+/** Days a "nobody knows the year" verdict stays final before re-asking. */
+const DEFAULT_RECHECK_DAYS = 30;
 
 const CYRILLIC_TITLE = /[а-яё]/i;
 
 function sleepDefault(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Timestamp of the last hopeless check of a document, or null. */
+function checkedAtOf(doc) {
+  const ts = Date.parse(String((doc && doc.firstPublishedYearCheckedAt) || ''));
+  return Number.isFinite(ts) ? ts : null;
+}
+
+/**
+ * Has this document been checked for a first-publication year recently enough
+ * that asking the providers again would be pure politeness debt?
+ */
+function recentlyChecked(doc, now, recheckDays) {
+  const ts = checkedAtOf(doc);
+  if (ts == null) return false;
+  const days = Number(recheckDays);
+  const window = Number.isFinite(days) && days >= 0 ? days : DEFAULT_RECHECK_DAYS;
+  return now - ts < window * 24 * 60 * 60 * 1000;
 }
 
 /** Details documents on disk (`cache-book/details/*.json`). */
@@ -110,10 +137,18 @@ async function firstYearForDoc(doc, options = {}) {
   const input = { isbn13, isbn10, title, authors };
 
   // 1. Hardcover knows the work by ISBN (`book.release_year`).
+  // `requireWorkClaim` keeps the product rule strict: an edition year is not a
+  // first-publication claim, so a legacy document that only has one contributes
+  // nothing here (the other providers still get their turn).
   if (isbn13 || isbn10) {
     try {
       push(
-        await hardcoverProvider.getWork(input, { lookupIsbns, sleep, requestDelayMs: pause }),
+        await hardcoverProvider.getWork(input, {
+          lookupIsbns,
+          sleep,
+          requestDelayMs: pause,
+          requireWorkClaim: true,
+        }),
         'hardcover'
       );
     } catch (err) {
@@ -152,7 +187,8 @@ async function firstYearForDoc(doc, options = {}) {
  * Backfill loop.
  *
  * Options: `limit` (0 = no cap), `ids` (array), `force`, `dryRun`, `pause`,
- * `budget`, `sleep`, provider overrides, `log`.
+ * `budget`, `sleep`, `now` (ISO string), `recheckDays`, provider overrides,
+ * `log`.
  */
 async function backfill(options = {}) {
   const dryRun = options.dryRun === true;
@@ -161,9 +197,15 @@ async function backfill(options = {}) {
   const force = options.force === true;
   const log = typeof options.log === 'function' ? options.log : console.log;
   const budget = options.budget === undefined ? litres.budgetFromEnv() : options.budget;
+  const nowDate = options.now ? new Date(options.now) : new Date();
+  const checkedAt = nowDate.toISOString();
+  const nowMs = nowDate.getTime();
+  const recheckDays =
+    options.recheckDays == null ? DEFAULT_RECHECK_DAYS : Number(options.recheckDays);
 
   const docs = detailDocs();
   const candidates = [];
+  let skippedChecked = 0;
   for (const { key, doc } of docs) {
     const workId = workIdOf(doc);
     if (!workId) continue;
@@ -174,6 +216,13 @@ async function backfill(options = {}) {
       );
     if (ids && !matchesId) continue;
     if (!ids && !force && providers.firstYearOf(doc.firstPublishedYear) != null) continue;
+    // A hopeless document is left alone for `recheckDays`: re-asking three
+    // providers for a year nobody has is exactly the load AGENTS.md budgets
+    // against. An explicit `--ids` still wins — the user asked for that one.
+    if (!ids && !force && recentlyChecked(doc, nowMs, recheckDays)) {
+      skippedChecked++;
+      continue;
+    }
     candidates.push({ key, doc, workId });
   }
 
@@ -182,6 +231,7 @@ async function backfill(options = {}) {
     scanned: docs.length,
     candidates: candidates.length,
     selected: selected.length,
+    skippedChecked,
     checked: 0,
     resolved: [],
     unknown: [],
@@ -200,6 +250,16 @@ async function backfill(options = {}) {
       if (found.year == null) {
         report.unknown.push({ workId, title: doc.title || null });
         log(`— ${workId} ${doc.title || ''} :: no first-publication claim`);
+        // Negative cache: the next run must not repeat these requests.
+        if (!dryRun) {
+          await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), {
+            ...doc,
+            firstPublishedYearCheckedAt: checkedAt,
+            firstPublishedYearCheckedBy: found.candidates.length
+              ? [...new Set(found.candidates.map((entry) => entry.source))].join(',')
+              : 'none',
+          });
+        }
         continue;
       }
       report.byProvider[found.source] = (report.byProvider[found.source] || 0) + 1;
@@ -219,6 +279,8 @@ async function backfill(options = {}) {
           ...doc,
           firstPublishedYear: found.year,
           firstPublishedYearSource: found.source,
+          firstPublishedYearCheckedAt: checkedAt,
+          firstPublishedYearCheckedBy: found.source,
         });
       }
     } catch (err) {
@@ -239,6 +301,7 @@ function parseArgs(argv) {
     else if (arg === '--force') options.force = true;
     else if (arg === '--limit') options.limit = Number(argv[++i]);
     else if (arg === '--pause') options.pause = Number(argv[++i]);
+    else if (arg === '--recheck-days') options.recheckDays = Number(argv[++i]);
     else if (arg === '--ids') {
       options.ids = String(argv[++i] || '')
         .split(',')
@@ -257,6 +320,7 @@ if (require.main === module) {
         scanned: report.scanned,
         candidates: report.candidates,
         selected: report.selected,
+        skippedChecked: report.skippedChecked,
         checked: report.checked,
         resolved: report.resolved.length,
         unknown: report.unknown.length,
@@ -276,8 +340,10 @@ if (require.main === module) {
 module.exports = {
   DEFAULT_LIMIT,
   DEFAULT_PAUSE_MS,
+  DEFAULT_RECHECK_DAYS,
   detailDocs,
   workIdOf,
+  recentlyChecked,
   firstYearForDoc,
   backfill,
   parseArgs,

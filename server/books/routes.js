@@ -141,6 +141,13 @@ function parseDeep(bodyValue, queryValue) {
 /**
  * POST /api/books/import/livelib { username, force?, deep?, cookieHeader? }
  *
+ * LEGACY scrape path. It is no longer reachable from the UI (28.10.2026): a
+ * LiveLib profile is created and refreshed from a `livelib-backup` export file
+ * (`/import/livelib-file`), because scraping is rate-limited by DDoS-Guard and
+ * its scan + resolve stages keep the browser waiting for many minutes. The
+ * endpoint stays for compatibility, for the job tests, and as the documented
+ * plan-B (cookie paste) escape hatch of §9; nothing in `public/` calls it.
+ *
  * `deep` (task two-phase import):
  *   - false (default, ~3 requests): bulk + RSC page 1, dates for the newest 20;
  *   - true: also read every collection page (~63 polite requests) and fill the
@@ -207,6 +214,19 @@ const fileUpload = multer({
 });
 
 /**
+ * Uploads currently being merged, one lock per profile key (lower-cased).
+ *
+ * A file refresh is the LiveLib update path (no scrape: the user re-uploads a
+ * fresh export), so a double click — or a second tab — can overlap two merges
+ * of the same profile. Both read `profiles/livelib-{key}.json`, merge and write
+ * it back, so the slower write would silently drop the other upload's rows.
+ * The merge itself is synchronous once the body is parsed; the lock only has to
+ * cover the parse→save window. A conflicting upload gets an honest 409 (the UI
+ * says «загрузка уже идёт») instead of a lost update.
+ */
+const fileImportLocks = new Set();
+
+/**
  * Does this file import also run the metadata chain?
  *
  * Default is YES: a `livelib-backup` file is reading history first and
@@ -262,11 +282,20 @@ function parseImportUserKey(body) {
  *   resolve   0 = skip the metadata chain (network); default is ON
  *             (aliases: `false|no|off`, or `?resolve=0` in the query)
  *
+ * **This is the LiveLib update path.** «Обновить» on a LiveLib profile does not
+ * scrape livelib.ru any more (user verdict, 28.10.2026): the reader exports a
+ * fresh file with livelib-backup and uploads it here, and the server merges it
+ * into the existing profile. A scrape could not be made honest — it is
+ * rate-limited by DDoS-Guard, its deep phase takes minutes and its enricher
+ * budget runs in the foreground, which is what the user saw as a spinner that
+ * never ended.
+ *
  * **No request ever leaves the server for livelib.ru**: this is the safe path
  * (see §9 «ban risk»). The parsed rows are merged into
  * `profiles/livelib-{userKey}.json` with `origin: 'livelib-file'`; an event
  * never loses a date it already had, and a shelf upload is additive, so the
- * four pages can be imported in any order.
+ * four pages can be imported in any order and a repeated upload of the same
+ * file is a no-op (`added: 0`, every row counted as `skipped`).
  *
  * The response is single-shot for the parse itself (counts, shelf tallies and
  * the parser warnings); the metadata chain then runs as the usual background
@@ -348,77 +377,100 @@ async function handleLivelibFileImport(req, res) {
     );
   }
 
-  // Pure parsing: `livelib-file.js` makes no network request.
-  const parsed = livelibFile.parseExportFile(file.buffer, {
-    filename: file.originalname,
-    shelf,
-  });
-  const resolvedShelf = parsed.shelf || shelf;
-  if (!resolvedShelf) {
+  // Two overlapping file refreshes of ONE profile would each read the document,
+  // merge their rows and write it back: the second write drops the first
+  // upload. The window is short (parse → save), so a 409 with a clear reason is
+  // cheaper and more honest than a queue nobody sees.
+  const lockKey = userKey.toLowerCase();
+  if (fileImportLocks.has(lockKey)) {
     throw new HttpError(
-      400,
-      'Не удалось определить полку файла. Передайте поле "shelf" ' +
-        `(${livelibFile.SHELVES.join('|')}) — сервис экспортирует одну страницу за раз, ` +
-        'и в самом файле её названия нет.',
-      'shelf_required'
+      409,
+      'Файл этого профиля уже загружается — дождитесь ответа, чтобы две выгрузки не перезаписали друг друга.',
+      'livelib_import_running'
     );
   }
+  fileImportLocks.add(lockKey);
+  try {
+    // Pure parsing: `livelib-file.js` makes no network request.
+    const parsed = livelibFile.parseExportFile(file.buffer, {
+      filename: file.originalname,
+      shelf,
+    });
+    const resolvedShelf = parsed.shelf || shelf;
+    if (!resolvedShelf) {
+      throw new HttpError(
+        400,
+        'Не удалось определить полку файла. Передайте поле "shelf" ' +
+          `(${livelibFile.SHELVES.join('|')}) — сервис экспортирует одну страницу за раз, ` +
+          'и в самом файле её названия нет.',
+        'shelf_required'
+      );
+    }
 
-  const existing = bookCache.getProfile('livelib', userKey);
-  const merged = livelibFile.mergeFileIntoProfile(existing, {
-    userKey,
-    books: parsed.books,
-    shelf: resolvedShelf,
-    format: parsed.format,
-    filename: file.originalname,
-  });
+    const existing = bookCache.getProfile('livelib', userKey);
+    const merged = livelibFile.mergeFileIntoProfile(existing, {
+      userKey,
+      books: parsed.books,
+      shelf: resolvedShelf,
+      format: parsed.format,
+      filename: file.originalname,
+    });
 
-  await bookCache.saveProfile('livelib', userKey, merged.profile);
-  await bookCache.saveRawImport('livelib', userKey, {
-    totals: parsed.stats,
-    shelf: resolvedShelf,
-    format: parsed.format,
-    origin: livelibFile.ORIGIN,
-    added: merged.added,
-    enriched: merged.enriched,
-    skipped: merged.skipped,
-    importedAt: merged.profile.importedAt,
-  });
+    await bookCache.saveProfile('livelib', userKey, merged.profile);
+    await bookCache.saveRawImport('livelib', userKey, {
+      totals: parsed.stats,
+      shelf: resolvedShelf,
+      format: parsed.format,
+      origin: livelibFile.ORIGIN,
+      added: merged.added,
+      enriched: merged.enriched,
+      skipped: merged.skipped,
+      importedAt: merged.profile.importedAt,
+    });
 
-  // Metadata chain: ON unless the caller explicitly opts out. The file path
-  // used to depend on a checkbox nobody ticked, so a file profile stayed a
-  // list of titles with no pages/series/editions forever. `resolve=0`
-  // (body or query) keeps an offline import possible.
-  const resolveRequested = wantsResolve(req);
-  const resolveJob = resolveRequested
-    ? importJobs.startResolveJob({ coalesce: false, allowLivelibCard: false })
-    : null;
+    // Metadata chain: ON unless the caller explicitly opts out. The file path
+    // used to depend on a checkbox nobody ticked, so a file profile stayed a
+    // list of titles with no pages/series/editions forever. `resolve=0`
+    // (body or query) keeps an offline import possible.
+    //
+    // This is also the LiveLib *refresh* path (see the route doc): the job
+    // keeps running after the 201 below, so the answer is immediate and the
+    // browser never waits on a 2 s/book Литрес budget. `coalesce: false` gives
+    // the freshly merged rows their own pass instead of joining one that may
+    // have already walked this profile.
+    const resolveRequested = wantsResolve(req);
+    const resolveJob = resolveRequested
+      ? importJobs.startResolveJob({ coalesce: false, allowLivelibCard: false })
+      : null;
 
-  console.log(
-    `[books-import livelib-file] ${userKey}/${resolvedShelf}: ${parsed.books.length} rows, ` +
-      `+${merged.added} new, ${merged.enriched} enriched, ${merged.skipped} unchanged ` +
-      `(${parsed.format}, ${parsed.stats.withIsbn} isbn, ` +
-      `resolve=${resolveJob ? resolveJob.id : 'skipped'})`
-  );
+    console.log(
+      `[books-import livelib-file] ${userKey}/${resolvedShelf}: ${parsed.books.length} rows, ` +
+        `+${merged.added} new, ${merged.enriched} enriched, ${merged.skipped} unchanged ` +
+        `(${parsed.format}, ${parsed.stats.withIsbn} isbn, ` +
+        `resolve=${resolveJob ? resolveJob.id : 'skipped'})`
+    );
 
-  res.status(201).json({
-    ok: true,
-    source: 'livelib',
-    userKey,
-    profileKey: `livelib-${userKey}`,
-    origin: livelibFile.ORIGIN,
-    shelf: resolvedShelf,
-    format: parsed.format,
-    imported: parsed.books.length,
-    added: merged.added,
-    enriched: merged.enriched,
-    skipped: merged.skipped,
-    events: merged.profile.events.length,
-    shelves: merged.profile.shelves,
-    stats: parsed.stats,
-    warnings: parsed.warnings,
-    resolve: resolveJob ? { jobId: resolveJob.id, stage: resolveJob.stage } : null,
-  });
+    res.status(201).json({
+      ok: true,
+      source: 'livelib',
+      userKey,
+      profileKey: `livelib-${userKey}`,
+      origin: livelibFile.ORIGIN,
+      shelf: resolvedShelf,
+      format: parsed.format,
+      imported: parsed.books.length,
+      added: merged.added,
+      enriched: merged.enriched,
+      skipped: merged.skipped,
+      events: merged.profile.events.length,
+      shelves: merged.profile.shelves,
+      stats: parsed.stats,
+      warnings: parsed.warnings,
+      resolve: resolveJob ? { jobId: resolveJob.id, stage: resolveJob.stage } : null,
+    });
+  } finally {
+    fileImportLocks.delete(lockKey);
+  }
 }
 
 /**
