@@ -6,7 +6,7 @@
  *   - events of another profile never leak into the payload (no union);
  *   - work metadata may still come from the shared metadata chain (Hardcover
  *     details resolved for a LiveLib book) — that is metadata, not an event merge;
- *   - `?sources=` is ignored and reported as such;
+ *   - the payload has no `ratings.bySource` / `sources.filter` any more;
  *   - calendar/timeline/streaks only use dated events.
  */
 
@@ -182,14 +182,21 @@ test('a LiveLib profile aggregates only its own events (metadata may come from H
   // same work belongs to a different profile and must not appear.
   const dune = stats.booksIndex['hc:100'];
   assert.equal(dune.rating, 7);
-  assert.equal(dune.ratingsBySource.livelib.rating10, 7);
-  assert.equal(dune.ratingsBySource.hardcover, undefined);
+  assert.equal('ratingsBySource' in dune, false);
   assert.deepEqual(dune.sources, ['livelib']);
 
   const merged = Object.fromEntries(stats.ratings.merged.map((entry) => [entry.score, entry.count]));
   assert.deepEqual(merged, { 6: 1, 7: 1 });
-  assert.deepEqual(stats.ratings.bySource.livelib.map((entry) => entry.score), [6, 7]);
-  assert.deepEqual(stats.ratings.bySource.hardcover, []);
+  assert.equal('bySource' in stats.ratings, false);
+
+  // Metadata coverage: one resolved work (hc:100 via the link), two stubs.
+  assert.deepEqual(stats.summary.metadata, {
+    resolved: 1,
+    total: 3,
+    percent: 33,
+    running: false,
+    budgetRemaining: null,
+  });
 
   // Calendar/timeline/streaks only for this profile's dated events.
   const timelineSum = stats.timeline.reduce((sum, entry) => sum + entry.finished, 0);
@@ -231,11 +238,15 @@ test('a Hardcover profile aggregates only the journal events', async () => {
   assert.equal(stats.summary.eventCount, 2);
   assert.equal(stats.summary.bookCount, 2);
   assert.equal(stats.summary.unresolvedCount, 0);
-  assert.deepEqual(stats.ratings.bySource.livelib, []);
   assert.deepEqual(
-    Object.fromEntries(stats.ratings.bySource.hardcover.map((entry) => [entry.score, entry.count])),
+    Object.fromEntries(stats.ratings.merged.map((entry) => [entry.score, entry.count])),
     { 8: 1, 9: 1 }
   );
+  // The journal carries its own metadata: coverage is 100%, badge hidden.
+  assert.equal(stats.summary.metadata.resolved, 2);
+  assert.equal(stats.summary.metadata.total, 2);
+  assert.equal(stats.summary.metadata.percent, 100);
+  assert.equal(stats.summary.metadata.running, false);
   assert.equal(stats.booksIndex['hc:100'].rating, 9);
   assert.deepEqual(stats.booksIndex['hc:100'].sources, ['hardcover']);
   assert.equal(stats.timeline.length, 1);
@@ -246,18 +257,17 @@ test('a Hardcover profile aggregates only the journal events', async () => {
   assert.equal(stats.summary.dateTo, '2024-03-03');
 });
 
-test('?sources= is ignored for books and reported honestly', async () => {
+test('the payload carries no source-filter block any more', async () => {
   await seed();
-  const stats = buildBooksStats({ profile: 'livelib-tester', sources: 'hardcover' });
+  const stats = buildBooksStats({ profile: 'livelib-tester' });
   assert.deepEqual(stats.sources.selected, ['livelib']);
-  assert.equal(stats.sources.filter.sourcesIgnored, true);
-  assert.equal(stats.sources.filter.requestedSources, 'hardcover');
-  assert.equal(stats.sources.filter.mode, 'profile');
+  assert.equal('filter' in stats.sources, false);
   assert.equal(stats.summary.eventCount, 3);
 
-  const plain = buildBooksStats({ profile: 'livelib-tester' });
-  assert.equal(plain.sources.filter.sourcesIgnored, false);
-  assert.equal(plain.sources.filter.requestedSources, null);
+  // An old option object cannot re-introduce a filter: the field is gone.
+  const withLegacyOption = buildBooksStats({ profile: 'livelib-tester', sources: 'hardcover' });
+  assert.deepEqual(withLegacyOption.sources.selected, ['livelib']);
+  assert.equal(withLegacyOption.summary.eventCount, 3);
 });
 
 test('a missing or ambiguous profile is a 400-shaped error, never a union', () => {

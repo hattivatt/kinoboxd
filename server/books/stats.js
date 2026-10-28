@@ -14,12 +14,14 @@
  *   - `booksIndex` keys are the LiveLib stub `ll:{sourceBookId}` or the resolved
  *     canonical work `hc:{books.id}` that the resolve chain linked *for this
  *     LiveLib book*; no cross-source title dedupe happens in stats;
- *   - `ratings.bySource` still exists for wire compatibility but carries only
- *     the active source (it equals `ratings.merged`);
+ *   - there is no `ratings.bySource` / `sources.filter` / `?sources=` any more:
+ *     the single-profile contract is strict, extra query parameters are a 400
+ *     at the route (`unexpected_parameter`);
  *   - only events with `finishedAt` enter timeline/calendar/streaks;
  *     `summary.undatedEventCount` reports the rest honestly;
- *   - `?sources=` is accepted and ignored (`sources.filter.sourcesIgnored`),
- *     one release of compatibility for pre-K6 clients;
+ *   - `summary.metadata` reports how much of the profile already has
+ *     bibliographic metadata (`resolved/total/percent`) and whether the resolve
+ *     stage is running for it right now (`running`, `budgetRemaining`);
  *   - `metadataSources` on a work says where the *bibliographic metadata* came
  *     from. That is a metadata chain, not an event union.
  */
@@ -198,17 +200,14 @@ function resolveProfileScope(raw, profilesIn) {
 /**
  * Load the one profile that feeds the aggregation.
  *
- * `?sources=` is accepted only to be ignored (`sourcesIgnored`), so a client
- * built before the single-profile contract keeps rendering instead of
- * hard-failing on a 400. No parameter at all means "no profile": the caller
- * (route) answers 400 before this point, internal callers get an empty scope.
+ * No parameter at all means "no profile": the caller (route) answers 400
+ * before this point, internal callers get an empty scope.
  */
-function selectProfiles(requestedSources, profileScope) {
+function selectProfiles(profileScope) {
   const scope = profileScope || resolveProfileScope(undefined);
   const profiles = scope.profiles;
   const connected = [...new Set(profiles.map((profile) => profile.source))];
   const allProfileKeys = profiles.map(profileKeyOf);
-  const sourcesRequested = requestedSources != null && String(requestedSources).trim() !== '';
   const chosenMeta = scope.selected.length ? scope.selected : [];
 
   const loaded = [];
@@ -222,7 +221,6 @@ function selectProfiles(requestedSources, profileScope) {
     selected,
     profiles: loaded,
     mode: chosenMeta.length ? 'profile' : 'none',
-    sourcesRequested,
     requestedProfiles: scope.requested,
     selectedProfileKeys: chosenMeta.map(profileKeyOf),
     allProfileKeys,
@@ -503,21 +501,6 @@ function workMetadata(workId, events) {
     ? finishDates.sort()[finishDates.length - 1]
     : null;
 
-  const ratingsBySource = {};
-  for (const source of ['livelib', 'hardcover']) {
-    const list = events.filter((event) => event.source === source && event.rating10 != null);
-    if (list.length) {
-      const chosen = list.sort((a, b) =>
-        String(b.finishedAt || '').localeCompare(String(a.finishedAt || ''))
-      )[0];
-      ratingsBySource[source] = {
-        rating: Number(chosen.rating != null ? chosen.rating : chosen.rating10),
-        scale: Number(chosen.ratingScale) || 10,
-        rating10: chosen.rating10,
-      };
-    }
-  }
-
   // Link menu (§6.3): LiveLib is derivable for every work with an LL event or
   // an LL link in links.json; provider page URLs come from the details doc.
   const links = {};
@@ -562,9 +545,9 @@ function workMetadata(workId, events) {
     details,
     links,
     finishedDate,
-    // Option A: Hardcover priority, LiveLib fallback.
+    // Option A: Hardcover priority, LiveLib fallback. With one profile this is
+    // simply the rating of the profile's own event(s).
     rating10: hcWithRating ? hcWithRating.rating10 : llEvents.find((e) => e.rating10 != null)?.rating10 ?? null,
-    ratingsBySource,
     sources: [...new Set(events.map((event) => event.source))].sort(),
     unresolved: !details,
   };
@@ -652,11 +635,6 @@ function mergeWorkGroup(list) {
   ];
   const links = {};
   for (const work of [...ordered].reverse()) Object.assign(links, work.links || {});
-  const ratingsBySource = {};
-  for (const source of ['livelib', 'hardcover']) {
-    const entry = ordered.map((work) => work.ratingsBySource && work.ratingsBySource[source]).find(Boolean);
-    if (entry) ratingsBySource[source] = entry;
-  }
   const mangaValues = ordered.map((work) => work.mangaComics);
   const mangaComics = mangaValues.includes(true)
     ? true
@@ -685,7 +663,6 @@ function mergeWorkGroup(list) {
     links,
     finishedDate: finishedDates.length ? finishedDates[finishedDates.length - 1] : null,
     rating10: pick('rating10'),
-    ratingsBySource,
     sources: [...new Set(ordered.flatMap((work) => work.sources || []))].sort(),
     unresolved: primary.unresolved,
     details: primary.details,
@@ -855,14 +832,15 @@ function applyManualMangaFlags(works, flags) {
  *
  * `options.profile` is the raw `?profile=` value (`livelib-Margaret`);
  * `options.profileScope` may carry an already-resolved scope (routes resolve it
- * to answer 400 with a good message). `options.sources` is accepted only to be
- * echoed as ignored. `options.now` is injectable for tests.
+ * to answer 400 with a good message). `options.resolveState` is the live
+ * import-job view (`{ running, budgetRemaining }`) used for
+ * `summary.metadata`; absent means "not running". `options.now` is injectable
+ * for tests.
  */
 function buildBooksStats(options = {}) {
   const startedAt = process.hrtime.bigint();
   const includeMangaComics = options.includeMangaComics === true;
   const selection = selectProfiles(
-    options.sources,
     options.profileScope || resolveProfileScope(options.profile, options.profilesOnDisk)
   );
   if (selection.profiles.length !== 1) {
@@ -874,7 +852,7 @@ function buildBooksStats(options = {}) {
     error.availableProfileKeys = selection.allProfileKeys;
     throw error;
   }
-  const { connected, selected, profiles, mode } = selection;
+  const { connected, selected, profiles } = selection;
   const profile = profiles[0];
   const prepared = prepareEvents(profiles);
   const reReadCounts = prepared.reReadCounts;
@@ -1006,6 +984,30 @@ function buildBooksStats(options = {}) {
     yearsSpan: years.length ? { from: years[0], to: years[years.length - 1] } : null,
   };
 
+  // Metadata coverage of the profile: a work is "covered" when a details
+  // document exists (shared metadata chain: Hardcover/Litres/GB/OL/LiveLib
+  // card). `running` is only true while the resolve stage of an import job is
+  // alive; it lets the UI say "догружается" instead of showing empty genres as
+  // final. A Hardcover profile takes its metadata from the journal, so it is
+  // never "loading" here.
+  const metadataResolved = [...works.values()].filter((work) => !work.unresolved).length;
+  const metadataTotal = works.size;
+  const resolveState = options.resolveState && typeof options.resolveState === 'object'
+    ? options.resolveState
+    : {};
+  const metadataRunning = profile.source === 'livelib' && resolveState.running === true;
+  const budgetRemaining = resolveState.budgetRemaining != null &&
+    Number.isFinite(Number(resolveState.budgetRemaining))
+    ? Number(resolveState.budgetRemaining)
+    : null;
+  summary.metadata = {
+    resolved: metadataResolved,
+    total: metadataTotal,
+    percent: metadataTotal ? Math.round((metadataResolved * 100) / metadataTotal) : 100,
+    running: metadataRunning,
+    budgetRemaining: metadataRunning ? budgetRemaining : null,
+  };
+
   /* ---------------- ratings ---------------- */
   function distribution(list) {
     const counts = new Map();
@@ -1018,19 +1020,13 @@ function buildBooksStats(options = {}) {
       .map(([score, count]) => ({ score, count }));
   }
 
-  // `bySource` survives on the wire for old clients, but with a single profile
-  // there is exactly one populated key: the active source. It is the same
-  // distribution as `merged`, never a union of two services.
-  const mergedDistribution = distribution(
-    [...works.values()].map((work) => work.rating10).filter((v) => v != null)
-  );
+  // One profile = one rating scale. There is no per-source split on the wire:
+  // `merged` IS the profile's distribution.
   const ratings = {
     scale: 10,
-    merged: mergedDistribution,
-    bySource: {
-      livelib: profile.source === 'livelib' ? mergedDistribution : [],
-      hardcover: profile.source === 'hardcover' ? mergedDistribution : [],
-    },
+    merged: distribution(
+      [...works.values()].map((work) => work.rating10).filter((v) => v != null)
+    ),
   };
 
   /* ---------------- works-based widgets ---------------- */
@@ -1219,7 +1215,6 @@ function buildBooksStats(options = {}) {
       titleRu: work.titleRu,
       authors: work.authors,
       rating: work.rating10,
-      ratingsBySource: work.ratingsBySource,
       finishedDate: work.finishedDate,
       sources: work.sources,
       genres: work.genres,
@@ -1260,9 +1255,10 @@ function buildBooksStats(options = {}) {
   const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
 
   return {
-    // Which profile produced this payload, plus (for compatibility) the
-    // sources visible on the server. `selected` is always exactly one source:
-    // a profile is one account of one service.
+    // Which profile produced this payload, plus the catalog of profiles on the
+    // server. `selected` is always exactly one source: a profile is one account
+    // of one service. There is no `filter` block: the route rejects unknown
+    // query parameters instead of echoing an ignored filter.
     sources: {
       connected,
       selected,
@@ -1276,16 +1272,6 @@ function buildBooksStats(options = {}) {
       profiles: {
         connected: selection.allProfileKeys,
         selected: selection.selectedProfileKeys,
-      },
-      filter: {
-        mode, // profile (the only mode a valid request can produce)
-        requestedProfile: selection.requestedProfiles[0] || null,
-        requestedProfiles: selection.requestedProfiles,
-        // `?sources=` is not applied any more; echoed so a legacy client can
-        // see that its filter was dropped instead of silently reinterpreting it.
-        requestedSources:
-          selection.sourcesRequested ? [].concat(options.sources).join(',') : null,
-        sourcesIgnored: selection.sourcesRequested,
       },
     },
     summary,

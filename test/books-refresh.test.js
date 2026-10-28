@@ -310,3 +310,52 @@ test('books markup wires the real profile-refresh button and tooltip', () => {
   // One profile = one source: the stats request carries a single profile key.
   assert.match(source, /getBooksStats\(\{\s*profile: activeProfileKey\(\)/);
 });
+
+test('metadata badge view model: hidden at 100%, running suffix, budget hint', async () => {
+  const { metadataBadge } = await import('../public/js/books-refresh.js');
+
+  // LiveLib profile with 42% coverage and a live resolve stage.
+  const running = metadataBadge({
+    resolved: 502,
+    total: 1211,
+    percent: 42,
+    running: true,
+    budgetRemaining: 42,
+  });
+  assert.equal(running.percent, 42);
+  assert.equal(running.pending, 709);
+  assert.equal(running.running, true);
+  assert.equal(running.text, 'Метадата: 42% · догружается…');
+  assert.match(running.hint, /709 книг ждут метадату/);
+  assert.match(running.hint, /502 из 1211/);
+  assert.match(running.hint, /Литрес-бюджет на этот прогон: 42/);
+
+  // Same coverage, no live job: no spinner, honest "next refresh" wording.
+  const idle = metadataBadge({
+    resolved: 502,
+    total: 1211,
+    percent: 42,
+    running: false,
+    budgetRemaining: null,
+  });
+  assert.equal(idle.text, 'Метадата: 42%');
+  assert.equal(idle.running, false);
+  assert.match(idle.hint, /Следующая порция — при обновлении профиля/);
+  assert.doesNotMatch(idle.hint, /Литрес-бюджет/);
+
+  // 100% / empty / legacy payloads hide the badge entirely.
+  assert.equal(metadataBadge({ resolved: 132, total: 132, percent: 100, running: false }), null);
+  assert.equal(metadataBadge({ resolved: 0, total: 0, percent: 100, running: false }), null);
+  assert.equal(metadataBadge(null), null);
+
+  // A one-book remainder gets the singular form (no «1 книги ждут»).
+  const one = metadataBadge({ resolved: 9, total: 10, percent: 90, running: false });
+  assert.match(one.hint, /^1 книга ждёт метадату/);
+
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  const source = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'books.js'), 'utf8');
+  assert.match(html, /id="books-metadata-badge"/);
+  assert.match(html, /id="books-metadata-spinner"/);
+  assert.match(source, /metadataBadge\(/);
+  assert.match(source, /renderMetadataBadge\(state\.data\)/);
+});

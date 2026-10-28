@@ -146,6 +146,12 @@ async function resolveAllLivelibProfiles(job, options = {}) {
   job.stage = 'resolve';
   job.page = 0;
   job.pageTotal = profiles.length;
+  // Live budget snapshot for the metadata badge: the object is mutated in
+  // place by the resolve chain, so refresh the copy after every profile.
+  job.liveBudget = {
+    litres: { limit: litresBudget.limit, used: litresBudget.used, remaining: litresBudget.remaining },
+    card: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
+  };
   for (const meta of profiles) {
     const data = bookCache.getProfile('livelib', meta.userKey);
     if (!data) continue;
@@ -162,6 +168,10 @@ async function resolveAllLivelibProfiles(job, options = {}) {
         job.resolveTotal = progress.total;
       },
     });
+    job.liveBudget = {
+      litres: { limit: litresBudget.limit, used: litresBudget.used, remaining: litresBudget.remaining },
+      card: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
+    };
     reports.push({ userKey: meta.userKey, ...report });
   }
   const providerChain = {};
@@ -689,6 +699,8 @@ function publicStatus(job) {
     requests: job.requests || null,
     totals: job.totals || null,
     resolve: job.resolve || null,
+    // Live resolve budget while the stage is running (masked data only).
+    resolveBudget: job.stage === 'resolve' ? job.liveBudget || null : null,
     // Masked only: `present`/`savedAt`/counts. The header value never leaves
     // the cookie store.
     cookies: job.cookies || null,
@@ -708,6 +720,45 @@ function idle() {
   return importChain.then(() => undefined);
 }
 
+/**
+ * Is the metadata resolve stage running for THIS profile, and how much of the
+ * Litres budget is left?
+ *
+ * The resolve pass always walks every cached LiveLib profile, whichever import
+ * triggered it (a LiveLib re-import or a fresh Hardcover journal — enrichment
+ * of LiveLib dates/metadata is the same pass). So a LiveLib profile is
+ * "loading" while any job sits in stage `resolve`. A Hardcover profile is not:
+ * its bibliographic metadata arrives with the journal itself.
+ */
+/**
+ * Pure core of `getResolveState`: pick a live resolve job out of an iterable.
+ * Exported so the mapping (which stage counts, which source counts, how the
+ * budget is read) is unit-tested without starting a network import.
+ */
+function resolveStateFromJobs(jobList, source) {
+  const idle = { running: false, jobId: null, budgetRemaining: null };
+  if (source !== 'livelib') return idle;
+  for (const job of jobList) {
+    if (!job || job.done || job.stage !== 'resolve') continue;
+    const litres = job.liveBudget && job.liveBudget.litres;
+    return {
+      running: true,
+      jobId: job.id || null,
+      startedAt: job.startedAt || null,
+      resolved: job.resolved == null ? null : Number(job.resolved),
+      total: job.resolveTotal == null ? null : Number(job.resolveTotal),
+      budgetRemaining: litres && litres.remaining != null && Number.isFinite(Number(litres.remaining))
+        ? Number(litres.remaining)
+        : null,
+    };
+  }
+  return idle;
+}
+
+function getResolveState(source, userKey) {
+  return resolveStateFromJobs(jobs.values(), source);
+}
+
 module.exports = {
   startLivelibImport,
   startHardcoverImport,
@@ -717,6 +768,8 @@ module.exports = {
   isFreshImport,
   LIVELIB_REIMPORT_TTL_MS,
   resolveAllLivelibProfiles,
+  resolveStateFromJobs,
+  getResolveState,
   /** True when an import for this `(source, userKey)` is still in flight. */
   isRunning(source, userKey) {
     return Boolean(findRunningJob(source, String(userKey == null ? '' : userKey).trim()));

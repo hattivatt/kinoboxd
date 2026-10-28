@@ -87,3 +87,59 @@ export function deepBadgeText(deep) {
   if (!Number.isFinite(percent) || percent >= 100) return '';
   return `История ${Math.max(0, Math.min(99, percent))}%`;
 }
+
+/* ------------------------------------------------------------------ */
+/* Metadata coverage badge                                            */
+/* ------------------------------------------------------------------ */
+
+function pluralBooks(count) {
+  const n = Math.abs(toCount(count)) % 100;
+  const n1 = n % 10;
+  if (n > 10 && n < 20) return 'книг ждут';
+  if (n1 === 1) return 'книга ждёт';
+  if (n1 >= 2 && n1 <= 4) return 'книги ждут';
+  return 'книг ждут';
+}
+
+/**
+ * View model of the "Метадата: N%" badge, or `null` when it must be hidden.
+ *
+ * Hidden when there is nothing to load (legacy payload, empty profile) and at
+ * 100% — a fully enriched profile needs no apology. `running` adds the
+ * «догружается…» suffix and the spinner; `budgetRemaining` (Litres books for
+ * the current run) is only present while the job is alive.
+ *
+ * @param {{resolved:number,total:number,percent:number,running:boolean,budgetRemaining:?number}|null} meta
+ */
+export function metadataBadge(meta) {
+  if (!meta || typeof meta !== 'object') return null;
+  const total = toCount(meta.total);
+  if (total <= 0) return null;
+  const resolved = Math.min(total, toCount(meta.resolved));
+  const percent = Math.max(0, Math.min(100, Math.round(Number(meta.percent))));
+  if (!Number.isFinite(percent) || percent >= 100) return null;
+  const pending = total - resolved;
+  const running = meta.running === true;
+  const budget = meta.budgetRemaining != null && Number.isFinite(Number(meta.budgetRemaining))
+    ? Math.max(0, Math.floor(Number(meta.budgetRemaining)))
+    : null;
+  const budgetNote = budget != null
+    ? ` Литрес-бюджет на этот прогон: ${budget} ${budget === 1 ? 'книга' : 'книг(и)'}.`
+    : '';
+  const next = running
+    ? ' Метадата догружается прямо сейчас — цифра обновится сама.'
+    : ' Следующая порция — при обновлении профиля.';
+  return {
+    percent,
+    resolved,
+    total,
+    pending,
+    running,
+    budgetRemaining: budget,
+    text: running ? `Метадата: ${percent}% · догружается…` : `Метадата: ${percent}%`,
+    hint:
+      `${pending} ${pluralBooks(pending)} метадату ` +
+      `(${resolved} из ${total} уже с жанрами/сериями/годом).${budgetNote}${next}`,
+  };
+}
+

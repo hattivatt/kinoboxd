@@ -268,13 +268,11 @@ router.get('/import/status', (req, res, next) => {
  * A missing parameter, a repeated/CSV parameter, a malformed token or a token
  * that names no cached profile is a 400 — silently widening the scope to
  * "everything" (the old union behaviour) is exactly what this contract
- * removes. `?profiles=` with ONE token is still accepted for one release so a
- * cached frontend does not hard-fail during the deploy.
+ * removes. `?profiles=` is NOT an alias any more: it is an unexpected
+ * parameter (400 `unexpected_parameter`).
  */
 function resolveProfileScopeOrThrow(req) {
-  const raw = req.query.profile != null ? req.query.profile : req.query.profiles;
-  const legacy = req.query.profile == null && req.query.profiles != null;
-  const scope = resolveProfileScope(raw);
+  const scope = resolveProfileScope(req.query.profile);
   const available = scope.availableProfileKeys;
   const availableText = available.length ? available.join(', ') : '(none)';
   if (!scope.explicit || scope.empty) {
@@ -316,22 +314,40 @@ function resolveProfileScopeOrThrow(req) {
       'invalid_profile'
     );
   }
-  return { scope, legacy };
+  return scope;
+}
+
+/**
+ * Strict query contract: the endpoint accepts exactly the listed parameters.
+ * An unknown one is a client bug (a stale build still sending `?sources=`,
+ * `?profiles=` or a typo), and silently ignoring it would make the payload look
+ * like it honoured a filter it never applied.
+ */
+function assertOnlyParams(req, allowed, endpoint) {
+  const keys = Object.keys(req.query || {});
+  const extra = keys.filter((key) => !allowed.includes(key));
+  if (!extra.length) return;
+  const list = extra.map((key) => `"${key}"`).join(', ');
+  throw new HttpError(
+    400,
+    `Unexpected query parameter(s) for ${endpoint}: ${list}. ` +
+      `Accepted: ${allowed.map((key) => `"${key}"`).join(', ')}.`,
+    'unexpected_parameter'
+  );
 }
 
 /**
  * GET /api/books/stats?profile=livelib-Margaret&includeMangaComics=0|1
  *
  * `profile` is mandatory and single: the payload is built from that profile's
- * events only (no union with another account/service). `?sources=` is ignored
- * for backward compatibility and reported as `sources.filter.sourcesIgnored`.
+ * events only (no union with another account/service). Any other query
+ * parameter — including the retired `?sources=` and `?profiles=` — is a 400
+ * `unexpected_parameter`; there is no compatibility echo any more.
  */
 router.get('/stats', (req, res, next) => {
   try {
-    const { scope, legacy } = resolveProfileScopeOrThrow(req);
-    if (legacy) {
-      res.set('X-Books-Legacy-Profiles', '1');
-    }
+    assertOnlyParams(req, ['profile', 'includeMangaComics'], 'GET /api/books/stats');
+    const scope = resolveProfileScopeOrThrow(req);
 
     const includeMangaRaw = req.query.includeMangaComics;
     let includeMangaComics = false;
@@ -346,10 +362,11 @@ router.get('/stats', (req, res, next) => {
         );
       }
     }
+    const selected = scope.selected[0];
     const stats = buildBooksStats({
-      sources: req.query.sources,
       profileScope: scope,
       includeMangaComics,
+      resolveState: importJobs.getResolveState(selected.source, selected.userKey),
     });
     res.set('X-Books-Build-Ms', String(stats.meta.buildMs));
     res.status(200).json(stats);
@@ -401,8 +418,9 @@ router.delete('/work/flag', async (req, res, next) => {
 /** GET /api/books/unmatched?profile=livelib-Margaret (single profile). */
 router.get('/unmatched', (req, res, next) => {
   try {
-    const { scope } = resolveProfileScopeOrThrow(req);
-    res.status(200).json(listUnmatched({ sources: req.query.sources, profileScope: scope }));
+    assertOnlyParams(req, ['profile'], 'GET /api/books/unmatched');
+    const scope = resolveProfileScopeOrThrow(req);
+    res.status(200).json(listUnmatched({ profileScope: scope }));
   } catch (err) {
     next(mapError(err));
   }

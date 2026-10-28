@@ -33,7 +33,7 @@ import {
   renderBooksTimeline, renderReadingCalendar, renderStreaks, normalizeStreaks,
   fmtDayRu, fmtDayShortRu,
 } from './books-charts.js';
-import { snapshotCounts, refreshToastMessage, deepBadgeText } from './books-refresh.js';
+import { snapshotCounts, refreshToastMessage, deepBadgeText, metadataBadge } from './books-refresh.js';
 import {
   LEGACY_ACCOUNTS_KEY, MAX_PROFILES,
   loadRegistry, listProfiles as listBooksProfiles, saveProfile as saveBooksProfile,
@@ -131,6 +131,7 @@ const state = {
   pollTimer: 0,
   pollSeq: 0,
   deepTimer: 0,
+  metadataTimer: 0,
   mangaBusy: false,
   onActivate: null,
 };
@@ -267,48 +268,7 @@ function normalizeLinks(raw, workId) {
 
 function pickRating10(entry) {
   const direct = numOrNull(entry && entry.rating);
-  if (direct != null) return Math.round(direct);
-  const bySource = entry && entry.ratingsBySource && typeof entry.ratingsBySource === 'object'
-    ? entry.ratingsBySource
-    : {};
-  const convert = (value, scale) => {
-    const n = numOrNull(value);
-    const s = numOrNull(scale);
-    if (n == null) return null;
-    if (s && s > 0 && s !== 10) return Math.round((n * 10) / s);
-    return Math.round(n);
-  };
-  const hardcover = bySource.hardcover && typeof bySource.hardcover === 'object'
-    ? bySource.hardcover
-    : null;
-  const livelib = bySource.livelib && typeof bySource.livelib === 'object'
-    ? bySource.livelib
-    : null;
-  const hc = hardcover
-    ? convert(hardcover.rating10 != null ? hardcover.rating10 : hardcover.rating,
-      hardcover.rating10 != null ? 10 : hardcover.scale)
-    : null;
-  if (hc != null) return hc;
-  return livelib
-    ? convert(livelib.rating10 != null ? livelib.rating10 : livelib.rating,
-      livelib.rating10 != null ? 10 : livelib.scale)
-    : null;
-}
-
-function normalizeRatingsBySource(raw) {
-  const source = raw && typeof raw === 'object' ? raw : {};
-  const out = {};
-  for (const key of ['livelib', 'hardcover']) {
-    const item = source[key] && typeof source[key] === 'object' ? source[key] : null;
-    if (!item) continue;
-    const native = numOrNull(item.rating);
-    const scale = numOrNull(item.scale);
-    const rating10 = item.rating10 != null
-      ? Math.round(toNum(item.rating10))
-      : (native != null && scale ? Math.round((native * 10) / scale) : null);
-    out[key] = { rating: native, scale, rating10 };
-  }
-  return out;
+  return direct != null ? Math.round(direct) : null;
 }
 
 function normalizeMetadataSources(raw) {
@@ -353,10 +313,7 @@ function normalizeEntry(workId, raw) {
     series: text(entry.series),
     coverUrl: text(entry.coverUrl || entry.cover),
     rating: pickRating10(entry),
-    ratingsBySource: normalizeRatingsBySource(entry.ratingsBySource),
-    sources: sources.length
-      ? sources
-      : Object.keys(normalizeRatingsBySource(entry.ratingsBySource)),
+    sources: sources.length ? sources : [],
     metadataSources: normalizeMetadataSources(entry.metadataSources),
     mangaComics,
     mangaComicsOverride,
@@ -394,9 +351,6 @@ function normalizeBooks(raw) {
   // sources metric describe *this* profile, not the whole cache.
   const profileSourcesScoped = scopeSourceNames(source.sources && source.sources.profiles);
   const ratingsRaw = source.ratings && typeof source.ratings === 'object' ? source.ratings : {};
-  const bySourceRaw = ratingsRaw.bySource && typeof ratingsRaw.bySource === 'object'
-    ? ratingsRaw.bySource
-    : {};
   const booksIndexRaw = source.booksIndex && typeof source.booksIndex === 'object'
     ? source.booksIndex
     : {};
@@ -462,8 +416,8 @@ function normalizeBooks(raw) {
       + Math.max(0, toNum(item && item.monthOnly)),
     monthOnly: Math.max(0, toNum(item && item.monthOnly)),
     reRead: Math.max(0, toNum(item && (item.reRead ?? item.reReadCount))),
-    livelib: Math.max(0, toNum(item && (item.livelib ?? (item.bySource && item.bySource.livelib)))),
-    hardcover: Math.max(0, toNum(item && (item.hardcover ?? (item.bySource && item.bySource.hardcover)))),
+    livelib: Math.max(0, toNum(item && item.livelib)),
+    hardcover: Math.max(0, toNum(item && item.hardcover)),
   })).filter((item) => /^\d{4}-\d{2}$/.test(item.month));
 
   const readDays = arr(source.readDays).map((item) => {
@@ -499,11 +453,22 @@ function normalizeBooks(raw) {
 
   const ratings = {
     merged: normalizeRatingList(ratingsRaw.merged),
-    bySource: {
-      livelib: normalizeRatingList(bySourceRaw.livelib),
-      hardcover: normalizeRatingList(bySourceRaw.hardcover),
-    },
   };
+
+  // Metadata coverage of the active profile (resolve chain). `null` on a
+  // legacy payload: the badge stays hidden instead of claiming 100%.
+  const metadataRaw = summaryRaw.metadata && typeof summaryRaw.metadata === 'object'
+    ? summaryRaw.metadata
+    : null;
+  const metadata = metadataRaw
+    ? {
+        resolved: Math.max(0, toNum(metadataRaw.resolved)),
+        total: Math.max(0, toNum(metadataRaw.total)),
+        percent: Math.max(0, Math.min(100, Math.round(toNum(metadataRaw.percent)))),
+        running: metadataRaw.running === true,
+        budgetRemaining: numOrNull(metadataRaw.budgetRemaining),
+      }
+    : null;
 
   const summary = {
     bookCount: Math.max(0, toNum(summaryRaw.bookCount)),
@@ -519,6 +484,7 @@ function normalizeBooks(raw) {
     dateFrom: text(summaryRaw.dateFrom) || null,
     dateTo: text(summaryRaw.dateTo) || null,
     mangaExcluded: Math.max(0, toNum(summaryRaw.mangaExcluded)),
+    metadata,
   };
   if (!summary.eventCount) summary.eventCount = summary.finishedCount;
   if (!summary.bookCount) summary.bookCount = Object.keys(booksIndex).length;
@@ -545,14 +511,30 @@ function normalizeBooks(raw) {
         done: metaRaw.deepScan.done === true,
       }
     : null;
+  // Per-profile audit (one entry under the single-profile contract). Kept for
+  // the «⚑ переимпорт HC» note: a journal saved before `statusId` existed.
+  const meta = {
+    profiles: arr(metaRaw.profiles).map((entry) => ({
+      key: text(entry && entry.key),
+      source: text(entry && entry.source).toLowerCase(),
+      userKey: text(entry && entry.userKey),
+      events: Math.max(0, toNum(entry && entry.events)),
+      keptEvents: Math.max(0, toNum(entry && entry.keptEvents)),
+      statusExcluded: Math.max(0, toNum(entry && entry.statusExcluded)),
+      missingStatusId: Math.max(0, toNum(entry && entry.missingStatusId)),
+      needsReimport: Boolean(entry && entry.needsReimport),
+    })).filter((entry) => entry.source),
+    statusFilter: metaRaw.statusFilter && typeof metaRaw.statusFilter === 'object'
+      ? metaRaw.statusFilter
+      : null,
+  };
 
   return {
-    connected: connected.length
-      ? connected
-      : Object.keys(bySourceRaw).filter((item) => SOURCE_LABEL[item]),
+    connected: connected.length ? connected : [],
     profile: payloadProfile,
     profileSources: profileSourcesScoped,
     deepScan,
+    meta,
     summary,
     ratings,
     genres,
@@ -640,6 +622,7 @@ function showScreen(name) {
   }
   const bar = $('books-profile-bar');
   if (bar) bar.hidden = name === 'progress';
+  if (name !== 'dashboard') stopMetadataPolling();
   updateRefreshButton();
   const back = $('books-progress-back');
   if (back) back.hidden = Boolean(state.refresh);
@@ -712,6 +695,7 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
     state.data = null;
     showLoading(false);
     hideJobs();
+    renderMetadataBadge(null);
     showScreen('import');
     updateRefreshButton();
     renderProfileSwitcher();
@@ -1021,6 +1005,7 @@ async function switchProfile(id) {
   state.seq += 1; // drop any in-flight payload of the previous profile
   applyProfileToForms();
   renderProfileSwitcher();
+  renderMetadataBadge(null);
   hideJobs();
   if (!activeProfileSources().length) {
     showScreen('import');
@@ -2119,10 +2104,81 @@ function metric(iconName, label, valueNode, sub = '', title = '', extraClass = '
   return node;
 }
 
+/* ---------------- metadata coverage badge ---------------- */
+
+/**
+ * Honest "metadata is still loading" badge.
+ *
+ * A LiveLib profile gets its genres/series/years from the resolve chain
+ * (Litres → GB → OL → Hardcover → LiveLib card), which is budgeted (Litres:
+ * 200 books per run) and therefore spreads over several profile refreshes.
+ * Empty genres are not a bug there — the badge says how much is covered and
+ * whether the resolve stage is running right now. 100% → no badge at all.
+ * A Hardcover profile takes metadata from the journal, so it is ~100% and the
+ * badge stays hidden too. The view model lives in `books-refresh.js` and is
+ * unit-tested without a DOM.
+ */
+function renderMetadataBadge(data = state.data) {
+  const badge = $('books-metadata-badge');
+  const textNode = $('books-metadata-text');
+  const spinner = $('books-metadata-spinner');
+  if (!badge || !textNode) return;
+  const meta = data && data.summary ? data.summary.metadata : null;
+  const view = metadataBadge(meta);
+  if (!view) {
+    badge.hidden = true;
+    badge.dataset.percent = '';
+    if (spinner) spinner.hidden = true;
+    stopMetadataPolling();
+    return;
+  }
+  badge.hidden = false;
+  badge.dataset.percent = String(view.percent);
+  badge.classList.toggle('is-running', view.running);
+  badge.title = view.hint;
+  textNode.textContent = view.text;
+  if (spinner) spinner.hidden = !view.running;
+  badge.setAttribute('aria-label', `${view.text}. ${view.hint}`);
+  startMetadataPolling(meta);
+}
+
+/**
+ * While the resolve stage is alive, re-read the stats every few seconds and
+ * re-render quietly when it changes. The existing deep-scan poller does the
+ * same for dates; both stop as soon as the server reports no running stage.
+ */
+function startMetadataPolling(meta) {
+  stopMetadataPolling();
+  if (!meta || !meta.running) return;
+  if (!state.active || state.view !== 'dashboard') return;
+  state.metadataTimer = window.setTimeout(pollMetadataOnce, POLL_INTERVAL * 4);
+}
+
+function stopMetadataPolling() {
+  if (state.metadataTimer) {
+    window.clearTimeout(state.metadataTimer);
+    state.metadataTimer = 0;
+  }
+}
+
+async function pollMetadataOnce() {
+  state.metadataTimer = 0;
+  const meta = state.data && state.data.summary ? state.data.summary.metadata : null;
+  if (!meta || !meta.running) return;
+  try {
+    // Silent: a background enrichment must not flash the loading screen or
+    // steal focus; renderDashboardBooks re-evaluates the badge afterwards.
+    await loadStats({ force: true, silent: true });
+  } catch (error) {
+    if (error && error.status === 401) return;
+  }
+}
+
 function renderDashboardBooks(data) {
   renderHead(data);
   renderSummary(data);
   renderFilters(data);
+  renderMetadataBadge(data);
   renderRecent(data);
   renderRatings(data);
   renderGenres(data);
@@ -2574,9 +2630,6 @@ function renderRatings(data) {
     return;
   }
 
-  const llByScore = new Map(data.ratings.bySource.livelib.map((item) => [item.score, item.count]));
-  const hcByScore = new Map(data.ratings.bySource.hardcover.map((item) => [item.score, item.count]));
-
   const segments = [];
   for (let score = 1; score <= 10; score += 1) {
     segments.push({
@@ -2598,14 +2651,8 @@ function renderRatings(data) {
     centerLabel: 'оценок',
     ariaLabel: `Распределение книг по оценкам, ${fmtInt(ratedTotal)} оценённых книг`,
     secondary: (seg) => {
-      if (seg.score === 0) return `${fmtPercent(seg.value, totalAll)} без оценки`;
-      const ll = llByScore.get(seg.score) || 0;
-      const hc = hcByScore.get(seg.score) || 0;
-      const split = [];
-      if (ll) split.push(`LiveLib ${fmtInt(ll)}`);
-      if (hc) split.push(`Hardcover ${fmtInt(hc)}`);
       const pct = `${fmtPercent(seg.value, totalAll)} всех книг`;
-      return split.length ? `${pct} · ${split.join(' · ')}` : pct;
+      return seg.score === 0 ? `${fmtPercent(seg.value, totalAll)} без оценки` : pct;
     },
     onSelect: (seg) => {
       hideTooltip();
@@ -3254,19 +3301,7 @@ function bookRatingNode(entry) {
   }
   node.append(el('span', { class: 'film-rating-star', text: '★' }));
   node.append(el('span', { text: String(entry.rating) }));
-
-  const parts = [];
-  const ll = entry.ratingsBySource.livelib;
-  const hc = entry.ratingsBySource.hardcover;
-  if (hc && hc.rating != null) {
-    parts.push(`Hardcover ${fmtRating(hc.rating)}/${hc.scale || 5} → ${hc.rating10}/10`);
-  }
-  if (ll && ll.rating != null) {
-    parts.push(`LiveLib ${fmtRating(ll.rating)}/${ll.scale || 10}`);
-  }
-  node.title = parts.length
-    ? `Оценка по правилу приоритета Hardcover: ${parts.join(' · ')}`
-    : `Ваша оценка: ${entry.rating} из 10`;
+  node.title = `Ваша оценка: ${entry.rating} из 10`;
   return node;
 }
 
@@ -3685,6 +3720,21 @@ export function initBooks({ onActivate } = {}) {
   if (createFirst) {
     createFirst.addEventListener('click', () => openProfileModal());
   }
+  const metadataBadgeNode = $('books-metadata-badge');
+  if (metadataBadgeNode) {
+    const show = (event) => {
+      const meta = state.data && state.data.summary ? state.data.summary.metadata : null;
+      const view = metadataBadge(meta);
+      if (!view) return;
+      showTooltip(view.text, view.hint);
+      if (event) moveTooltip(event);
+    };
+    metadataBadgeNode.addEventListener('pointerenter', show);
+    metadataBadgeNode.addEventListener('pointermove', moveTooltip);
+    metadataBadgeNode.addEventListener('pointerleave', hideTooltip);
+    // Touch/keyboard: a click shows the same hint (there is no hover).
+    metadataBadgeNode.addEventListener('click', show);
+  }
   document.addEventListener('click', (event) => {
     if (!state.profileMenuOpen) return;
     const switcher = $('books-profile-switcher');
@@ -3776,6 +3826,9 @@ export async function showBooks() {
   }
   if (state.view === 'dashboard' && state.data) {
     if (state.onActivate) state.onActivate();
+    // Resume the metadata badge poller after a tab switch (the payload may
+    // still report a running resolve stage).
+    renderMetadataBadge(state.data);
     return;
   }
   if (state.view === 'progress' && hasJobs()) {
@@ -3804,6 +3857,7 @@ export function hideBooks() {
   // A manual refresh continues on the server and in the background poller;
   // only idle/import polling is paused while the tab is hidden.
   if (!state.refresh) stopPolling();
+  stopMetadataPolling();
   closeBookMenu();
   closeProfileMenu();
 }
@@ -3812,6 +3866,7 @@ export function hideBooks() {
 export function resetBooks() {
   stopPolling();
   stopDeepPolling();
+  stopMetadataPolling();
   closeBookMenu();
   closeProfileMenu();
   state.loaded = false;

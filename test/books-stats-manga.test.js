@@ -345,7 +345,8 @@ test('payload schema stays compatible: single-profile fields keep their place', 
   assert.deepEqual(stats.sources.connected.sort(), ['hardcover', 'livelib']);
   assert.deepEqual(stats.sources.selected, ['livelib']);
   assert.equal(stats.sources.profile.key, 'livelib-tester');
-  assert.equal(stats.sources.filter.mode, 'profile');
+  assert.equal('filter' in stats.sources, false);
+  assert.equal('bySource' in stats.ratings, false);
   assert.deepEqual(stats.summary.sources, ['livelib']);
   assert.equal(stats.sourceBreakdown, undefined);
   assert.equal(stats.ratings.merged.length > 0, true);
