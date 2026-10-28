@@ -166,7 +166,10 @@ test('file import: metadata coverage counts real columns, not "the file was pars
   assert.deepEqual(on.summary.metadata, {
     resolved: 4,
     total: 6,
+    resolvable: 6,
+    hopeless: 0,
     percent: 67,
+    done: false,
     running: false,
     budgetRemaining: null,
   });
@@ -183,7 +186,10 @@ test('file import: metadata coverage counts real columns, not "the file was pars
   assert.deepEqual(off.summary.metadata, {
     resolved: 1,
     total: 3,
+    resolvable: 3,
+    hopeless: 0,
     percent: 33,
+    done: false,
     running: false,
     budgetRemaining: null,
   });
@@ -233,7 +239,10 @@ test('file import: a minimal export keeps the filter open and the badge honest',
   assert.deepEqual(stats.summary.metadata, {
     resolved: 0,
     total: 2,
+    resolvable: 2,
+    hopeless: 0,
     percent: 0,
+    done: false,
     running: false,
     budgetRemaining: null,
   });

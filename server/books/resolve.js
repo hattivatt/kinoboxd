@@ -355,20 +355,41 @@ async function tryProvider(provider, input, options, chain) {
     stat.skipped++;
     return null;
   }
+  // "Providers were asked": recorded per event so the metadata badge can keep
+  // its denominator on the resolvable pool. A breaker/budget skip is NOT an
+  // answer, so those keys are removed again below.
+  const key = input && input.llBookId ? String(input.llBookId) : null;
+  const budget = provider.NAME === 'litres' ? options.litresBudget : options.cardBudget;
+  const usedBefore = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
   stat.calls++;
   try {
     const result = await provider.getWork(input, providerOptionsFor(options, provider));
+    const usedAfter = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
+    const budgetBlocked =
+      budget && usedBefore != null && usedAfter === usedBefore && Number(budget.remaining) === 0;
+    if (key && !budgetBlocked) {
+      if (result) {
+        options.attemptedKeys && options.attemptedKeys.delete(key);
+      } else if (!budgetBlocked) {
+        options.attemptedKeys && options.attemptedKeys.add(key);
+      }
+    }
     if (result) {
       stat.hits++;
       const method = (result.match && result.match.method) || 'unknown';
       stat.methods[method] = (stat.methods[method] || 0) + 1;
     } else if (typeof provider.isBreakerOpen === 'function' && provider.isBreakerOpen()) {
       stat.skipped++;
+      if (key) options.attemptedKeys && options.attemptedKeys.delete(key);
     }
     return result;
   } catch (err) {
     stat.errors++;
     stat.lastError = (err && err.code) || 'provider_error';
+    if (key) {
+      options.attemptedKeys && options.attemptedKeys.delete(key);
+      options.providerErrorKeys && options.providerErrorKeys.add(key);
+    }
     if (typeof provider.noteError === 'function') provider.noteError(err);
     return null;
   }
@@ -479,6 +500,12 @@ async function resolveProfile(llProfile, options = {}) {
     litres: new Map(),
   };
   const lookupFn = options.lookupIsbns || lookupIsbns;
+  // Per-event provenance of the pass (see tryProvider): a key is "hopeless"
+  // only when a provider was really called and answered nothing. Persisted by
+  // the import job so stats does not count such books in the metadata percent.
+  const attemptedKeys = new Set();
+  const providerErrorKeys = new Set();
+  options = { ...options, attemptedKeys, providerErrorKeys };
 
   const report = {
     total: events.length,
@@ -579,6 +606,14 @@ async function resolveProfile(llProfile, options = {}) {
     // Persist freshly discovered works once.
     for (const details of lookup.works.values()) {
       await bookCache.saveDetails(details.hcWorkId, details);
+    }
+    // The batch is one network attempt for every ISBN-bearing event; a failed
+    // batch is not an answer (the event stays pending, never "hopeless").
+    for (const bookIds of isbnToBookIds.values()) {
+      for (const bookId of bookIds) {
+        if (lookupErrors.length) providerErrorKeys.add(String(bookId));
+        else attemptedKeys.add(String(bookId));
+      }
     }
   }
 
@@ -912,6 +947,37 @@ async function resolveProfile(llProfile, options = {}) {
     const bookId = eventKeyOf(event);
     return !links.has(bookId) && !bookCache.getWorkDetails(`ll:${bookId}`);
   }).length;
+  report.attempted = attemptedKeys.size;
+  // A provider that ran out of budget did NOT answer: an event whose best
+  // matcher is that provider stays pending instead of being written off as
+  // hopeless (otherwise the badge could claim "готово" while 200 Cyrillic
+  // books are still waiting for the next Litres allowance).
+  const litresExhausted = litresBudget.used >= litresBudget.limit;
+  const cardExhausted = cardBudget.used >= cardBudget.limit;
+  const budgetPendingKeys = new Set();
+  if (litresExhausted) {
+    for (const event of pending) {
+      if (CYRILLIC_TITLE.test(String((event && event.title) || ''))) {
+        const key = eventKeyOf(event);
+        if (key) budgetPendingKeys.add(key);
+      }
+    }
+  }
+  if (cardExhausted) {
+    for (const event of pending) {
+      if (!isbnOfEvent(event)) {
+        const key = eventKeyOf(event);
+        if (key) budgetPendingKeys.add(key);
+      }
+    }
+  }
+  report.unmatchedKeys = [...attemptedKeys].filter(
+    (bookId) =>
+      !links.has(bookId) &&
+      !bookCache.getWorkDetails(`ll:${bookId}`) &&
+      !providerErrorKeys.has(bookId) &&
+      !budgetPendingKeys.has(bookId)
+  );
   report.lookupErrors = lookupErrors;
 
   if (onProgress) {

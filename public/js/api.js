@@ -208,11 +208,22 @@ export function startBooksImportLivelib(username, { force = false, deep = false,
   });
 }
 
-export function startBooksImportHardcover(userId, { signal } = {}) {
+/**
+ * Hardcover journal refresh.
+ *
+ * Default = an incremental diff (`updated_at > lastSyncAt`): one page for the
+ * usual "one book added" case. `force: true` re-reads the whole journal — the
+ * explicit "Полная перепроверка" option (Shift+click in the UI); the server
+ * also falls back to it when the journal shrank (a deleted book cannot be
+ * detected through `updated_at`).
+ */
+export function startBooksImportHardcover(userId, { force = false, signal } = {}) {
+  const body = userId != null && userId !== '' ? { userId } : {};
+  if (force) body.force = true;
   return request('/api/books/import/hardcover', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(userId != null && userId !== '' ? { userId } : {}),
+    body: JSON.stringify(body),
     signal,
   });
 }

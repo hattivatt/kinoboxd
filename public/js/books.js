@@ -33,7 +33,7 @@ import {
   renderBooksTimeline, renderReadingCalendar, renderStreaks, normalizeStreaks,
   fmtDayRu, fmtDayShortRu,
 } from './books-charts.js';
-import { snapshotCounts, refreshToastMessage, deepBadgeText, metadataBadge } from './books-refresh.js';
+import { snapshotCounts, refreshToastMessage, deepBadgeText, metadataBadge, withPreservedScroll } from './books-refresh.js';
 import {
   LEGACY_ACCOUNTS_KEY, MAX_PROFILES,
   loadRegistry, listProfiles as listBooksProfiles, saveProfile as saveBooksProfile,
@@ -618,11 +618,14 @@ function sourceScopeTitle(sources) {
   if (livelib) {
     return 'Обновить профиль LiveLib: лёгкая проверка (2 запроса), затем история датируется в фоне (~3 мин)';
   }
-  if (hardcover) return 'Обновить профиль Hardcover: полный журнал (~10 с)';
+  if (hardcover) {
+    return 'Обновить профиль Hardcover: только новое с прошлой синхронизации (~2 с). Shift+клик — полная перепроверка журнала.';
+  }
   return 'Обновить профиль';
 }
 
 function showScreen(name) {
+  const previous = state.view;
   state.view = name;
   const screens = {
     import: $('books-import'),
@@ -638,7 +641,11 @@ function showScreen(name) {
   updateRefreshButton();
   const back = $('books-progress-back');
   if (back) back.hidden = Boolean(state.refresh);
-  if (state.active && state.onActivate) state.onActivate();
+  // `onActivate` is main.js's `showView('books')`, which ends with
+  // `window.scrollTo(0, 0)`. Calling it on every render made the metadata
+  // poller (every ~5 s) throw the user back to the top of the dashboard
+  // (user report, 28.10.2026). Only a real screen change may activate.
+  if (previous !== name && state.active && state.onActivate) state.onActivate();
 }
 
 function showLoading(visible) {
@@ -733,7 +740,18 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
     }
     hideJobs();
     showScreen('dashboard');
-    renderDashboardBooks(state.data);
+    // A silent background re-render (metadata badge poller, deep scan finish)
+    // must not move the page: the dashboard is rebuilt wholesale, so restore
+    // the window scroll explicitly.
+    if (silent) {
+      withPreservedScroll(
+        () => (typeof window !== 'undefined' ? window.scrollY || 0 : 0),
+        (y) => window.scrollTo(0, y),
+        () => renderDashboardBooks(state.data)
+      );
+    } else {
+      renderDashboardBooks(state.data);
+    }
   } catch (error) {
     if (seq !== state.seq) return;
     if (error && error.status === 401) return; // auth view takes over
@@ -1667,6 +1685,11 @@ async function startImport(source, account, { cookieHeader = '' } = {}) {
 
 function progressPercent(status) {
   if (!status) return 0;
+  const doneFlag = status.done || status.stage === 'done';
+  const percentValue = numOrNull(status.percent);
+  if (percentValue != null) {
+    return Math.max(doneFlag ? 100 : 2, Math.min(100, Math.round(percentValue)));
+  }
   const page = numOrNull(status.page ?? status.current);
   const pageTotal = numOrNull(status.pageTotal ?? status.totalPages ?? status.pagesTotal ?? status.pages);
   if (page != null && pageTotal && pageTotal > 0) {
@@ -1677,8 +1700,7 @@ function progressPercent(status) {
   if (batch != null && batchTotal && batchTotal > 0) {
     return Math.max(2, Math.min(100, Math.round((batch / batchTotal) * 100)));
   }
-  const done = status.done || status.stage === 'done';
-  return done ? 100 : 0;
+  return doneFlag ? 100 : 0;
 }
 
 function statusMeta(status) {
@@ -1715,12 +1737,29 @@ function refreshStageText(source, job) {
   if (!status) return 'Запускаем…';
   if (status.error) return text(status.error);
   if (status.done || status.stage === 'done') return 'Готово';
+  if (status.stage === 'resolve') {
+    const done = numOrNull(status.resolved);
+    const total = numOrNull(status.resolveTotal);
+    return done != null && total
+      ? `Догружаем метадату ${fmtInt(done)}/${fmtInt(total)}`
+      : 'Догружаем метадату';
+  }
   const page = numOrNull(status.page ?? status.current ?? status.batch ?? status.batchIndex);
   const pageTotal = numOrNull(
     status.pageTotal ?? status.totalPages ?? status.pagesTotal ?? status.batchTotal ?? status.batchesTotal
   );
   if (source === 'hardcover') {
-    return page != null && page > 0 ? `Читаем журнал ${fmtInt(page)}/${pageTotal ? fmtInt(pageTotal) : '?'}` : 'Читаем журнал';
+    const sync = status.sync && typeof status.sync === 'object' ? status.sync : null;
+    if (sync && sync.mode === 'incremental') {
+      const changed = numOrNull(sync.changedRows);
+      return changed != null
+        ? `Проверяем новинки · изменено ${fmtInt(changed)}`
+        : 'Проверяем новинки';
+    }
+    if (sync && sync.fallback === 'journal-shrank') return 'Журнал уменьшился — полная перепроверка';
+    return page != null && page > 0
+      ? `Читаем журнал ${fmtInt(page)}/${pageTotal ? fmtInt(pageTotal) : '?'}`
+      : 'Читаем журнал';
   }
   if (source === 'livelib') {
     return page != null && page > 0 ? `LiveLib страница ${fmtInt(page)}/${pageTotal ? fmtInt(pageTotal) : '?'}` : 'LiveLib: полный скан';
@@ -1730,6 +1769,12 @@ function refreshStageText(source, job) {
 
 function refreshMeta(status) {
   if (!status) return '';
+  const sync = status.sync && typeof status.sync === 'object' ? status.sync : null;
+  if (sync && sync.mode === 'incremental' && sync.changedRows != null) {
+    const changed = fmtInt(sync.changedRows);
+    const total = sync.userBooksTotal != null ? ` · в журнале ${fmtInt(sync.userBooksTotal)}` : '';
+    return `изменено ${changed} ${plural(sync.changedRows, ['книга', 'книги', 'книг'])}${total}`;
+  }
   const events = Array.isArray(status.events) ? status.events.length : numOrNull(status.events);
   return events != null ? `${fmtInt(events)} ${plural(events, ['событие', 'события', 'событий'])}` : '';
 }
@@ -1807,7 +1852,10 @@ function renderProgress() {
         ? 'Проверка завершена — пересчитываем статистику…'
         : 'Импорт завершён — считаем статистику…';
     } else if (refreshing) {
-      statusNode.textContent = 'Полная проверка: Hardcover читается заново, LiveLib — все страницы (до 3 минут).';
+      const resolving = jobs.some(([, job]) => job.status && job.status.stage === 'resolve');
+      statusNode.textContent = resolving
+        ? 'Журнал уже сохранён — метадата догружается в фоне, дашборд не ждёт.'
+        : 'Проверяем только новое с прошлой синхронизации. Полная перепроверка — Shift+клик по «Обновить профиль».';
     } else {
       statusNode.textContent = totalEvents > 0
         ? `Собрано ${fmtInt(totalEvents)} ${plural(totalEvents, ['событие', 'события', 'событий'])}…`
@@ -2183,20 +2231,20 @@ async function finishRefresh(refresh) {
  * The job runs on the server while the user may switch to Films; polling
  * keeps going.
  */
-async function refreshProfiles() {
+async function refreshProfiles(options = {}) {
   if (state.refresh || state.refreshStarting || state.loading ||
       state.starting.hardcover || state.starting.livelib) return;
   state.refreshStarting = true;
   updateRefreshButton();
   try {
-    await runRefreshProfiles();
+    await runRefreshProfiles(options);
   } finally {
     state.refreshStarting = false;
     updateRefreshButton();
   }
 }
 
-async function runRefreshProfiles() {
+async function runRefreshProfiles(options = {}) {
   const profile = state.profile;
   const sources = activeProfileSources();
   const source = sources[0] || '';
@@ -2219,6 +2267,7 @@ async function runRefreshProfiles() {
   state.refresh = {
     before: snapshotCounts(baseline || state.data),
     source,
+    force: Boolean(options.force),
     failures: {},
     startedAt: Date.now(),
   };
@@ -2236,7 +2285,9 @@ async function runRefreshProfiles() {
       state.refresh.failures.hardcover = 'в профиле нет ID Hardcover';
     } else {
       try {
-        const response = await startBooksImportHardcover(userId);
+        const response = await startBooksImportHardcover(userId, {
+          force: Boolean(state.refresh && state.refresh.force),
+        });
         attachRefreshJob('hardcover', response, userId);
       } catch (error) {
         if (error && error.status === 401) return;
@@ -4004,7 +4055,9 @@ export function initBooks({ onActivate } = {}) {
   if (refresh) {
     refresh.addEventListener('click', (event) => {
       event.preventDefault();
-      refreshProfiles();
+      // Shift+click = full Hardcover journal re-read (the default is the
+      // incremental `updated_at` diff, which is one query for one new book).
+      refreshProfiles({ force: Boolean(event.shiftKey) });
     });
   }
 

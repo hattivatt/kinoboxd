@@ -1295,6 +1295,19 @@ function buildBooksStats(options = {}) {
   let works = new Map();
   for (const [workId, list] of byWork) works.set(workId, workMetadata(workId, list));
 
+  // Resolve-cache keys of every work, for the metadata-coverage denominator.
+  // A work is "hopeless" only when the last resolve pass asked a provider
+  // about *all* of its events and got nothing back (resolve-state).
+  const workLinkKeys = new Map();
+  for (const [workId, list] of byWork) {
+    const keys = [];
+    for (const event of list) {
+      const key = eventLinkKeyOf(event);
+      if (key && !keys.includes(key)) keys.push(key);
+    }
+    workLinkKeys.set(workId, keys);
+  }
+
   // Manga/comics filter (default OFF = manga excluded). A work is comics when
   // its own flag is true *or* any volume of the same series is comics
   // (series-level propagation above); `null` still survives on its own.
@@ -1503,8 +1516,31 @@ function buildBooksStats(options = {}) {
   // alive; it lets the UI say "догружается" instead of showing empty genres as
   // final. A Hardcover profile takes its metadata from the journal, so it is
   // never "loading" here.
+  //
+  // The denominator is the RESOLVABLE pool, not every work (user report,
+  // 28.10.2026: the badge stuck at 99% forever). `resolve-state` records the
+  // event keys a provider was really asked about and answered nothing; such a
+  // work can never reach 100%, so it is reported separately as `hopeless` and
+  // excluded from `resolvable`. Plan shelves were already dropped by
+  // `prepareEvents`, so they never inflate either number.
   const metadataResolved = [...works.values()].filter((work) => !work.unresolved).length;
   const metadataTotal = works.size;
+  const resolveArchive =
+    profile.source === 'livelib' ? bookCache.getResolveState('livelib', profile.userKey) : null;
+  const hopelessKeys = new Set(
+    Array.isArray(resolveArchive && resolveArchive.unmatchedKeys)
+      ? resolveArchive.unmatchedKeys.map(String)
+      : []
+  );
+  let metadataHopeless = 0;
+  if (hopelessKeys.size) {
+    for (const [workId, work] of works) {
+      if (!work.unresolved) continue;
+      const keys = workLinkKeys.get(workId) || [];
+      if (keys.length && keys.every((key) => hopelessKeys.has(String(key)))) metadataHopeless++;
+    }
+  }
+  const metadataResolvable = Math.max(0, metadataTotal - metadataHopeless);
   const resolveState = options.resolveState && typeof options.resolveState === 'object'
     ? options.resolveState
     : {};
@@ -1513,10 +1549,19 @@ function buildBooksStats(options = {}) {
     Number.isFinite(Number(resolveState.budgetRemaining))
     ? Number(resolveState.budgetRemaining)
     : null;
+  const metadataPercent = metadataResolvable
+    ? Math.round((metadataResolved * 100) / metadataResolvable)
+    : 100;
   summary.metadata = {
     resolved: metadataResolved,
     total: metadataTotal,
-    percent: metadataTotal ? Math.round((metadataResolved * 100) / metadataTotal) : 100,
+    resolvable: metadataResolvable,
+    hopeless: metadataHopeless,
+    percent: metadataPercent,
+    // "done" = nothing left to load for the resolvable pool. The badge uses it
+    // to stop saying «догружается» once the job finished, even if `hopeless`
+    // works remain dark.
+    done: !metadataRunning && metadataPercent >= 100,
     running: metadataRunning,
     budgetRemaining: metadataRunning ? budgetRemaining : null,
   };

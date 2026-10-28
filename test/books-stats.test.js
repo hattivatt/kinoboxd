@@ -195,7 +195,10 @@ test('a LiveLib profile aggregates only its own events (metadata may come from H
   assert.deepEqual(stats.summary.metadata, {
     resolved: 1,
     total: 3,
+    resolvable: 3,
+    hopeless: 0,
     percent: 33,
+    done: false,
     running: false,
     budgetRemaining: null,
   });

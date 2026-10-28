@@ -22,6 +22,7 @@
  *     flags/book-flags.json              workId -> manual manga/comics override
  *     match-log.jsonl                    audit of broad matches (append-only)
  *     imports/{source}-{userKey}-{ts}.json  raw import payload (debug)
+ *     resolve-state/{source}-{userKey}.json last completed metadata pass
  *
  * The root can be moved with KINOBOXD_CACHE_BOOK_DIR; by default it is
  * `app/cache-book`, a sibling of the film cache, so the two namespaces never
@@ -40,6 +41,7 @@ const PROFILES_DIR = path.join(BOOK_CACHE_DIR, 'profiles');
 const DETAILS_DIR = path.join(BOOK_CACHE_DIR, 'details');
 const LINKS_DIR = path.join(BOOK_CACHE_DIR, 'links');
 const IMPORTS_DIR = path.join(BOOK_CACHE_DIR, 'imports');
+const RESOLVE_STATE_DIR = path.join(BOOK_CACHE_DIR, 'resolve-state');
 const FLAGS_DIR = path.join(BOOK_CACHE_DIR, 'flags');
 const INDEX_PATH = path.join(BOOK_CACHE_DIR, 'index.json');
 const LINKS_JSON_PATH = path.join(BOOK_CACHE_DIR, 'links.json');
@@ -47,7 +49,7 @@ const FLAGS_PATH = path.join(FLAGS_DIR, 'book-flags.json');
 const MATCH_LOG_PATH = path.join(BOOK_CACHE_DIR, 'match-log.jsonl');
 const AUTHORS_PATH = path.join(BOOK_CACHE_DIR, 'authors.json');
 
-for (const dir of [PROFILES_DIR, DETAILS_DIR, LINKS_DIR, IMPORTS_DIR, FLAGS_DIR]) {
+for (const dir of [PROFILES_DIR, DETAILS_DIR, LINKS_DIR, IMPORTS_DIR, RESOLVE_STATE_DIR, FLAGS_DIR]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -718,6 +720,45 @@ async function saveRawImport(source, userKey, payload) {
   return filePath;
 }
 
+/* ------------------------------------------------------------------ */
+/* Resolve audit state: cache-book/resolve-state/{source}-{key}.json   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Last completed metadata-resolve pass of one LiveLib profile.
+ *
+ * `unmatchedKeys` is the honest "providers were asked and answered nothing"
+ * set: an event key lands there only when at least one provider was really
+ * called for it (no breaker/budget skip) and none returned a work. The stats
+ * payload uses it to keep the «Метадата: N%» denominator on the resolvable
+ * pool instead of counting books no provider knows forever (user report,
+ * 28.10.2026: the badge sat at 99% and never reached 100).
+ */
+function resolveStatePath(source, userKey) {
+  return path.join(RESOLVE_STATE_DIR, `${safeKey(source)}-${safeKey(userKey)}.json`);
+}
+
+const resolveStateMemory = new Map();
+
+function getResolveState(source, userKey) {
+  const key = `${source}:${userKey}`;
+  const filePath = resolveStatePath(source, userKey);
+  const cached = resolveStateMemory.get(key);
+  if (cached && fingerprintOf(cached.path) === cached.fingerprint) return cached.data;
+  if (cached) resolveStateMemory.delete(key);
+  const found = readJsonWithFingerprint(filePath);
+  if (!found || !found.data || typeof found.data !== 'object') return null;
+  resolveStateMemory.set(key, { data: found.data, path: filePath, fingerprint: found.fingerprint });
+  return found.data;
+}
+
+async function saveResolveState(source, userKey, data) {
+  const filePath = resolveStatePath(source, userKey);
+  const fingerprint = await writeJsonAtomic(filePath, data);
+  resolveStateMemory.set(`${source}:${userKey}`, { data, path: filePath, fingerprint });
+  return filePath;
+}
+
 /** Append one broad-match audit record. Never throws into the job. */
 function appendMatchLog(entry) {
   try {
@@ -744,6 +785,7 @@ function clearMemory() {
   flagsSaving = Promise.resolve();
   authorsMap = null;
   authorsMapFingerprint = null;
+  resolveStateMemory.clear();
 }
 
 module.exports = {
@@ -752,6 +794,7 @@ module.exports = {
   DETAILS_DIR,
   LINKS_DIR,
   IMPORTS_DIR,
+  RESOLVE_STATE_DIR,
   INDEX_PATH,
   LINKS_JSON_PATH,
   MATCH_LOG_PATH,
@@ -790,6 +833,8 @@ module.exports = {
   getAuthorsMap,
   saveAuthorsMap,
   saveRawImport,
+  getResolveState,
+  saveResolveState,
   appendMatchLog,
   clearMemory,
 };

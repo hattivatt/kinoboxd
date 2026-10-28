@@ -177,11 +177,14 @@ router.post('/import/livelib', (req, res, next) => {
   }
 });
 
-/** POST /api/books/import/hardcover { userId? } — defaults to the token owner. */
+/** POST /api/books/import/hardcover { userId?, force? } — defaults to the token owner. */
 router.post('/import/hardcover', (req, res, next) => {
   try {
     const body = req.body || {};
-    const job = importJobs.startHardcoverImport(body.userId);
+    // `force: true` = full journal re-read. The default click is incremental
+    // (`updated_at > lastSyncAt`); the UI sets force on Shift+click / retry.
+    const force = parseForce(body.force, req.query && req.query.force);
+    const job = importJobs.startHardcoverImport(body.userId, { force });
     res.status(202).json(job);
   } catch (err) {
     next(mapError(err));

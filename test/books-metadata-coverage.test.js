@@ -112,7 +112,10 @@ test('metadata coverage counts works with a details document', async () => {
   assert.deepEqual(stats.summary.metadata, {
     resolved: 2,
     total: 4,
+    resolvable: 4,
+    hopeless: 0,
     percent: 50,
+    done: false,
     running: false,
     budgetRemaining: null,
   });
@@ -138,7 +141,10 @@ test('running + budgetRemaining are forwarded only for a LiveLib profile', async
   assert.deepEqual(hc.summary.metadata, {
     resolved: 1,
     total: 1,
+    resolvable: 1,
+    hopeless: 0,
     percent: 100,
+    done: true,
     running: false,
     budgetRemaining: null,
   });
@@ -157,6 +163,66 @@ test('a fully enriched or empty profile reports 100% (badge hidden)', async () =
   assert.equal(stats.summary.metadata.total, 0);
   assert.equal(stats.summary.metadata.percent, 100);
   assert.equal(stats.summary.metadata.running, false);
+});
+
+test('hopeless works leave the metadata denominator (99% -> 100%)', async () => {
+  await seed();
+  // The resolve pass asked the providers about 200 and 400 and got nothing.
+  await bookCache.saveResolveState('livelib', 'Meta', {
+    schemaVersion: 1,
+    ranAt: '2026-10-28T00:00:00.000Z',
+    total: 4,
+    attempted: 2,
+    matched: 0,
+    skippedPlanShelf: 0,
+    lookupErrors: [],
+    unmatchedKeys: ['200', '400'],
+  });
+
+  const stats = buildBooksStats({ profile: 'livelib-Meta' });
+  assert.deepEqual(stats.summary.metadata, {
+    resolved: 2,
+    total: 4,
+    // 200 and 400 are dark for every provider -> not part of the pool, so the
+    // badge can honestly read 100% instead of freezing at 99% forever.
+    resolvable: 2,
+    hopeless: 2,
+    percent: 100,
+    done: true,
+    running: false,
+    budgetRemaining: null,
+  });
+
+  // Only one of them is hopeless: 2 of 3 resolvable = 67%, not done.
+  await bookCache.saveResolveState('livelib', 'Meta', {
+    schemaVersion: 1,
+    ranAt: '2026-10-28T00:00:00.000Z',
+    unmatchedKeys: ['200'],
+  });
+  const partial = buildBooksStats({ profile: 'livelib-Meta' });
+  assert.deepEqual(partial.summary.metadata, {
+    resolved: 2,
+    total: 4,
+    resolvable: 3,
+    hopeless: 1,
+    percent: 67,
+    done: false,
+    running: false,
+    budgetRemaining: null,
+  });
+});
+
+test('plan shelves never inflate the metadata denominator', async () => {
+  await seed();
+  const profile = bookCache.getProfile('livelib', 'Meta');
+  await bookCache.saveProfile('livelib', 'Meta', {
+    ...profile,
+    events: [...profile.events, event(500, { shelf: 'wish' }), event(501, { shelf: 'reading' })],
+  });
+  const stats = buildBooksStats({ profile: 'livelib-Meta' });
+  // Same 4 history works; the two plans are not statistics and not metadata.
+  assert.equal(stats.summary.metadata.total, 4);
+  assert.equal(stats.summary.eventCount, 4);
 });
 
 test('resolveStateFromJobs recognises only a live LiveLib resolve stage', () => {

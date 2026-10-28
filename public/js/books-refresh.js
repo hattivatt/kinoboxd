@@ -102,29 +102,70 @@ function pluralBooks(count) {
 }
 
 /**
+ * Run a synchronous render and return the window scroll to where it was.
+ *
+ * The books dashboard re-renders its whole DOM while the metadata resolve is
+ * polled (every ~5 s). Removing a tall container and building it again can
+ * clamp/restore the window scroll, which the user sees as the page jumping to
+ * the top (user report, 28.10.2026). `getY`/`setY` are injected so the rule is
+ * unit-testable without a DOM: only a non-zero scroll is restored, and a
+ * rendering that already preserved the position is left alone.
+ */
+export function withPreservedScroll(getY, setY, render) {
+  const read = typeof getY === 'function' ? getY : () => 0;
+  const write = typeof setY === 'function' ? setY : () => {};
+  const before = Number(read()) || 0;
+  const result = typeof render === 'function' ? render() : undefined;
+  const after = Number(read()) || 0;
+  if (before > 0 && after !== before) {
+    try {
+      write(before);
+    } catch {
+      /* a scroll restore must never break the render */
+    }
+  }
+  return result;
+}
+
+/**
  * View model of the "Метадата: N%" badge, or `null` when it must be hidden.
  *
  * Hidden when there is nothing to load (legacy payload, empty profile) and at
- * 100% — a fully enriched profile needs no apology. `running` adds the
+ * `pending === 0` — a fully enriched profile needs no apology. `resolvable`
+ * (server-side) is the pool minus works the providers were asked about and
+ * answered nothing for; `hopeless` is that excluded tail, reported in the
+ * hint instead of pinning the badge at 99% forever. `running` adds the
  * «догружается…» suffix and the spinner; `budgetRemaining` (Litres books for
  * the current run) is only present while the job is alive.
  *
- * @param {{resolved:number,total:number,percent:number,running:boolean,budgetRemaining:?number}|null} meta
+ * @param {{resolved:number,total:number,resolvable?:number,hopeless?:number,percent:number,running:boolean,done?:boolean,budgetRemaining:?number}|null} meta
  */
 export function metadataBadge(meta) {
   if (!meta || typeof meta !== 'object') return null;
   const total = toCount(meta.total);
   if (total <= 0) return null;
   const resolved = Math.min(total, toCount(meta.resolved));
-  const percent = Math.max(0, Math.min(100, Math.round(Number(meta.percent))));
-  if (!Number.isFinite(percent) || percent >= 100) return null;
-  const pending = total - resolved;
+  const resolvable = meta.resolvable == null
+    ? total
+    : Math.min(total, toCount(meta.resolvable));
+  const hopeless = meta.hopeless == null
+    ? Math.max(0, total - resolvable)
+    : Math.max(0, toCount(meta.hopeless));
+  const pending = Math.max(0, resolvable - resolved);
   const running = meta.running === true;
+  // Nothing left in the resolvable pool: no badge, whatever the raw total is
+  // (and even while a pass is still walking hopeless keys).
+  if (pending === 0) return null;
+  const percent = Math.max(0, Math.min(100, Math.round(Number(meta.percent))));
+  if (!Number.isFinite(percent)) return null;
   const budget = meta.budgetRemaining != null && Number.isFinite(Number(meta.budgetRemaining))
     ? Math.max(0, Math.floor(Number(meta.budgetRemaining)))
     : null;
   const budgetNote = budget != null
     ? ` Литрес-бюджет на этот прогон: ${budget} ${budget === 1 ? 'книга' : 'книг(и)'}.`
+    : '';
+  const hopelessNote = hopeless > 0
+    ? ` Ещё ${hopeless} ${hopeless === 1 ? 'книга' : 'книг'} без метаданных у провайдеров — в знаменатель не входят.`
     : '';
   const next = running
     ? ' Метадата догружается прямо сейчас — цифра обновится сама.'
@@ -133,13 +174,17 @@ export function metadataBadge(meta) {
     percent,
     resolved,
     total,
+    resolvable,
+    hopeless,
     pending,
     running,
+    done: running ? false : pending === 0,
     budgetRemaining: budget,
     text: running ? `Метадата: ${percent}% · догружается…` : `Метадата: ${percent}%`,
     hint:
       `${pending} ${pluralBooks(pending)} метадату ` +
-      `(${resolved} из ${total} уже с жанрами/сериями/годом).${budgetNote}${next}`,
+      `(${resolved} из ${resolvable} резолвимых уже с жанрами/сериями/годом).` +
+      `${hopelessNote}${budgetNote}${next}`,
   };
 }
 

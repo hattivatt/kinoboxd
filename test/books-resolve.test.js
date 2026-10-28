@@ -216,3 +216,51 @@ test('resolveProfile matches by ISBN and by title, keeps negatives uncached', as
     hardcover.graphql = originalGraphql;
   }
 });
+
+test('resolve report separates hopeless keys from budget-pending ones', async () => {
+  const miss = { NAME: 'googlebooks', getWork: async () => null };
+  const profile = {
+    schemaVersion: 1,
+    source: 'livelib',
+    userKey: 'Hopeless',
+    events: [
+      {
+        id: 'll:101',
+        source: 'livelib',
+        sourceBookId: '101',
+        title: 'Obscure Book',
+        authors: ['Nobody'],
+        status: 'read',
+      },
+    ],
+  };
+  const report = await resolve.resolveProfile(profile, { providers: [miss] });
+  // A provider was really called and answered nothing -> the work is reported
+  // as hopeless so stats can drop it from the metadata denominator.
+  assert.equal(report.attempted, 1);
+  assert.deepEqual(report.unmatchedKeys, ['101']);
+
+  // A budget-starved Litres call is NOT an answer: the key stays pending and
+  // must not be written off as hopeless.
+  const starved = { NAME: 'litres', getWork: async () => null };
+  const ruProfile = {
+    ...profile,
+    events: [
+      {
+        id: 'll:202',
+        source: 'livelib',
+        sourceBookId: '202',
+        title: 'Неизвестная книга',
+        authors: ['Автор'],
+        status: 'read',
+      },
+    ],
+  };
+  const budget = { limit: 0, used: 0, remaining: 0, take: () => false };
+  const starvedReport = await resolve.resolveProfile(ruProfile, {
+    providers: [starved],
+    litresBudget: budget,
+  });
+  assert.equal(starvedReport.attempted, 0);
+  assert.deepEqual(starvedReport.unmatchedKeys, []);
+});

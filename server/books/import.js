@@ -178,6 +178,23 @@ async function resolveAllLivelibProfiles(job, options = {}) {
       card: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
     };
     reports.push({ userKey: meta.userKey, ...report });
+    // Persist the pass outcome for the metadata badge: which event keys the
+    // providers were asked about and answered nothing. Best-effort — a
+    // read-only cache must not turn a successful enrich into a failed job.
+    try {
+      await bookCache.saveResolveState('livelib', meta.userKey, {
+        schemaVersion: 1,
+        ranAt: new Date().toISOString(),
+        total: report.total,
+        attempted: report.attempted == null ? 0 : report.attempted,
+        matched: report.withMetadata == null ? 0 : report.withMetadata,
+        skippedPlanShelf: report.skippedPlanShelf || 0,
+        lookupErrors: report.lookupErrors || [],
+        unmatchedKeys: Array.isArray(report.unmatchedKeys) ? report.unmatchedKeys : [],
+      });
+    } catch (err) {
+      console.warn(`[books-import ${job.id}] resolve-state save failed: ${err.message}`);
+    }
   }
   const providerChain = {};
   for (const report of reports) {
@@ -595,12 +612,22 @@ function maskSession(session) {
 /**
  * Hardcover import.
  *
- * Deliberately has no reuse TTL: every click re-fetches the journal (~7 pages,
- * a few seconds) so a profile written by an older schema gets `statusId` for
- * every event. LiveLib is the opposite trade-off (20+ polite requests, 12 h
- * reuse) — see `startLivelibImport`.
+ * Default is an INCREMENTAL refresh: `user_books.updated_at > lastSyncAt` is
+ * one page for the usual "one book added" case (user report, 28.10.2026: a
+ * single new book took minutes because every click re-read all 656 rows plus
+ * a full LiveLib metadata pass). A full paginated pass stays the fallback:
+ *
+ *   - no `sync` cursor in the cached profile (old document / first import),
+ *   - `{ force: true }` — the explicit "Полная перепроверка" option,
+ *   - the journal shrank: a deleted user_book is invisible to `updated_at`,
+ *     so a lower aggregate count asks for the full pass.
+ *
+ * The job finishes as soon as the journal is on disk. The LiveLib metadata
+ * re-resolve that a changed journal can improve is queued as a SEPARATE job
+ * (the import chain keeps them serialized), so the progress screen never
+ * waits for the Litres 2 s/book budget.
  */
-function startHardcoverImport(userId) {
+function startHardcoverImport(userId, options = {}) {
   // Fail before creating a job when the token is absent: the UI needs a clear
   // "token not configured" state, not a failed background job.
   try {
@@ -618,6 +645,7 @@ function startHardcoverImport(userId) {
   const requested = userId == null || String(userId).trim() === '' ? 'me' : String(userId).trim();
   const running = findRunningHardcoverJob(requested);
   if (running) return publicStatus(running);
+  const force = options.force === true;
 
   const job = {
     id: newJobId('hardcover', requested),
@@ -629,8 +657,11 @@ function startHardcoverImport(userId) {
     events: 0,
     done: false,
     reused: false,
-    // Hardcover has no reuse path: every job re-fetches the journal.
-    force: true,
+    // `force` means "read the whole journal", not "reuse nothing": the default
+    // click is an incremental diff.
+    force,
+    percent: 0,
+    sync: null,
     error: null,
     warning: null,
     startedAt: Date.now(),
@@ -641,42 +672,138 @@ function startHardcoverImport(userId) {
     const owner = await hardcover.resolveUser(requested);
     job.userKey = String(owner.id);
     job.username = owner.username;
+    const userKey = String(owner.id);
+    const cachedProfile = bookCache.getProfile('hardcover', userKey);
+    const cursor =
+      cachedProfile && cachedProfile.sync && typeof cachedProfile.sync.lastSyncAt === 'string'
+        ? cachedProfile.sync
+        : null;
+    const syncStartedAt = new Date().toISOString();
+    const requestsBefore = hardcover.gate.snapshot().requests;
 
-    const journal = await hardcover.fetchJournal(owner.id, {
-      onProgress: (progress) => {
-        job.stage = 'hardcover-journal';
-        job.page = progress.page;
-        job.pageTotal = progress.total ? Math.ceil(progress.total / 100) : null;
-        job.events = progress.events;
-      },
-    });
+    const onProgress = (progress) => {
+      job.stage = 'hardcover-journal';
+      job.page = progress.page;
+      job.pageTotal = progress.total ? Math.ceil(progress.total / 100) : null;
+      job.events = progress.events;
+      if (job.sync) job.sync.changedRows = progress.changedRows;
+      if (job.pageTotal) {
+        job.percent = Math.max(1, Math.min(95, Math.round((progress.page / job.pageTotal) * 100)));
+      }
+    };
+
+    let journal = null;
+    if (!force && cursor) {
+      job.sync = {
+        mode: 'incremental',
+        since: cursor.lastSyncAt,
+        changedRows: 0,
+        userBooksTotal: null,
+        fallback: null,
+      };
+      journal = await hardcover.fetchJournalIncremental(owner.id, cursor.lastSyncAt, {
+        knownTotal: cursor.userBooksTotal,
+        onProgress,
+      });
+      if (journal.needsFull) {
+        console.log(
+          `[books-import ${job.id}] incremental journal shrank ` +
+            `(${journal.totals.userBooks} < ${cursor.userBooksTotal}); full refresh`
+        );
+        job.sync.fallback = 'journal-shrank';
+        journal = null;
+      }
+    }
+
+    if (!journal) {
+      job.sync = {
+        mode: 'full',
+        since: null,
+        changedRows: null,
+        userBooksTotal: null,
+        fallback: job.sync && job.sync.fallback ? job.sync.fallback : null,
+      };
+      journal = await hardcover.fetchJournal(owner.id, { onProgress });
+    }
+
+    // Incremental rows replace their cached events; a full pass is the
+    // document as-is (same semantics as before this round).
+    const events =
+      journal.mode === 'incremental' && cachedProfile
+        ? hardcover.mergeJournalEvents(cachedProfile.events, journal)
+        : journal.events;
+    const eventsWithDate = events.filter((event) => event && event.finishedAt).length;
+    const mergedJournal = {
+      ...journal,
+      events,
+      eventsWithDate,
+      totals: { ...journal.totals, events: events.length },
+    };
+
     const warnings = [];
-    const profile = hardcover.buildProfile(owner, journal, warnings);
-    await bookCache.saveProfile('hardcover', String(owner.id), profile);
-    await bookCache.saveRawImport('hardcover', String(owner.id), {
-      totals: journal.totals,
-      eventsWithDate: journal.eventsWithDate,
+    const profile = hardcover.buildProfile(owner, mergedJournal, warnings);
+    profile.sync = {
+      schemaVersion: 1,
+      mode: journal.mode,
+      lastSyncAt: syncStartedAt,
+      fullSyncedAt:
+        journal.mode === 'full'
+          ? new Date().toISOString()
+          : cursor && cursor.fullSyncedAt
+          ? cursor.fullSyncedAt
+          : null,
+      userBooksTotal: journal.totals.userBooks == null ? null : Number(journal.totals.userBooks),
+    };
+    await bookCache.saveProfile('hardcover', userKey, profile);
+    await bookCache.saveRawImport('hardcover', userKey, {
+      totals: mergedJournal.totals,
+      eventsWithDate,
       statusFilter: journal.statusFilter,
       keepStatusIds: journal.keepStatusIds,
+      sync: profile.sync,
       importedAt: profile.importedAt,
     });
-    job.events = journal.events.length;
+
+    job.events = events.length;
+    job.percent = 100;
+    job.requests = hardcover.gate.snapshot().requests - requestsBefore;
+    job.sync = {
+      mode: journal.mode,
+      since: journal.mode === 'incremental' ? cursor.lastSyncAt : null,
+      changedRows: journal.mode === 'incremental' ? journal.totals.changedRows : null,
+      userBooksTotal: profile.sync.userBooksTotal,
+      fallback: job.sync ? job.sync.fallback : null,
+    };
     job.totals = {
-      userBooks: journal.totals.userBooks,
-      pages: journal.totals.pages,
-      eventsWithDate: journal.eventsWithDate,
+      userBooks: mergedJournal.totals.userBooks,
+      pages: mergedJournal.totals.pages,
+      events: events.length,
+      eventsWithDate,
+      changedRows: job.sync.changedRows,
       skippedNonFinished: journal.statusFilter.skippedNonFinished,
       skippedByStatus: journal.statusFilter.byStatus,
       keepStatusIds: journal.keepStatusIds,
     };
     console.log(
-      `[books-import ${job.id}] hardcover journal saved: ${journal.events.length} events ` +
-        `(${journal.eventsWithDate} dated), ${journal.works.size} works, ` +
-        `skipped=${journal.statusFilter.skippedNonFinished} ` +
-        `${JSON.stringify(journal.statusFilter.byStatus)}`
+      `[books-import ${job.id}] hardcover ${journal.mode} journal saved: ` +
+        `${events.length} events (${eventsWithDate} dated), ${journal.works.size} works, ` +
+        `changed=${job.sync.changedRows == null ? 'n/a' : job.sync.changedRows}, ` +
+        `requests=${job.requests}, skipped=${journal.statusFilter.skippedNonFinished}`
     );
 
-    await resolveQuietly(job);
+    // A journal change can improve the LiveLib -> Hardcover match, but the
+    // resolve pass is budgeted (Litres 2 s/book) and must not hold the
+    // progress screen. Queue it behind this job; an unchanged journal has
+    // nothing new for the matcher, so it is skipped entirely.
+    const changedRows = journal.mode === 'incremental' ? journal.totals.changedRows || 0 : null;
+    const shouldResolve = journal.mode === 'full' || changedRows > 0;
+    if (shouldResolve) {
+      const resolveJob = startResolveJob({ coalesce: true });
+      job.resolveQueued = resolveJob ? resolveJob.id : null;
+    } else {
+      job.resolveQueued = null;
+      job.resolveSkipped = true;
+    }
   });
 
   return publicStatus(job);
@@ -762,6 +889,12 @@ function publicStatus(job) {
     // Deep scan progress of the profile: the "Обновить профиль" button renders
     // `deep.percent` as «История 45%», and stats stay usable meanwhile.
     deep: job.deep || null,
+    // Hardcover journal sync mode (`incremental`/`full`) + changed row count;
+    // the progress screen says «проверяем новинки» instead of «читаем журнал».
+    sync: job.sync || null,
+    // The metadata pass that a changed journal queued behind this job (id only;
+    // it may already be done — this is diagnostics, not a handle to poll).
+    resolveQueued: job.resolveQueued || null,
     deepSkipped: Boolean(job.deepSkipped),
     undatedEventCount: job.undatedEventCount == null ? null : Number(job.undatedEventCount),
     cachedAt: job.cachedAt || null,

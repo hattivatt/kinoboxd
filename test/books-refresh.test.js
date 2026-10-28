@@ -359,3 +359,90 @@ test('metadata badge view model: hidden at 100%, running suffix, budget hint', a
   assert.match(source, /metadataBadge\(/);
   assert.match(source, /renderMetadataBadge\(state\.data\)/);
 });
+
+test('metadata badge: hopeless works leave the denominator and the badge can finish', async () => {
+  const { metadataBadge } = await import('../public/js/books-refresh.js');
+
+  // 12 dark works out of 1200: the server already excludes them from
+  // `resolvable`, so the badge is hidden instead of sitting at 99% forever.
+  assert.equal(
+    metadataBadge({
+      resolved: 1188,
+      total: 1200,
+      resolvable: 1188,
+      hopeless: 12,
+      percent: 100,
+      done: true,
+      running: false,
+    }),
+    null
+  );
+
+  // One genuinely resolvable book left: honest 91% with the excluded tail
+  // spelled out in the hint.
+  const partial = metadataBadge({
+    resolved: 10,
+    total: 12,
+    resolvable: 11,
+    hopeless: 1,
+    percent: 91,
+    done: false,
+    running: false,
+  });
+  assert.ok(partial);
+  assert.equal(partial.percent, 91);
+  assert.equal(partial.resolvable, 11);
+  assert.equal(partial.hopeless, 1);
+  assert.equal(partial.pending, 1);
+  assert.equal(partial.done, false);
+  assert.match(partial.hint, /10 из 11 резолвимых/);
+  assert.match(partial.hint, /Ещё 1 книга без метаданных у провайдеров/);
+  assert.doesNotMatch(partial.hint, /догружается/);
+});
+
+test('silent re-render keeps the window scroll (books dashboard)', async () => {
+  const { withPreservedScroll } = await import('../public/js/books-refresh.js');
+
+  // Render wiped the scroll (the real failure mode): restore it.
+  let y = 840;
+  let writes = 0;
+  withPreservedScroll(
+    () => y,
+    (value) => {
+      writes++;
+      y = value;
+    },
+    () => {
+      y = 0;
+    }
+  );
+  assert.equal(y, 840);
+  assert.equal(writes, 1);
+
+  // Render preserved the position: no redundant scrollTo (it would fight the
+  // user's own scrolling).
+  y = 300;
+  writes = 0;
+  withPreservedScroll(
+    () => y,
+    (value) => {
+      writes++;
+      y = value;
+    },
+    () => {}
+  );
+  assert.equal(y, 300);
+  assert.equal(writes, 0);
+
+  // Already at the top: nothing to restore, and the render result passes through.
+  writes = 0;
+  const result = withPreservedScroll(
+    () => 0,
+    () => {
+      writes++;
+    },
+    () => 'rendered'
+  );
+  assert.equal(result, 'rendered');
+  assert.equal(writes, 0);
+});

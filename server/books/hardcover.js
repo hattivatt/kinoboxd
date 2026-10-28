@@ -21,6 +21,13 @@
  * and the edition publisher/language in the same query — Hasura counts
  * top-level fields per request, not join depth, so one request per page is
  * enough.
+ *
+ * Incremental refresh (`fetchJournalIncremental`) reads only rows whose
+ * `user_books.updated_at` is newer than the last successful sync — one page
+ * for the usual "one book added" case. A full paginated pass stays the
+ * fallback (no sync cursor yet, `force`, or a shrunk journal: a deleted row
+ * cannot be detected through `updated_at`, so a lower row count asks for a
+ * full re-read).
  */
 
 const config = require('../config');
@@ -322,17 +329,7 @@ function recordSkipped(counter, statusId, status) {
   counter.byStatus[key] = (counter.byStatus[key] || 0) + 1;
 }
 
-const JOURNAL_PAGE_QUERY = `
-query JournalPage($userId: Int!, $limit: Int!, $offset: Int!, $withTotal: Boolean!) {
-  total: user_books_aggregate(where: { user_id: { _eq: $userId } }) @include(if: $withTotal) {
-    aggregate { count }
-  }
-  rows: user_books(
-    where: { user_id: { _eq: $userId } }
-    order_by: { id: asc }
-    limit: $limit
-    offset: $offset
-  ) {
+const JOURNAL_ROW_FIELDS = `
     id
     book_id
     edition_id
@@ -342,6 +339,7 @@ query JournalPage($userId: Int!, $limit: Int!, $offset: Int!, $withTotal: Boolea
     first_read_date
     last_read_date
     date_added
+    updated_at
     book {
       id
       title
@@ -383,7 +381,39 @@ query JournalPage($userId: Int!, $limit: Int!, $offset: Int!, $withTotal: Boolea
       finished_at_precision
       progress_pages
       edition_id
-    }
+    }`;
+
+const JOURNAL_PAGE_QUERY = `
+query JournalPage($userId: Int!, $limit: Int!, $offset: Int!, $withTotal: Boolean!) {
+  total: user_books_aggregate(where: { user_id: { _eq: $userId } }) @include(if: $withTotal) {
+    aggregate { count }
+  }
+  rows: user_books(
+    where: { user_id: { _eq: $userId } }
+    order_by: { id: asc }
+    limit: $limit
+    offset: $offset
+  ) {${JOURNAL_ROW_FIELDS}
+  }
+}`;
+
+/**
+ * Rows changed since the previous sync. `updated_at` is a real user_books
+ * column (introspected live, 28.10.2026); ordering by it keeps pagination
+ * stable while rows are being updated. `total` is read on the first page so a
+ * shrunk journal (deleted book) can fall back to the full pass.
+ */
+const INCREMENTAL_JOURNAL_PAGE_QUERY = `
+query IncrementalJournalPage($userId: Int!, $since: timestamptz!, $limit: Int!, $offset: Int!, $withTotal: Boolean!) {
+  total: user_books_aggregate(where: { user_id: { _eq: $userId } }) @include(if: $withTotal) {
+    aggregate { count }
+  }
+  rows: user_books(
+    where: { user_id: { _eq: $userId }, updated_at: { _gt: $since } }
+    order_by: { updated_at: asc }
+    limit: $limit
+    offset: $offset
+  ) {${JOURNAL_ROW_FIELDS}
   }
 }`;
 
@@ -624,6 +654,32 @@ function eventsFromRow(row, counter) {
 }
 
 /**
+ * Turn one GraphQL page into profile events + canonical works. Shared by the
+ * full and the incremental journal pass so status filtering, metadata
+ * persistence and event dedupe cannot drift between the two.
+ */
+function ingestJournalRows(rows, state, fetchedAt) {
+  let added = 0;
+  for (const row of rows) {
+    // Metadata is independent of the journal role: a "want to read" work can
+    // still be the canonical Hardcover work for a LiveLib event, so details
+    // are persisted even when the row yields no events (status filter).
+    const details = detailsFromBook(row.book, row.edition, fetchedAt);
+    if (details && !state.works.has(details.hcWorkId)) {
+      state.works.set(details.hcWorkId, details);
+    }
+    for (const event of eventsFromRow(row, state.statusFilter)) {
+      if (state.seenEventIds.has(event.id)) continue;
+      state.seenEventIds.add(event.id);
+      if (event.finishedAt) state.eventsWithDate++;
+      state.events.push(event);
+      added++;
+    }
+  }
+  return added;
+}
+
+/**
  * Fetch the whole journal and persist canonical work metadata.
  *
  * Returns { events, works, totals, eventsWithDate, statusFilter, keepStatusIds }.
@@ -640,10 +696,10 @@ async function fetchJournal(userId, options = {}) {
   const works = new Map();
   const seenEventIds = new Set();
   const statusFilter = createStatusFilterCounter();
+  const state = { events, works, seenEventIds, statusFilter, eventsWithDate: 0 };
   let offset = 0;
   let page = 0;
   let total = null;
-  let eventsWithDate = 0;
 
   for (;;) {
     page++;
@@ -660,21 +716,7 @@ async function fetchJournal(userId, options = {}) {
     }
     const rows = Array.isArray(data.rows) ? data.rows : [];
 
-    for (const row of rows) {
-      // Metadata is independent of the journal role: a "want to read" work can
-      // still be the canonical Hardcover work for a LiveLib event, so details
-      // are persisted even when the row yields no events (status filter).
-      const details = detailsFromBook(row.book, row.edition, fetchedAt);
-      if (details && !works.has(details.hcWorkId)) {
-        works.set(details.hcWorkId, details);
-      }
-      for (const event of eventsFromRow(row, statusFilter)) {
-        if (seenEventIds.has(event.id)) continue;
-        seenEventIds.add(event.id);
-        if (event.finishedAt) eventsWithDate++;
-        events.push(event);
-      }
-    }
+    ingestJournalRows(rows, state, fetchedAt);
 
     if (onProgress) onProgress({ page, pageTotal: null, events: events.length, total });
     console.log(
@@ -712,11 +754,148 @@ async function fetchJournal(userId, options = {}) {
     events,
     works,
     totals: { userBooks: total, pages: page },
-    eventsWithDate,
+    eventsWithDate: state.eventsWithDate,
     statusFilter,
     keepStatusIds: [...HARDCOVER_KEEP_STATUS_IDS],
     fetchedAt,
+    changedUserBookIds: null,
+    mode: 'full',
   };
+}
+
+/**
+ * Incremental journal pass: only rows with `updated_at > since`.
+ *
+ * Returns the same shape as `fetchJournal` plus
+ *   - `mode: 'incremental'`,
+ *   - `changedUserBookIds` — rows whose events must replace the cached ones,
+ *   - `needsFull` — the journal shrank (a deleted user_book is invisible to an
+ *     `updated_at` filter) or the incremental query is unusable, so the caller
+ *     must fall back to `fetchJournal`.
+ *
+ * One page is the normal case for "user added one book"; the page loop only
+ * exists for a bulk change after a long pause.
+ */
+async function fetchJournalIncremental(userId, since, options = {}) {
+  const owner = await resolveUser(userId);
+  const limit = Math.min(Math.max(Number(options.pageSize) || 100, 1), 100);
+  const maxPages = Number(options.maxPages) || 50;
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const fetchedAt = new Date().toISOString();
+  const knownTotal = Number.isFinite(Number(options.knownTotal))
+    ? Number(options.knownTotal)
+    : null;
+
+  const events = [];
+  const works = new Map();
+  const seenEventIds = new Set();
+  const statusFilter = createStatusFilterCounter();
+  const state = { events, works, seenEventIds, statusFilter, eventsWithDate: 0 };
+  const changedUserBookIds = new Set();
+  let offset = 0;
+  let page = 0;
+  let total = null;
+
+  for (;;) {
+    page++;
+    const withTotal = total === null;
+    const data = await graphql(
+      INCREMENTAL_JOURNAL_PAGE_QUERY,
+      { userId: owner.id, since, limit, offset, withTotal },
+      { label: `incremental journal page ${page}` }
+    );
+    if (withTotal) {
+      total = Number(
+        data.total && data.total.aggregate ? data.total.aggregate.count : 0
+      );
+    }
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    for (const row of rows) changedUserBookIds.add(Number(row && row.id));
+    ingestJournalRows(rows, state, fetchedAt);
+
+    if (onProgress) {
+      onProgress({
+        page,
+        pageTotal: null,
+        events: events.length,
+        total,
+        changedRows: changedUserBookIds.size,
+      });
+    }
+    console.log(
+      `[hardcover ${owner.id}] incremental page ${page}: changed=${changedUserBookIds.size} ` +
+        `events=${events.length}` + (total == null ? '' : `/${total}`)
+    );
+
+    if (rows.length < limit) break;
+    offset += limit;
+    if (page >= maxPages) {
+      console.warn(`[hardcover ${owner.id}] incremental page cap ${maxPages} reached`);
+      break;
+    }
+  }
+
+  for (const details of works.values()) {
+    await bookCache.saveDetails(details.hcWorkId, details);
+  }
+
+  events.sort((a, b) => {
+    const left = a.finishedAt || '';
+    const right = b.finishedAt || '';
+    if (left === right) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    return left < right ? 1 : -1;
+  });
+
+  // A lower row count means at least one user_book was deleted: updated_at
+  // cannot tell us which, so the caller re-reads the whole journal.
+  const needsFull = knownTotal != null && total != null && total < knownTotal;
+
+  return {
+    owner,
+    events,
+    works,
+    totals: { userBooks: total, pages: page, changedRows: changedUserBookIds.size },
+    eventsWithDate: state.eventsWithDate,
+    statusFilter,
+    keepStatusIds: [...HARDCOVER_KEEP_STATUS_IDS],
+    fetchedAt,
+    changedUserBookIds,
+    needsFull,
+    mode: 'incremental',
+  };
+}
+
+/**
+ * Merge an incremental journal into the cached profile events.
+ *
+ * A changed user_book replaces *all* its cached events (a re-read count change
+ * can turn one read into two), untouched books are kept verbatim. Event ids
+ * are deduped and the list keeps the newest-finished-first order of
+ * `fetchJournal` so the payload does not depend on the sync mode.
+ */
+function mergeJournalEvents(previousEvents, journal) {
+  const changed = journal.changedUserBookIds instanceof Set
+    ? journal.changedUserBookIds
+    : new Set();
+  const events = [];
+  const seen = new Set();
+  const push = (event) => {
+    if (!event || seen.has(event.id)) return;
+    seen.add(event.id);
+    events.push(event);
+  };
+  for (const event of Array.isArray(previousEvents) ? previousEvents : []) {
+    if (changed.has(Number(event && event.userBookId))) continue;
+    push(event);
+  }
+  for (const event of journal.events) push(event);
+  events.sort((a, b) => {
+    const left = a.finishedAt || '';
+    const right = b.finishedAt || '';
+    if (left === right) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    return left < right ? 1 : -1;
+  });
+  return events;
 }
 
 /** Build the persisted profile document (schemaVersion 1, doc §3.3). */
@@ -746,6 +925,8 @@ module.exports = {
   getMe,
   resolveUser,
   fetchJournal,
+  fetchJournalIncremental,
+  mergeJournalEvents,
   buildProfile,
   eventsFromRow,
   createStatusFilterCounter,
