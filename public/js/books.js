@@ -438,10 +438,13 @@ function normalizeBooks(raw) {
   const recentlyFinished = arr(source.recentlyFinished || source.recentlyRead)
     .map((item) => {
       const entry = booksIndex[text(item && item.workId)];
-      const date = text(item && (item.date || item.finishedAt)).slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+      const rawDate = text(item && (item.date || item.finishedAt));
+      const date = rawDate.slice(0, 10);
+      const precision = text(item && item.precision) || (/^\d{4}-\d{2}-\d{2}/.test(rawDate) ? 'day' : 'month');
+      if (!/^\d{4}-\d{2}(?:-\d{2})?$/.test(date)) return null;
       return {
         date,
+        precision,
         workId: text(item && item.workId),
         source: text(item && item.source).toLowerCase(),
         reRead: Boolean(item && (item.reRead || item.reread)),
@@ -2713,13 +2716,16 @@ function renderRecent(data) {
   for (const item of items) {
     const book = recentBookItem(item);
     const title = book.title || 'Без названия';
+    const monthOnly = item.precision === 'month';
+    const dateLabel = monthOnly ? monthName(item.date) : fmtDayRu(item.date);
+    const dateShort = monthOnly ? monthShort(item.date) : fmtDayShortRu(item.date);
     const card = el('div', { class: 'recent-card' });
     const poster = el('div', {
       class: 'recent-poster',
       role: 'button',
       tabIndex: 0,
       'aria-label': `${title}: ссылки и действия`,
-      title: `${title}${book.year ? ` (${book.year})` : ''} · ${fmtDayRu(item.date)}`,
+      title: `${title}${book.year ? ` (${book.year})` : ''} · ${dateLabel}${monthOnly ? ' · точность: месяц' : ''}`,
     });
     poster.append(bookCover(book.coverUrl, title));
 
@@ -2745,8 +2751,8 @@ function renderRecent(data) {
       openBookListModal({
         kicker: 'Недавно читал',
         title,
-        subtitle: fmtDayRu(item.date),
-        groupLabel: fmtDayRu(item.date),
+        subtitle: dateLabel,
+        groupLabel: dateLabel,
         books: [book],
         sortScope: 'recent',
       });
@@ -2766,8 +2772,8 @@ function renderRecent(data) {
     card.append(poster);
     card.append(el('div', {
       class: 'recent-date',
-      text: fmtDayShortRu(item.date),
-      title: fmtDayRu(item.date),
+      text: dateShort,
+      title: dateLabel,
     }));
     host.append(card);
   }
@@ -3279,9 +3285,11 @@ function renderYearBarsWidget(data) {
 
   if (note) {
     const total = years.reduce((sum, item) => sum + item.count, 0);
-    if (!years.length) note.textContent = 'нет данных';
-    else if (years.length === 1) note.textContent = `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}`;
-    else note.textContent = `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}`;
+    const ancient = toNum(data.summary && data.summary.ancientBookCount);
+    const ancientNote = ancient > 0 ? ` · ${fmtInt(ancient)} ${plural(ancient, ['книга', 'книги', 'книг'])} до 1000 г.` : '';
+    if (!years.length) note.textContent = ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных';
+    else if (years.length === 1) note.textContent = `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}`;
+    else note.textContent = `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}`;
   }
 
   if (typeof ResizeObserver === 'function') {
