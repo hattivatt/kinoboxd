@@ -98,6 +98,93 @@ test('the blacklist is a normalised set, not a string compare', () => {
   assert.equal(isBlacklistedSeries(null), false);
 });
 
+test('every confirmed tag is filtered, whatever its spelling', () => {
+  // Full list confirmed by the user 28.10.2026 (publisher catalogues/promo
+  // shelves, not literary series). The canonical spelling lives in the module;
+  // here we pin that each one actually bites in the spellings a Литрес/Эксмо
+  // export produces.
+  const confirmed = [
+    'Книга на все времена',
+    'Азбука-классика',
+    'Эксклюзивная классика',
+    'The Big Book',
+    'Иностранная литература. Большие книги',
+    'Женская библиотека',
+    'Зарубежная классика',
+    'Зачарованный мир',
+    'Золотая серия фэнтези',
+    'Классика',
+    'Библиотека приключений',
+    'Pocket book',
+    'Классики и современники',
+    'Прочесть обязательно!',
+    'Русская классика',
+    'Шорт-лист',
+  ];
+  for (const name of confirmed) {
+    assert.ok(
+      SERIES_BLACKLIST.includes(name),
+      `missing from SERIES_BLACKLIST: ${name}`
+    );
+    for (const variant of [
+      name,
+      name.toLowerCase(),
+      name.toUpperCase(),
+      `«${name}»`,
+      `${name} (Эксмо)`,
+      `  ${name}. `,
+    ]) {
+      assert.equal(isBlacklistedSeries(variant), true, variant);
+    }
+  }
+});
+
+test('normalisation folds the pocket-book variant into «Азбука-классика»', () => {
+  // «Азбука-классика (pocket-book)» is the same shelf; the parenthetical is
+  // dropped by normalisation, so a second array entry would be a silent
+  // duplicate of the same key. The real export carries both spellings.
+  assert.equal(blacklistKey('Азбука-классика (pocket-book)'), 'азбука классика');
+  assert.equal(blacklistKey('Азбука-классика'), 'азбука классика');
+  assert.equal(isBlacklistedSeries('Азбука-классика (pocket-book)'), true);
+  assert.equal(isBlacklistedSeries('АЗБУКА-КЛАССИКА (POCKET-BOOK)'), true);
+
+  // …and the list itself must not carry two entries with one key: a duplicate
+  // would be a change that does nothing, so it is banned explicitly.
+  const keys = SERIES_BLACKLIST.map(blacklistKey);
+  assert.equal(new Set(keys).size, keys.length, `duplicate keys: ${keys.join(', ')}`);
+});
+
+test('exact match only: real series with these words are not touched', () => {
+  // Short, generic tags («Классика», «Pocket book») are the dangerous ones.
+  // Matching is the whole normalized key, so a longer name that *contains* a
+  // tag is a different series and must survive.
+  for (const legit of [
+    'Моэм — автор на все времена',
+    'Зарубежная классика. XX век',
+    'Иностранная литература. Современная классика',
+    'Антиутопии. Классика',
+    'Классика детектива',
+    'Классика в школе',
+    'Лениздат-классика',
+    'Новые краски классики',
+    'Всемирная детская классика',
+    'Лучшая мировая классика',
+    'Исторический роман. Классика',
+    'Мировая классика',
+    'Pocket Book of Horror',
+    'The Big Book of Fantasy',
+    'Золотая библиотека фантастики',
+    'Школьная библиотека',
+    'Библиотека всемирной литературы',
+    'Хроники Амбера',
+  ]) {
+    assert.equal(isBlacklistedSeries(legit), false, legit);
+  }
+  // A tag glued to a subtitle is no longer the tag either (exact-match rule).
+  assert.equal(isBlacklistedSeries('Классика. Подарочное издание'), false);
+  assert.equal(isBlacklistedSeries('Шорт-лист 2024'), false);
+});
+
 test('filterBlacklistedSeries drops only the tag and reports the count', () => {
   const { list, removed } = filterBlacklistedSeries([
     { name: 'Книга на все времена', hcId: null, position: null },
@@ -177,4 +264,90 @@ test('a blacklisted series never reaches the payload, a real one stays', async (
   assert.equal(stats.summary.bookCount, 3);
   // And no widget entry leaks the tag name.
   assert.ok(!JSON.stringify(stats).includes('Книга на все времена'));
+});
+
+test('the whole confirmed list is dropped from the payload, look-alikes stay', async () => {
+  // One work per kind of evidence: a Литрес tag that even carries an order, three
+  // file-column tags (the column is the authority for a value), and three real
+  // series whose names merely *contain* a short tag.
+  await details('hc:9101', {
+    schemaVersion: 2,
+    hcWorkId: 9101,
+    title: 'Книга 1',
+    authors: [{ hcId: 11, name: 'Автор 1' }],
+    genres: ['Проза'],
+    series: [{ name: 'Азбука-классика (pocket-book)', position: 1, source: 'litres' }],
+    metadataSources: ['litres'],
+  });
+  await details('hc:9106', {
+    schemaVersion: 2,
+    hcWorkId: 9106,
+    title: 'Книга 6',
+    authors: [{ hcId: 16, name: 'Автор 6' }],
+    genres: ['Ужасы'],
+    series: [{ hcId: 616, name: 'Pocket Book of Horror', position: 1 }],
+    metadataSources: ['hardcover'],
+  });
+  for (const id of ['9101', '9102', '9103', '9104', '9105', '9106', '9107']) {
+    await bookCache.saveLink(id, {
+      schemaVersion: 2,
+      livelibBookId: id,
+      workId: `hc:${id}`,
+      method: 'isbn',
+      score: 1,
+    });
+  }
+
+  await bookCache.saveProfile(
+    'livelib',
+    'Tags',
+    profile('Tags', [
+      event('ll:9101', 'Книга 1', { raw: { sourceBookId: '9101' }, genres: ['Проза'] }),
+      event('ll:9102', 'Книга 2', {
+        raw: { sourceBookId: '9102' },
+        fileSeries: 'Классика',
+        genres: ['Проза'],
+      }),
+      event('ll:9103', 'Книга 3', {
+        raw: { sourceBookId: '9103' },
+        fileSeries: 'Pocket Book',
+        genres: ['Проза'],
+      }),
+      event('ll:9104', 'Книга 4', {
+        raw: { sourceBookId: '9104' },
+        fileSeries: 'Моэм — автор на все времена',
+        genres: ['Проза'],
+      }),
+      event('ll:9105', 'Книга 5', {
+        raw: { sourceBookId: '9105' },
+        fileSeries: 'Антиутопии. Классика',
+        genres: ['Антиутопия'],
+      }),
+      event('ll:9106', 'Книга 6', { raw: { sourceBookId: '9106' }, genres: ['Ужасы'] }),
+      event('ll:9107', 'Книга 7', {
+        raw: { sourceBookId: '9107' },
+        fileSeries: 'Зарубежная классика. XX век',
+        genres: ['Проза'],
+      }),
+    ])
+  );
+
+  const stats = buildBooksStats({ profile: 'livelib-Tags', includeMangaComics: true });
+  const names = stats.series.map((entry) => entry.name).sort();
+  assert.deepEqual(names, [
+    'Pocket Book of Horror',
+    'Антиутопии. Классика',
+    'Зарубежная классика. XX век',
+    'Моэм — автор на все времена',
+  ]);
+  assert.equal(stats.summary.seriesCount, 4);
+  // Three works lost a tag: the Литрес shelf, «Классика» and «Pocket Book».
+  assert.equal(stats.summary.seriesTagsFiltered, 3);
+  // No book is hidden by the filter.
+  assert.equal(stats.summary.bookCount, 7);
+  // No widget entry leaks a tag name (series list only: a genre could legally
+  // be called «Классика» and is not what this filter governs).
+  for (const tag of ['Азбука-классика', 'Классика', 'Pocket Book']) {
+    assert.ok(!names.includes(tag), tag);
+  }
 });
