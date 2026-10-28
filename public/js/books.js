@@ -33,6 +33,15 @@ import {
   fmtDayRu, fmtDayShortRu,
 } from './books-charts.js';
 import { snapshotCounts, refreshToastMessage } from './books-refresh.js';
+import {
+  LEGACY_ACCOUNTS_KEY, MAX_PROFILES,
+  loadRegistry, listProfiles as listBooksProfiles, saveProfile as saveBooksProfile,
+  removeProfile as removeBooksProfile, getProfile as getRegistryProfile, setActiveId as setActiveBooksProfileId,
+  migrateLegacyAccounts, adoptServerProfiles, normalizeProfile, profileQuery,
+  profileSources, profileSourceNames, profileSummary, sourceAccount, withSource,
+  normalizeSource, isValidLivelibUsername, isValidHardcoverUser,
+  sanitizeCookieHeader, isLivelibBlocked,
+} from './books-profiles.js';
 
 /* =========================================================
    constants
@@ -57,7 +66,7 @@ const AUTHORS_INITIAL = 20;
 const AUTHORS_BATCH = 60;
 const AUTHORS_SEARCH_MIN = 30;
 const JOBS_KEY = 'kinoboxd.books.jobs.v1';
-const ACCOUNTS_KEY = 'kinoboxd.books.accounts.v1';
+const ACCOUNTS_KEY = LEGACY_ACCOUNTS_KEY;
 const SORT_KEY = 'kinoboxd.books.sort.';
 const POLL_INTERVAL = 1200;
 
@@ -106,13 +115,17 @@ const state = {
   data: null,
   error: null,
   seq: 0,
-  connected: [],
   selectedDecade: null,
-  jobs: {}, // source -> { jobId, status, failed, account }
+  jobs: {}, // source -> { jobId, status, failed, account, profileId }
   refresh: null, // { before, sources, failures, startedAt } while "Обновить профиль" runs
   refreshStarting: false, // guards the profile fetch/baseline window before state.refresh exists
   starting: {},
-  accounts: {},
+  profiles: [],
+  profilesReady: false,
+  profile: null, // active local profile record
+  profileMenuOpen: false,
+  restoreCandidate: null, // server-side sources adoptable in one click
+  cookie: { username: '', busy: false }, // cookie value itself is never kept
   pollTimer: 0,
   pollSeq: 0,
   mangaBusy: false,
@@ -532,27 +545,20 @@ function normalizeBooks(raw) {
    view switching inside the books section
    ========================================================= */
 
-function connectedSources() {
-  const list = Array.isArray(state.connected) ? state.connected : [];
-  return [...new Set(list)]
-    .map((source) => text(source).toLowerCase())
-    .filter((source) => SOURCE_LABEL[source]);
-}
-
 /**
  * Topbar refresh button visibility/busy state.
  *
  * Visible only on the books tab (the whole section is hidden on Films anyway)
- * when at least one source profile is connected, and during its own progress
- * screen so the user still sees the spinner they started.
+ * when the *active local profile* has at least one source, and during its own
+ * progress screen so the user still sees the spinner they started.
  */
 function updateRefreshButton() {
   const refresh = $('books-refresh');
   if (!refresh) return;
   const busy = Boolean(state.refresh || state.refreshStarting);
-  const connected = connectedSources().length > 0;
+  const sources = activeProfileSources();
   const viewAllows = state.view === 'dashboard' || (state.view === 'progress' && busy);
-  refresh.hidden = !(connected && viewAllows);
+  refresh.hidden = !(sources.length && viewAllows);
   refresh.disabled = busy;
   refresh.classList.toggle('is-busy', busy);
   refresh.setAttribute('aria-busy', busy ? 'true' : 'false');
@@ -560,8 +566,26 @@ function updateRefreshButton() {
   if (spinner) spinner.hidden = !busy;
   const label = $('books-refresh-label');
   if (label) label.textContent = busy ? 'Обновляем…' : 'Обновить профиль';
+  if (sources.length) {
+    const scope = sources.map(sourceLabel).join(' · ');
+    const title = sourceScopeTitle(sources);
+    refresh.title = title;
+    refresh.setAttribute('aria-label', `Обновить профиль: ${scope}`);
+  }
   const reimport = $('books-reimport');
   if (reimport) reimport.hidden = state.view !== 'dashboard' || busy;
+}
+
+/** Honest tooltip for the scoped refresh (never promises the other source). */
+function sourceScopeTitle(sources) {
+  const hardcover = sources.includes('hardcover');
+  const livelib = sources.includes('livelib');
+  if (hardcover && livelib) {
+    return 'Обновить источники профиля: Hardcover (полный журнал, ~10 с) и LiveLib (полный скан, ~3 мин)';
+  }
+  if (livelib) return 'Обновить LiveLib в этом профиле: полный скан всех страниц (~3 мин)';
+  if (hardcover) return 'Обновить Hardcover в этом профиле: полный журнал (~10 с)';
+  return 'Обновить источники профиля';
 }
 
 function showScreen(name) {
@@ -574,6 +598,8 @@ function showScreen(name) {
   for (const [key, node] of Object.entries(screens)) {
     if (node) node.hidden = key !== name;
   }
+  const bar = $('books-profile-bar');
+  if (bar) bar.hidden = name === 'progress';
   updateRefreshButton();
   const back = $('books-progress-back');
   if (back) back.hidden = Boolean(state.refresh);
@@ -638,14 +664,28 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
   if (!silent) showError(null);
   if (!silent && state.view !== 'dashboard') showLoading(true);
 
+  if (!state.profile || !activeProfileSources().length) {
+    // No local profile → no scope. Never fall back to "everything the server
+    // has": that is exactly the cross-device leak this round removes.
+    state.loading = false;
+    state.loaded = false;
+    state.data = null;
+    showLoading(false);
+    hideJobs();
+    showScreen('import');
+    updateRefreshButton();
+    renderProfileSwitcher();
+    return;
+  }
+
   try {
     const raw = await getBooksStats({
+      profiles: activeProfileQuery(),
       sources: state.source,
       includeMangaComics: state.includeManga,
     });
     if (seq !== state.seq) return;
     state.data = normalizeBooks(raw);
-    state.connected = state.data.connected;
     updateRefreshButton();
     state.loaded = true;
     state.selectedDecade = null;
@@ -690,26 +730,554 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
 }
 
 /* =========================================================
-   import: start, progress, polling
+   local profile registry (one book profile per browser context)
    ========================================================= */
 
-function readAccounts() {
-  const saved = readJson(ACCOUNTS_KEY, null);
-  if (saved && typeof saved === 'object') {
-    for (const key of ['livelib', 'hardcover']) {
-      const value = text(saved[key]);
-      if (value) state.accounts[key] = value;
-    }
-  }
-  const livelib = $('books-livelib-username');
-  if (livelib && state.accounts.livelib) livelib.value = state.accounts.livelib;
-  const hardcover = $('books-hardcover-userid');
-  if (hardcover && state.accounts.hardcover) hardcover.value = state.accounts.hardcover;
+/** Source account from the active profile ('' when the source is detached). */
+function profileAccount(source) {
+  return sourceAccount(state.profile, source);
 }
 
-function saveAccounts() {
-  safeStorageSet(ACCOUNTS_KEY, JSON.stringify(state.accounts));
+function activeProfileSources() {
+  return state.profile ? profileSourceNames(state.profile) : [];
 }
+
+function activeProfileQuery() {
+  return state.profile ? profileQuery(state.profile) : '';
+}
+
+function profileSavedLabel(savedAt) {
+  const ts = Number(savedAt);
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+  const diff = Date.now() - ts;
+  if (diff < 60 * 1000) return 'сохранён только что';
+  if (diff < 60 * 60 * 1000) {
+    const minutes = Math.max(1, Math.round(diff / 60000));
+    return `сохранён ${minutes} ${plural(minutes, ['минуту', 'минуты', 'минут'])} назад`;
+  }
+  if (diff < 24 * 60 * 60 * 1000) {
+    const hours = Math.max(1, Math.round(diff / 3600000));
+    return `сохранён ${hours} ${plural(hours, ['час', 'часа', 'часов'])} назад`;
+  }
+  const days = Math.max(1, Math.round(diff / 86400000));
+  if (days < 8) return `сохранён ${days} ${plural(days, ['день', 'дня', 'дней'])} назад`;
+  const date = new Date(ts);
+  return `сохранён ${date.getDate()}.${String(date.getMonth() + 1).padStart(2, '0')}.${date.getFullYear()}`;
+}
+
+/**
+ * Fill the import inputs from the active profile. Empty profile → empty fields:
+ * the old hardcoded `34748` / «Margaret» defaults are gone on purpose.
+ */
+function applyProfileToForms() {
+  const livelib = $('books-livelib-username');
+  if (livelib) livelib.value = profileAccount('livelib');
+  const hardcover = $('books-hardcover-userid');
+  if (hardcover) hardcover.value = profileAccount('hardcover');
+}
+
+function renderProfileMenuRow(profile) {
+  const active = Boolean(state.profile && state.profile.id === profile.id);
+  const item = el('div', {
+    class: `profile-item${active ? ' is-active' : ''}`,
+    role: 'option',
+    'aria-selected': active ? 'true' : 'false',
+    dataset: { profileId: profile.id },
+  });
+  const pick = el('button', {
+    type: 'button',
+    class: 'profile-pick',
+    title: `${profile.label} · ${profileSummary(profile)}`,
+  });
+  const copy = el('span', { class: 'profile-copy' });
+  copy.append(el('span', { class: 'profile-name', text: profile.label }));
+  const saved = profileSavedLabel(profile.savedAt);
+  const summary = profileSummary(profile);
+  copy.append(el('span', {
+    class: 'profile-meta',
+    text: summary || saved,
+    title: [summary, saved].filter(Boolean).join(' · '),
+  }));
+  pick.append(copy);
+  if (active) pick.append(el('span', { class: 'profile-check', html: icon('check', 14) }));
+  pick.addEventListener('click', () => {
+    closeProfileMenu();
+    switchProfile(profile.id);
+  });
+
+  const del = el('button', {
+    type: 'button',
+    class: 'profile-del',
+    title: 'Удалить профиль',
+    'aria-label': `Удалить профиль ${profile.label}`,
+    html: icon('trash', 14),
+  });
+  del.addEventListener('click', (event) => {
+    event.stopPropagation();
+    deleteProfile(profile.id);
+  });
+
+  item.append(pick, del);
+  return item;
+}
+
+function renderProfileSwitcher() {
+  const switcher = $('books-profile-switcher');
+  const label = $('books-profile-btn-label');
+  const profiles = Array.isArray(state.profiles) ? state.profiles : [];
+  if (label) {
+    label.textContent = state.profile ? state.profile.label : 'Профиль';
+    label.title = state.profile ? state.profile.label : 'Книжные профили на этом устройстве';
+  }
+  if (switcher) switcher.classList.toggle('has-active', Boolean(state.profile));
+
+  const list = $('books-profile-list');
+  if (list) {
+    clear(list);
+    if (!profiles.length) {
+      list.append(el('div', { class: 'profile-empty', text: 'Пока нет книжных профилей' }));
+    } else {
+      for (const profile of profiles) list.append(renderProfileMenuRow(profile));
+    }
+  }
+  const add = $('books-profile-add');
+  if (add) add.disabled = profiles.length >= MAX_PROFILES;
+
+  const empty = $('books-profile-empty');
+  if (empty) {
+    empty.hidden = profiles.length > 0;
+    const previous = empty.querySelector('.books-profile-restore');
+    if (previous) previous.remove();
+    if (!profiles.length) {
+      const candidate = state.restoreCandidate;
+      if (candidate) {
+        const restore = el('button', {
+          type: 'button',
+          class: 'btn btn-ghost books-profile-restore',
+          text: `Подключить серверные источники (${profileSummary(candidate)})`,
+          title: 'На сервере уже есть импортированные профили — перенести их в этот браузер',
+        });
+        restore.addEventListener('click', () => adoptRestoreCandidate());
+        empty.append(restore);
+      }
+    }
+  }
+
+  const hint = $('books-profile-hint');
+  if (hint) {
+    const sources = activeProfileSources();
+    hint.hidden = !sources.length;
+    if (sources.length) {
+      hint.textContent = `Запрос ограничен профилем: ${profileSummary(state.profile)}. Данные хранятся на сервере, профиль — в этом браузере.`;
+    }
+  }
+  const bar = $('books-profile-bar');
+  if (bar) bar.hidden = state.view === 'progress';
+}
+
+function setProfileMenuOpen(open) {
+  state.profileMenuOpen = Boolean(open);
+  const menu = $('books-profile-menu');
+  const button = $('books-profile-btn');
+  const switcher = $('books-profile-switcher');
+  if (menu) menu.hidden = !state.profileMenuOpen;
+  if (button) button.setAttribute('aria-expanded', state.profileMenuOpen ? 'true' : 'false');
+  if (switcher) switcher.classList.toggle('is-open', state.profileMenuOpen);
+}
+
+function closeProfileMenu() {
+  if (state.profileMenuOpen) setProfileMenuOpen(false);
+}
+
+/**
+ * Load the local registry once per page (and re-read after create/delete).
+ * First run migrates *real* remembered accounts from the old localStorage
+ * blob; nothing is invented, and a server-only install is offered as an
+ * explicit «Подключить серверные источники» action instead of being adopted
+ * silently (a second laptop must stay empty).
+ */
+async function ensureProfiles({ reload = false } = {}) {
+  if (state.profilesReady && !reload) return;
+  let snapshot = { profiles: [], active: null };
+  try {
+    snapshot = await loadRegistry();
+  } catch {
+    snapshot = { profiles: [], active: null };
+  }
+  state.profiles = snapshot.profiles;
+  state.profile = snapshot.active;
+
+  if (!state.profiles.length) {
+    const legacy = readJson(ACCOUNTS_KEY, null);
+    const migrated = migrateLegacyAccounts(legacy);
+    if (migrated) {
+      const saved = await saveBooksProfile(migrated);
+      state.profile = saved;
+      setActiveBooksProfileId(saved.id);
+      state.profiles = await listBooksProfiles();
+      safeStorageRemove(ACCOUNTS_KEY);
+      toast(`Книжный профиль восстановлен: ${saved.label}`, 'info', { duration: 5200 });
+    }
+  }
+  if (!state.profiles.length) {
+    try {
+      const server = await getBooksProfiles();
+      state.restoreCandidate = adoptServerProfiles(server && server.profiles);
+    } catch {
+      state.restoreCandidate = null;
+    }
+  } else {
+    state.restoreCandidate = null;
+  }
+
+  state.profilesReady = true;
+  applyProfileToForms();
+  renderProfileSwitcher();
+}
+
+async function adoptRestoreCandidate() {
+  const candidate = state.restoreCandidate;
+  if (!candidate) return;
+  const saved = await saveBooksProfile(candidate);
+  state.restoreCandidate = null;
+  state.profile = saved;
+  setActiveBooksProfileId(saved.id);
+  await ensureProfiles({ reload: true });
+  state.loaded = false;
+  await loadStats({ force: true });
+  toast(`Профиль подключён: ${saved.label}`, 'success', { duration: 4600 });
+}
+
+async function switchProfile(id) {
+  const profile = state.profiles.find((item) => item.id === id) || await getRegistryProfile(id);
+  if (!profile) return;
+  if (state.profile && state.profile.id === profile.id) return;
+  if (hasRunningJobs()) {
+    toast('Дождитесь окончания импорта или обновите страницу', 'info', { duration: 5200 });
+    return;
+  }
+  state.profile = profile;
+  setActiveBooksProfileId(profile.id);
+  state.data = null;
+  state.loaded = false;
+  state.source = '';
+  state.selectedDecade = null;
+  state.seq += 1; // drop any in-flight payload of the previous profile
+  applyProfileToForms();
+  renderProfileSwitcher();
+  hideJobs();
+  if (!activeProfileSources().length) {
+    showScreen('import');
+    return;
+  }
+  showScreen('import');
+  await loadStats({ force: true });
+}
+
+async function deleteProfile(id) {
+  const profile = state.profiles.find((item) => item.id === id);
+  if (!profile) return;
+  const running = jobList().filter(([, job]) => job && job.profileId === id && !job.failed &&
+    !(job.status && (job.status.done || job.status.stage === 'done')));
+  if (running.length) {
+    toast('По этому профилю идёт импорт — дождитесь завершения', 'info', { duration: 5200 });
+    return;
+  }
+  const question = `Удалить профиль «${profile.label}»? Данные источников останутся на сервере — профиль можно создать заново.`;
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function' && !window.confirm(question)) return;
+  await removeBooksProfile(id);
+  const wasActive = Boolean(state.profile && state.profile.id === id);
+  await ensureProfiles({ reload: true });
+  if (wasActive) {
+    state.profile = state.profiles[0] || null;
+    setActiveBooksProfileId(state.profile ? state.profile.id : null);
+    state.data = null;
+    state.loaded = false;
+    state.source = '';
+    applyProfileToForms();
+    renderProfileSwitcher();
+    if (state.profile && activeProfileSources().length) await loadStats({ force: true });
+    else showScreen('import');
+  } else {
+    renderProfileSwitcher();
+  }
+  toast(`Профиль «${profile.label}» удалён`, 'info', { duration: 4200 });
+}
+
+function hasRunningJobs() {
+  return jobList().some(([, job]) => job && !job.failed &&
+    !(job.status && (job.status.done || job.status.stage === 'done')));
+}
+
+/**
+ * Create the profile lazily from a single import card. This is the "first
+ * import without a profile" path: the label is derived from the account that
+ * the user actually typed, so no default owner is ever implied.
+ */
+async function ensureProfileForSource(source, account) {
+  if (!state.profile) {
+    const entry = normalizeSource(source, account);
+    if (!entry) return null;
+    const created = normalizeProfile({
+      label: entry.source === 'livelib' ? `@${entry.username}` : `Hardcover ${entry.userId}`,
+      sources: [entry],
+    });
+    const saved = await saveBooksProfile(created);
+    state.profile = saved;
+    setActiveBooksProfileId(saved.id);
+    await ensureProfiles({ reload: true });
+    renderProfileSwitcher();
+    return saved;
+  }
+  return state.profile;
+}
+
+/** Attach (or replace) one source of the active profile. */
+async function attachSourceToProfile(source, account) {
+  if (!state.profile) return ensureProfileForSource(source, account);
+  const current = profileAccount(source);
+  if (current === text(account)) return state.profile;
+  const updated = withSource(state.profile, source, account);
+  if (!profileSources(updated).length) return state.profile;
+  const saved = await saveBooksProfile(updated, { keepId: state.profile.id });
+  state.profile = saved;
+  await ensureProfiles({ reload: true });
+  applyProfileToForms();
+  renderProfileSwitcher();
+  return saved;
+}
+
+/* =========================================================
+   profile creation modal
+   ========================================================= */
+
+function openProfileModal(draft = {}) {
+  closeProfileMenu();
+  const titleId = 'books-profile-modal-title';
+  const head = el('div', { class: 'modal-head' },
+    el('div', {},
+      el('h2', { class: 'modal-title', id: titleId, text: 'Новый книжный профиль' }),
+      el('span', { class: 'modal-note', text: 'Живёт в этом браузере; данные источников остаются на сервере' }),
+    ),
+  );
+  const body = el('div', { class: 'modal-body' });
+  const form = el('form', { class: 'books-profile-form', novalidate: true });
+
+  const labelInput = el('input', {
+    class: 'books-input',
+    id: 'books-profile-label',
+    type: 'text',
+    maxlength: '48',
+    autocomplete: 'off',
+    placeholder: 'например, «Мой профиль»',
+    value: draft.label || '',
+  });
+  form.append(el('label', { class: 'books-field', for: 'books-profile-label' },
+    el('span', { class: 'books-field-label' }, 'Название', el('span', {}, 'как удобно')),
+    labelInput,
+  ));
+
+  const sourcesBox = el('div', { class: 'books-profile-sources' });
+  sourcesBox.append(el('div', { class: 'books-profile-sources-title', text: 'Источники (можно оба)' }));
+
+  const livelibInput = el('input', {
+    class: 'books-input',
+    id: 'books-profile-livelib',
+    type: 'text',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    placeholder: 'username, livelib.ru/reader/…',
+    value: draft.livelib || '',
+  });
+  sourcesBox.append(el('label', { class: 'books-field', for: 'books-profile-livelib' },
+    el('span', { class: 'books-field-label' }, 'LiveLib', el('span', {}, 'livelib.ru/reader/<username>')),
+    livelibInput,
+  ));
+
+  const hardcoverInput = el('input', {
+    class: 'books-input',
+    id: 'books-profile-hardcover',
+    type: 'text',
+    inputmode: 'numeric',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    placeholder: 'числовой ID профиля',
+    value: draft.hardcover || '',
+  });
+  sourcesBox.append(el('label', { class: 'books-field', for: 'books-profile-hardcover' },
+    el('span', { class: 'books-field-label' }, 'Hardcover', el('span', {}, 'hardcover.app/@<username>')),
+    hardcoverInput,
+  ));
+  sourcesBox.append(el('p', {
+    class: 'books-profile-form-note',
+    text: 'Аккаунт Hardcover — из ссылки профиля. Токен API уже настроен на сервере, вводить его не нужно.',
+  }));
+  form.append(sourcesBox);
+
+  const error = el('div', { class: 'books-source-error', role: 'alert', hidden: true });
+  form.append(error);
+
+  const submit = el('button', { type: 'submit', class: 'btn btn-primary', text: 'Создать профиль' });
+  const cancel = el('button', { type: 'button', class: 'btn btn-link', text: 'Отмена' });
+  form.append(el('div', { class: 'books-profile-form-actions' }, submit, cancel));
+  body.append(form);
+
+  const modal = openModal({ head, body, labelledBy: titleId, className: 'modal-films modal-books' });
+  const close = () => {
+    if (modal && typeof modal.close === 'function') modal.close();
+  };
+  cancel.addEventListener('click', close);
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    error.hidden = true;
+    const label = text(labelInput.value);
+    const livelibRaw = text(livelibInput.value).replace(/^@/, '');
+    const hardcoverRaw = text(hardcoverInput.value);
+    const sources = [];
+    if (livelibRaw) {
+      const entry = normalizeSource('livelib', livelibRaw);
+      if (!entry) {
+        error.textContent = 'Имя пользователя LiveLib: латиница, цифры, «_», «.», «-» (или ссылка /reader/…).';
+        error.hidden = false;
+        livelibInput.focus();
+        return;
+      }
+      sources.push(entry);
+    }
+    if (hardcoverRaw) {
+      const entry = normalizeSource('hardcover', hardcoverRaw);
+      if (!entry) {
+        error.textContent = 'ID пользователя Hardcover — это число из ссылки профиля.';
+        error.hidden = false;
+        hardcoverInput.focus();
+        return;
+      }
+      sources.push(entry);
+    }
+    if (!sources.length) {
+      error.textContent = 'Добавьте хотя бы один источник: LiveLib или Hardcover.';
+      error.hidden = false;
+      livelibInput.focus();
+      return;
+    }
+    const record = normalizeProfile({ label, sources });
+    submit.disabled = true;
+    try {
+      await saveBooksProfile(record);
+      state.profile = record;
+      setActiveBooksProfileId(record.id);
+      await ensureProfiles({ reload: true });
+      state.data = null;
+      state.loaded = false;
+      state.source = '';
+      state.seq += 1;
+      applyProfileToForms();
+      renderProfileSwitcher();
+      close();
+      showScreen('import');
+      toast(`Профиль «${record.label}» создан — запустите импорт источников`, 'success', { duration: 6000 });
+      // If the server already has these sources (old install, cleared
+      // localStorage), the dashboard can appear right away; otherwise the
+      // request answers 404 and the import screen stays.
+      await loadStats({ force: true });
+    } catch (err) {
+      error.textContent = shortErrorMessage(err);
+      error.hidden = false;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  window.setTimeout(() => labelInput.focus(), 30);
+  return modal;
+}
+
+/* =========================================================
+   LiveLib 403 → cookie header
+   ========================================================= */
+
+function hideCookiePanel({ clear = true } = {}) {
+  const panel = $('books-livelib-cookie-panel');
+  if (panel) panel.hidden = true;
+  const input = $('books-livelib-cookie');
+  if (input && clear) input.value = '';
+  const error = $('books-livelib-cookie-error');
+  if (error) {
+    error.textContent = '';
+    error.hidden = true;
+  }
+}
+
+function showCookiePanel(username = '') {
+  state.cookie.username = text(username) || profileAccount('livelib');
+  const panel = $('books-livelib-cookie-panel');
+  if (panel) panel.hidden = false;
+  const error = $('books-livelib-cookie-error');
+  if (error) {
+    error.textContent = '';
+    error.hidden = true;
+  }
+  const input = $('books-livelib-cookie');
+  if (input) input.value = '';
+  const field = $('books-livelib-username');
+  if (field && state.cookie.username) field.value = state.cookie.username;
+}
+
+function setCookieBusy(busy) {
+  state.cookie.busy = Boolean(busy);
+  const spinner = $('books-livelib-cookie-spinner');
+  if (spinner) spinner.hidden = !busy;
+  const button = $('books-livelib-cookie-submit');
+  if (button) {
+    button.disabled = Boolean(busy);
+    button.classList.toggle('is-busy', Boolean(busy));
+  }
+}
+
+async function submitCookieImport() {
+  if (state.cookie.busy) return;
+  const input = $('books-livelib-cookie');
+  const raw = input ? input.value : '';
+  const header = sanitizeCookieHeader(raw);
+  const error = $('books-livelib-cookie-error');
+  const fail = (message) => {
+    if (!error) return;
+    error.textContent = message;
+    error.hidden = false;
+  };
+  if (!header) {
+    fail('Похоже, это не заголовок Cookie. Нужна строка вида «__ddg1=…; __ddg2=…» (можно с префиксом «Cookie:»).');
+    return;
+  }
+  // The value leaves the DOM as soon as it is read: it is never stored in
+  // localStorage/IndexedDB and never rendered again.
+  if (input) input.value = '';
+  if (error) error.hidden = true;
+
+  const username = state.cookie.username
+    || profileAccount('livelib')
+    || text($('books-livelib-username') && $('books-livelib-username').value);
+  if (!username) {
+    fail('Введите имя пользователя LiveLib.');
+    return;
+  }
+
+  setCookieBusy(true);
+  try {
+    const result = await startImport('livelib', username, { cookieHeader: header });
+    if (result && result.ok) hideCookiePanel();
+    else if (result && result.blocked) {
+      fail('LiveLib снова ответил 403 — cookie, похоже, устарел. Скопируйте заголовок заново.');
+    }
+  } finally {
+    setCookieBusy(false);
+  }
+}
+
+/* =========================================================
+   import jobs
+   ========================================================= */
 
 function jobList() {
   return Object.entries(state.jobs).filter(([, job]) => job && job.jobId);
@@ -724,6 +1292,7 @@ function saveJobs() {
     source,
     jobId: job.jobId,
     account: job.account || '',
+    profileId: job.profileId || (state.profile && state.profile.id) || '',
     startedAt: job.startedAt || Date.now(),
   }));
   if (!list.length) safeStorageRemove(JOBS_KEY);
@@ -741,13 +1310,21 @@ function hydrateJobs() {
     state.jobs[source] = {
       jobId,
       account: text(item.account),
+      profileId: text(item.profileId),
       status: null,
       failed: null,
       startedAt: Number(item.startedAt) || Date.now(),
     };
-    if (item.account) state.accounts[source] = text(item.account);
   }
-  if (hasJobs()) saveAccounts();
+  // A job restored from localStorage belongs to the profile that started it.
+  // Keeping a foreign job would attach its progress (and its "done" reload) to
+  // whichever profile happens to be active after a reload.
+  for (const [source, job] of Object.entries(state.jobs)) {
+    if (job.profileId && (!state.profile || job.profileId !== state.profile.id)) {
+      delete state.jobs[source];
+    }
+  }
+  if (hasJobs()) saveJobs();
 }
 
 function hideJobs() {
@@ -779,24 +1356,36 @@ function setSourceError(source, message) {
   host.hidden = false;
 }
 
-async function startImport(source, account) {
-  if (state.starting[source]) return;
+/**
+ * Start one source import *inside the active profile*.
+ *
+ * The account becomes a source of the profile (a profile is created lazily on
+ * the first import), so a fresh browser never imports into "someone else's"
+ * record and the `profiles=` scope keeps matching the request.
+ *
+ * @returns {Promise<{ok:boolean, blocked?:boolean}>} `blocked` means LiveLib
+ *   answered 403 and the cookie panel was opened.
+ */
+async function startImport(source, account, { cookieHeader = '' } = {}) {
+  if (state.starting[source]) return { ok: false };
   setSourceError(source, '');
   setSourceBusy(source, true);
   try {
+    await ensureProfileForSource(source, account);
+    await attachSourceToProfile(source, account);
+
     const response = source === 'livelib'
-      ? await startBooksImportLivelib(account)
+      ? await startBooksImportLivelib(account, { cookieHeader })
       : await startBooksImportHardcover(account);
     const jobId = text(response && (response.jobId || response.job_id || response.id || (response.job && response.job.id)));
-    state.accounts[source] = account;
-    saveAccounts();
 
     if (!jobId) {
       // Some server versions can answer "already done" without a job id.
       if (response && (response.done || response.stage === 'done')) {
         hideJobs();
+        hideCookiePanel();
         await loadStats({ force: true });
-        return;
+        return { ok: true };
       }
       throw new Error('Сервер не вернул идентификатор задачи импорта.');
     }
@@ -804,18 +1393,29 @@ async function startImport(source, account) {
     state.jobs[source] = {
       jobId,
       account,
+      profileId: state.profile ? state.profile.id : '',
       status: response && typeof response === 'object' ? response : null,
       failed: null,
       startedAt: Date.now(),
     };
     saveJobs();
+    if (source === 'livelib') hideCookiePanel({ clear: false });
     showScreen('progress');
     renderProgress();
     startPolling();
+    return { ok: true };
   } catch (error) {
-    if (error && error.status === 401) return;
-    setSourceError(source, shortErrorMessage(error));
-    toast(`Не удалось запустить импорт ${sourceLabel(source)}`, 'error', { duration: 6500 });
+    if (error && error.status === 401) return { ok: false };
+    const blocked = source === 'livelib' && isLivelibBlocked(error);
+    if (blocked) {
+      setSourceError('livelib', '');
+      showCookiePanel(account);
+      toast('LiveLib ответил 403 — нужен заголовок Cookie из браузера', 'error', { duration: 9000 });
+    } else {
+      setSourceError(source, shortErrorMessage(error));
+      toast(`Не удалось запустить импорт ${sourceLabel(source)}`, 'error', { duration: 6500 });
+    }
+    return { ok: false, blocked };
   } finally {
     setSourceBusy(source, false);
   }
@@ -997,31 +1597,38 @@ function renderProgressError(jobs) {
     host.hidden = false;
     return;
   }
-  host.append(errorBox({
-    title: 'Импорт не удался',
-    message,
-    actions: [
-      {
-        label: 'Повторить',
-        primary: true,
-        onClick: () => {
-          for (const [source, job] of failed) {
-            delete state.jobs[source];
-            saveJobs();
-            const account = job.account || state.accounts[source];
-            if (account) startImport(source, account);
-          }
-        },
+  const blockedJob = failed.find(([source, job]) => source === 'livelib' && isLivelibBlocked(job.failed || (job.status && job.status.error)));
+  const actions = [
+    {
+      label: 'Повторить',
+      primary: true,
+      onClick: () => {
+        for (const [source, job] of failed) {
+          delete state.jobs[source];
+          saveJobs();
+          const account = job.account || profileAccount(source);
+          if (account) startImport(source, account);
+        }
       },
-      {
-        label: 'Показать статистику',
-        onClick: () => {
-          hideJobs();
-          loadStats({ force: true });
-        },
+    },
+    {
+      label: 'Показать статистику',
+      onClick: () => {
+        hideJobs();
+        loadStats({ force: true });
       },
-    ],
-  }));
+    },
+  ];
+  if (blockedJob) {
+    actions.unshift({
+      label: 'Вставить cookie LiveLib',
+      onClick: () => {
+        showScreen('import');
+        showCookiePanel(blockedJob[1].account || '');
+      },
+    });
+  }
+  host.append(errorBox({ title: 'Импорт не удался', message, actions }));
   host.hidden = false;
 }
 
@@ -1116,14 +1723,8 @@ async function finishImport() {
 }
 
 /* =========================================================
-   manual profile refresh (both sources, force LiveLib)
+   manual profile refresh (only the sources of the active profile)
    ========================================================= */
-
-function profileUserKey(profiles, source) {
-  const list = profiles && Array.isArray(profiles.profiles) ? profiles.profiles : [];
-  const entry = list.find((item) => item && item.source === source);
-  return entry ? text(entry.userKey) : '';
-}
 
 function refreshJobId(response) {
   return text(response && (response.id || response.jobId || response.job_id || (response.job && response.job.id)));
@@ -1140,6 +1741,7 @@ function attachRefreshJob(source, response, account) {
   state.jobs[source] = {
     jobId,
     account: account || '',
+    profileId: state.profile ? state.profile.id : '',
     status: response && typeof response === 'object' ? response : null,
     failed: null,
     startedAt: Date.now(),
@@ -1168,7 +1770,10 @@ async function finishRefresh(refresh) {
 
   let afterPayload = null;
   try {
-    afterPayload = await getBooksStats({ includeMangaComics: state.includeManga });
+    afterPayload = await getBooksStats({
+      profiles: activeProfileQuery(),
+      includeMangaComics: state.includeManga,
+    });
   } catch {
     /* fall back to whatever loadStats renders below */
   }
@@ -1182,6 +1787,13 @@ async function finishRefresh(refresh) {
   }
   const message = refreshToastMessage(refresh.before, after, { sources, failures });
   toast(message, hadFailures ? 'error' : 'success', { duration: hadFailures ? 10000 : 6000 });
+  // A LiveLib 403 during a full scan is the one failure the user can fix:
+  // prepare the cookie panel with the exact instruction and, if there is no
+  // dashboard to keep, drop the user straight onto the import card.
+  if (isLivelibBlocked(failures.livelib)) {
+    showCookiePanel(sourceAccount(state.profile, 'livelib'));
+    if (!state.data) showScreen('import');
+  }
 }
 
 /**
@@ -1211,28 +1823,21 @@ async function refreshProfiles() {
 }
 
 async function runRefreshProfiles() {
-  let profiles = null;
-  try {
-    profiles = await getBooksProfiles();
-  } catch (error) {
-    if (error && error.status === 401) return;
-    toast(shortErrorMessage(error), 'error', { duration: 7000 });
-    return;
-  }
-  const fromProfiles = profiles && Array.isArray(profiles.connected)
-    ? profiles.connected.map((source) => text(source).toLowerCase()).filter((source) => SOURCE_LABEL[source])
-    : [];
-  const sources = fromProfiles.length ? [...new Set(fromProfiles)] : connectedSources();
-  if (!sources.length) {
-    toast('Нет подключённых книжных источников — сначала импортируйте профиль', 'info', { duration: 6000 });
+  const profile = state.profile;
+  const sources = activeProfileSources();
+  if (!profile || !sources.length) {
+    toast('Нет активного книжного профиля — создайте профиль и импортируйте источник', 'info', { duration: 6000 });
     return;
   }
 
-  // Baseline for the toast diff: always the unfiltered payload, so a source
-  // chip cannot hide the other source's delta.
+  // Baseline for the toast diff: the same profile scope, always unfiltered by
+  // the source chip, so a chip cannot hide the other source's delta.
   let baseline = null;
   try {
-    baseline = await getBooksStats({ includeMangaComics: state.includeManga });
+    baseline = await getBooksStats({
+      profiles: profileQuery(profile),
+      includeMangaComics: state.includeManga,
+    });
   } catch {
     /* state.data below is still a usable (possibly filtered) snapshot */
   }
@@ -1251,37 +1856,42 @@ async function runRefreshProfiles() {
   renderProgress();
 
   if (sources.includes('hardcover')) {
-    const userId = state.accounts.hardcover || profileUserKey(profiles, 'hardcover') || '34748';
-    state.accounts.hardcover = userId;
-    try {
-      const response = await startBooksImportHardcover(userId);
-      attachRefreshJob('hardcover', response, userId);
-    } catch (error) {
-      if (error && error.status === 401) return;
-      state.refresh.failures.hardcover = refreshErrorMessage(error);
+    // The profile owns the account: no token-owner fallback, no 34748.
+    const userId = sourceAccount(profile, 'hardcover');
+    if (!userId) {
+      state.refresh.failures.hardcover = 'в профиле нет ID Hardcover';
+    } else {
+      try {
+        const response = await startBooksImportHardcover(userId);
+        attachRefreshJob('hardcover', response, userId);
+      } catch (error) {
+        if (error && error.status === 401) return;
+        state.refresh.failures.hardcover = refreshErrorMessage(error);
+      }
     }
   }
 
   if (sources.includes('livelib')) {
-    const username = state.accounts.livelib || profileUserKey(profiles, 'livelib');
+    const username = sourceAccount(profile, 'livelib');
     if (!username) {
-      state.refresh.failures.livelib = 'не найден username LiveLib';
+      state.refresh.failures.livelib = 'в профиле нет имени LiveLib';
     } else {
-      state.accounts.livelib = username;
       try {
         const response = await startBooksImportLivelib(username, { force: true });
         attachRefreshJob('livelib', response, username);
       } catch (error) {
         if (error && error.status === 401) return;
-        state.refresh.failures.livelib = refreshErrorMessage(error);
+        state.refresh.failures.livelib = isLivelibBlocked(error)
+          ? '403 от LiveLib — нужен заголовок Cookie'
+          : refreshErrorMessage(error);
       }
     }
   }
-  saveAccounts();
   saveJobs();
 
   if (!state.refresh) return; // 401 tore the view down
   if (!jobList().length) {
+    // finishRefresh opens the cookie panel by itself when LiveLib is blocked.
     await finishRefresh(state.refresh);
     return;
   }
@@ -1326,9 +1936,10 @@ function renderHead(data) {
   const activeSources = state.source ? [state.source] : data.connected;
   const kicker = $('books-kicker');
   if (kicker) {
-    kicker.textContent = activeSources.length
+    const scope = activeSources.length
       ? `${activeSources.map(sourceLabel).join(' ∪ ')} · сводка`
       : 'книжная полка · сводка';
+    kicker.textContent = state.profile ? `${state.profile.label} · ${scope}` : scope;
   }
   const sub = $('books-sub');
   if (sub) {
@@ -1338,9 +1949,12 @@ function renderHead(data) {
     const reReads = data.summary.reReadCount > 0
       ? `, в том числе ${fmtInt(data.summary.reReadCount)} ${plural(data.summary.reReadCount, ['перечитка', 'перечитки', 'перечитываний'])}`
       : '';
+    const scopeNote = state.profile
+      ? `Профиль «${state.profile.label}»: ${profileSummary(state.profile)}.`
+      : '';
     const sourceNote = state.source
-      ? `Показан только источник ${sourceLabel(state.source)}.`
-      : 'Оценки и даты — LiveLib ∪ Hardcover, метадата — Hardcover.';
+      ? `${scopeNote} Показан только источник ${sourceLabel(state.source)}.`
+      : `${scopeNote} Оценки и даты — LiveLib ∪ Hardcover, метадата — Hardcover.`;
     sub.textContent = parts.length
       ? `${parts.join(' · ')}${reReads}. ${sourceNote}`
       : 'Подключите источник, чтобы увидеть оценки, жанры и календарь чтения.';
@@ -1422,7 +2036,7 @@ function renderSourcesMetric(data) {
   for (const source of data.connected) {
     const plate = el('span', { class: `book-source-plate is-${source}` });
     plate.append(el('span', { class: 'book-source-mark', text: SOURCE_MARK[source] }));
-    const account = state.accounts[source];
+    const account = profileAccount(source);
     if (account) {
       plate.append(el('span', { class: 'src-uid', text: source === 'livelib' ? `@${account}` : account }));
     }
@@ -1468,13 +2082,20 @@ function renderSourcesMetric(data) {
 function renderFilters(data) {
   const host = $('books-filters');
   if (!host) return;
+  const scope = activeProfileSources();
   for (const button of host.querySelectorAll('.source-chip')) {
     const source = button.dataset.source || '';
-    const enabled = !source || !data.connected.length || data.connected.includes(source);
+    const attached = !source || !scope.length ? true : scope.includes(source);
+    const enabled = attached && (!source || !data.connected.length || data.connected.includes(source));
     button.disabled = !enabled;
+    button.hidden = Boolean(source) && !attached && scope.length > 0;
     button.classList.toggle('is-active', state.source === source);
     button.setAttribute('aria-pressed', state.source === source ? 'true' : 'false');
-    button.title = enabled ? '' : `${sourceLabel(source)} не подключён`;
+    button.title = enabled
+      ? ''
+      : attached
+      ? `${sourceLabel(source)} не подключён`
+      : `${sourceLabel(source)} нет в активном профиле`;
   }
   const note = $('books-filters-note');
   if (note) {
@@ -2777,7 +3398,6 @@ export function renderBookMenu(book) {
 export function initBooks({ onActivate } = {}) {
   state.onActivate = typeof onActivate === 'function' ? onActivate : null;
   state.includeManga = readJson(MANGA_STORAGE_KEY, false) === true;
-  readAccounts();
 
   const livelibForm = $('books-livelib-form');
   if (livelibForm) {
@@ -2787,6 +3407,11 @@ export function initBooks({ onActivate } = {}) {
       const username = text(input && input.value).replace(/^@/, '');
       if (!username) {
         setSourceError('livelib', 'Введите имя пользователя LiveLib.');
+        if (input) input.focus();
+        return;
+      }
+      if (!isValidLivelibUsername(username)) {
+        setSourceError('livelib', 'Имя пользователя LiveLib: латиница, цифры, «_», «.», «-».');
         if (input) input.focus();
         return;
       }
@@ -2800,14 +3425,62 @@ export function initBooks({ onActivate } = {}) {
       event.preventDefault();
       const input = $('books-hardcover-userid');
       const raw = text(input && input.value);
-      if (raw && !/^\d+$/.test(raw)) {
+      if (!raw) {
+        // No implicit token-owner default any more: the profile owns the id.
+        setSourceError('hardcover', 'Введите числовой ID пользователя Hardcover.');
+        if (input) input.focus();
+        return;
+      }
+      if (!isValidHardcoverUser(raw)) {
         setSourceError('hardcover', 'ID пользователя Hardcover — это число.');
         if (input) input.focus();
         return;
       }
-      startImport('hardcover', raw || '34748');
+      startImport('hardcover', raw);
     });
   }
+
+  const cookieSubmit = $('books-livelib-cookie-submit');
+  if (cookieSubmit) {
+    cookieSubmit.addEventListener('click', () => submitCookieImport());
+  }
+  const cookieInput = $('books-livelib-cookie');
+  if (cookieInput) {
+    cookieInput.addEventListener('keydown', (event) => {
+      // Enter submits, Shift+Enter keeps a newline (a pasted header may be wrapped).
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        submitCookieImport();
+      }
+    });
+  }
+  const cookieCancel = $('books-livelib-cookie-cancel');
+  if (cookieCancel) cookieCancel.addEventListener('click', () => hideCookiePanel());
+
+  const profileBtn = $('books-profile-btn');
+  if (profileBtn) {
+    profileBtn.addEventListener('click', () => setProfileMenuOpen(!state.profileMenuOpen));
+  }
+  const profileAdd = $('books-profile-add');
+  if (profileAdd) {
+    profileAdd.addEventListener('click', () => openProfileModal());
+  }
+  const createFirst = $('books-profile-create-first');
+  if (createFirst) {
+    createFirst.addEventListener('click', () => openProfileModal());
+  }
+  document.addEventListener('click', (event) => {
+    if (!state.profileMenuOpen) return;
+    const switcher = $('books-profile-switcher');
+    if (switcher && switcher.contains(event.target)) return;
+    closeProfileMenu();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (!state.profileMenuOpen || event.key !== 'Escape') return;
+    closeProfileMenu();
+    const trigger = $('books-profile-btn');
+    if (trigger) trigger.focus();
+  });
 
   const filters = $('books-filters');
   if (filters) {
@@ -2871,6 +3544,10 @@ export function initBooks({ onActivate } = {}) {
  */
 export async function showBooks() {
   state.active = true;
+  if (state.active && state.onActivate) state.onActivate();
+  // The local registry is authoritative for scoping; load it before any
+  // request so `profiles=` can never be missing on the first paint.
+  await ensureProfiles();
   if (state.refresh) {
     // The refresh keeps running while the user visits Films; returning to the
     // tab must re-attach the progress view, not load stale stats.
@@ -2911,12 +3588,14 @@ export function hideBooks() {
   // only idle/import polling is paused while the tab is hidden.
   if (!state.refresh) stopPolling();
   closeBookMenu();
+  closeProfileMenu();
 }
 
 /** Drop every in-memory book artefact (logout / different user session). */
 export function resetBooks() {
   stopPolling();
   closeBookMenu();
+  closeProfileMenu();
   state.loaded = false;
   state.data = null;
   state.jobs = {};
@@ -2924,6 +3603,12 @@ export function resetBooks() {
   state.refreshStarting = false;
   state.source = '';
   state.selectedDecade = null;
+  // The registry itself is device-scoped (IndexedDB), not session-scoped: a
+  // logout must not delete the user's book profiles, only the in-memory view.
+  state.profilesReady = false;
+  state.profile = null;
+  state.profiles = [];
+  hideCookiePanel();
   authorsState.visible = AUTHORS_INITIAL;
   authorsState.expanded = false;
   authorsState.query = '';
@@ -2931,4 +3616,5 @@ export function resetBooks() {
   state.seq += 1; // abort any in-flight render
   saveJobs();
   showScreen('import');
+  renderProfileSwitcher();
 }

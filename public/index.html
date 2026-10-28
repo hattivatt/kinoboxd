@@ -569,6 +569,32 @@
         </div>
         <div id="books-error" hidden></div>
 
+        <!-- local profile switcher: every browser keeps its own book profiles -->
+        <section class="books-profile-bar" id="books-profile-bar" aria-label="Книжный профиль">
+          <div class="profile-switcher books-profile-switcher" id="books-profile-switcher">
+            <button type="button" class="btn btn-ghost profile-btn books-profile-btn" id="books-profile-btn" aria-haspopup="dialog" aria-expanded="false" title="Книжные профили на этом устройстве">
+              <span class="profile-btn-dot" aria-hidden="true"></span>
+              <span class="profile-label" id="books-profile-btn-label">Профиль</span>
+              <svg class="profile-caret" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="profile-menu books-profile-menu" id="books-profile-menu" role="dialog" aria-label="Книжные профили на этом устройстве" hidden>
+              <div class="profile-menu-head">
+                <span>Книжные профили</span>
+                <span class="profile-menu-hint">на этом устройстве</span>
+              </div>
+              <div class="profile-list" id="books-profile-list" role="listbox" aria-label="Список книжных профилей"></div>
+              <button type="button" class="profile-add" id="books-profile-add">
+                <span aria-hidden="true">+</span> Создать профиль
+              </button>
+            </div>
+          </div>
+          <div class="books-profile-empty" id="books-profile-empty" hidden>
+            <p class="books-profile-empty-text">В этом браузере ещё нет книжных профилей. Данные других устройств сюда не попадают — профиль хранится локально.</p>
+            <button type="button" class="btn btn-primary" id="books-profile-create-first">Создать первый профиль</button>
+          </div>
+          <div class="books-profile-hint" id="books-profile-hint" hidden></div>
+        </section>
+
         <!-- empty state: two independent import cards -->
         <section class="books-import" id="books-import" hidden>
           <div class="dash-hero books-import-hero">
@@ -597,6 +623,26 @@
                   <span>Импорт</span>
                 </button>
               </form>
+              <div class="books-cookie" id="books-livelib-cookie-panel" role="region" aria-label="LiveLib заблокировал сервер" hidden>
+                <p class="books-cookie-title">LiveLib заблокировал сервер (403)</p>
+                <p class="books-cookie-text">
+                  Скопируй заголовок <code>Cookie</code> из браузера, где livelib.ru открывается без блокировки:
+                  DevTools → Network → любой запрос → Request Headers → <code>Cookie: __ddg1=…</code>.
+                  Вставь строку целиком (можно без префикса «Cookie:»). Значение уходит на сервер и хранится только там — в этом браузере оно не сохраняется.
+                </p>
+                <label class="books-field" for="books-livelib-cookie">
+                  <span class="books-field-label">Заголовок Cookie <span>не сохраняется в браузере</span></span>
+                  <textarea class="books-input books-cookie-input" id="books-livelib-cookie" rows="3" autocomplete="off" spellcheck="false" placeholder="__ddg1=...; __ddg2=..."></textarea>
+                </label>
+                <div class="books-source-error" id="books-livelib-cookie-error" role="alert" hidden></div>
+                <div class="books-cookie-actions">
+                  <button type="button" class="btn btn-primary" id="books-livelib-cookie-submit">
+                    <span class="spinner spinner-sm" id="books-livelib-cookie-spinner" hidden aria-hidden="true"></span>
+                    <span>Импорт с cookie</span>
+                  </button>
+                  <button type="button" class="btn btn-link" id="books-livelib-cookie-cancel">Скрыть</button>
+                </div>
+              </div>
               <p class="book-source-note">Публичный профиль. Импорт идёт страницами по 20 книг — около 2–3 минут на 1 200 книг.</p>
             </article>
 
@@ -611,7 +657,7 @@
               <form class="books-source-form" id="books-hardcover-form" novalidate>
                 <label class="books-field" for="books-hardcover-userid">
                   <span class="books-field-label">ID пользователя <span>hardcover.app/@&lt;username&gt;</span></span>
-                  <input class="books-input" id="books-hardcover-userid" name="userId" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="34748" value="34748">
+                  <input class="books-input" id="books-hardcover-userid" name="userId" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="например, 12345">
                 </label>
                 <div class="books-source-error" id="books-hardcover-error" role="alert" hidden></div>
                 <button type="submit" class="btn btn-primary books-source-submit" id="books-hardcover-submit">
@@ -619,7 +665,7 @@
                   <span>Импорт</span>
                 </button>
               </form>
-              <p class="book-source-note">Использует API-токен владельца. По умолчанию — профиль, к которому привязан токен (34748).</p>
+              <p class="book-source-note">Использует API-токен владельца. ID можно взять из ссылки профиля; если профиль уже импортирован на сервере, он подставится из активного книжного профиля.</p>
             </article>
           </div>
 
