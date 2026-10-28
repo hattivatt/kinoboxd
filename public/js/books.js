@@ -483,6 +483,25 @@ function normalizeBooks(raw) {
       }
     : null;
 
+  // First-publication-year backfill progress (round 29.10.2026). `null` on a
+  // legacy payload: the years note then keeps its old wording instead of
+  // promising a queue that the server did not report.
+  const yearBackfillRaw = summaryRaw.yearBackfill && typeof summaryRaw.yearBackfill === 'object'
+    ? summaryRaw.yearBackfill
+    : null;
+  const yearBackfill = yearBackfillRaw
+    ? {
+        known: Math.max(0, toNum(yearBackfillRaw.known)),
+        unknown: Math.max(0, toNum(yearBackfillRaw.unknown)),
+        pending: Math.max(0, toNum(yearBackfillRaw.pending)),
+        honestUnknown: Math.max(0, toNum(yearBackfillRaw.honestUnknown)),
+        unlinked: Math.max(0, toNum(yearBackfillRaw.unlinked)),
+        perRun: Math.max(1, toNum(yearBackfillRaw.perRun, 200)),
+        runsLeft: Math.max(0, toNum(yearBackfillRaw.runsLeft)),
+        open: yearBackfillRaw.open === true,
+      }
+    : null;
+
   const summary = {
     bookCount: Math.max(0, toNum(summaryRaw.bookCount)),
     eventCount: Math.max(0, toNum(summaryRaw.eventCount ?? summaryRaw.readCount)),
@@ -498,6 +517,7 @@ function normalizeBooks(raw) {
     dateTo: text(summaryRaw.dateTo) || null,
     mangaExcluded: Math.max(0, toNum(summaryRaw.mangaExcluded)),
     metadata,
+    yearBackfill,
   };
   if (!summary.eventCount) summary.eventCount = summary.finishedCount;
   if (!summary.bookCount) summary.bookCount = Object.keys(booksIndex).length;
@@ -3017,9 +3037,14 @@ function renderDecades(data) {
     return;
   }
 
+  const backfill = data.summary && data.summary.yearBackfill;
   const segments = decades.map((item, index) => ({
     key: `decade-${item.start}`,
-    label: item.label,
+    // The unknown slice is the backfill queue while it is open; the legend
+    // says so instead of presenting it as a settled «nobody knows» decade.
+    label: item.unknown && backfill && backfill.open
+      ? `${item.label} · бэкфилл идёт`
+      : item.label,
     value: item.count,
     color: DECADE_COLORS[index % DECADE_COLORS.length],
     decadeStart: item.unknown ? null : item.start,
@@ -3156,7 +3181,19 @@ function renderYearBarsWidget(data) {
     const ancient = toNum(data.summary && data.summary.ancientBookCount);
     const unknown = toNum(data.summary && data.summary.yearUnknownCount);
     const ancientNote = ancient > 0 ? ` · ${fmtInt(ancient)} ${plural(ancient, ['книга', 'книги', 'книг'])} до 1000 г.` : '';
-    const unknownNote = unknown > 0 ? ` · ${fmtInt(unknown)} ${plural(unknown, ['книга', 'книги', 'книг'])} без года` : '';
+    // «Год неизвестен» while the backfill queue is open is a snapshot, not a
+    // verdict: say so instead of letting the user read the bucket as final.
+    const backfill = data.summary && data.summary.yearBackfill;
+    const unknownNote = unknown > 0
+      ? backfill && backfill.open
+        ? ` · ${fmtInt(unknown)} без года — бэкфилл идёт, осталось ~${fmtInt(backfill.runsLeft)} ` +
+          `${plural(backfill.runsLeft, ['прогон', 'прогона', 'прогонов'])}` +
+          `${backfill.unlinked > 0 ? ` (${fmtInt(backfill.unlinked)} ждут привязки к метаданным)` : ''}`
+        : backfill
+          ? ` · ${fmtInt(unknown)} без года — провайдеры не знают` +
+            `${backfill.unlinked > 0 ? ` (${fmtInt(backfill.unlinked)} без метаданных)` : ''}`
+          : ` · ${fmtInt(unknown)} ${plural(unknown, ['книга', 'книги', 'книг'])} без года`
+      : '';
     if (!years.length) note.textContent = `${ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных'}${unknownNote}`;
     else if (years.length === 1) note.textContent = `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${unknownNote}`;
     else note.textContent = `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${unknownNote}`;

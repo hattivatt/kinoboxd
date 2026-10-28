@@ -1566,6 +1566,63 @@ function buildBooksStats(options = {}) {
     budgetRemaining: metadataRunning ? budgetRemaining : null,
   };
 
+  // First-publication-year progress (round 29.10.2026).
+  //
+  // «Год неизвестен» is not one bucket: it mixes three different states, and
+  // the user read them as a final verdict. The years backfill
+  // (`kinoboxd-backfill-books`, timer `kinoboxd-backfill-books.timer`) fills
+  // `pending` over several runs; `unlinked` needs the *metadata* chain first
+  // (there is no details document to write a year into); `honestUnknown` is
+  // final until the negative cache expires (30 days).
+  //
+  //   pending       — details document exists, has no year and was never asked
+  //                   (or the last run deferred it on budget/network);
+  //   honestUnknown — every provider answered and nobody knows the year
+  //                   (`firstPublishedYearCheckedAt` is set);
+  //   unlinked      — no details document at all: the year backfill cannot
+  //                   help until the resolve chain creates one.
+  //
+  // `perRun`/`runsLeft` come from `BOOKS_BACKFILL_LIMIT` (the module exports
+  // the unit's `--limit` to the server), so the UI can say «осталось ~K
+  // прогонов» instead of showing the queue size as a final answer.
+  let yearsKnown = 0;
+  let yearsPending = 0;
+  let yearsHonest = 0;
+  let yearsUnlinked = 0;
+  for (const work of works.values()) {
+    if (Number.isFinite(work.year)) {
+      yearsKnown++;
+      continue;
+    }
+    const details = work.details;
+    if (!details) {
+      yearsUnlinked++;
+      continue;
+    }
+    if (details.firstPublishedYear != null || details.firstPublishedYearCheckedAt) {
+      yearsHonest++;
+      continue;
+    }
+    yearsPending++;
+  }
+  const backfillLimit = Number(process.env.BOOKS_BACKFILL_LIMIT);
+  const yearsPerRun =
+    Number.isFinite(backfillLimit) && backfillLimit > 0
+      ? Math.floor(backfillLimit)
+      : Math.max(yearsPending, 1);
+  summary.yearBackfill = {
+    known: yearsKnown,
+    unknown: yearsPending + yearsHonest + yearsUnlinked,
+    pending: yearsPending,
+    honestUnknown: yearsHonest,
+    unlinked: yearsUnlinked,
+    perRun: yearsPerRun,
+    runsLeft: yearsPending > 0 ? Math.ceil(yearsPending / yearsPerRun) : 0,
+    // Queue still open: «Год неизвестен» is a snapshot of the backfill, not a
+    // final verdict. The UI words it that way only while this is true.
+    open: yearsPending > 0,
+  };
+
   /* ---------------- ratings ---------------- */
   function distribution(list) {
     const counts = new Map();
