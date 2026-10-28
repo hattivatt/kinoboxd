@@ -17,7 +17,10 @@
  *   - only events with `finishedAt` enter timeline/calendar/streaks;
  *     `summary.undatedEventCount` reports the rest honestly;
  *   - `sources=` filters events before aggregation, metadata may still come
- *     from Hardcover details.
+ *     from Hardcover details;
+ *   - `profiles=` scopes the aggregation to exact profile documents
+ *     (`livelib-Margaret`, `hardcover-34748`) and takes priority over
+ *     `sources=`; every widget is computed from the scoped events only.
  */
 
 const bookCache = require('./book-cache');
@@ -93,34 +96,154 @@ function computeStreaks(readDays, field) {
 /* Inputs                                                              */
 /* ------------------------------------------------------------------ */
 
+/** Sources that can hold a profile document (`profiles/{source}-{userKey}`). */
+const PROFILE_SOURCES = ['livelib', 'hardcover'];
+
 /** Connected sources = profiles present on disk. */
 function connectedProfiles() {
   return bookCache.listProfiles();
 }
 
+/** Canonical profile key, the same token `?profiles=` accepts. */
+function profileKeyOf(profile) {
+  return `${profile.source}-${profile.userKey}`;
+}
+
 /**
- * Load all profiles of the requested sources. `requested` is a comma separated
- * string or an array; unknown/not-connected values are ignored (an explicit
- * unknown-only filter returns an empty profile rather than an error).
+ * Parse `?profiles=` — a comma separated list of `source-userKey` tokens that
+ * name profile *documents* (`cache-book/profiles/{source}-{userKey}.json`),
+ * e.g. `livelib-Margaret,hardcover-34748`.
+ *
+ * There is no second separator on purpose: the first `-` after the source is
+ * the boundary, so a LiveLib username with dashes (`my-reader`) stays intact.
+ * The userKey grammar matches what the importers accept (letters, digits,
+ * `_`, `.`, `-`), so no token can address a file outside profiles/.
  */
-function selectProfiles(requested) {
-  const profiles = connectedProfiles();
+function parseProfilesParam(raw) {
+  if (raw == null) return { present: false, tokens: [], malformed: [] };
+  const values = Array.isArray(raw) ? raw : [raw];
+  const tokens = [];
+  const malformed = [];
+  for (const value of values) {
+    for (const part of String(value).split(',')) {
+      const token = part.trim();
+      if (!token) continue;
+      const match = /^(livelib|hardcover)-(.+)$/i.exec(token);
+      const userKey = match ? match[2].trim() : '';
+      if (!match || !/^[\w.-]{1,120}$/.test(userKey)) {
+        malformed.push(token);
+        continue;
+      }
+      tokens.push({ token, source: match[1].toLowerCase(), userKey });
+    }
+  }
+  return { present: true, tokens, malformed };
+}
+
+/**
+ * Resolve `?profiles=` against the profile documents that exist on disk.
+ *
+ * Matching is case-insensitive (a client may lower-case the token) but the
+ * result always carries the canonical `userKey` from the file, and a token
+ * that names no cached profile is reported as `unknown` instead of silently
+ * widening the selection — that is what keeps `?profiles=` honest.
+ *
+ * `explicit` is true whenever the parameter was present at all (including an
+ * empty `?profiles=`), so the caller can distinguish "no scope asked" from
+ * "scope asked but resolved to nothing" (the latter is a 400 at the route).
+ */
+function resolveProfileScope(raw, profilesIn) {
+  const profiles = Array.isArray(profilesIn) ? profilesIn : connectedProfiles();
+  const available = profiles.map((profile) => ({
+    key: profileKeyOf(profile),
+    source: profile.source,
+    userKey: profile.userKey,
+  }));
+  const parsed = parseProfilesParam(raw);
+  if (!parsed.present) {
+    return {
+      explicit: false,
+      requested: [],
+      selected: available,
+      unknown: [],
+      malformed: [],
+      profiles,
+    };
+  }
+  const byLowerKey = new Map(available.map((entry) => [entry.key.toLowerCase(), entry]));
+  const selected = [];
+  const unknown = [];
+  for (const { token, source, userKey } of parsed.tokens) {
+    const hit = byLowerKey.get(`${source}-${userKey}`.toLowerCase());
+    if (!hit) {
+      unknown.push(token);
+      continue;
+    }
+    if (!selected.some((entry) => entry.key === hit.key)) selected.push(hit);
+  }
+  return {
+    explicit: true,
+    requested: parsed.tokens.map((entry) => entry.token),
+    selected,
+    unknown,
+    malformed: parsed.malformed,
+    profiles,
+  };
+}
+
+/**
+ * Load the profiles that feed the aggregation.
+ *
+ * Two selection axes, in priority order:
+ *   1. `?profiles=` (profileScope) — exact profile documents, `sources` is
+ *      then only a label and is ignored for selection;
+ *   2. `?sources=` — every profile of those sources (the coarse axis).
+ * Neither → all cached profiles.
+ *
+ * Unresolvable values are ignored here (an unknown-only filter returns an
+ * empty profile rather than an error); `/api/books/stats` validates the raw
+ * parameter first and answers 400 instead.
+ */
+function selectProfiles(requested, profileScope) {
+  const scope = profileScope || resolveProfileScope(undefined);
+  const profiles = scope.profiles;
   const connected = [...new Set(profiles.map((profile) => profile.source))];
+  const allProfileKeys = profiles.map(profileKeyOf);
+
+  const sourcesRequested = requested != null && String(requested).trim() !== '';
+  let mode = 'all';
   let selected = connected;
-  if (requested != null && String(requested).trim() !== '') {
+  let chosen = profiles;
+
+  if (scope.explicit) {
+    mode = 'profiles';
+    const keys = new Set(scope.selected.map((entry) => entry.key));
+    chosen = profiles.filter((profile) => keys.has(profileKeyOf(profile)));
+    selected = [...new Set(chosen.map((profile) => profile.source))];
+  } else if (sourcesRequested) {
+    mode = 'sources';
     const wanted = (Array.isArray(requested) ? requested : String(requested).split(','))
       .map((value) => String(value).trim().toLowerCase())
       .filter(Boolean);
     selected = connected.filter((source) => wanted.includes(source));
+    chosen = profiles.filter((profile) => selected.includes(profile.source));
   }
+
   const loaded = [];
-  for (const source of selected) {
-    for (const meta of profiles.filter((profile) => profile.source === source)) {
-      const data = bookCache.getProfile(source, meta.userKey);
-      if (data && Array.isArray(data.events)) loaded.push(data);
-    }
+  for (const meta of chosen) {
+    const data = bookCache.getProfile(meta.source, meta.userKey);
+    if (data && Array.isArray(data.events)) loaded.push(data);
   }
-  return { connected, selected, profiles: loaded };
+  return {
+    connected,
+    selected,
+    profiles: loaded,
+    mode,
+    sourcesRequested,
+    requestedProfiles: scope.requested,
+    selectedProfileKeys: chosen.map(profileKeyOf),
+    allProfileKeys,
+  };
 }
 
 function saneYear(value) {
@@ -746,12 +869,18 @@ function applyManualMangaFlags(works, flags) {
 
 /**
  * Build the whole /api/books/stats payload. `options.sources` is the raw
- * `?sources=` value (string or array); `options.now` is injectable for tests.
+ * `?sources=` value (string or array), `options.profiles` the raw `?profiles=`
+ * value; `options.now` is injectable for tests.
  */
 function buildBooksStats(options = {}) {
   const startedAt = process.hrtime.bigint();
   const includeMangaComics = options.includeMangaComics === true;
-  const { connected, selected, profiles } = selectProfiles(options.sources);
+  const selection = selectProfiles(
+    options.sources,
+    options.profileScope ||
+      resolveProfileScope(options.profiles, options.profilesOnDisk)
+  );
+  const { connected, selected, profiles, mode } = selection;
   const prepared = prepareEvents(profiles);
   const reReadCounts = prepared.reReadCounts;
   let events = prepared.events.filter((event) => selected.includes(event.source));
@@ -1151,6 +1280,23 @@ function buildBooksStats(options = {}) {
     sources: {
       connected,
       selected,
+      // Which profile documents (not sources) produced this payload: the
+      // `?profiles=` scope lives here so the frontend can show "LiveLib
+      // Margaret + Hardcover 34748" without guessing from cache files.
+      profiles: {
+        connected: selection.allProfileKeys,
+        selected: selection.selectedProfileKeys,
+      },
+      filter: {
+        mode, // all | sources | profiles
+        requestedSources:
+          selection.sourcesRequested ? [].concat(options.sources).join(',') : null,
+        requestedProfiles: selection.requestedProfiles,
+        // `?profiles=` is authoritative; a parallel `?sources=` is not applied.
+        sourcesIgnored:
+          mode === 'profiles' &&
+          selection.sourcesRequested,
+      },
     },
     summary,
     sourceBreakdown,
@@ -1184,6 +1330,7 @@ function buildBooksStats(options = {}) {
           missingStatusId: 0,
         };
         return {
+          key: `${profile.source}-${profile.userKey}`,
           source: profile.source,
           userKey: profile.userKey,
           importedAt: profile.importedAt || null,
@@ -1202,6 +1349,56 @@ function buildBooksStats(options = {}) {
   };
 }
 
+/**
+ * Compact summary of ONE cached profile document, for `GET /api/books/profiles`
+ * (switcher badges + docs). Reuses `prepareEvents`, so the Hardcover journal
+ * status filter and re-read grouping behave exactly like in the stats build,
+ * but no details/metadata files are read — the endpoint must stay cheap for a
+ * 1245-event LiveLib profile.
+ */
+function profileSummary(profile) {
+  if (!profile || !Array.isArray(profile.events)) {
+    return {
+      eventCount: 0,
+      bookCount: 0,
+      finishedCount: 0,
+      undatedEventCount: 0,
+      readCount: 0,
+      reReadCount: 0,
+      avgRating: null,
+      dateFrom: null,
+      dateTo: null,
+    };
+  }
+  const prepared = prepareEvents([profile]);
+  const events = prepared.events;
+  const workIds = new Set(events.map((event) => event.workId));
+  const finished = events.filter((event) => event.finishedAt);
+  const dates = finished
+    .map((event) => String(event.finishedAt).slice(0, 10))
+    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+    .sort();
+  let reReadCount = 0;
+  const groups = new Set(
+    events.map((event) => `${event.source}:${event.userKey}:${event.sourceBookId}`)
+  );
+  for (const key of groups) reReadCount += prepared.reReadCounts.get(key) || 0;
+
+  return {
+    eventCount: events.length,
+    bookCount: workIds.size,
+    finishedCount: finished.length,
+    undatedEventCount: events.length - finished.length,
+    readCount: events.filter((event) => event.status === 'read').length,
+    reReadCount,
+    avgRating: mean(
+      events.filter((event) => event.rating10 != null).map((event) => event.rating10)
+    ),
+    dateFrom: dates.length ? dates[0] : null,
+    dateTo: dates.length ? dates[dates.length - 1] : null,
+  };
+}
+
 /** Unmatched list for GET /api/books/unmatched (livelib-only by contract). */
 function listUnmatched(options = {}) {
   const stats = buildBooksStats(options);
@@ -1215,11 +1412,15 @@ function listUnmatched(options = {}) {
 module.exports = {
   PAGE_BUCKETS,
   HARDCOVER_PROFILE_STATUS_IDS,
+  PROFILE_SOURCES,
   round2,
   mean,
   dayNumber,
   computeStreaks,
   connectedProfiles,
+  profileKeyOf,
+  parseProfilesParam,
+  resolveProfileScope,
   selectProfiles,
   keepHardcoverProfileEvent,
   prepareEvents,
@@ -1230,5 +1431,6 @@ module.exports = {
   propagateSeriesManga,
   applyManualMangaFlags,
   buildBooksStats,
+  profileSummary,
   listUnmatched,
 };
