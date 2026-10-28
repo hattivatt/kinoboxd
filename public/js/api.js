@@ -139,11 +139,17 @@ export function getKinopoiskStatus(uploadId, { signal } = {}) {
 /* ---------------- books ---------------- */
 
 /**
- * Aggregated book payload. `sources` is the server-side source filter
- * ("livelib", "hardcover" or a comma-separated list); omitted = all connected.
+ * Aggregated book payload.
+ *
+ * - `profiles` scopes the payload to the active browser profile: a
+ *   comma-separated list of `livelib-<username>` / `hardcover-<userId>` keys.
+ *   Omitted → every source cached on the server (legacy clients).
+ * - `sources` is the in-profile source filter ("livelib", "hardcover" or a
+ *   comma-separated list); omitted = all sources of the profile.
  */
-export function getBooksStats({ sources = '', includeMangaComics = null, signal } = {}) {
+export function getBooksStats({ sources = '', profiles = '', includeMangaComics = null, signal } = {}) {
   const params = new URLSearchParams();
+  if (profiles) params.set('profiles', profiles);
   if (sources) params.set('sources', sources);
   // Always spelled out: the backend default is "exclude", but sending it
   // explicitly keeps the toggle, the chips and the request in one state.
@@ -175,11 +181,15 @@ export function clearBookMangaFlag(workId, { signal } = {}) {
   });
 }
 
-export function startBooksImportLivelib(username, { force = false, signal } = {}) {
+export function startBooksImportLivelib(username, { force = false, cookieHeader = '', signal } = {}) {
   const body = { username };
   // `force: true` deliberately skips the 12 h LiveLib reuse window and
   // re-scrapes every page. Only the manual "Обновить профиль" button sets it.
   if (force) body.force = true;
+  // The raw `Cookie: __ddg1=...` header is sent exactly once, after a 403.
+  // The value is never echoed back, stored client-side or logged; the server
+  // owns persistence (K5).
+  if (cookieHeader) body.cookieHeader = cookieHeader;
   return request('/api/books/import/livelib', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
