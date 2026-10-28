@@ -15,18 +15,29 @@ const { HttpError } = require('../upload');
 const config = require('../config');
 const bookCache = require('./book-cache');
 const importJobs = require('./import');
-const { buildBooksStats, listUnmatched } = require('./stats');
+const {
+  buildBooksStats,
+  listUnmatched,
+  profileSummary,
+  resolveProfileScope,
+  PROFILE_SOURCES,
+} = require('./stats');
+const livelibCookies = require('./livelib-cookies');
 const { HardcoverError } = require('./hardcover');
 const { LivelibError } = require('./livelib');
 
 const router = express.Router();
 
-const KNOWN_SOURCES = ['livelib', 'hardcover'];
+const KNOWN_SOURCES = PROFILE_SOURCES;
 
 function mapError(err) {
   if (err instanceof HttpError) return err;
+  if (err instanceof livelibCookies.CookieError) {
+    return new HttpError(400, err.message, err.code);
+  }
   if (err instanceof LivelibError) {
     if (err.code === 'livelib_invalid_username') return new HttpError(400, err.message, err.code);
+    if (err.code === 'livelib_import_running') return new HttpError(409, err.message, err.code);
     if (err.code === 'livelib_blocked') return new HttpError(429, err.message, err.code);
     if (err.code === 'livelib_bulk_error') return new HttpError(404, err.message, err.code);
     return new HttpError(502, err.message, err.code);
@@ -50,12 +61,34 @@ function hardcoverTokenInfo() {
   }
 }
 
-/** GET /api/books/profiles — cached source profiles for the switcher/badges. */
+/**
+ * GET /api/books/profiles — cached source profiles for the switcher/badges.
+ *
+ * Each entry carries:
+ *   - `key`       — the exact `?profiles=` token (`livelib-Margaret`),
+ *   - `sourceKey` — the minimal provider-qualified key for docs
+ *                   (`livelib/Margaret`, `hardcover/34748`),
+ *   - `summary`   — compact aggregates (books/events/dates/avgRating),
+ *   - `cookies`   — masked cookie-store status (LiveLib only; `present`/`count`).
+ */
 router.get('/profiles', (req, res) => {
-  const profiles = bookCache.listProfiles();
+  const profiles = bookCache.listProfiles().map((meta) => {
+    const data = bookCache.getProfile(meta.source, meta.userKey);
+    return Object.assign({}, meta, {
+      key: `${meta.source}-${meta.userKey}`,
+      sourceKey: `${meta.source}/${meta.userKey}`,
+      summary: profileSummary(data),
+      cookies:
+        meta.source === 'livelib'
+          ? livelibCookies.cookieStatus('livelib', meta.userKey)
+          : { present: false, savedAt: null, count: 0 },
+    });
+  });
   res.status(200).json({
     profiles,
     connected: [...new Set(profiles.map((profile) => profile.source))],
+    // Echoed for the frontend/docs: `?profiles=` accepts only these tokens.
+    availableProfileKeys: profiles.map((profile) => profile.key),
     hardcoverToken: hardcoverTokenInfo(),
     cacheDir: bookCache.BOOK_CACHE_DIR,
   });
@@ -82,7 +115,15 @@ function parseForce(bodyValue, queryValue) {
   );
 }
 
-/** POST /api/books/import/livelib { username, force? } (?force=1) */
+/**
+ * POST /api/books/import/livelib { username, force?, cookieHeader? }
+ *
+ * `cookieHeader` is the plan-B escape hatch for a DDoS-Guard-flagged host: the
+ * `Cookie:` value copied from a browser where the profile opens. Accepted as
+ * `"Cookie: a=b; c=d"`, `"a=b; c=d"` or a pairs object. It is validated here
+ * (400 `invalid_cookie_header`), stored 0600 in `cache-book/cookies/` and never
+ * echoed — the job status only reports `cookies.present`.
+ */
 router.post('/import/livelib', (req, res, next) => {
   try {
     const username = req.body && req.body.username;
@@ -97,7 +138,9 @@ router.post('/import/livelib', (req, res, next) => {
     const nameMatch = String(username).match(/\/(?:reader|users)\/([^/?#]+)/);
     const value = nameMatch ? nameMatch[1] : username;
     const force = parseForce(req.body && req.body.force, req.query && req.query.force);
-    const job = importJobs.startLivelibImport(value, { force });
+    const cookieHeader =
+      (req.body && (req.body.cookieHeader != null ? req.body.cookieHeader : req.body.cookies)) || null;
+    const job = importJobs.startLivelibImport(value, { force, cookieHeader });
     res.status(202).json(job);
   } catch (err) {
     next(mapError(err));
@@ -132,7 +175,52 @@ router.get('/import/status', (req, res, next) => {
   }
 });
 
-/** GET /api/books/stats?sources=livelib,hardcover&includeMangaComics=0|1 */
+/**
+ * Validate `?profiles=` strictly and return the resolved scope.
+ *
+ * A malformed token, a token that names no cached profile, or a scope that
+ * resolves to zero profiles is a 400 — silently widening the scope to
+ * "everything" would be worse than an explicit client error.
+ */
+function resolveProfileScopeOrThrow(raw) {
+  const scope = resolveProfileScope(raw);
+  if (!scope.explicit) return scope;
+  if (scope.malformed.length > 0) {
+    throw new HttpError(
+      400,
+      `Query parameter "profiles": expected "source-userKey" tokens ` +
+        `(${PROFILE_SOURCES.join('|')}), got: ${scope.malformed.join(', ')}.`,
+      'invalid_profiles'
+    );
+  }
+  if (scope.unknown.length > 0) {
+    const available = scope.profiles.map((profile) => `${profile.source}-${profile.userKey}`);
+    throw new HttpError(
+      400,
+      `Query parameter "profiles": not a cached profile: ${scope.unknown.join(', ')}. ` +
+        `Available: ${available.length ? available.join(', ') : '(none)'}.`,
+      'unknown_profile'
+    );
+  }
+  if (scope.selected.length === 0) {
+    throw new HttpError(
+      400,
+      'Query parameter "profiles" must name at least one cached profile.',
+      'invalid_profiles'
+    );
+  }
+  return scope;
+}
+
+/**
+ * GET /api/books/stats
+ *   ?sources=livelib,hardcover      coarse axis (all profiles of those sources)
+ *   ?profiles=livelib-Margaret,hardcover-34748   exact profile documents
+ *   ?includeMangaComics=0|1
+ *
+ * `profiles=` wins over `sources=` (a parallel `sources=` is echoed as ignored
+ * in `sources.filter`).
+ */
 router.get('/stats', (req, res, next) => {
   try {
     const raw = req.query.sources;
@@ -149,6 +237,9 @@ router.get('/stats', (req, res, next) => {
         );
       }
     }
+
+    const profileScope = resolveProfileScopeOrThrow(req.query.profiles);
+
     const includeMangaRaw = req.query.includeMangaComics;
     let includeMangaComics = false;
     if (includeMangaRaw != null && String(includeMangaRaw).trim() !== '') {
@@ -162,7 +253,11 @@ router.get('/stats', (req, res, next) => {
         );
       }
     }
-    const stats = buildBooksStats({ sources: raw, includeMangaComics });
+    const stats = buildBooksStats({
+      sources: raw,
+      profileScope,
+      includeMangaComics,
+    });
     res.set('X-Books-Build-Ms', String(stats.meta.buildMs));
     res.status(200).json(stats);
   } catch (err) {
@@ -210,10 +305,11 @@ router.delete('/work/flag', async (req, res, next) => {
   }
 });
 
-/** GET /api/books/unmatched?sources=livelib */
+/** GET /api/books/unmatched?sources=livelib&profiles=livelib-Margaret */
 router.get('/unmatched', (req, res, next) => {
   try {
-    res.status(200).json(listUnmatched({ sources: req.query.sources }));
+    const profileScope = resolveProfileScopeOrThrow(req.query.profiles);
+    res.status(200).json(listUnmatched({ sources: req.query.sources, profileScope }));
   } catch (err) {
     next(mapError(err));
   }

@@ -195,6 +195,7 @@ async function getWork(input = {}, options = {}) {
       url,
       {
         headers: { accept: 'text/html', 'User-Agent': livelib.USER_AGENT },
+        jar: options.jar,
         fetchImpl: options.fetchImpl,
       },
       `card ${bookId}`

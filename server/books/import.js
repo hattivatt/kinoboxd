@@ -21,6 +21,7 @@ const config = require('../config');
 const bookCache = require('./book-cache');
 const hardcover = require('./hardcover');
 const livelib = require('./livelib');
+const livelibCookies = require('./livelib-cookies');
 const resolve = require('./resolve');
 
 const jobs = new Map();
@@ -101,6 +102,16 @@ function enqueue(job, task) {
         job.stage = 'failed';
         job.error = message;
       }
+      // A blocked source is a first-class state for the UI: it decides whether
+      // to offer the cookie paste form ("plan B") or just a retry.
+      if (err && err.code === 'livelib_blocked') {
+        job.code = 'livelib_blocked';
+        job.blocked = {
+          code: 'livelib_blocked',
+          planB: 'cookieHeader',
+          cookiesPresent: Boolean(job.cookies && job.cookies.present),
+        };
+      }
       console.error(`[books-import ${job.id}] ${message}`);
     })
     .then(() => {
@@ -142,6 +153,9 @@ async function resolveAllLivelibProfiles(job, options = {}) {
       force: Boolean(options.force),
       cardBudget,
       litresBudget,
+      // Same anonymous session for the card pages: with plan-B cookies the
+      // enrichment must not fall back to a cold, blockable IP.
+      jar: options.jar,
       onProgress: (progress) => {
         job.resolved = progress.resolved;
         job.resolveTotal = progress.total;
@@ -203,6 +217,20 @@ async function resolveAllLivelibProfiles(job, options = {}) {
 /* LiveLib import                                                      */
 /* ------------------------------------------------------------------ */
 
+/**
+ * LiveLib import job.
+ *
+ * `options.cookieHeader` is "plan B" for a DDoS-Guard-flagged host: the user
+ * pastes the `Cookie:` value from a browser where the profile opens. The header
+ * is validated synchronously (a malformed paste is a 400, not a failed job),
+ * persisted to `cache-book/cookies/livelib-{username}.json` (0600), and used to
+ * seed the anonymous jar for the bootstrap, the scrape AND the card resolve.
+ * Only a masked `{ provided, stored, present, savedAt }` block ever reaches the
+ * job status — never the value.
+ *
+ * A supplied header also disables the 12 h reuse window: the user is
+ * explicitly retrying because the cached state did not work.
+ */
 function startLivelibImport(username, options = {}) {
   const cleanUsername = String(username == null ? '' : username).trim().replace(/^@/, '');
   if (!/^[\w.-]{1,64}$/.test(cleanUsername)) {
@@ -212,14 +240,34 @@ function startLivelibImport(username, options = {}) {
     );
   }
 
+  // Validate the paste before anything is queued or written.
+  const providedHeader =
+    options.cookieHeader == null || String(options.cookieHeader).trim() === ''
+      ? null
+      : livelibCookies.normalizeCookieHeader(options.cookieHeader);
+  const storedCookie = providedHeader ? null : livelibCookies.getCookies('livelib', cleanUsername);
+  const cookieHeader = providedHeader || (storedCookie ? storedCookie.cookieHeader : null);
+
   const running = findRunningJob('livelib', cleanUsername);
-  if (running) return publicStatus(running);
+  if (running) {
+    // A paste during a running scrape cannot be applied to that job; silently
+    // dropping it would look like "cookies saved" in the UI. 409 asks for a
+    // retry after the current import finishes.
+    if (providedHeader) {
+      throw new livelib.LivelibError(
+        'Импорт этого профиля уже выполняется — дождитесь завершения и повторите вставку cookie.',
+        'livelib_import_running'
+      );
+    }
+    return publicStatus(running);
+  }
 
   // Repeat-import guard (politeness + cheap UI): a cached profile younger than
   // LIVELIB_REIMPORT_TTL_MS is reused instead of re-scraping 20+ pages. An
-  // explicit { force: true } (or an expired profile) still performs a full
-  // import, and a Hardcover import re-runs resolve over the cached profile.
-  const force = Boolean(options.force);
+  // explicit { force: true }, an expired profile or a fresh cookie paste still
+  // performs a full import, and a Hardcover import re-runs resolve over the
+  // cached profile.
+  const force = Boolean(options.force) || Boolean(providedHeader);
   if (!force) {
     const cached = bookCache.getProfile('livelib', cleanUsername);
     if (cached && isFreshImport(cached.importedAt)) {
@@ -238,6 +286,12 @@ function startLivelibImport(username, options = {}) {
         cachedAt: cached.importedAt || null,
         error: null,
         warning: null,
+        cookies: {
+          provided: false,
+          stored: Boolean(storedCookie),
+          present: Boolean(cookieHeader),
+          savedAt: storedCookie ? storedCookie.savedAt : null,
+        },
         startedAt: now,
         finishedAt: now,
       };
@@ -263,12 +317,38 @@ function startLivelibImport(username, options = {}) {
     force,
     error: null,
     warning: null,
+    cookies: {
+      provided: Boolean(providedHeader),
+      stored: Boolean(storedCookie),
+      present: Boolean(cookieHeader),
+      savedAt: storedCookie ? storedCookie.savedAt : null,
+    },
     startedAt: Date.now(),
   };
   rememberJob(job);
 
   enqueue(job, async () => {
+    if (providedHeader) {
+      const saved = await livelibCookies.saveCookies('livelib', cleanUsername, providedHeader);
+      job.cookies = {
+        provided: true,
+        stored: true,
+        present: true,
+        savedAt: saved.savedAt,
+        count: saved.count,
+      };
+      console.log(
+        `[books-import ${job.id}] livelib cookies stored ` +
+          `(${saved.count} cookie(s), savedAt=${saved.savedAt})`
+      );
+    }
+
+    const jar = livelib.makeJar(cookieHeader);
     const result = await livelib.importLivelib(cleanUsername, {
+      jar,
+      onSession: (session) => {
+        job.session = maskSession(session);
+      },
       onProgress: (progress) => {
         job.stage = progress.stage === 'bulk' ? 'livelib-bulk' : 'livelib-rsc';
         job.page = progress.page;
@@ -287,18 +367,42 @@ function startLivelibImport(username, options = {}) {
     job.events = result.profile.events.length;
     job.requests = result.requests;
     job.totals = result.totals;
+    job.session = result.session ? result.session : job.session || null;
+    job.cookies = Object.assign({}, job.cookies, {
+      present: true,
+      jarAfter: result.session ? result.session.cookiesUsed : null,
+    });
     job.warning = result.warnings.length ? result.warnings.join(' ') : null;
     console.log(
       `[books-import ${job.id}] livelib profile saved: ${result.profile.events.length} events ` +
-        `(${result.totals.dated} dated), requests=${result.requests.total}`
+        `(${result.totals.dated} dated), requests=${result.requests.total}, ` +
+        `cookies=${job.cookies.present ? 'jar' : 'none'}`
     );
 
-    await resolveAllLivelibProfiles(job);
+    await resolveAllLivelibProfiles(job, { jar });
   });
 
   return publicStatus(job);
 }
 
+/** Bootstrap diagnostics for the job status: statuses/counts, never values. */
+function maskSession(session) {
+  if (!session) return null;
+  return {
+    bootstrap: {
+      skipped: Boolean(session.skipped),
+      status: session.status == null ? null : session.status,
+      challenge: Boolean(session.challenge),
+      blocked: Boolean(session.blocked),
+      cookieCount: session.cookieCount || 0,
+      title: session.title || null,
+      hops: Array.isArray(session.hops)
+        ? session.hops.map((hop) => ({ status: hop.status, cookieCount: hop.cookieCount }))
+        : [],
+    },
+    cookiesUsed: session.cookieCount || 0,
+  };
+}
 /* ------------------------------------------------------------------ */
 /* Hardcover import                                                    */
 /* ------------------------------------------------------------------ */
@@ -411,12 +515,18 @@ function publicStatus(job) {
     force: Boolean(job.force),
     cachedAt: job.cachedAt || null,
     error: job.error || null,
+    code: job.code || null,
     warning: job.warning || null,
     startedAt: job.startedAt,
     elapsedMs: job.finishedAt ? job.finishedAt - job.startedAt : Date.now() - job.startedAt,
     requests: job.requests || null,
     totals: job.totals || null,
     resolve: job.resolve || null,
+    // Masked only: `present`/`savedAt`/counts. The header value never leaves
+    // the cookie store.
+    cookies: job.cookies || null,
+    session: job.session || null,
+    blocked: job.blocked || null,
   };
 }
 
@@ -436,6 +546,7 @@ module.exports = {
   startHardcoverImport,
   getStatus,
   publicStatus,
+  maskSession,
   isFreshImport,
   LIVELIB_REIMPORT_TTL_MS,
   resolveAllLivelibProfiles,

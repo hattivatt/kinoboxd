@@ -3,22 +3,29 @@
 /**
  * LiveLib import (reading profile of a public user).
  *
- * Two complementary sources, both public and login-free (P0, 27.10.2026):
+ * Three steps, all public and login-free (P0, 27.10.2026):
  *
- *  1. Next.js collection pages
- *       GET https://www.livelib.ru/reader/{username}/read?ordering=read_at_desc&page=N
- *     (308 -> /users/{numericId}/books/read?ordering=read_at_desc&page=N).
- *     20 cards per page; the authoritative data is the React Server Component
- *     payload (self.__next_f): personal `rating` (0..10) and `read_date`
- *     (year/month/day) per user_book. 1245 books = 63 pages.
+ *  0. Browser-like bootstrap (see the HTTP section below)
+ *       GET https://www.livelib.ru/reader/{username}/read
+ *     with the full Chrome header set; every `Set-Cookie` (DDoS-Guard hands out
+ *     `__ddg1_`/`__ddg2_`/...) is kept in a jar and sent with the calls below.
+ *     Without it a cold request from a flagged IP gets a challenge 403 in ~0.3 s
+ *     and the whole import dies on its first byte.
  *
- *  2. Legacy bulk endpoint (undocumented, "livelib-backup" trick)
+ *  1. Legacy bulk endpoint (undocumented, "livelib-backup" trick)
  *       POST /reader/{username}/read/listview/biglist
  *       x-requested-with: XMLHttpRequest, form-urlencoded
  *       page_no=1&per_page=1000&is_new_design=ll2015b&is_prev=false
  *     Returns JSON { error_code, content: HTML, last_page, object_ids }.
  *     One request per 1000 books, and the HTML carries ISBN (~68%),
  *     publisher/year/language/series per user_book.
+ *
+ *  2. Next.js collection pages
+ *       GET https://www.livelib.ru/reader/{username}/read?ordering=read_at_desc&page=N
+ *     (308 -> /users/{numericId}/books/read?ordering=read_at_desc&page=N).
+ *     20 cards per page; the authoritative data is the React Server Component
+ *     payload (self.__next_f): personal `rating` (0..10) and `read_date`
+ *     (year/month/day) per user_book. 1245 books = 63 pages.
  *
  * Merge: the bulk pass supplies metadata, the RSC pass supplies exact dates and
  * the native 10-scale rating. Both are keyed by the SAME user_book id
@@ -27,19 +34,50 @@
  * events are keyed by user_book id and edition duplicates are reported as
  * re-reads instead of being collapsed.
  *
- * Politeness: one request at a time, random 1.5-2.5 s pause between requests,
- * browser UA, 429/403 -> stop (no hammering), transport retries only.
+ * Politeness: one request at a time, random 1.5-2.5 s pause between requests
+ * (and before the bootstrap), browser UA, 429/403 -> stop (no hammering),
+ * transport retries only.
  *
  * HTML fixtures for tests live in test/fixtures/ (gzipped real pages).
  */
 
 const cheerio = require('cheerio');
 
+const { parseCookieHeader } = require('./cookie-header');
+
 const LIVELIB_ORIGIN = 'https://www.livelib.ru';
 
+/**
+ * Desktop Chrome UA. Kept in sync across the scraper: the Site sits behind
+ * DDoS-Guard, so a consistent, plausible browser fingerprint matters more than
+ * the exact minor version (AGENTS.md: browser UA, no bot-looking strings).
+ */
 const USER_AGENT =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
-  'Chrome/128.0.0.0 Safari/537.36';
+  'Chrome/140.0.0.0 Safari/537.36';
+
+/**
+ * Full browser header set for the bootstrap document request. `sec-ch-*` and
+ * `sec-fetch-*` are what Chrome actually sends on a top-level navigation;
+ * DDoS-Guard scores their absence, so the first request of a session carries
+ * all of them (the JSON/HTML calls after it keep the shorter set).
+ */
+const BROWSER_HEADERS = {
+  'User-Agent': USER_AGENT,
+  Accept:
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+  'Cache-Control': 'no-cache',
+  Pragma: 'no-cache',
+  'Sec-Ch-Ua': '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"Linux"',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-User': '?1',
+  'Upgrade-Insecure-Requests': '1',
+};
 
 const REQUEST_TIMEOUT_MS = 45000;
 const MIN_DELAY_MS = 1500;
@@ -47,6 +85,7 @@ const MAX_DELAY_MS = 2500;
 const BULK_PER_PAGE = 1000;
 const MAX_RSC_PAGES = 200;
 const MAX_BULK_PAGES = 10;
+const MAX_REDIRECTS = 5;
 
 class LivelibError extends Error {
   constructor(message, code) {
@@ -70,23 +109,136 @@ function cleanText(value) {
 }
 
 /* ------------------------------------------------------------------ */
-/* HTTP                                                               */
+/* HTTP + anonymous cookie jar                                         */
 /* ------------------------------------------------------------------ */
+
+/*
+ * LiveLib answers a cold, cookie-less request from a flagged IP with a
+ * DDoS-Guard challenge 403 (seen on a user's server: 403 after ~0.3 s, before
+ * any collection page was even touched). The working pattern — the same one
+ * `server/kp.js` uses for KinoPoisk — is:
+ *
+ *   1. GET the public profile page like a browser (BROWSER_HEADERS) and keep
+ *      every `Set-Cookie` (`__ddg1_`, `__ddg2_`, `__ddg8_`, ...) in a jar,
+ *      following redirects manually so intermediate hops are not lost;
+ *   2. only then POST the legacy biglist / fetch collection pages with
+ *      `Cookie:` from that jar, capturing refreshed cookies on each response.
+ *
+ * The bootstrap response itself may be 403/redirect/captcha — that is not an
+ * error by itself (the cookies it sets are often the point). If the *next*
+ * request is blocked too, the job reports `livelib_blocked` and the caller can
+ * offer plan B (a cookie header copied from a real browser).
+ */
+
+function headerValue(headers, name) {
+  if (!headers) return null;
+  if (typeof headers.get === 'function') {
+    const value = headers.get(name);
+    if (value != null) return value;
+    if (typeof headers.getSetCookie !== 'function') return null;
+  }
+  const lower = String(name).toLowerCase();
+  if (headers instanceof Map) return headers.get(lower) || headers.get(name) || null;
+  if (typeof headers === 'object') return headers[lower] || headers[name] || null;
+  return null;
+}
+
+/**
+ * All `Set-Cookie` values of a response. Tolerant to test doubles: undici uses
+ * `getSetCookie()`, a Map or a plain object may carry a single `set-cookie`.
+ */
+function setCookieValues(headers) {
+  if (!headers) return [];
+  if (typeof headers.getSetCookie === 'function') {
+    const list = headers.getSetCookie();
+    return Array.isArray(list) ? list.filter(Boolean) : [];
+  }
+  if (typeof headers.raw === 'function') {
+    const raw = headers.raw();
+    const list = raw && (raw['set-cookie'] || raw['Set-Cookie']);
+    if (list) return [].concat(list).filter(Boolean);
+  }
+  const single = headerValue(headers, 'set-cookie');
+  return single ? [].concat(single).filter(Boolean) : [];
+}
+
+/**
+ * Anonymous cookie jar (`Map<name, value>`), seeded from a stored/user header.
+ * Mirrors `makeJar`/`storeCookies`/`cookieHeader` from server/kp.js.
+ */
+function makeJar(seed) {
+  const jar = new Map();
+  if (!seed) return jar;
+  if (seed instanceof Map) {
+    for (const [name, value] of seed) jar.set(name, value);
+    return jar;
+  }
+  for (const [name, value] of parseCookieHeader(String(seed))) jar.set(name, value);
+  return jar;
+}
+
+function storeCookies(jar, response) {
+  if (!jar) return;
+  for (const raw of setCookieValues(response && response.headers)) {
+    const pair = String(raw).split(';')[0];
+    const eq = pair.indexOf('=');
+    if (eq < 1) continue;
+    const name = pair.slice(0, eq).trim();
+    const value = pair.slice(eq + 1).trim();
+    if (!name) continue;
+    const rest = String(raw).toLowerCase();
+    // Expired/deleted cookie: `Max-Age=0` or an empty value.
+    if (/max-age=0(?:;|$)/.test(rest) || value === '') jar.delete(name);
+    else jar.set(name, value);
+  }
+}
+
+function cookieHeaderOf(jar) {
+  if (!jar || jar.size === 0) return null;
+  return [...jar.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
+}
+
+function withCookies(headers, jar) {
+  const merged = Object.assign({}, headers || {});
+  const cookie = cookieHeaderOf(jar);
+  if (cookie) merged.Cookie = cookie;
+  return merged;
+}
 
 /** Fetch with transport retries; refuses 403/429 loudly instead of retrying. */
 async function request(url, options = {}, label = url) {
   const fetchImpl = options.fetchImpl || fetch;
+  const jar = options.jar || null;
+  const method = options.method || 'GET';
+  // Only idempotent requests are redirected manually: replaying a POST body
+  // after a 3xx is not what a browser does for a form post either.
+  const followRedirects = String(method).toUpperCase() === 'GET';
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    let response;
+    let response = null;
+    let currentUrl = url;
     try {
-      response = await fetchImpl(url, {
-        method: options.method || 'GET',
-        headers: options.headers,
-        body: options.body,
-        redirect: 'follow',
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+      for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+        response = await fetchImpl(currentUrl, {
+          method,
+          headers: withCookies(options.headers, jar),
+          body: options.body,
+          redirect: 'manual',
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        storeCookies(jar, response);
+        const location = headerValue(response.headers, 'location');
+        if (followRedirects && response.status >= 300 && response.status < 400 && location) {
+          currentUrl = new URL(location, currentUrl).toString();
+          try {
+            await response.text();
+          } catch (err) {
+            // A 3xx body is irrelevant; ignoring it must not break the hop.
+          }
+          continue;
+        }
+        break;
+      }
     } catch (err) {
       lastError = err;
       if (attempt >= 3) {
@@ -97,10 +249,7 @@ async function request(url, options = {}, label = url) {
     }
 
     if (response.status === 429 || response.status === 403) {
-      throw new LivelibError(
-        `LiveLib ограничил доступ (HTTP ${response.status}) — импорт остановлен, повторите позже.`,
-        'livelib_blocked'
-      );
+      throw new LivelibError(blockedMessage(response.status), 'livelib_blocked');
     }
     if (response.status >= 500) {
       lastError = new LivelibError(
@@ -118,9 +267,113 @@ async function request(url, options = {}, label = url) {
       );
     }
     const text = await response.text();
-    return { status: response.status, url: response.url || url, headers: response.headers, text };
+    return {
+      status: response.status,
+      url: response.url || currentUrl,
+      headers: response.headers,
+      text,
+    };
   }
   throw lastError;
+}
+
+function blockedMessage(status) {
+  return (
+    `LiveLib ограничил доступ (HTTP ${status}) — DDoS-Guard/анти-бот; импорт остановлен. ` +
+    'Bootstrap с браузерными заголовками не помог: если профиль открывается в вашем браузере, ' +
+    'вставьте cookie из него (поле cookieHeader) и повторите, иначе попробуйте позже.'
+  );
+}
+
+/** True when the HTML/headers look like a DDoS-Guard or captcha interstitial. */
+function isChallengeHtml(html) {
+  const text = String(html || '');
+  if (!text) return false;
+  return (
+    /ddos-?guard/i.test(text) ||
+    /__ddg\d?[_a-z]*\s*=/i.test(text) ||
+    /Checking your browser/i.test(text) ||
+    /Проверка браузера/i.test(text) ||
+    /cf_chl|Just a moment|cloudflare/i.test(text) ||
+    /(?:recaptcha|hcaptcha|smartcaptcha)/i.test(text)
+  );
+}
+
+function pageTitleOf(html) {
+  const match = /<title[^>]*>([\s\S]{0,200}?)<\/title>/i.exec(String(html || ''));
+  return match ? cleanText(match[1]).slice(0, 120) : null;
+}
+
+/**
+ * Browser-like bootstrap: GET the public profile page with the full header set
+ * and collect the cookies it hands out.
+ *
+ * Deliberately tolerant: a 403/redirect/challenge answer is *data*, not an
+ * error — the response usually still carries the `__ddg*` cookies that make
+ * the following JSON call pass. Only transport failures throw.
+ *
+ * Returns masked diagnostics (`cookieCount`, statuses, title, challenge flag);
+ * cookie values never leave this module.
+ */
+async function bootstrapSession(username, options = {}) {
+  const fetchImpl = options.fetchImpl || fetch;
+  const jar = options.jar || makeJar(options.cookieHeader);
+  const url = `${LIVELIB_ORIGIN}/reader/${encodeURIComponent(username)}/read`;
+  const hops = [];
+  let status = null;
+  let finalUrl = url;
+  let html = '';
+  let response = null;
+  let currentUrl = url;
+
+  if (options.skip === true) {
+    return {
+      skipped: true,
+      status: null,
+      url: null,
+      hops: [],
+      challenge: false,
+      blocked: false,
+      cookieCount: jar.size,
+      title: null,
+    };
+  }
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    response = await fetchImpl(currentUrl, {
+      method: 'GET',
+      headers: withCookies(BROWSER_HEADERS, jar),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    storeCookies(jar, response);
+    status = response.status;
+    finalUrl = response.url || currentUrl;
+    hops.push({ status, url: currentUrl, cookieCount: jar.size });
+    const location = headerValue(response.headers, 'location');
+    if (status >= 300 && status < 400 && location) {
+      currentUrl = new URL(location, currentUrl).toString();
+      continue;
+    }
+    try {
+      html = await response.text();
+    } catch (err) {
+      html = '';
+    }
+    break;
+  }
+
+  const challenge = isChallengeHtml(html);
+  return {
+    skipped: false,
+    status,
+    url: finalUrl,
+    hops,
+    challenge,
+    blocked: status === 403 || status === 429,
+    cookieCount: jar.size,
+    title: pageTitleOf(html),
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -389,11 +642,19 @@ function parseBulkContent(content) {
 async function fetchBulk(username, options = {}) {
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const perPage = Math.min(Math.max(Number(options.perPage) || BULK_PER_PAGE, 1), 2000);
+  const jar = options.jar || null;
   const entries = [];
   const byUserBook = new Map();
   let pageNo = 1;
   let requests = 0;
   let lastPage = false;
+
+  // Politeness: after the bootstrap GET the next request must still be spaced
+  // out (AGENTS.md: 1.5-2.5 s between LiveLib requests, always).
+  const initialDelay = Number.isFinite(Number(options.initialDelayMs))
+    ? Number(options.initialDelayMs)
+    : null;
+  if (requests === 0 && initialDelay && initialDelay > 0) await sleep(initialDelay);
 
   while (!lastPage && pageNo <= MAX_BULK_PAGES) {
     if (requests > 0) await sleep(randomDelay());
@@ -401,6 +662,7 @@ async function fetchBulk(username, options = {}) {
       `${LIVELIB_ORIGIN}/reader/${encodeURIComponent(username)}/read/listview/biglist`,
       {
         method: 'POST',
+        jar,
         headers: {
           'User-Agent': USER_AGENT,
           'x-requested-with': 'XMLHttpRequest',
@@ -410,6 +672,7 @@ async function fetchBulk(username, options = {}) {
           Referer: `${LIVELIB_ORIGIN}/reader/${encodeURIComponent(username)}/read`,
         },
         body: `page_no=${pageNo}&per_page=${perPage}&is_new_design=ll2015b&is_prev=false`,
+        fetchImpl: options.fetchImpl,
       },
       `bulk page ${pageNo}`
     );
@@ -480,6 +743,7 @@ async function fetchRsc(username, options = {}) {
   const maxPages = Math.min(Math.max(Number(options.maxPages) || MAX_RSC_PAGES, 1), MAX_RSC_PAGES);
   const delayMs = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : null;
   const pageDelay = () => (delayMs == null ? randomDelay() : delayMs);
+  const jar = options.jar || null;
   const rows = [];
   const byUserBook = new Map();
   const warnings = [];
@@ -493,6 +757,8 @@ async function fetchRsc(username, options = {}) {
   const first = await request(
     `${LIVELIB_ORIGIN}/reader/${encodeURIComponent(username)}/read?ordering=read_at_desc`,
     {
+      jar,
+      fetchImpl: options.fetchImpl,
       headers: {
         'User-Agent': USER_AGENT,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -538,6 +804,8 @@ async function fetchRsc(username, options = {}) {
     const res = await request(
       url,
       {
+        jar,
+        fetchImpl: options.fetchImpl,
         headers: {
           'User-Agent': USER_AGENT,
           Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -671,8 +939,16 @@ function buildEvent(rscRow, bulkRow) {
 }
 
 /**
- * Full LiveLib import: bulk metadata pass + all RSC pages, merged by
- * user_book id. Returns { profile, requests, warnings, totals }.
+ * Full LiveLib import:
+ *   0. browser-like bootstrap GET -> cookie jar (`__ddg*` and friends);
+ *   1. legacy bulk pass (metadata, ISBN) with the jar;
+ *   2. RSC pages (exact dates, native 10-scale ratings) with the jar.
+ * Merged by user_book id. Returns { profile, requests, warnings, totals, session }.
+ *
+ * `options.cookieHeader` seeds the jar (plan B: cookies copied from a real
+ * browser); `options.jar` reuses an existing one. `options.bootstrap === false`
+ * skips step 0 (tests only). `options.delayMs === 0` disables the politeness
+ * pauses (tests only) — production always waits 1.5-2.5 s.
  */
 async function importLivelib(username, options = {}) {
   const cleanUsername = String(username == null ? '' : username).trim().replace(/^@/, '');
@@ -681,16 +957,76 @@ async function importLivelib(username, options = {}) {
   }
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const warnings = [];
+  const fixedDelay = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : null;
+  const pause = () => (fixedDelay == null ? randomDelay() : fixedDelay);
+  const jar = options.jar || makeJar(options.cookieHeader);
+  const seeded = jar.size;
+
+  // 0. Cold-session bootstrap. The delay is unconditional: the first request of
+  // a session is the one DDoS-Guard scores, so it must look like a human click,
+  // not like a 5 ms follow-up to the previous import.
+  let session = null;
+  if (options.bootstrap === false) {
+    session = {
+      skipped: true,
+      status: null,
+      url: null,
+      hops: [],
+      challenge: false,
+      blocked: false,
+      cookieCount: jar.size,
+      title: null,
+    };
+  } else {
+    const delay = options.bootstrapDelayMs == null ? pause() : Number(options.bootstrapDelayMs);
+    if (delay > 0) await sleep(delay);
+    try {
+      session = await bootstrapSession(cleanUsername, {
+        jar,
+        fetchImpl: options.fetchImpl,
+      });
+    } catch (err) {
+      throw new LivelibError(
+        `LiveLib недоступен на bootstrap-запросе: ${err.message}`,
+        'livelib_network_error'
+      );
+    }
+    console.log(
+      `[livelib ${cleanUsername}] bootstrap: status=${session.status} ` +
+        `challenge=${session.challenge} cookies=${session.cookieCount} ` +
+        `(seeded=${seeded}) hops=${session.hops.length}`
+    );
+    if (typeof options.onSession === 'function') {
+      try {
+        options.onSession(session);
+      } catch (err) {
+        // Diagnostics must never break the import.
+      }
+    }
+    if (session.blocked || session.challenge) {
+      warnings.push(
+        `Bootstrap вернул HTTP ${session.status}` +
+          `${session.challenge ? ' с DDoS-Guard/captcha-страницей' : ''}; ` +
+          `продолжаем с полученными cookie (${session.cookieCount}).`
+      );
+    }
+  }
 
   const bulk = await fetchBulk(cleanUsername, {
     onProgress: (progress) =>
       onProgress && onProgress({ stage: 'bulk', page: progress.page, pageTotal: null, events: progress.events }),
     perPage: options.bulkPerPage,
+    jar,
+    fetchImpl: options.fetchImpl,
+    initialDelayMs: fixedDelay == null ? randomDelay() : fixedDelay,
   });
 
   const rsc = await fetchRsc(cleanUsername, {
     onProgress,
     maxPages: options.maxRscPages,
+    jar,
+    fetchImpl: options.fetchImpl,
+    delayMs: fixedDelay == null ? undefined : fixedDelay,
   });
   for (const warning of rsc.warnings) warnings.push(warning);
 
@@ -768,6 +1104,25 @@ async function importLivelib(username, options = {}) {
     profile,
     requests: { bulk: bulk.requests, rsc: rsc.requests, total: bulk.requests + rsc.requests },
     warnings,
+    // Masked session diagnostics for the job status: statuses and counts only,
+    // never cookie names/values.
+    session: {
+      bootstrap: session
+        ? {
+            skipped: Boolean(session.skipped),
+            status: session.status == null ? null : session.status,
+            challenge: Boolean(session.challenge),
+            blocked: Boolean(session.blocked),
+            cookieCount: session.cookieCount || 0,
+            title: session.title || null,
+            hops: Array.isArray(session.hops)
+              ? session.hops.map((hop) => ({ status: hop.status, cookieCount: hop.cookieCount }))
+              : [],
+          }
+        : null,
+      seededCookies: seeded,
+      cookiesUsed: jar.size,
+    },
     totals: {
       events: events.length,
       dated,
@@ -786,6 +1141,12 @@ module.exports = {
   LivelibError,
   BULK_PER_PAGE,
   USER_AGENT,
+  BROWSER_HEADERS,
+  makeJar,
+  storeCookies,
+  cookieHeaderOf,
+  isChallengeHtml,
+  bootstrapSession,
   flightFromHtml,
   parseRscHtml,
   parseBulkContent,

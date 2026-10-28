@@ -292,6 +292,9 @@ function providerOptionsFor(options, provider) {
   return {
     fetchImpl: options.fetchImpl,
     sleep: options.sleep,
+    // Anonymous LiveLib session cookies (bootstrap/plan B). Only the card
+    // provider talks to LiveLib.
+    jar: provider.NAME === 'livelib-card' ? options.jar : undefined,
     negativeMemo:
       options.negativeMemo && options.negativeMemo[provider.NAME]
         ? options.negativeMemo[provider.NAME]

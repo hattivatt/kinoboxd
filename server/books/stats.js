@@ -1355,6 +1355,12 @@ function buildBooksStats(options = {}) {
  * status filter and re-read grouping behave exactly like in the stats build,
  * but no details/metadata files are read — the endpoint must stay cheap for a
  * 1245-event LiveLib profile.
+ *
+ * Deliberately *not* the stats payload: `bookCount` here is unique `workId`
+ * before the cross-source title dedupe (live: 1211 vs 1210 for the same
+ * profile) and no manga/comics filter is applied (live Hardcover: 653 events
+ * here vs 131 in /stats, where the comics shelf is hidden by default). Use it
+ * for badges/docs, never as a substitute for /api/books/stats.
  */
 function profileSummary(profile) {
   if (!profile || !Array.isArray(profile.events)) {
