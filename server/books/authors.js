@@ -172,8 +172,17 @@ function givenNamesCompatible(left, right) {
   if (leftShort || rightShort) {
     const short = leftShort && rightShort ? (left.length <= right.length ? leftInitials : rightInitials) : leftShort ? leftInitials : rightInitials;
     const full = leftShort && rightShort ? (left.length <= right.length ? rightInitials : leftInitials) : leftShort ? rightInitials : leftInitials;
-    // The abbreviated side may omit a middle name, never invent one.
-    if (short.length > full.length) return false;
+    if (leftShort && rightShort) {
+      // Two abbreviated spellings must agree on every initial.
+      return short.length === full.length && short.every((initial) => full.includes(initial));
+    }
+    // A full name may have fewer initials than the abbreviated form when the
+    // abbreviation adds a middle name: «Джоан Роулинг» ↔ «J. K. Rowling».
+    // The first initial still has to agree, and every shared position too.
+    if (short.length > full.length) {
+      if (!short.length || !full.length || short[0] !== full[0]) return false;
+      return short.slice(0, full.length).every((initial, index) => initial === full[index]);
+    }
     return short.every((initial) => full.includes(initial));
   }
   const a = left.join(' ');
