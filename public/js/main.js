@@ -43,7 +43,6 @@ const state = {
   attachedLb: null,
   profileId: null,
   profiles: [],
-  staleProfileId: null,
   flowSeq: 0,
   flowAbort: null,
   importSource: 'kinopoisk',
@@ -468,43 +467,6 @@ async function persistActiveProfile(stats) {
 }
 
 /* =========================================================
-   stale-data banner
-   ========================================================= */
-
-function formatSavedAt(value) {
-  const date = new Date(Number(value));
-  if (Number.isNaN(date.getTime())) return '';
-  try {
-    return new Intl.DateTimeFormat('ru-RU', {
-      day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
-    }).format(date);
-  } catch {
-    return '';
-  }
-}
-
-function showStaleBanner(profile, savedAt) {
-  const banner = $('stale-banner');
-  if (!banner) return;
-  state.staleProfileId = profile && profile.id ? profile.id : state.profileId;
-  const meta = $('stale-meta');
-  const stamp = formatSavedAt(savedAt);
-  if (meta) {
-    meta.textContent = stamp
-      ? `Показаны сохранённые данные от ${stamp}. Обновите профиль, чтобы получить свежую статистику.`
-      : 'Показаны сохранённые данные. Обновите профиль, чтобы получить свежую статистику.';
-  }
-  banner.hidden = false;
-}
-
-function hideStaleBanner() {
-  state.staleProfileId = null;
-  const banner = $('stale-banner');
-  if (banner) banner.hidden = true;
-}
-
-
-/* =========================================================
    boot
    ========================================================= */
 
@@ -622,7 +584,6 @@ async function boot() {
   }
   state.profileId = profile.id;
   setActiveId(profile.id);
-  state.staleProfileId = null;
 
   state.uploadId = saved.uploadId || profile.uploadId || null;
   state.uploadSummary = saved.summary || null;
@@ -813,7 +774,6 @@ function applyStats(stats, { fromCache = false, profile = null } = {}) {
     : null;
   state.stats = stats;
   state.dashboardReady = true;
-  if (!fromCache) hideStaleBanner();
   setHasSession(Boolean(state.uploadId));
   showView('dashboard');
   try {
@@ -849,7 +809,6 @@ function showUnrecoverableProfile(profile, message) {
   state.attachedLb = null;
   state.kp = null;
   state.importSource = 'kinopoisk';
-  hideStaleBanner();
   resetUpload();
   setHasSession(false);
   showView('upload');
@@ -866,9 +825,9 @@ async function handleUnknownUpload(profile, { flow = null } = {}) {
     if (profile.uploadId) state.uploadId = profile.uploadId;
     state.profileId = profile.id;
     setActiveId(profile.id);
+    // Draw the local payload silently: the topbar already has an explicit
+    // «Обновить профиль» action, so a restart shows no banner and no toast.
     applyStats(cached.stats, { fromCache: true, profile });
-    showStaleBanner(profile, cached.savedAt);
-    toast('Сервер перезапустился — показаны сохранённые данные профиля.', 'info', { duration: 6500 });
     return;
   }
 
@@ -881,7 +840,6 @@ async function recoverProfile(profile, { flow = null } = {}) {
   const current = flow || beginFlow();
   if (!profile || !isFlow(current)) return false;
 
-  hideStaleBanner();
   state.profileId = profile.id;
   setActiveId(profile.id);
   state.uploadId = profile.uploadId || null;
@@ -974,7 +932,6 @@ async function switchProfile(id) {
   resetYearBarsFilters();
 
   const flow = beginFlow();
-  hideStaleBanner();
 
   state.profileId = id;
   setActiveId(id);
@@ -1061,7 +1018,6 @@ async function deleteSavedProfile(id) {
     state.attachedLb = null;
     state.kp = null;
     state.importSource = 'kinopoisk';
-    hideStaleBanner();
     resetUpload();
     setHasSession(false);
     showView('upload');
@@ -1100,7 +1056,6 @@ function newUploadFromScratch() {
   resetProfileRefresh();
   dismissImportToast();
   clearSession();
-  hideStaleBanner();
   state.uploadId = null;
   state.uploadSummary = null;
   state.uploadFilms = null;
@@ -1445,7 +1400,6 @@ async function handleKinopoiskImport({ url, kpUserId, refresh = false } = {}) {
   state.importStarting = true;
   setImportBusy(true);
   beginFlow();
-  hideStaleBanner();
 
   try {
     const data = await startKinopoiskImport(url);
@@ -1701,21 +1655,6 @@ function bindUi() {
 
   const refresh = $('profile-refresh');
   if (refresh) refresh.addEventListener('click', () => { refreshActiveProfile(); });
-
-  const staleRefresh = $('stale-refresh');
-  if (staleRefresh) {
-    staleRefresh.addEventListener('click', async () => {
-      const id = state.staleProfileId || state.profileId;
-      if (!id) return;
-      const profile = await getProfile(id);
-      if (!profile) {
-        hideStaleBanner();
-        return;
-      }
-      const flow = beginFlow();
-      await recoverProfile(profile, { flow });
-    });
-  }
 
   const restart = $('enrich-restart');
   if (restart) {
