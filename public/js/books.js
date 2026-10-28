@@ -1,14 +1,15 @@
 /* Books tab: import screen, import progress, dashboard and modals.
  *
  * One module owns the whole book namespace: `/api/books/*` payload
- * normalisation, the LiveLib ∪ Hardcover import flow, every widget and the
- * book-specific link menu. Film code is not imported here except for the
- * generic primitives (donut, modal shell, toasts, icons).
+ * normalisation, the per-profile import flow (one source + one account per
+ * profile — LiveLib and Hardcover statistics are never merged), every widget
+ * and the book-specific link menu. Film code is not imported here except for
+ * the generic primitives (donut, modal shell, toasts, icons).
  *
  * Design notes:
- *  - the source filter is a *server-side* filter (`?sources=`), because the
- *    payload is aggregated per source and merging on the client would fight
- *    the "profile = union" contract;
+ *  - a profile is one source: `/api/books/stats?profile=livelib-Margaret`;
+ *    the switcher changes the profile, and the payload is rebuilt from that
+ *    profile's events only (no `?sources=` chip any more);
  *  - no IndexedDB cache for books in the MVP: a cold start either returns
  *    stats or opens the import screen;
  *  - the payload is parsed tolerantly: the quick API contract (`score`,
@@ -32,13 +33,13 @@ import {
   renderBooksTimeline, renderReadingCalendar, renderStreaks, normalizeStreaks,
   fmtDayRu, fmtDayShortRu,
 } from './books-charts.js';
-import { snapshotCounts, refreshToastMessage } from './books-refresh.js';
+import { snapshotCounts, refreshToastMessage, deepBadgeText } from './books-refresh.js';
 import {
   LEGACY_ACCOUNTS_KEY, MAX_PROFILES,
   loadRegistry, listProfiles as listBooksProfiles, saveProfile as saveBooksProfile,
   removeProfile as removeBooksProfile, getProfile as getRegistryProfile, setActiveId as setActiveBooksProfileId,
-  migrateLegacyAccounts, adoptServerProfiles, normalizeProfile, profileQuery,
-  profileSources, profileSourceNames, profileSummary, sourceAccount, withSource,
+  migrateLegacyAccounts, adoptServerProfiles, normalizeProfile, profileKey,
+  profileSourceNames, profileSummary, sourceAccount,
   normalizeSource, isValidLivelibUsername, isValidHardcoverUser, scopeSourceNames,
   sanitizeCookieHeader, isLivelibBlocked,
 } from './books-profiles.js';
@@ -89,6 +90,7 @@ const STAGE_LABEL = {
   pages: 'Читаем страницы LiveLib',
   'livelib-bulk': 'Читаем полный список LiveLib',
   'livelib-rsc': 'Читаем дневник LiveLib',
+  'livelib-deep': 'Датируем историю LiveLib',
   journal: 'Читаем журнал Hardcover',
   graphql: 'Читаем журнал Hardcover',
   'hardcover-journal': 'Читаем журнал Hardcover',
@@ -110,24 +112,25 @@ const state = {
   loading: false,
   loaded: false,
   view: 'import', // import | progress | dashboard
-  source: '', // '' (all) | livelib | hardcover
   includeManga: false, // ?includeMangaComics=0|1, default off
   data: null,
   error: null,
   seq: 0,
   selectedDecade: null,
   jobs: {}, // source -> { jobId, status, failed, account, profileId }
-  refresh: null, // { before, sources, failures, startedAt } while "Обновить профиль" runs
+  refresh: null, // { before, source, failures, startedAt } while "Обновить профиль" runs
   refreshStarting: false, // guards the profile fetch/baseline window before state.refresh exists
+  deep: null, // { jobId, source, percent, page, pageTotal } — background deep scan
   starting: {},
   profiles: [],
   profilesReady: false,
   profile: null, // active local profile record
   profileMenuOpen: false,
-  restoreCandidate: null, // server-side sources adoptable in one click
+  restoreCandidate: null, // server-side profiles adoptable (one per source)
   cookie: { username: '', busy: false }, // cookie value itself is never kept
   pollTimer: 0,
   pollSeq: 0,
+  deepTimer: 0,
   mangaBusy: false,
   onActivate: null,
 };
@@ -136,8 +139,8 @@ let openBookMenuClose = null;
 let bookModalSeq = 0;
 let inflightLoad = null;
 
-/* Authors widget paging/search. Kept outside the payload so a refetch (source
- * chip or manga toggle) does not silently drop the user's query. */
+/* Authors widget paging/search. Kept outside the payload so a refetch (manga
+ * toggle) does not silently drop the user's query. */
 const authorsState = { visible: AUTHORS_INITIAL, expanded: false, query: '' };
 
 /* =========================================================
@@ -503,6 +506,7 @@ function normalizeBooks(raw) {
     finishedCount: Math.max(0, toNum(summaryRaw.finishedCount)),
     reReadCount: Math.max(0, toNum(summaryRaw.reReadCount)),
     undatedEventCount: Math.max(0, toNum(summaryRaw.undatedEventCount)),
+    monthOnlyEventCount: Math.max(0, toNum(summaryRaw.monthOnlyEventCount)),
     readCount: Math.max(0, toNum(summaryRaw.readCount)),
     pageCount: numOrNull(summaryRaw.pageCount),
     avgPages: numOrNull(summaryRaw.avgPages),
@@ -514,20 +518,36 @@ function normalizeBooks(raw) {
   if (!summary.eventCount) summary.eventCount = summary.finishedCount;
   if (!summary.bookCount) summary.bookCount = Object.keys(booksIndex).length;
 
-  const sourceBreakdown = arr(source.sourceBreakdown).map((item) => ({
-    source: text(item && item.source).toLowerCase(),
-    events: Math.max(0, toNum(item && item.events)),
-    books: Math.max(0, toNum(item && item.books)),
-    avgRating: numOrNull(item && item.avgRating),
-    finishedWithDate: Math.max(0, toNum(item && item.finishedWithDate)),
-  })).filter((item) => SOURCE_LABEL[item.source]);
+  const profileBlock = (source.sources && typeof source.sources === 'object'
+    ? source.sources.profile
+    : null) || null;
+  const payloadProfile = profileBlock && typeof profileBlock === 'object'
+    ? {
+        key: text(profileBlock.key),
+        source: text(profileBlock.source).toLowerCase(),
+        userKey: text(profileBlock.userKey),
+        importedAt: text(profileBlock.importedAt) || null,
+        eventCount: Math.max(0, toNum(profileBlock.eventCount)),
+      }
+    : null;
+  const metaRaw = source.meta && typeof source.meta === 'object' ? source.meta : {};
+  const deepScan = metaRaw.deepScan && typeof metaRaw.deepScan === 'object'
+    ? {
+        pageTotal: numOrNull(metaRaw.deepScan.pageTotal),
+        lastPage: numOrNull(metaRaw.deepScan.lastPage),
+        dated: numOrNull(metaRaw.deepScan.dated),
+        total: numOrNull(metaRaw.deepScan.total),
+        done: metaRaw.deepScan.done === true,
+      }
+    : null;
 
   return {
     connected: connected.length
       ? connected
-      : [...new Set([...sourceBreakdown.map((item) => item.source), ...Object.keys(bySourceRaw)])]
-        .filter((item) => SOURCE_LABEL[item]),
+      : Object.keys(bySourceRaw).filter((item) => SOURCE_LABEL[item]),
+    profile: payloadProfile,
     profileSources: profileSourcesScoped,
+    deepScan,
     summary,
     ratings,
     genres,
@@ -542,7 +562,6 @@ function normalizeBooks(raw) {
     recentlyFinished,
     booksIndex,
     hasMangaField,
-    sourceBreakdown,
   };
 }
 
@@ -572,10 +591,22 @@ function updateRefreshButton() {
   const label = $('books-refresh-label');
   if (label) label.textContent = busy ? 'Обновляем…' : 'Обновить профиль';
   if (sources.length) {
-    const scope = sources.map(sourceLabel).join(' · ');
+    const scope = sources.map(sourceLabel).join('');
     const title = sourceScopeTitle(sources);
     refresh.title = title;
     refresh.setAttribute('aria-label', `Обновить профиль: ${scope}`);
+  }
+  // Deep scan badge: «История 45%» while the background pass dates the history.
+  const badge = $('books-refresh-percent');
+  if (badge) {
+    const text = deepBadgeText(state.deep);
+    badge.textContent = text;
+    badge.hidden = !text;
+    if (text) {
+      const total = Number(state.deep && state.deep.pageTotal) || 0;
+      const page = Number(state.deep && state.deep.page) || 0;
+      badge.title = `Глубокий скан LiveLib: ${fmtInt(page)} из ${fmtInt(total)} страниц. Дашборд уже показывает датированные книги.`;
+    }
   }
   const reimport = $('books-reimport');
   if (reimport) reimport.hidden = state.view !== 'dashboard' || busy;
@@ -585,12 +616,11 @@ function updateRefreshButton() {
 function sourceScopeTitle(sources) {
   const hardcover = sources.includes('hardcover');
   const livelib = sources.includes('livelib');
-  if (hardcover && livelib) {
-    return 'Обновить источники профиля: Hardcover (полный журнал, ~10 с) и LiveLib (полный скан, ~3 мин)';
+  if (livelib) {
+    return 'Обновить профиль LiveLib: лёгкая проверка (2 запроса), затем история датируется в фоне (~3 мин)';
   }
-  if (livelib) return 'Обновить LiveLib в этом профиле: полный скан всех страниц (~3 мин)';
-  if (hardcover) return 'Обновить Hardcover в этом профиле: полный журнал (~10 с)';
-  return 'Обновить источники профиля';
+  if (hardcover) return 'Обновить профиль Hardcover: полный журнал (~10 с)';
+  return 'Обновить профиль';
 }
 
 function showScreen(name) {
@@ -685,8 +715,7 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
 
   try {
     const raw = await getBooksStats({
-      profiles: activeProfileQuery(),
-      sources: state.source,
+      profile: activeProfileKey(),
       includeMangaComics: state.includeManga,
     });
     if (seq !== state.seq) return;
@@ -747,8 +776,8 @@ function activeProfileSources() {
   return state.profile ? profileSourceNames(state.profile) : [];
 }
 
-function activeProfileQuery() {
-  return state.profile ? profileQuery(state.profile) : '';
+function activeProfileKey() {
+  return state.profile ? profileKey(state.profile) : '';
 }
 
 function profileSavedLabel(savedAt) {
@@ -854,13 +883,13 @@ function renderProfileSwitcher() {
     const previous = empty.querySelector('.books-profile-restore');
     if (previous) previous.remove();
     if (!profiles.length) {
-      const candidate = state.restoreCandidate;
-      if (candidate) {
+      const candidates = Array.isArray(state.restoreCandidate) ? state.restoreCandidate : [];
+      if (candidates.length) {
         const restore = el('button', {
           type: 'button',
           class: 'btn btn-ghost books-profile-restore',
-          text: `Подключить серверные источники (${profileSummary(candidate)})`,
-          title: 'На сервере уже есть импортированные профили — перенести их в этот браузер',
+          text: `Подключить серверные профили (${candidates.map((profile) => profileSummary(profile)).join(' · ')})`,
+          title: 'На сервере уже есть импортированные профили — перенести их в этот браузер (каждый — отдельный профиль)',
         });
         restore.addEventListener('click', () => adoptRestoreCandidate());
         empty.append(restore);
@@ -897,9 +926,9 @@ function closeProfileMenu() {
 /**
  * Load the local registry once per page (and re-read after create/delete).
  * First run migrates *real* remembered accounts from the old localStorage
- * blob; nothing is invented, and a server-only install is offered as an
- * explicit «Подключить серверные источники» action instead of being adopted
- * silently (a second laptop must stay empty).
+ * blob (one profile per account); nothing is invented, and a server-only
+ * install is offered as an explicit «Подключить серверные профили» action
+ * instead of being adopted silently (a second laptop must stay empty).
  */
 async function ensureProfiles({ reload = false } = {}) {
   if (state.profilesReady && !reload) return;
@@ -915,13 +944,22 @@ async function ensureProfiles({ reload = false } = {}) {
   if (!state.profiles.length) {
     const legacy = readJson(ACCOUNTS_KEY, null);
     const migrated = migrateLegacyAccounts(legacy);
-    if (migrated) {
-      const saved = await saveBooksProfile(migrated);
+    if (migrated.length) {
+      let saved = null;
+      for (const record of migrated) {
+        saved = await saveBooksProfile(record);
+      }
       state.profile = saved;
       setActiveBooksProfileId(saved.id);
       state.profiles = await listBooksProfiles();
       safeStorageRemove(ACCOUNTS_KEY);
-      toast(`Книжный профиль восстановлен: ${saved.label}`, 'info', { duration: 5200 });
+      toast(
+        migrated.length > 1
+          ? `Книжные профили восстановлены: ${migrated.map((record) => record.label).join(', ')}`
+          : `Книжный профиль восстановлен: ${saved.label}`,
+        'info',
+        { duration: 5200 }
+      );
     }
   }
   if (!state.profiles.length) {
@@ -929,10 +967,10 @@ async function ensureProfiles({ reload = false } = {}) {
       const server = await getBooksProfiles();
       state.restoreCandidate = adoptServerProfiles(server && server.profiles);
     } catch {
-      state.restoreCandidate = null;
+      state.restoreCandidate = [];
     }
   } else {
-    state.restoreCandidate = null;
+    state.restoreCandidate = [];
   }
 
   state.profilesReady = true;
@@ -941,16 +979,25 @@ async function ensureProfiles({ reload = false } = {}) {
 }
 
 async function adoptRestoreCandidate() {
-  const candidate = state.restoreCandidate;
-  if (!candidate) return;
-  const saved = await saveBooksProfile(candidate);
-  state.restoreCandidate = null;
+  const candidates = Array.isArray(state.restoreCandidate) ? state.restoreCandidate : [];
+  if (!candidates.length) return;
+  let saved = null;
+  for (const candidate of candidates) {
+    saved = await saveBooksProfile(candidate);
+  }
+  state.restoreCandidate = [];
   state.profile = saved;
   setActiveBooksProfileId(saved.id);
   await ensureProfiles({ reload: true });
   state.loaded = false;
   await loadStats({ force: true });
-  toast(`Профиль подключён: ${saved.label}`, 'success', { duration: 4600 });
+  toast(
+    candidates.length > 1
+      ? `Подключено профилей: ${candidates.length} (${candidates.map((record) => record.label).join(', ')})`
+      : `Профиль подключён: ${saved.label}`,
+    'success',
+    { duration: 4600 }
+  );
 }
 
 async function switchProfile(id) {
@@ -965,7 +1012,6 @@ async function switchProfile(id) {
   setActiveBooksProfileId(profile.id);
   state.data = null;
   state.loaded = false;
-  state.source = '';
   state.selectedDecade = null;
   state.seq += 1; // drop any in-flight payload of the previous profile
   applyProfileToForms();
@@ -998,7 +1044,6 @@ async function deleteProfile(id) {
     setActiveBooksProfileId(state.profile ? state.profile.id : null);
     state.data = null;
     state.loaded = false;
-    state.source = '';
     applyProfileToForms();
     renderProfileSwitcher();
     if (state.profile && activeProfileSources().length) await loadStats({ force: true });
@@ -1019,37 +1064,38 @@ function hasRunningJobs() {
  * import without a profile" path: the label is derived from the account that
  * the user actually typed, so no default owner is ever implied.
  */
-async function ensureProfileForSource(source, account) {
-  if (!state.profile) {
-    const entry = normalizeSource(source, account);
-    if (!entry) return null;
-    const created = normalizeProfile({
-      label: entry.source === 'livelib' ? `@${entry.username}` : `Hardcover ${entry.userId}`,
-      sources: [entry],
-    });
-    const saved = await saveBooksProfile(created);
-    state.profile = saved;
-    setActiveBooksProfileId(saved.id);
-    await ensureProfiles({ reload: true });
-    renderProfileSwitcher();
-    return saved;
-  }
-  return state.profile;
-}
+/**
+ * Profile for an import: a profile is one source + one account, so this
+ * returns the active profile when it already IS that account, and otherwise
+ * creates (and activates) a separate profile. Importing Hardcover while a
+ * LiveLib profile is active must never union the two.
+ *
+ * The label is derived from the account the user typed, so no default owner
+ * is ever implied.
+ */
+async function ensureProfileForImport(source, account) {
+  const entry = normalizeSource(source, account);
+  if (!entry) return null;
+  const key = entry.source === 'livelib' ? `livelib-${entry.username}` : `hardcover-${entry.userId}`;
+  if (state.profile && profileKey(state.profile) === key) return state.profile;
 
-/** Attach (or replace) one source of the active profile. */
-async function attachSourceToProfile(source, account) {
-  if (!state.profile) return ensureProfileForSource(source, account);
-  const current = profileAccount(source);
-  if (current === text(account)) return state.profile;
-  const updated = withSource(state.profile, source, account);
-  if (!profileSources(updated).length) return state.profile;
-  const saved = await saveBooksProfile(updated, { keepId: state.profile.id });
+  // Reuse an existing local profile for the same account instead of
+  // duplicating switcher entries.
+  const existing = (state.profiles || []).find((profile) => profileKey(profile) === key);
+  const record = existing || normalizeProfile({
+    label: entry.source === 'livelib' ? `LiveLib @${entry.username}` : `Hardcover ${entry.userId}`,
+    sources: [entry],
+  });
+  const saved = existing
+    ? existing
+    : await saveBooksProfile(record);
   state.profile = saved;
+  setActiveBooksProfileId(saved.id);
   await ensureProfiles({ reload: true });
+  state.profile = state.profiles.find((profile) => profile.id === saved.id) || saved;
   applyProfileToForms();
   renderProfileSwitcher();
-  return saved;
+  return state.profile;
 }
 
 /* =========================================================
@@ -1083,7 +1129,15 @@ function openProfileModal(draft = {}) {
   ));
 
   const sourcesBox = el('div', { class: 'books-profile-sources' });
-  sourcesBox.append(el('div', { class: 'books-profile-sources-title', text: 'Источники (можно оба)' }));
+  sourcesBox.append(el('div', {
+    class: 'books-profile-sources-title',
+    text: 'Источник (один на профиль)',
+  }));
+  sourcesBox.append(el('p', {
+    class: 'books-profile-form-note',
+    text: 'Профиль — это один аккаунт одного сервиса: статистика LiveLib и Hardcover не смешивается. ' +
+      'Для второго аккаунта создайте отдельный профиль и переключайтесь между ними.',
+  }));
 
   const livelibInput = el('input', {
     class: 'books-input',
@@ -1161,10 +1215,22 @@ function openProfileModal(draft = {}) {
       sources.push(entry);
     }
     if (!sources.length) {
-      error.textContent = 'Добавьте хотя бы один источник: LiveLib или Hardcover.';
+      error.textContent = 'Укажите один источник: LiveLib или Hardcover.';
       error.hidden = false;
       livelibInput.focus();
       return;
+    }
+    if (sources.length > 1) {
+      error.textContent =
+        'Один профиль — один источник. Создайте отдельный профиль для LiveLib и для Hardcover: ' +
+        'их статистика не смешивается.';
+      error.hidden = false;
+      hardcoverInput.focus();
+      return;
+    }
+    if (!label) {
+      // Never invent a profile name: normalizeProfile falls back to the
+      // account itself (@name / id).
     }
     const record = normalizeProfile({ label, sources });
     submit.disabled = true;
@@ -1175,7 +1241,6 @@ function openProfileModal(draft = {}) {
       await ensureProfiles({ reload: true });
       state.data = null;
       state.loaded = false;
-      state.source = '';
       state.seq += 1;
       applyProfileToForms();
       renderProfileSwitcher();
@@ -1364,9 +1429,9 @@ function setSourceError(source, message) {
 /**
  * Start one source import *inside the active profile*.
  *
- * The account becomes a source of the profile (a profile is created lazily on
- * the first import), so a fresh browser never imports into "someone else's"
- * record and the `profiles=` scope keeps matching the request.
+ * The account becomes the profile's only source (a profile is created or
+ * activated lazily on the first import), so a fresh browser never imports into
+ * "someone else's" record and the `profile=` scope keeps matching the request.
  *
  * @returns {Promise<{ok:boolean, blocked?:boolean}>} `blocked` means LiveLib
  *   answered 403 and the cookie panel was opened.
@@ -1376,11 +1441,10 @@ async function startImport(source, account, { cookieHeader = '' } = {}) {
   setSourceError(source, '');
   setSourceBusy(source, true);
   try {
-    await ensureProfileForSource(source, account);
-    await attachSourceToProfile(source, account);
+    await ensureProfileForImport(source, account);
 
     const response = source === 'livelib'
-      ? await startBooksImportLivelib(account, { cookieHeader })
+      ? await startBooksImportLivelib(account, { cookieHeader, deep: 'auto' })
       : await startBooksImportHardcover(account);
     const jobId = text(response && (response.jobId || response.job_id || response.id || (response.job && response.job.id)));
 
@@ -1506,7 +1570,7 @@ function renderProgress() {
   const refreshing = Boolean(state.refresh);
   const jobs = jobList();
   if (kicker) {
-    const names = jobs.map(([source]) => SOURCE_LABEL[source]).join(' ∪ ') || 'книжный импорт';
+    const names = jobs.map(([source]) => SOURCE_LABEL[source]).join(' · ') || 'книжный импорт';
     kicker.textContent = refreshing ? `проверка источников · ${names}` : names;
   }
   if (title) title.textContent = refreshing ? 'Проверяем книжные профили' : 'Собираем книжный профиль';
@@ -1645,6 +1709,101 @@ function stopPolling() {
   state.pollSeq += 1;
 }
 
+/* ---------------- background deep scan (LiveLib history dates) ------------- */
+
+/**
+ * The deep scan is a long (~3 min) background pass: it must not keep the user
+ * on the progress screen. When the only pending job is `livelib-deep`, the
+ * foreground flow finishes (dashboard + toast) and this poller keeps updating
+ * the «История 45%» badge until the job is done, then silently re-renders.
+ */
+function startDeepPolling() {
+  stopDeepPolling();
+  if (!state.deep) return;
+  state.deepTimer = window.setTimeout(pollDeepOnce, POLL_INTERVAL * 2);
+}
+
+function stopDeepPolling() {
+  if (state.deepTimer) {
+    window.clearTimeout(state.deepTimer);
+    state.deepTimer = 0;
+  }
+}
+
+async function pollDeepOnce() {
+  const deep = state.deep;
+  if (!deep) return;
+  try {
+    const status = await getBooksImportStatus(deep.jobId, { source: deep.source || 'livelib' });
+    if (!state.deep || state.deep.jobId !== deep.jobId) return;
+    const block = status && status.deep && typeof status.deep === 'object' ? status.deep : {};
+    const done = Boolean(status && (status.done || status.stage === 'done' || status.stage === 'failed' || status.error));
+    state.deep = {
+      ...deep,
+      percent: block.percent != null ? Number(block.percent) : deep.percent,
+      page: block.page != null ? Number(block.page) : deep.page,
+      pageTotal: block.pageTotal != null ? Number(block.pageTotal) : deep.pageTotal,
+      dated: block.dated != null ? Number(block.dated) : deep.dated,
+      total: block.total != null ? Number(block.total) : deep.total,
+      done,
+      failed: Boolean(status && (status.stage === 'failed' || status.error)),
+    };
+    updateRefreshButton();
+    if (done) {
+      const finished = state.deep;
+      state.deep = null;
+      updateRefreshButton();
+      // Silent refresh: the stats reader revalidated the profile file, so this
+      // only re-renders with the dates that were written while we polled.
+      await loadStats({ force: true, silent: true });
+      if (finished.failed) {
+        toast('Глубокий скан истории прервался — даты можно добрать кнопкой «Обновить профиль»', 'error', { duration: 8000 });
+      } else {
+        toast(
+          `История датирована: ${fmtInt(finished.dated || 0)} из ${fmtInt(finished.total || 0)}`,
+          'success',
+          { duration: 6000 }
+        );
+      }
+      return;
+    }
+  } catch (error) {
+    if (error && (error.status === 404 || error.status === 410)) {
+      state.deep = null;
+      updateRefreshButton();
+      return;
+    }
+    if (error && error.status === 401) return;
+  }
+  state.deepTimer = window.setTimeout(pollDeepOnce, POLL_INTERVAL * 2);
+}
+
+/** Move a `livelib-deep` job out of the foreground progress flow. */
+function detachDeepJob(source, job) {
+  const status = (job && job.status) || {};
+  const block = status.deep && typeof status.deep === 'object' ? status.deep : {};
+  state.deep = {
+    jobId: job.jobId,
+    source,
+    percent: block.percent != null ? Number(block.percent) : numOrNull(status.percent) || 0,
+    page: block.page != null ? Number(block.page) : numOrNull(status.page),
+    pageTotal: block.pageTotal != null ? Number(block.pageTotal) : numOrNull(status.pageTotal),
+    dated: block.dated != null ? Number(block.dated) : null,
+    total: block.total != null ? Number(block.total) : null,
+    done: false,
+  };
+  updateRefreshButton();
+}
+
+function deepOnlyPending(jobs) {
+  const pending = jobs.filter(([, job]) => job && !job.failed &&
+    !(job.status && (job.status.done || job.status.stage === 'done')));
+  if (!pending.length) return null;
+  const allDeep = pending.every(([, job]) => job.status && job.status.stage === 'livelib-deep');
+  if (!allDeep) return null;
+  return pending[0];
+}
+
 function startPolling() {
   stopPolling();
   if (state.view !== 'progress') return;
@@ -1692,6 +1851,17 @@ async function pollOnce(pollId) {
 
   if (changed) saveJobs();
   if (!stillPolling()) return;
+
+  // Deep scan finished the foreground part (profile saved, stats usable): do
+  // not keep the progress screen for the remaining ~3 minutes of dating.
+  const deepOnly = deepOnlyPending(jobList());
+  if (deepOnly) {
+    detachDeepJob(deepOnly[0], deepOnly[1]);
+    await finishForeground();
+    startDeepPolling();
+    return;
+  }
+
   renderProgress();
 
   const pending = jobList().filter(([, job]) => !job.failed && !(job.status && (job.status.done || job.status.stage === 'done')));
@@ -1723,7 +1893,26 @@ async function finishImport() {
   hideJobs();
   await loadStats({ force: true });
   if (state.view === 'dashboard' && names.length) {
-    toast(`Импорт завершён: ${names.join(' ∪ ')}`, 'success', { duration: 4600 });
+    toast(`Импорт завершён: ${names.join('')}`, 'success', { duration: 4600 });
+  }
+}
+
+/** Leave the progress screen while a deep scan keeps running in background. */
+async function finishForeground() {
+  if (state.refresh) {
+    await finishRefresh(state.refresh);
+    return;
+  }
+  const jobs = jobList();
+  const names = jobs.map(([source]) => sourceLabel(source));
+  hideJobs();
+  await loadStats({ force: true });
+  if (state.view === 'dashboard' && names.length) {
+    toast(
+      `Импорт завершён: ${names.join('')} · история датируется в фоне`,
+      'success',
+      { duration: 5600 }
+    );
   }
 }
 
@@ -1767,8 +1956,9 @@ async function finishRefresh(refresh) {
   for (const [source, job] of jobList()) {
     if (job.failed || (job.status && job.status.error)) failures[source] = refreshJobFailure(job);
   }
-  const sources = refresh.sources.slice();
-  const hadFailures = Object.keys(failures).length > 0;
+  const source = refresh.source;
+  const failure = failures[source] || '';
+  const hadFailure = Boolean(failure);
 
   hideJobs();
   if (state.view === 'progress') showScreen('dashboard');
@@ -1776,7 +1966,7 @@ async function finishRefresh(refresh) {
   let afterPayload = null;
   try {
     afterPayload = await getBooksStats({
-      profiles: activeProfileQuery(),
+      profile: activeProfileKey(),
       includeMangaComics: state.includeManga,
     });
   } catch {
@@ -1790,29 +1980,33 @@ async function finishRefresh(refresh) {
     toast('Не удалось пересчитать статистику после обновления', 'error', { duration: 8000 });
     return;
   }
-  const message = refreshToastMessage(refresh.before, after, { sources, failures });
-  toast(message, hadFailures ? 'error' : 'success', { duration: hadFailures ? 10000 : 6000 });
+  const message = refreshToastMessage(refresh.before, after, {
+    source,
+    failure,
+    deep: state.deep,
+  });
+  toast(message, hadFailure ? 'error' : 'success', { duration: hadFailure ? 10000 : 6000 });
   // A LiveLib 403 during a full scan is the one failure the user can fix:
   // prepare the cookie panel with the exact instruction and, if there is no
   // dashboard to keep, drop the user straight onto the import card.
-  if (isLivelibBlocked(failures.livelib)) {
+  if (isLivelibBlocked(failure)) {
     showCookiePanel(sourceAccount(state.profile, 'livelib'));
     if (!state.data) showScreen('import');
   }
 }
 
 /**
- * "↻ Обновить профиль": a real two-source check.
+ * "↻ Обновить профиль" for the ONE source of the active profile.
  *
  *  - Hardcover: `/api/books/import/hardcover` has no reuse TTL — every click
  *    re-fetches the whole journal (~8 GraphQL requests).
- *  - LiveLib: `{ force: true }` skips the 12 h reuse window and re-scrapes all
- *    pages (63+ polite requests, ~2–3 min). This is a user-initiated action,
- *    not a background poll.
+ *  - LiveLib: `{ force: true, deep: 'auto' }` = light re-check (bulk + page 1)
+ *    then, when the stored events still lack exact dates, a background deep
+ *    scan. The foreground flow returns as soon as the light phase is done and
+ *    the button shows «История N%»; the dashboard stays usable.
  *
- * Both jobs are started through the same endpoints as the import screen and
- * coalesce server-side when an import is already running. The jobs run on the
- * server while the user may switch to Films; polling keeps going.
+ * The job runs on the server while the user may switch to Films; polling
+ * keeps going.
  */
 async function refreshProfiles() {
   if (state.refresh || state.refreshStarting || state.loading ||
@@ -1830,26 +2024,26 @@ async function refreshProfiles() {
 async function runRefreshProfiles() {
   const profile = state.profile;
   const sources = activeProfileSources();
-  if (!profile || !sources.length) {
+  const source = sources[0] || '';
+  if (!profile || !source) {
     toast('Нет активного книжного профиля — создайте профиль и импортируйте источник', 'info', { duration: 6000 });
     return;
   }
 
-  // Baseline for the toast diff: the same profile scope, always unfiltered by
-  // the source chip, so a chip cannot hide the other source's delta.
+  // Baseline for the toast diff: the same profile scope.
   let baseline = null;
   try {
     baseline = await getBooksStats({
-      profiles: profileQuery(profile),
+      profile: profileKey(profile),
       includeMangaComics: state.includeManga,
     });
   } catch {
-    /* state.data below is still a usable (possibly filtered) snapshot */
+    /* state.data below is still a usable snapshot */
   }
 
   state.refresh = {
     before: snapshotCounts(baseline || state.data),
-    sources,
+    source,
     failures: {},
     startedAt: Date.now(),
   };
@@ -1860,7 +2054,7 @@ async function runRefreshProfiles() {
   showScreen('progress');
   renderProgress();
 
-  if (sources.includes('hardcover')) {
+  if (source === 'hardcover') {
     // The profile owns the account: no token-owner fallback, no 34748.
     const userId = sourceAccount(profile, 'hardcover');
     if (!userId) {
@@ -1874,15 +2068,15 @@ async function runRefreshProfiles() {
         state.refresh.failures.hardcover = refreshErrorMessage(error);
       }
     }
-  }
-
-  if (sources.includes('livelib')) {
+  } else {
     const username = sourceAccount(profile, 'livelib');
     if (!username) {
       state.refresh.failures.livelib = 'в профиле нет имени LiveLib';
     } else {
       try {
-        const response = await startBooksImportLivelib(username, { force: true });
+        // `deep: 'auto'` — light re-check now, deep scan only if dates are
+        // missing (a fully dated profile costs 3 polite requests, not 63).
+        const response = await startBooksImportLivelib(username, { force: true, deep: 'auto' });
         attachRefreshJob('livelib', response, username);
       } catch (error) {
         if (error && error.status === 401) return;
@@ -1938,17 +2132,14 @@ function renderDashboardBooks(data) {
 }
 
 function renderHead(data) {
-  // Scope = the profile's sources when the server said which documents it
-  // used; `connected` (everything cached) is only a fallback for old payloads.
+  // Scope = the profile's single source (the payload says which document it
+  // built). `connected` (everything cached) is only a fallback for old payloads.
   const scoped = Array.isArray(data.profileSources) && data.profileSources.length
     ? data.profileSources
-    : data.connected;
-  const activeSources = state.source ? [state.source] : scoped;
+    : data.connected.slice(0, 1);
   const kicker = $('books-kicker');
   if (kicker) {
-    const scope = activeSources.length
-      ? `${activeSources.map(sourceLabel).join(' ∪ ')} · сводка`
-      : 'книжная полка · сводка';
+    const scope = scoped.length ? `${scoped.map(sourceLabel).join('')} · сводка` : 'книжная полка · сводка';
     kicker.textContent = state.profile ? `${state.profile.label} · ${scope}` : scope;
   }
   const sub = $('books-sub');
@@ -1962,13 +2153,23 @@ function renderHead(data) {
     const scopeNote = state.profile
       ? `Профиль «${state.profile.label}»: ${profileSummary(state.profile)}.`
       : '';
-    // One source in the profile: say so instead of claiming the union.
-    const single = !state.source && scoped.length === 1 ? scoped[0] : null;
-    const sourceNote = state.source
-      ? `${scopeNote} Показан только источник ${sourceLabel(state.source)}.`
-      : single
-      ? `${scopeNote} Оценки и даты — ${sourceLabel(single)}, метадата — Hardcover.`
-      : `${scopeNote} Оценки и даты — LiveLib ∪ Hardcover, метадата — Hardcover.`;
+    // A profile is one source; metadata may come from the resolve chain.
+    const metadata = Array.isArray(data.booksIndex)
+      ? []
+      : [...new Set(Object.values(data.booksIndex)
+        .flatMap((entry) => entry.metadataSources || [])
+        .filter((source) => !scoped.includes(source)))];
+    const chain = metadata.length
+      ? `, метадата — ${metadata.map((source) => (METADATA_LABEL[source] || [source])[1]).join(', ')}`
+      : '';
+    const undated = data.summary.undatedEventCount > 0
+      ? ` Без даты: ${fmtInt(data.summary.undatedEventCount)} — вне календаря.`
+      : data.summary.monthOnlyEventCount > 0
+      ? ` Дата по месяцу у ${fmtInt(data.summary.monthOnlyEventCount)} событий — они в таймлайне, но не в календаре и стриках.`
+      : '';
+    const sourceNote = scoped.length
+      ? `${scopeNote} Оценки и даты — только ${scoped.map(sourceLabel).join('')}${chain}.${undated}`
+      : `${scopeNote} Подключите источник, чтобы увидеть оценки, жанры и календарь.`;
     sub.textContent = parts.length
       ? `${parts.join(' · ')}${reReads}. ${sourceNote}`
       : 'Подключите источник, чтобы увидеть оценки, жанры и календарь чтения.';
@@ -2043,14 +2244,14 @@ function renderSourcesMetric(data) {
   const node = el('div', { class: 'metric metric-source metric-books-source' });
   const labelNode = el('div', { class: 'metric-label' });
   labelNode.innerHTML = icon('book', 12);
-  labelNode.append(document.createTextNode('источники'));
+  labelNode.append(document.createTextNode('источник'));
   node.append(labelNode);
 
-  // Badges describe the active profile's sources, not every source cached on
-  // the server (an Hardcover-only profile must not show a LiveLib plate).
+  // One profile = one source. `connected` (every profile cached on the server)
+  // is only a fallback for an old payload.
   const sources = Array.isArray(data.profileSources) && data.profileSources.length
     ? data.profileSources
-    : data.connected;
+    : data.connected.slice(0, 1);
   const value = el('div', { class: 'metric-value' });
   for (const source of sources) {
     const plate = el('span', { class: `book-source-plate is-${source}` });
@@ -2061,36 +2262,40 @@ function renderSourcesMetric(data) {
     }
     value.append(plate);
   }
-  if (!sources.length) value.append(el('span', { class: 'src-empty', text: 'не подключены' }));
+  if (!sources.length) value.append(el('span', { class: 'src-empty', text: 'не подключён' }));
   node.append(value);
 
-  const breakdown = data.sourceBreakdown;
-  const subParts = sources.map((source) => {
-    const item = breakdown.find((entry) => entry.source === source);
-    return item
-      ? `${sourceLabel(source)}: ${fmtInt(item.events)}`
-      : sourceLabel(source);
-  });
+  // Metadata providers of the works in THIS profile (resolve chain), not a
+  // second event source: LiveLib dates stay LiveLib dates.
+  const metadata = [...new Set(Object.values(data.booksIndex)
+    .flatMap((entry) => entry.metadataSources || [])
+    .filter((source) => !sources.includes(source)))];
   // A Hardcover profile imported before the journal schema carried
   // `statusId`: the label fallback keeps the numbers honest, but a re-import
   // refreshes the stored events (the import button always re-fetches HC).
   const staleHardcover = (Array.isArray(data.meta && data.meta.profiles) ? data.meta.profiles : [])
     .filter((profile) => profile && profile.source === 'hardcover' && profile.needsReimport);
-  const subText = subParts.join(' · ') || 'LiveLib ∪ Hardcover';
-  node.append(el('div', {
-    class: 'metric-sub',
-    text: staleHardcover.length ? `${subText} · ⚑ переимпорт HC` : subText,
-  }));
+  const subParts = [
+    sources.length ? `${sourceLabel(sources[0])}: ${fmtInt(data.summary.eventCount)}` : 'не подключён',
+    metadata.length ? `метадата: ${metadata.map((source) => (METADATA_LABEL[source] || [source])[0]).join(' ')}` : null,
+    staleHardcover.length ? '⚑ переимпорт HC' : null,
+  ].filter(Boolean);
+  node.append(el('div', { class: 'metric-sub', text: subParts.join(' · ') }));
 
   node.addEventListener('pointerenter', (event) => {
-    const primary = sources.map(sourceLabel).join(' ∪ ') || 'Источники не подключены';
-    const details = breakdown.length
-      ? breakdown.filter((item) => sources.includes(item.source)).map((item) => `${sourceLabel(item.source)}: ${fmtInt(item.events)} событий, ${fmtInt(item.books)} книг${item.avgRating != null ? `, средняя ${fmtRating(item.avgRating)}` : ''}`).join(' · ')
-      : 'Импортируйте профиль LiveLib и/или Hardcover';
+    const primary = sources.map(sourceLabel).join('') || 'Источник не подключён';
+    const details = sources.length
+      ? `${fmtInt(data.summary.eventCount)} событий, ${fmtInt(data.summary.bookCount)} книг` +
+        `${data.summary.avgRating != null ? `, средняя ${fmtRating(data.summary.avgRating)}` : ''}` +
+        `${data.summary.undatedEventCount ? ` · без даты: ${fmtInt(data.summary.undatedEventCount)}` : ''}`
+      : 'Импортируйте профиль LiveLib или Hardcover';
+    const metaNote = metadata.length
+      ? ` Метадата работ: ${metadata.map((source) => (METADATA_LABEL[source] || [source])[1]).join(', ')} (обогащение, не события).`
+      : '';
     const statusNote = staleHardcover.length
       ? ' ⚑ Профиль Hardcover сохранён без statusId: статусы пересчитаны по меткам, повторный импорт Hardcover обновит схему событий.'
       : '';
-    showTooltip(primary, `${details}${statusNote}`);
+    showTooltip(primary, `${details}.${metaNote}${statusNote}`);
     moveTooltip(event);
   });
   node.addEventListener('pointermove', moveTooltip);
@@ -2101,26 +2306,21 @@ function renderSourcesMetric(data) {
 function renderFilters(data) {
   const host = $('books-filters');
   if (!host) return;
-  const scope = activeProfileSources();
-  for (const button of host.querySelectorAll('.source-chip')) {
-    const source = button.dataset.source || '';
-    const attached = !source || !scope.length ? true : scope.includes(source);
-    const enabled = attached && (!source || !data.connected.length || data.connected.includes(source));
-    button.disabled = !enabled;
-    button.hidden = Boolean(source) && !attached && scope.length > 0;
-    button.classList.toggle('is-active', state.source === source);
-    button.setAttribute('aria-pressed', state.source === source ? 'true' : 'false');
-    button.title = enabled
-      ? ''
-      : attached
-      ? `${sourceLabel(source)} не подключён`
-      : `${sourceLabel(source)} нет в активном профиле`;
+  // No source chips any more: the active profile IS the scope. The pill only
+  // names the source of the rendered payload.
+  const sources = Array.isArray(data.profileSources) && data.profileSources.length
+    ? data.profileSources
+    : data.connected.slice(0, 1);
+  const pill = $('books-source-badge');
+  if (pill) {
+    pill.hidden = !sources.length;
+    pill.textContent = sources.length ? `Источник: ${sourceLabel(sources[0])}` : '';
+    pill.className = `books-source-badge${sources.length ? ` is-${sources[0]}` : ''}`;
+    pill.title = 'Профиль = один источник. Переключите профиль, чтобы увидеть второй.';
   }
   const note = $('books-filters-note');
   if (note) {
-    note.textContent = state.source
-      ? `только ${sourceLabel(state.source)} · фильтр на сервере применяется ко всем виджетам`
-      : 'фильтр применяется ко всем виджетам';
+    note.textContent = 'фильтр применяется ко всем виджетам';
   }
   syncMangaToggle(data);
 }
@@ -2178,22 +2378,9 @@ async function setIncludeManga(next) {
 }
 
 async function setSource(source) {
-  const next = SOURCE_LABEL[source] ? source : '';
-  if (state.source === next || state.loading) return;
-  const previous = state.source;
-  state.source = next;
-  state.loaded = false;
-  state.selectedDecade = null;
-  const host = $('books-filters');
-  if (host) host.classList.add('is-busy');
-  await loadStats({ force: true, silent: true });
-  if (host) host.classList.remove('is-busy');
-  if (!state.loaded) {
-    // A failed refetch keeps the old dashboard: restore the filter that
-    // matches the rendered payload instead of lying about the selection.
-    state.source = previous;
-  }
-  if (state.data) renderFilters(state.data);
+  // Legacy hook: the source chip UI is gone (a profile is one source). Kept as
+  // a no-op so an old cached element handler cannot crash a stale page.
+  return Boolean(source);
 }
 
 /* ---------------- recent strip ---------------- */
@@ -3504,9 +3691,10 @@ export function initBooks({ onActivate } = {}) {
   const filters = $('books-filters');
   if (filters) {
     filters.addEventListener('click', (event) => {
+      // The source chips are gone; a profile is one source. Ignore any stale
+      // `.source-chip` markup instead of issuing a filtered request.
       const button = event.target.closest('.source-chip');
-      if (!button || button.disabled) return;
-      setSource(button.dataset.source || '');
+      if (button) event.preventDefault();
     });
   }
 
@@ -3565,7 +3753,7 @@ export async function showBooks() {
   state.active = true;
   if (state.active && state.onActivate) state.onActivate();
   // The local registry is authoritative for scoping; load it before any
-  // request so `profiles=` can never be missing on the first paint.
+  // request so `profile=` can never be missing on the first paint.
   await ensureProfiles();
   if (state.refresh) {
     // The refresh keeps running while the user visits Films; returning to the
@@ -3613,6 +3801,7 @@ export function hideBooks() {
 /** Drop every in-memory book artefact (logout / different user session). */
 export function resetBooks() {
   stopPolling();
+  stopDeepPolling();
   closeBookMenu();
   closeProfileMenu();
   state.loaded = false;
@@ -3620,7 +3809,7 @@ export function resetBooks() {
   state.jobs = {};
   state.refresh = null;
   state.refreshStarting = false;
-  state.source = '';
+  state.deep = null;
   state.selectedDecade = null;
   // The registry itself is device-scoped (IndexedDB), not session-scoped: a
   // logout must not delete the user's book profiles, only the in-memory view.

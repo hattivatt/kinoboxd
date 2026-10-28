@@ -527,12 +527,13 @@
             </nav>
           </div>
           <div class="topbar-actions">
-            <button type="button" class="btn btn-ghost books-refresh" id="books-refresh" hidden title="Полная проверка Hardcover (всегда, ~10 с) и LiveLib (полный скан всех страниц, ~3 мин)" aria-label="Обновить профиль из Hardcover и LiveLib">
+            <button type="button" class="btn btn-ghost books-refresh" id="books-refresh" hidden title="Обновить профиль: Hardcover — журнал (~10 с), LiveLib — лёгкая проверка и фоновый глубокий скан истории (~3 мин)" aria-label="Обновить книжный профиль">
               <span class="spinner spinner-sm" id="books-refresh-spinner" hidden aria-hidden="true"></span>
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/>
               </svg>
               <span id="books-refresh-label">Обновить профиль</span>
+              <span class="books-refresh-percent" id="books-refresh-percent" hidden></span>
             </button>
             <button type="button" class="btn btn-ghost" id="books-reimport" hidden title="Переимпортировать профиль чтения" aria-label="Переимпортировать профиль чтения">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -668,7 +669,7 @@
           <div class="progress-shell">
             <div class="progress-card">
               <div class="progress-top">
-                <div class="kicker" id="books-progress-kicker">LiveLib ∪ Hardcover · импорт</div>
+                <div class="kicker" id="books-progress-kicker">книжный профиль · импорт</div>
                 <h2 id="books-progress-title">Собираем книжный профиль</h2>
                 <p class="progress-status" id="books-progress-status" aria-live="polite">Готовим запрос…</p>
               </div>
@@ -688,16 +689,14 @@
           <div class="dash-hero">
             <div class="kicker dash-kicker" id="books-kicker">библиотека · сводка</div>
             <h1>Твоя книжная статистика</h1>
-            <p class="dash-sub" id="books-sub">Собрано из профилей LiveLib и Hardcover.</p>
+            <p class="dash-sub" id="books-sub">Статистика одного профиля чтения.</p>
           </div>
 
           <div class="summary-strip" id="books-summary"></div>
 
-          <div class="books-filters" id="books-filters" role="group" aria-label="Фильтр по источнику">
+          <div class="books-filters" id="books-filters" aria-label="Профиль и фильтры">
             <span class="books-filters-label">Источник</span>
-            <button type="button" class="source-chip is-active" data-source="" aria-pressed="true">Все</button>
-            <button type="button" class="source-chip" data-source="livelib" aria-pressed="false">LiveLib</button>
-            <button type="button" class="source-chip" data-source="hardcover" aria-pressed="false">Hardcover</button>
+            <span class="books-source-badge" id="books-source-badge" hidden></span>
             <label class="manga-toggle" id="books-manga-toggle-wrap" for="books-manga-toggle" title="Манга и комиксы не входят в книжную статистику, пока переключатель выключен">
               <input type="checkbox" class="manga-toggle-input" id="books-manga-toggle">
               <span class="manga-toggle-track" aria-hidden="true"><span class="manga-toggle-thumb"></span></span>

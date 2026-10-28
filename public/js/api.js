@@ -139,20 +139,18 @@ export function getKinopoiskStatus(uploadId, { signal } = {}) {
 /* ---------------- books ---------------- */
 
 /**
- * Aggregated book payload.
+ * Aggregated book payload for ONE profile.
  *
- * - `profiles` scopes the payload to the active browser profile: a
- *   comma-separated list of `livelib-<username>` / `hardcover-<userId>` keys.
- *   Omitted → every source cached on the server (legacy clients).
- * - `sources` is the in-profile source filter ("livelib", "hardcover" or a
- *   comma-separated list); omitted = all sources of the profile.
+ * - `profile` is the mandatory single token (`livelib-Margaret` or
+ *   `hardcover-34748`): a books profile is one source + one account, and the
+ *   backend answers 400 without it. There is no `sources` parameter and no
+ *   multi-profile CSV any more (a union was removed by design).
  */
-export function getBooksStats({ sources = '', profiles = '', includeMangaComics = null, signal } = {}) {
+export function getBooksStats({ profile = '', includeMangaComics = null, signal } = {}) {
   const params = new URLSearchParams();
-  if (profiles) params.set('profiles', profiles);
-  if (sources) params.set('sources', sources);
+  if (profile) params.set('profile', profile);
   // Always spelled out: the backend default is "exclude", but sending it
-  // explicitly keeps the toggle, the chips and the request in one state.
+  // explicitly keeps the toggle and the request in one state.
   if (includeMangaComics != null) {
     params.set('includeMangaComics', includeMangaComics ? '1' : '0');
   }
@@ -181,11 +179,23 @@ export function clearBookMangaFlag(workId, { signal } = {}) {
   });
 }
 
-export function startBooksImportLivelib(username, { force = false, cookieHeader = '', signal } = {}) {
+/**
+ * Start a LiveLib import.
+ *
+ * `deep` selects the phase:
+ *   - false (default): light — bulk + RSC page 1, ~3 requests;
+ *   - 'auto': light, then a background deep scan only while the stored
+ *     profile still has events without an exact date;
+ *   - true: always deep.
+ * The deep phase keeps running server-side; the UI polls `/import/status` and
+ * renders `percent` on the «Обновить профиль» button.
+ */
+export function startBooksImportLivelib(username, { force = false, deep = false, cookieHeader = '', signal } = {}) {
   const body = { username };
   // `force: true` deliberately skips the 12 h LiveLib reuse window and
-  // re-scrapes every page. Only the manual "Обновить профиль" button sets it.
+  // re-scrapes the bulk list. Only the manual "Обновить профиль" button sets it.
   if (force) body.force = true;
+  if (deep) body.deep = deep;
   // The raw `Cookie: __ddg1=...` header is sent exactly once, after a 403.
   // The value is never echoed back, stored client-side or logged; the server
   // owns persistence (K5).

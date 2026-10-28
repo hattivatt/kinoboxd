@@ -3581,6 +3581,35 @@ img { display: block; }
   color: #c8ffdb;
 }
 .source-chip:disabled { opacity: 0.38; cursor: not-allowed; }
+/* Passive badge: one profile = one source, no filter buttons. */
+.books-source-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 224, 84, 0.35);
+  background: rgba(0, 224, 84, 0.1);
+  color: #c8ffdb;
+  font-size: 11.5px;
+  font-weight: 650;
+}
+.books-source-badge.is-hardcover {
+  border-color: rgba(255, 128, 0, 0.42);
+  background: rgba(255, 128, 0, 0.13);
+  color: #ffd1a1;
+}
+.books-refresh-percent {
+  margin-left: 2px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(64, 188, 244, 0.18);
+  border: 1px solid rgba(64, 188, 244, 0.42);
+  color: #bfe9ff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
 .books-filters-note { margin-left: auto; font-size: 10.5px; color: var(--muted-2); }
 
 /* manga / comics scope switch (default off) */

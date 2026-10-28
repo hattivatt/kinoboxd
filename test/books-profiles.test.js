@@ -2,11 +2,12 @@
 
 /* Pure helpers of the local books-profile registry.
  *
- * The IndexedDB part is exercised by the Playwright mock run; here we cover
- * the logic that decides *what* is sent to the server and what is accepted
- * from the user:
+ * Model (28.10.2026): a profile is ONE source + ONE account. Hardcover-34748
+ * and LiveLib-Margaret are different profiles and their statistics never
+ * merge. Here we cover the logic that decides *what* is sent to the server and
+ * what is accepted from the user:
  *  - profile normalisation (dedupe, ordering, no invented defaults);
- *  - `profiles=livelib-X,hardcover-Y` query building;
+ *  - single-token `profile=` building and the K6 two-source migration;
  *  - first-run migration from the old localStorage accounts;
  *  - cookie-header sanitising (the value must never be echoed/stored);
  *  - LiveLib 403 detection.
@@ -16,13 +17,17 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  normalizeProfile, profileKeys, profileQuery, profileSources, profileSummary, scopeSourceNames,
-  withSource, sourceAccount, migrateLegacyAccounts, adoptServerProfiles,
+  normalizeProfile, profileKey, profileKeys, profileQuery, primarySource,
+  profileSources, profileSummary, scopeSourceNames, withSource, sourceAccount,
+  migrateLegacyAccounts, adoptServerProfiles, splitMultiSourceProfile,
   isValidLivelibUsername, isValidHardcoverUser, sanitizeCookieHeader,
   looksLikeCookieHeader, isLivelibBlocked, normalizeSource, MAX_PROFILES,
 } = require('../public/js/books-profiles.js');
 
 test('normalizeProfile keeps valid sources, dedupes and orders LiveLib → Hardcover', () => {
+  // `normalizeProfile` is the tolerant reader: it preserves every source of a
+  // legacy record so `loadRegistry` can split it. The *single-profile* view is
+  // `primarySource` / `profileKey`.
   const profile = normalizeProfile({
     label: '  Дом  ',
     sources: [
@@ -39,7 +44,9 @@ test('normalizeProfile keeps valid sources, dedupes and orders LiveLib → Hardc
     { source: 'livelib', username: 'Margaret' },
     { source: 'hardcover', userId: '999' }, // last valid hardcover wins
   ]);
-  assert.deepEqual(profileKeys(profile), ['livelib-Margaret', 'hardcover-999']);
+  // The profile stands for ONE account: Hardcover wins on a legacy union.
+  assert.deepEqual(primarySource(profile), { source: 'hardcover', userId: '999' });
+  assert.equal(profileKey(profile), 'hardcover-999');
 });
 
 test('normalizeProfile never invents 34748/Margaret or an empty label', () => {
@@ -53,20 +60,29 @@ test('normalizeProfile never invents 34748/Margaret or an empty label', () => {
   assert.match(empty.id, /^bk:/);
 });
 
-test('profileQuery builds the CSV the backend expects', () => {
-  const profile = normalizeProfile({
-    label: 'Оба',
-    sources: [
-      { source: 'livelib', username: 'Margaret' },
-      { source: 'hardcover', userId: '34748' },
-    ],
+test('profileKey builds exactly ONE token for ?profile=', () => {
+  const livelib = normalizeProfile({
+    label: 'Жена',
+    sources: [{ source: 'livelib', username: 'Margaret' }],
   });
-  assert.equal(profileQuery(profile), 'livelib-Margaret,hardcover-34748');
+  assert.equal(profileKey(livelib), 'livelib-Margaret');
+  assert.deepEqual(profileKeys(livelib), ['livelib-Margaret']);
+  assert.equal(profileQuery(livelib), 'livelib-Margaret'); // deprecated alias
+  assert.equal(profileSummary(livelib), 'LiveLib @Margaret');
+
+  const hardcover = normalizeProfile({
+    label: 'Я',
+    sources: [{ source: 'hardcover', userId: '34748' }],
+  });
+  assert.equal(profileKey(hardcover), 'hardcover-34748');
+  assert.equal(profileSummary(hardcover), 'Hardcover 34748');
+
+  assert.equal(profileKey({ sources: [] }), '');
   assert.equal(profileQuery({ sources: [] }), '');
-  assert.equal(profileSummary(profile), 'LiveLib @Margaret · Hardcover 34748');
+  assert.equal(profileSummary({ sources: [] }), '');
 });
 
-test('withSource replaces one source and keeps the other', () => {
+test('withSource resets the profile to that one source (never unions)', () => {
   const base = normalizeProfile({
     label: 'Дом',
     sources: [
@@ -76,11 +92,60 @@ test('withSource replaces one source and keeps the other', () => {
   });
   const next = withSource(base, 'hardcover', '555');
   assert.equal(sourceAccount(next, 'hardcover'), '555');
-  assert.equal(sourceAccount(next, 'livelib'), 'Margaret');
+  assert.equal(sourceAccount(next, 'livelib'), '');
+  assert.deepEqual(profileSources(next), [{ source: 'hardcover', userId: '555' }]);
   assert.equal(sourceAccount(base, 'hardcover'), '34748', 'input record is not mutated');
 
   const rejected = withSource(base, 'livelib', '');
   assert.equal(sourceAccount(rejected, 'livelib'), 'Margaret');
+});
+
+test('splitMultiSourceProfile splits a K6 union into two labelled profiles', () => {
+  const legacy = normalizeProfile({
+    id: 'bk:legacy',
+    label: 'Профиль чтения',
+    sources: [
+      { source: 'livelib', username: 'Margaret' },
+      { source: 'hardcover', userId: '34748' },
+    ],
+    savedAt: 123,
+  });
+  const split = splitMultiSourceProfile(legacy);
+  assert.equal(split.unchanged, false);
+  assert.equal(split.records.length, 2);
+  assert.equal(split.primaryId, 'bk:legacy');
+
+  const primary = split.records.find((record) => record.id === 'bk:legacy');
+  assert.deepEqual(profileSources(primary), [{ source: 'hardcover', userId: '34748' }]);
+  assert.equal(primary.label, 'Профиль чтения'); // custom label survives
+  assert.equal(primary.savedAt, 123);
+
+  const second = split.records.find((record) => record.id !== 'bk:legacy');
+  assert.match(second.id, /^bk:/);
+  assert.deepEqual(profileSources(second), [{ source: 'livelib', username: 'Margaret' }]);
+  assert.equal(second.label, 'LiveLib Margaret');
+
+  // An auto-generated union label is replaced by account labels on both sides.
+  const auto = normalizeProfile({
+    id: 'bk:auto',
+    label: '@Margaret + 34748',
+    sources: [
+      { source: 'livelib', username: 'Margaret' },
+      { source: 'hardcover', userId: '34748' },
+    ],
+  });
+  const autoSplit = splitMultiSourceProfile(auto);
+  assert.deepEqual(
+    autoSplit.records.map((record) => record.label).sort(),
+    ['Hardcover 34748', 'LiveLib Margaret']
+  );
+
+  // A single-source record is returned untouched.
+  const single = splitMultiSourceProfile(
+    normalizeProfile({ id: 'bk:one', sources: [{ source: 'livelib', username: 'X' }] })
+  );
+  assert.equal(single.unchanged, true);
+  assert.equal(single.records[0].id, 'bk:one');
 });
 
 test('account validators reject the values the old UI silently accepted', () => {
@@ -95,42 +160,47 @@ test('account validators reject the values the old UI silently accepted', () => 
     'the URL form is the server\'s job; the profile stores the username');
 });
 
-test('legacy accounts migration only carries really remembered accounts', () => {
-  assert.equal(migrateLegacyAccounts(null), null);
-  assert.equal(migrateLegacyAccounts({}), null);
-  assert.equal(migrateLegacyAccounts({ livelib: '  ', hardcover: '' }), null);
-  assert.equal(migrateLegacyAccounts({ hardcover: 'abc' }), null);
+test('legacy accounts migration creates one profile per remembered account', () => {
+  assert.deepEqual(migrateLegacyAccounts(null), []);
+  assert.deepEqual(migrateLegacyAccounts({}), []);
+  assert.deepEqual(migrateLegacyAccounts({ livelib: '  ', hardcover: '' }), []);
+  assert.deepEqual(migrateLegacyAccounts({ hardcover: 'abc' }), []);
 
   const both = migrateLegacyAccounts({ livelib: 'Margaret', hardcover: '34748' });
-  assert.equal(both.label, 'Мой профиль');
-  assert.deepEqual(profileKeys(both), ['livelib-Margaret', 'hardcover-34748']);
+  assert.equal(both.length, 2);
+  assert.deepEqual(both.map(profileKey).sort(), ['hardcover-34748', 'livelib-Margaret']);
+  assert.deepEqual(both.map((record) => record.label).sort(), [
+    'Hardcover 34748',
+    'LiveLib @Margaret',
+  ]);
 
   const onlyLivelib = migrateLegacyAccounts({ livelib: 'Margaret' });
-  assert.deepEqual(profileKeys(onlyLivelib), ['livelib-Margaret']);
-  assert.ok(!profileKeys(onlyLivelib).some((key) => key.includes('34748')),
+  assert.equal(onlyLivelib.length, 1);
+  assert.equal(profileKey(onlyLivelib[0]), 'livelib-Margaret');
+  assert.ok(!profileKey(onlyLivelib[0]).includes('34748'),
     'no hardcoded hardcover owner is invented');
 });
 
-test('adoptServerProfiles turns /api/books/profiles rows into one profile', () => {
+test('adoptServerProfiles returns one local profile per server profile', () => {
   const adopted = adoptServerProfiles([
     { source: 'livelib', userKey: 'Margaret', eventCount: 1245 },
     { source: 'hardcover', userKey: '34748', eventCount: 681 },
-    { source: 'livelib', userKey: 'other' }, // same source, deduped by validator order
+    { source: 'livelib', userKey: 'other' }, // same source, latest wins
     { source: 'storygraph', userKey: 'sg' },
   ]);
-  assert.equal(adopted.label, 'Сохранённый на сервере');
-  assert.deepEqual(profileKeys(adopted), ['livelib-other', 'hardcover-34748']);
-  assert.equal(adoptServerProfiles([]), null);
-  assert.equal(adoptServerProfiles([{ source: 'livelib', userKey: 'bad name' }]), null);
+  assert.equal(adopted.length, 2);
+  assert.deepEqual(adopted.map(profileKey).sort(), ['hardcover-34748', 'livelib-other']);
+  assert.deepEqual(adoptServerProfiles([]), []);
+  assert.deepEqual(adoptServerProfiles([{ source: 'livelib', userKey: 'bad name' }]), []);
 });
 
-test('adoptServerProfiles prefers the latest import when a source has two accounts', () => {
+test('adoptServerProfiles prefers the latest import per source', () => {
   const adopted = adoptServerProfiles([
     { source: 'livelib', userKey: 'Margaret', importedAt: '2026-10-20T10:00:00.000Z' },
     { source: 'livelib', userKey: 'readingwitch', importedAt: '2026-10-27T09:00:00.000Z' },
     { source: 'hardcover', userKey: '34748', importedAt: '2026-10-25T10:00:00.000Z' },
   ]);
-  assert.deepEqual(profileKeys(adopted), ['livelib-readingwitch', 'hardcover-34748']);
+  assert.deepEqual(adopted.map(profileKey).sort(), ['hardcover-34748', 'livelib-readingwitch']);
 });
 
 test('scopeSourceNames reads the server profile scope, tolerates legacy payloads', () => {
