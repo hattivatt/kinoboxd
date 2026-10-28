@@ -218,6 +218,28 @@ export function startBooksImportHardcover(userId, { signal } = {}) {
 }
 
 /**
+ * Import a `livelib-backup` export file (safe path, §2.1 of the books doc).
+ *
+ * Multipart, single shot: the server parses the file and merges it into
+ * `livelib-{username}`, returning `201 { added, enriched, skipped, shelves,
+ * warnings }`. Nothing is scraped, so there is no job to poll.
+ *
+ * `shelf` is `read`/`dnf`/`reading`/`wish`; when empty the server sniffs it from
+ * the file name (`livelib-{user}-{pagename}-{date}.json`).
+ * `resolve: true` additionally starts the metadata chain in the background —
+ * off by default, because the point of the file is "no network".
+ */
+export function importBooksLivelibFile({ file, username, shelf = '', resolve = false, signal } = {}) {
+  const body = new FormData();
+  body.append('username', username == null ? '' : String(username));
+  if (shelf) body.append('shelf', String(shelf));
+  if (resolve) body.append('resolve', '1');
+  // A File object keeps its name (used for the shelf sniffing and the audit).
+  body.append('file', file, file && file.name ? file.name : 'livelib-export.json');
+  return request('/api/books/import/livelib-file', { method: 'POST', body, signal });
+}
+
+/**
  * Connected book sources + their cache keys. The manual refresh needs the
  * LiveLib username / Hardcover userId even when the UI was opened in a new
  * browser and `localStorage` has no remembered account anymore.

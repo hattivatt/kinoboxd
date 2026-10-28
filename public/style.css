@@ -3507,6 +3507,181 @@ img { display: block; }
   line-height: 1.5;
   color: var(--muted-2);
 }
+
+/* ---------------- books: LiveLib export-file import (safe path) ---------------- */
+
+.books-file {
+  margin-top: 14px;
+  padding: 13px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.books-file-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.books-file-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.books-file-badge {
+  padding: 2px 7px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9fe8bd;
+  background: rgba(0, 224, 84, 0.08);
+  border: 1px solid rgba(0, 224, 84, 0.26);
+  border-radius: 999px;
+}
+.books-file-text {
+  margin: 0 0 10px;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.books-file-text a { color: #9fe8bd; text-decoration: none; border-bottom: 1px solid rgba(159, 232, 189, 0.35); }
+.books-file-text a:hover { color: #c6f4d8; }
+.books-file-input {
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: var(--text-soft);
+}
+.books-file-field { position: relative; }
+.books-file-input-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.books-file-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  background: #12171c;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  min-width: 0;
+}
+.books-file-picker:hover { border-color: rgba(255, 255, 255, 0.2); }
+.books-file-field:focus-within .books-file-picker {
+  border-color: rgba(0, 224, 84, 0.58);
+  box-shadow: 0 0 0 3px rgba(0, 224, 84, 0.12);
+}
+.books-file-picker-btn {
+  flex: none;
+  padding: 5px 10px;
+  font-size: 11px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+}
+.books-file-picker-name {
+  font-size: 11.5px;
+  color: var(--muted-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.books-file-picker-name.is-set { color: var(--text-soft); }
+.books-select {
+  appearance: none;
+  padding: 9px 11px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.books-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+  cursor: pointer;
+}
+.books-check input { margin: 2px 0 0; accent-color: var(--green); }
+.books-file-help {
+  margin-top: 12px;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.books-file-help summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-soft);
+  cursor: pointer;
+  list-style: none;
+}
+.books-file-help summary::-webkit-details-marker { display: none; }
+.books-file-help summary::before { content: '▸ '; color: var(--muted-2); }
+.books-file-help[open] summary::before { content: '▾ '; }
+.books-file-help summary:hover { color: var(--text); }
+.books-file-steps {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.books-file-steps b { color: var(--text-soft); font-weight: 600; }
+.books-file-steps a { color: #9fe8bd; text-decoration: none; }
+.books-file-note {
+  margin: 8px 0 0;
+  color: var(--muted-2);
+}
+.books-file-result {
+  margin-top: 11px;
+  padding: 10px 11px;
+  background: rgba(0, 224, 84, 0.05);
+  border: 1px solid rgba(0, 224, 84, 0.22);
+  border-radius: 9px;
+}
+.books-file-result-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.books-file-result-title { font-size: 12px; font-weight: 700; color: #9fe8bd; }
+.books-file-result-shelf {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.books-file-result-meta,
+.books-file-result-shelves {
+  margin: 5px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.books-file-result-shelves { color: var(--muted-2); }
+.books-file-warnings {
+  margin: 7px 0 0;
+  padding-left: 16px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #ffc182;
+}
+.books-file-warnings li + li { margin-top: 3px; }
 .books-import-note {
   display: flex;
   align-items: flex-start;

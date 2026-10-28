@@ -20,7 +20,7 @@
 
 import {
   getBooksStats, startBooksImportLivelib, startBooksImportHardcover, getBooksImportStatus,
-  getBooksProfiles, setBookMangaFlag, clearBookMangaFlag,
+  getBooksProfiles, setBookMangaFlag, clearBookMangaFlag, importBooksLivelibFile,
 } from './api.js';
 import {
   $, el, clear, fmtInt, fmtPercent, fmtRating, fmtPeriod, plural, icon, serviceIcon,
@@ -128,6 +128,7 @@ const state = {
   profileMenuOpen: false,
   restoreCandidate: null, // server-side profiles adoptable (one per source)
   cookie: { username: '', busy: false }, // cookie value itself is never kept
+  fileImport: { busy: false, result: null }, // livelib-backup export upload
   pollTimer: 0,
   pollSeq: 0,
   deepTimer: 0,
@@ -795,6 +796,8 @@ function profileSavedLabel(savedAt) {
 function applyProfileToForms() {
   const livelib = $('books-livelib-username');
   if (livelib) livelib.value = profileAccount('livelib');
+  const livelibFile = $('books-livelib-file-user');
+  if (livelibFile) livelibFile.value = profileAccount('livelib');
   const hardcover = $('books-hardcover-userid');
   if (hardcover) hardcover.value = profileAccount('hardcover');
 }
@@ -1332,6 +1335,173 @@ async function submitCookieImport() {
     }
   } finally {
     setCookieBusy(false);
+  }
+}
+
+/* =========================================================
+   LiveLib export FILE import (livelib-backup, safe path)
+   ========================================================= */
+
+/** Same ceiling as the route's multer limit; the browser can refuse earlier. */
+const FILE_IMPORT_MAX_BYTES = 24 * 1024 * 1024;
+
+/** RU labels of the four exportable shelves. */
+const SHELF_LABEL = {
+  read: 'Прочитал',
+  dnf: 'Не дочитал',
+  reading: 'Читаю сейчас',
+  wish: 'Хочу прочитать',
+};
+
+function setFileImportError(message) {
+  const host = $('books-livelib-file-error');
+  if (!host) return;
+  if (!message) {
+    host.textContent = '';
+    host.hidden = true;
+    return;
+  }
+  host.textContent = message;
+  host.hidden = false;
+}
+
+function setFileImportBusy(busy) {
+  state.fileImport.busy = Boolean(busy);
+  const spinner = $('books-livelib-file-spinner');
+  if (spinner) spinner.hidden = !busy;
+  const button = $('books-livelib-file-submit');
+  if (button) {
+    button.disabled = Boolean(busy);
+    button.classList.toggle('is-busy', Boolean(busy));
+  }
+}
+
+function renderFileImportResult(result) {
+  const host = $('books-livelib-file-result');
+  if (!host) return;
+  clear(host);
+  if (!result) {
+    host.hidden = true;
+    return;
+  }
+  const shelf = SHELF_LABEL[result.shelf] || result.shelf || '';
+  const head = el('div', { class: 'books-file-result-head' },
+    el('span', { class: 'books-file-result-title', text: `Файл принят: ${fmtInt(result.imported)} ${plural(result.imported, ['книга', 'книги', 'книг'])}` }),
+    shelf ? el('span', { class: 'books-file-result-shelf', text: `полка «${shelf}»` }) : null,
+  );
+  host.append(head);
+  host.append(el('p', {
+    class: 'books-file-result-meta',
+    text: [
+      `+${fmtInt(result.added)} ${plural(result.added, ['новая', 'новые', 'новых'])}`,
+      `${fmtInt(result.enriched)} ${plural(result.enriched, ['обогащена', 'обогащены', 'обогащено'])}`,
+      `${fmtInt(result.skipped)} без изменений`,
+      `всего событий: ${fmtInt(result.events)}`,
+      String(result.format || '').toUpperCase(),
+    ].filter(Boolean).join(' · '),
+  }));
+  const shelves = result.shelves && typeof result.shelves === 'object' ? result.shelves : null;
+  if (shelves) {
+    const parts = ['read', 'dnf', 'reading', 'wish']
+      .map((key) => `${SHELF_LABEL[key]} ${fmtInt(shelves[key] || 0)}`);
+    host.append(el('p', { class: 'books-file-result-shelves', text: parts.join(' · ') }));
+  }
+  if (Array.isArray(result.warnings) && result.warnings.length) {
+    const list = el('ul', { class: 'books-file-warnings' });
+    for (const warning of result.warnings) list.append(el('li', { text: String(warning) }));
+    host.append(list);
+  }
+  if (result.resolve) {
+    host.append(el('p', {
+      class: 'books-file-result-meta',
+      text: 'Метадата догружается в фоне — прогресс виден в бейдже «Метадата».',
+    }));
+  }
+  host.hidden = false;
+}
+
+/**
+ * Upload one exported shelf. Multipart, one shot: the server parses the file,
+ * merges it into `livelib-{username}` and answers 201 with the counts. Nothing
+ * is scraped, so there is no job/progress screen — the dashboard simply
+ * refreshes from the merged profile.
+ */
+async function submitFileImport() {
+  if (state.fileImport.busy) return;
+  const input = $('books-livelib-file');
+  const userInput = $('books-livelib-file-user');
+  const shelfInput = $('books-livelib-file-shelf');
+  const resolveInput = $('books-livelib-file-resolve');
+  const file = input && input.files && input.files[0] ? input.files[0] : null;
+
+  const username = text(userInput && userInput.value)
+    || text($('books-livelib-username') && $('books-livelib-username').value)
+    || profileAccount('livelib');
+  const fail = (message, focus) => {
+    setFileImportError(message);
+    if (focus && focus.focus) focus.focus();
+  };
+  setFileImportError('');
+  renderFileImportResult(null);
+
+  if (!username) {
+    fail('Введите имя пользователя LiveLib — файл попадёт в этот профиль.', userInput);
+    return;
+  }
+  if (!isValidLivelibUsername(username)) {
+    fail('Имя пользователя LiveLib: латиница, цифры, «_», «.», «-».', userInput);
+    return;
+  }
+  if (!file) {
+    fail('Выберите файл экспорта (.json или .csv).', input);
+    return;
+  }
+  if (!/\.(json|csv)$/i.test(file.name || '')) {
+    fail('Нужен файл .json или .csv — так выгружает livelib-backup.', input);
+    return;
+  }
+  if (file.size > FILE_IMPORT_MAX_BYTES) {
+    fail('Файл больше 24 МБ — проверьте, что это одна страница полки, а не архив.', input);
+    return;
+  }
+
+  setFileImportBusy(true);
+  try {
+    const result = await importBooksLivelibFile({
+      file,
+      username,
+      shelf: text(shelfInput && shelfInput.value),
+      resolve: Boolean(resolveInput && resolveInput.checked),
+    });
+    renderFileImportResult(result);
+    // The browser registry owns the switcher entry; the server owns the events.
+    await ensureProfileForImport('livelib', username);
+    if (input) input.value = '';
+    const fileName = $('books-livelib-file-name');
+    if (fileName) {
+      fileName.textContent = 'Файл не выбран';
+      fileName.classList.remove('is-set');
+    }
+    state.loaded = false;
+    await loadStats({ force: true });
+    const parts = [
+      `Файл импортирован: ${fmtInt(result.imported)} ${plural(result.imported, ['книга', 'книги', 'книг'])}`,
+      `+${fmtInt(result.added)} новых`,
+    ];
+    if (result.enriched) parts.push(`${fmtInt(result.enriched)} обогащено`);
+    toast(parts.join(' · '), 'success', { duration: 6000 });
+  } catch (error) {
+    if (error && error.status === 401) return;
+    // `shortErrorMessage` turns *any* 400 into "данные не готовы", which is the
+    // film-payload wording. A file-import 400 is specific and useful (bad
+    // columns, empty file, unknown shelf), so the server text is shown as is.
+    const message = error && error.name === 'ApiError' && text(error.message)
+      ? text(error.message)
+      : shortErrorMessage(error);
+    setFileImportError(message);
+    toast(`Файл не импортирован: ${message}`, 'error', { duration: 8000 });
+  } finally {
+    setFileImportBusy(false);
   }
 }
 
@@ -3694,8 +3864,7 @@ export function initBooks({ onActivate } = {}) {
   const cookieSubmit = $('books-livelib-cookie-submit');
   if (cookieSubmit) {
     cookieSubmit.addEventListener('click', () => submitCookieImport());
-  }
-  const cookieInput = $('books-livelib-cookie');
+  }  const cookieInput = $('books-livelib-cookie');
   if (cookieInput) {
     cookieInput.addEventListener('keydown', (event) => {
       // Enter submits, Shift+Enter keeps a newline (a pasted header may be wrapped).
@@ -3707,6 +3876,29 @@ export function initBooks({ onActivate } = {}) {
   }
   const cookieCancel = $('books-livelib-cookie-cancel');
   if (cookieCancel) cookieCancel.addEventListener('click', () => hideCookiePanel());
+
+  const fileForm = $('books-livelib-file-form');
+  if (fileForm) {
+    fileForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      submitFileImport();
+    });
+  }
+  const fileInput = $('books-livelib-file');
+  if (fileInput) {
+    // A new pick invalidates the previous result/error: the block always talks
+    // about the file the user is looking at.
+    fileInput.addEventListener('change', () => {
+      const name = $('books-livelib-file-name');
+      if (name) {
+        const picked = fileInput.files && fileInput.files[0] ? fileInput.files[0].name : '';
+        name.textContent = picked || 'Файл не выбран';
+        name.classList.toggle('is-set', Boolean(picked));
+      }
+      setFileImportError('');
+      renderFileImportResult(null);
+    });
+  }
 
   const profileBtn = $('books-profile-btn');
   if (profileBtn) {
