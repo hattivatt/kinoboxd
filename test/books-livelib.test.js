@@ -20,6 +20,12 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const pageHtml = zlib
   .gunzipSync(fs.readFileSync(path.join(FIXTURES, 'livelib-read-page1.html.gz')))
   .toString('utf8');
+const page2Html = zlib
+  .gunzipSync(fs.readFileSync(path.join(FIXTURES, 'livelib-read-page2.html.gz')))
+  .toString('utf8');
+const page3Html = zlib
+  .gunzipSync(fs.readFileSync(path.join(FIXTURES, 'livelib-read-page3.html.gz')))
+  .toString('utf8');
 const bulkJson = JSON.parse(
   zlib.gunzipSync(fs.readFileSync(path.join(FIXTURES, 'livelib-bulk-page1.json.gz'))).toString('utf8')
 );
@@ -118,7 +124,9 @@ test('an empty page is a canary error, not an empty profile', () => {
 test('repeated pagination pages stop the scrape instead of re-reading 62 times', async () => {
   const originalFetch = global.fetch;
   let requests = 0;
-  // The live site ignores ?page= for anonymous users: page 2 renders page 1.
+  // A server that ignores ?page= renders page 1 again: no offset-matched
+  // payload exists, the parser falls back to offset 0 and the scan stops
+  // instead of hammering 61 more pages.
   global.fetch = async () => {
     requests++;
     return {
@@ -130,10 +138,78 @@ test('repeated pagination pages stop the scrape instead of re-reading 62 times',
   };
   try {
     const result = await livelib.fetchRsc('Margaret', { maxPages: 10, delayMs: 0 });
+    // Page 2 came back with the offset:0 payload: the parser refuses it and
+    // the scan stops after the first (valid) page instead of hammering 61 more.
     assert.equal(requests, 2);
-    assert.equal(result.pagesFetched, 2);
+    assert.equal(result.pagesFetched, 1);
     assert.equal(result.rows.length, 20);
-    assert.ok(result.warnings.some((warning) => /pagination returned no new books/.test(warning)));
+    assert.ok(result.warnings.some((warning) => /returned the payload for offset 0/.test(warning)));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('pages 2 and 3 read the offset-matched payload, not page 1 again', () => {
+  // Each page N>1 carries TWO dehydrated queries: offset:0 (page 1) and the
+  // requested offset. Taking the first block is the bug this test pins.
+  const first = livelib.parseRscHtml(page2Html, { page: 2 });
+  assert.equal(first.offset, 20);
+  assert.equal(first.rows.length, 20);
+  assert.equal(first.rows[0].userBookId, '44519359');
+  assert.notEqual(first.rows[0].userBookId, '53103775');
+
+  const third = livelib.parseRscHtml(page3Html, { page: 3 });
+  assert.equal(third.offset, 40);
+  assert.equal(third.rows[0].userBookId, '41048167');
+
+  // Every row of the requested page carries an exact read date.
+  assert.equal(first.rows.filter((row) => row.readDate).length, 20);
+  assert.equal(third.rows.filter((row) => row.readDate).length, 20);
+  assert.equal(first.total, 1245);
+  assert.equal(third.pageTotal, 63);
+
+  const ids = new Set([
+    ...first.rows.map((row) => row.userBookId),
+    ...third.rows.map((row) => row.userBookId),
+  ]);
+  assert.equal(ids.size, 40);
+
+  // Without a page hint the LAST payload wins (the router appends the page
+  // the user asked for), which keeps a standalone fixture useful.
+  const implicit = livelib.parseRscHtml(page3Html);
+  assert.equal(implicit.offset, 40);
+  assert.deepEqual(implicit.offsets, [0, 40]);
+});
+
+test('fetchRsc collects distinct rows across offset-matched pages', async () => {
+  const originalFetch = global.fetch;
+  const byPage = new Map([
+    [1, pageHtml],
+    [2, page2Html],
+    [3, page3Html],
+  ]);
+  const requestedPages = [];
+  global.fetch = async (url) => {
+    const parsedUrl = new URL(String(url));
+    const page = Number(parsedUrl.searchParams.get('page') || 1);
+    requestedPages.push(page);
+    return {
+      status: 200,
+      url: 'https://www.livelib.ru/users/50064/books/read?ordering=read_at_desc' +
+        (page > 1 ? `&page=${page}` : ''),
+      headers: new Map(),
+      // Page 4 repeats page 3: the scan must stop rather than loop to page 63.
+      text: async () => byPage.get(page) || page3Html,
+    };
+  };
+  try {
+    const result = await livelib.fetchRsc('Margaret', { maxPages: 5, delayMs: 0 });
+    assert.equal(result.rows.length, 60);
+    assert.equal(new Set(result.rows.map((row) => row.userBookId)).size, 60);
+    // Page 4 repeated page 3 (offset 40, asked for 60): rejected, not applied.
+    assert.equal(result.pagesFetched, 3);
+    assert.deepEqual(requestedPages, [1, 2, 3, 4]);
+    assert.ok(result.warnings.some((warning) => /returned the payload for offset 0/.test(warning)));
   } finally {
     global.fetch = originalFetch;
   }

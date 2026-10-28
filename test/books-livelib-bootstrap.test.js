@@ -212,7 +212,8 @@ test('bootstrap 403 -> jar -> bulk/RSC 200 imports the profile end to end', asyn
   // 20 RSC rows with exact dates + 80 bulk-only rows without a date.
   assert.equal(result.profile.events.length, 100);
   assert.equal(result.totals.dated, 20);
-  assert.equal(result.totals.undated, 80);
+  assert.equal(result.totals.undated, 0);
+  assert.equal(result.totals.monthOnly, 80);
   assert.equal(result.totals.events, 100);
   assert.equal(result.profile.source, 'livelib');
   assert.equal(result.profile.userKey, 'Margaret');

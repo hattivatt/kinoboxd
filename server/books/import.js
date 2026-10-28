@@ -120,6 +120,7 @@ function enqueue(job, task) {
       job.pageTotal = null;
       if (!job.done && job.stage !== 'failed') job.stage = 'done';
       job.done = job.stage === 'done';
+      if (job.done) job.percent = 100;
       job.elapsedMs = job.finishedAt - job.startedAt;
       console.log(
         `[books-import ${job.id}] ${job.stage} after ${job.elapsedMs}ms ` +
@@ -230,6 +231,16 @@ async function resolveAllLivelibProfiles(job, options = {}) {
  *
  * A supplied header also disables the 12 h reuse window: the user is
  * explicitly retrying because the cached state did not work.
+ *
+ * `options.deep`:
+ *   - `false` (default) — light only: bulk + RSC page 1, ~3 requests;
+ *   - `true` — light (unless a fresh profile is reused) + a full RSC deep scan;
+ *   - `'auto'` — light, then deep only when the profile still has undated
+ *     events (what «Обновить профиль» asks for: fast re-check first, exact
+ *     dates in the background when the history is incomplete).
+ *
+ * The deep phase does not block the dashboard: the profile file is rewritten
+ * every 5 pages and `/api/books/stats` revalidates its fingerprint per read.
  */
 function startLivelibImport(username, options = {}) {
   const cleanUsername = String(username == null ? '' : username).trim().replace(/^@/, '');
@@ -247,6 +258,7 @@ function startLivelibImport(username, options = {}) {
       : livelibCookies.normalizeCookieHeader(options.cookieHeader);
   const storedCookie = providedHeader ? null : livelibCookies.getCookies('livelib', cleanUsername);
   const cookieHeader = providedHeader || (storedCookie ? storedCookie.cookieHeader : null);
+  const deepMode = options.deep === true ? true : options.deep === 'auto' ? 'auto' : false;
 
   const running = findRunningJob('livelib', cleanUsername);
   if (running) {
@@ -263,46 +275,60 @@ function startLivelibImport(username, options = {}) {
   }
 
   // Repeat-import guard (politeness + cheap UI): a cached profile younger than
-  // LIVELIB_REIMPORT_TTL_MS is reused instead of re-scraping 20+ pages. An
+  // LIVELIB_REIMPORT_TTL_MS is reused instead of re-scraping the bulk pass. An
   // explicit { force: true }, an expired profile or a fresh cookie paste still
-  // performs a full import, and a Hardcover import re-runs resolve over the
-  // cached profile.
+  // performs a light import. A cached profile also means a deep request can run
+  // without touching the bulk endpoint again.
   const force = Boolean(options.force) || Boolean(providedHeader);
-  if (!force) {
-    const cached = bookCache.getProfile('livelib', cleanUsername);
-    if (cached && isFreshImport(cached.importedAt)) {
-      const now = Date.now();
-      const reused = {
-        id: newJobId('livelib', cleanUsername),
-        source: 'livelib',
-        userKey: cleanUsername,
-        stage: 'done',
-        page: null,
-        pageTotal: null,
-        events: cached.events.length,
-        done: true,
-        reused: true,
-        force: false,
-        cachedAt: cached.importedAt || null,
-        error: null,
-        warning: null,
-        cookies: {
-          provided: false,
-          stored: Boolean(storedCookie),
-          present: Boolean(cookieHeader),
-          savedAt: storedCookie ? storedCookie.savedAt : null,
-        },
-        startedAt: now,
-        finishedAt: now,
-      };
-      rememberJob(reused);
-      console.log(
-        `[books-import ${reused.id}] livelib profile reused from cache ` +
-          `(${cached.events.length} events, importedAt=${cached.importedAt})`
-      );
-      return publicStatus(reused);
-    }
+  const cached = bookCache.getProfile('livelib', cleanUsername);
+  const cachedFresh = Boolean(cached && isFreshImport(cached.importedAt));
+  const deepPending = Boolean(
+    cached &&
+      cached.deepScan &&
+      cached.deepScan.done !== true &&
+      Number(cached.deepScan.lastPage) > 0
+  );
+  const undatedCached = cached ? undatedCount(cached.events) : 0;
+  const wantDeep =
+    deepMode === true || (deepMode === 'auto' && (deepPending || undatedCached > 0));
+  if (!force && !wantDeep && cachedFresh) {
+    const now = Date.now();
+    const reused = {
+      id: newJobId('livelib', cleanUsername),
+      source: 'livelib',
+      userKey: cleanUsername,
+      stage: 'done',
+      page: null,
+      pageTotal: null,
+      events: cached.events.length,
+      done: true,
+      reused: true,
+      force: false,
+      percent: 100,
+      cachedAt: cached.importedAt || null,
+      error: null,
+      warning: null,
+      deep: cached.deepScan || null,
+      cookies: {
+        provided: false,
+        stored: Boolean(storedCookie),
+        present: Boolean(cookieHeader),
+        savedAt: storedCookie ? storedCookie.savedAt : null,
+      },
+      startedAt: now,
+      finishedAt: now,
+    };
+    rememberJob(reused);
+    console.log(
+      `[books-import ${reused.id}] livelib profile reused from cache ` +
+        `(${cached.events.length} events, importedAt=${cached.importedAt})`
+    );
+    return publicStatus(reused);
   }
+
+  // A fresh profile + a deep request needs no bulk re-scrape: the deep scan
+  // only adds dates to events that are already stored.
+  const skipLight = Boolean(cached && cachedFresh && !force && wantDeep);
 
   const job = {
     id: newJobId('livelib', cleanUsername),
@@ -315,6 +341,9 @@ function startLivelibImport(username, options = {}) {
     done: false,
     reused: false,
     force,
+    deepRequested: deepMode,
+    skipLight,
+    percent: 0,
     error: null,
     warning: null,
     cookies: {
@@ -344,45 +373,174 @@ function startLivelibImport(username, options = {}) {
     }
 
     const jar = livelib.makeJar(cookieHeader);
-    const result = await livelib.importLivelib(cleanUsername, {
-      jar,
-      onSession: (session) => {
-        job.session = maskSession(session);
-      },
-      onProgress: (progress) => {
-        job.stage = progress.stage === 'bulk' ? 'livelib-bulk' : 'livelib-rsc';
-        job.page = progress.page;
-        job.pageTotal = progress.pageTotal;
-        job.events = progress.events;
-      },
-    });
+    let profile = cached;
 
-    await bookCache.saveProfile('livelib', cleanUsername, result.profile);
-    await bookCache.saveRawImport('livelib', cleanUsername, {
-      totals: result.totals,
-      requests: result.requests,
-      warnings: result.warnings,
-      importedAt: result.profile.importedAt,
-    });
-    job.events = result.profile.events.length;
-    job.requests = result.requests;
-    job.totals = result.totals;
-    job.session = result.session ? result.session : job.session || null;
-    job.cookies = Object.assign({}, job.cookies, {
-      present: true,
-      jarAfter: result.session ? result.session.cookiesUsed : null,
-    });
-    job.warning = result.warnings.length ? result.warnings.join(' ') : null;
-    console.log(
-      `[books-import ${job.id}] livelib profile saved: ${result.profile.events.length} events ` +
-        `(${result.totals.dated} dated), requests=${result.requests.total}, ` +
-        `cookies=${job.cookies.present ? 'jar' : 'none'}`
-    );
+    if (!skipLight) {
+      job.stage = 'livelib-bulk';
+      const result = await livelib.importLivelib(cleanUsername, {
+        jar,
+        existingProfile: cached,
+        onSession: (session) => {
+          job.session = maskSession(session);
+        },
+        onProgress: (progress) => {
+          job.stage = progress.stage === 'bulk' ? 'livelib-bulk' : 'livelib-rsc';
+          job.page = progress.page;
+          job.pageTotal = progress.pageTotal;
+          job.events = progress.events;
+          job.percent = percentProgressOf(progress);
+        },
+      });
 
-    await resolveAllLivelibProfiles(job, { jar });
+      profile = result.profile;
+      await bookCache.saveProfile('livelib', cleanUsername, profile);
+      await bookCache.saveRawImport('livelib', cleanUsername, {
+        totals: result.totals,
+        requests: result.requests,
+        warnings: result.warnings,
+        importedAt: result.profile.importedAt,
+      });
+      job.events = profile.events.length;
+      job.requests = result.requests;
+      job.totals = result.totals;
+      job.session = result.session ? result.session : job.session || null;
+      job.cookies = Object.assign({}, job.cookies, {
+        present: true,
+        jarAfter: result.session ? result.session.cookiesUsed : null,
+      });
+      job.warning = result.warnings.length ? result.warnings.join(' ') : null;
+      job.undatedEventCount = undatedCount(profile.events);
+      console.log(
+        `[books-import ${job.id}] livelib profile saved: ${profile.events.length} events ` +
+          `(${result.totals.dated} dated), requests=${result.requests.total}, ` +
+          `cookies=${job.cookies.present ? 'jar' : 'none'}`
+      );
+    } else {
+      job.events = profile.events.length;
+      job.undatedEventCount = undatedCached;
+    }
+
+    // Deep phase: fill exact dates on the already imported events. `auto`
+    // skips it when the history is already fully dated.
+    const undated = profile.events.filter((event) => !event.finishedAt).length;
+    const deepDone = Boolean(profile.deepScan && profile.deepScan.done === true);
+    if (deepMode === true && deepDone) {
+      // An explicit `deep: true` is a full re-scan request: re-read the pages
+      // instead of returning "already complete". Dates/months are idempotent.
+      profile.deepScan = { ...profile.deepScan, done: false, lastPage: 1 };
+    }
+    const shouldDeep =
+      deepMode === true || (deepMode === 'auto' && !deepDone && undated > 0);
+    if (shouldDeep) {
+      job.stage = 'livelib-deep';
+      job.percent = deepDone ? 100 : percentFromDeep(profile.deepScan);
+      job.deep = deepSummary(profile.deepScan, profile.events);
+      const deep = await livelib.deepScanProfile(cleanUsername, profile, {
+        jar,
+        onProgress: (progress) => {
+          job.stage = 'livelib-deep';
+          job.page = progress.page;
+          job.pageTotal = progress.pageTotal;
+          job.events = profile.events.length;
+          job.undatedEventCount = undatedCount(profile.events);
+          job.percent = percentOf(progress.page, progress.pageTotal);
+          job.deep = deepSummary(profile.deepScan, profile.events, progress);
+        },
+        onBatch: async (draft, progress) => {
+          // Write the profile every N pages: stats read it by fingerprint, so
+          // the dashboard gains dated events while the job is still running.
+          await bookCache.saveProfile('livelib', cleanUsername, draft);
+          job.percent = percentOf(progress.page, progress.pageTotal);
+          job.deep = deepSummary(draft.deepScan, profile.events, progress);
+          job.events = profile.events.length;
+          job.undatedEventCount = undatedCount(profile.events);
+        },
+      });
+      job.deep = deepSummary(profile.deepScan, profile.events);
+      job.deepSkipped = Boolean(deep.skipped);
+      job.deepRequests = deep.requests;
+      if (Array.isArray(deep.warnings) && deep.warnings.length) {
+        job.warning = [job.warning, ...deep.warnings].filter(Boolean).join(' ');
+      }
+      job.percent = 100;
+      console.log(
+        `[books-import ${job.id}] livelib deep scan: ${deep.dated}/${deep.total} dated, ` +
+          `requests=${deep.requests}${deep.skipped ? ' (already complete)' : ''}`
+      );
+    }
+
+    await resolveQuietly(job, { jar });
   });
 
   return publicStatus(job);
+}
+
+/**
+ * Metadata resolve is enrichment, not part of the import contract: a provider
+ * outage (LiveLib card / Litres / Hardcover) must not turn a successfully
+ * scraped profile into a failed job. The error is reported as a warning.
+ */
+async function resolveQuietly(job, options = {}) {
+  try {
+    await resolveAllLivelibProfiles(job, options);
+  } catch (err) {
+    const message = err && err.message ? err.message : 'resolve failed';
+    job.resolveError = message;
+    job.warning = [job.warning, `метадата: ${message}`].filter(Boolean).join(' ');
+    console.warn(`[books-import ${job.id}] resolve failed (import kept): ${message}`);
+  }
+}
+
+/** Events with neither an exact day nor a month: the honest "undated" count. */
+function undatedCount(events) {
+  const list = Array.isArray(events) ? events : [];
+  return list.filter(
+    (event) => event && !event.finishedAt && !/^\d{4}-\d{2}$/.test(String(event.readMonth || ''))
+  ).length;
+}
+
+/** Dated (exact day) events of a LiveLib profile. */
+function deepCount(profile) {
+  return profile.events.filter((event) => event && event.finishedAt).length;
+}
+
+function percentOf(page, pageTotal) {
+  const done = Number(page);
+  const total = Number(pageTotal);
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(1, Math.min(100, Math.round((done / total) * 100)));
+}
+
+function percentFromDeep(deep) {
+  if (!deep) return 0;
+  if (deep.done) return 100;
+  return percentOf(deep.lastPage, deep.pageTotal);
+}
+
+function percentProgressOf(progress) {
+  return percentOf(progress && progress.page, progress && progress.pageTotal);
+}
+
+/** Masked deep-scan state for the job status: page numbers and counts only. */
+function deepSummary(deep, events, progress) {
+  const list = Array.isArray(events) ? events : [];
+  const dated = list.filter((event) => event && event.finishedAt).length;
+  const monthOnly = list.filter(
+    (event) => event && !event.finishedAt && /^\d{4}-\d{2}$/.test(String(event.readMonth || ''))
+  ).length;
+  const page = progress ? progress.page : deep && deep.lastPage;
+  const pageTotal = (progress && progress.pageTotal) || (deep && deep.pageTotal) || null;
+  return {
+    page: page == null ? null : Number(page),
+    pageTotal: pageTotal == null ? null : Number(pageTotal),
+    percent: percentOf(page, pageTotal),
+    dated,
+    monthOnly,
+    total: list.length,
+    undated: list.length - dated - monthOnly,
+    done: Boolean(deep && deep.done),
+    lastPage: deep && deep.lastPage != null ? Number(deep.lastPage) : null,
+  };
 }
 
 /** Bootstrap diagnostics for the job status: statuses/counts, never values. */
@@ -491,7 +649,7 @@ function startHardcoverImport(userId) {
         `${JSON.stringify(journal.statusFilter.byStatus)}`
     );
 
-    await resolveAllLivelibProfiles(job);
+    await resolveQuietly(job);
   });
 
   return publicStatus(job);
@@ -509,10 +667,19 @@ function publicStatus(job) {
     stage: job.stage,
     page: job.page,
     pageTotal: job.pageTotal,
+    // Overall job progress, 0..100 (the progress screen uses it).
+    percent: job.percent == null ? null : Number(job.percent),
     events: job.events,
     done: Boolean(job.done),
     reused: Boolean(job.reused),
     force: Boolean(job.force),
+    deepRequested: job.deepRequested === undefined ? false : job.deepRequested,
+    skipLight: Boolean(job.skipLight),
+    // Deep scan progress of the profile: the "Обновить профиль" button renders
+    // `deep.percent` as «История 45%», and stats stay usable meanwhile.
+    deep: job.deep || null,
+    deepSkipped: Boolean(job.deepSkipped),
+    undatedEventCount: job.undatedEventCount == null ? null : Number(job.undatedEventCount),
     cachedAt: job.cachedAt || null,
     error: job.error || null,
     code: job.code || null,

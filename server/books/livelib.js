@@ -424,10 +424,89 @@ function sliceBalancedJson(text, start) {
 }
 
 /**
- * Parse one server-rendered collection page.
- * Returns { rows, total, nextPage, pageTotal }.
+ * All dehydrated TanStack query payload blocks of the flight stream, each with
+ * the `queryKey` that follows it (the key is serialised after the data in the
+ * same query object, so the nearest key *after* the payload is its own).
+ *
+ * Why this exists: the HTML of page N>1 embeds TWO queries for the same
+ * collection — `offset:0` (page 1, re-rendered for the client router) and
+ * `offset:(N-1)*20` (the requested page). Picking the first `payload` block
+ * always read page 1, which is what made a 63-page scan collect 20 books
+ * (spike 28.10.2026).
  */
-function parseRscHtml(html) {
+function payloadCandidates(flight) {
+  const out = [];
+  let index = -1;
+  while ((index = flight.indexOf('"payload"', index + 1)) !== -1) {
+    const colon = flight.indexOf(':', index);
+    const brace = flight.indexOf('{', colon);
+    if (brace < 0) continue;
+    const raw = sliceBalancedJson(flight, brace);
+    if (!raw) continue;
+    let payload = null;
+    try {
+      payload = JSON.parse(raw);
+    } catch (err) {
+      continue;
+    }
+    let offset = null;
+    let queryKey = null;
+    const keyIndex = flight.indexOf('"queryKey"', brace + raw.length);
+    if (keyIndex >= 0 && keyIndex - (brace + raw.length) < 4000) {
+      const bracket = flight.indexOf('[', keyIndex);
+      const close = bracket >= 0 ? flight.indexOf(']', bracket) : -1;
+      if (close > bracket) {
+        const rawKey = flight.slice(bracket, close + 1);
+        try {
+          queryKey = JSON.parse(rawKey);
+        } catch (err) {
+          queryKey = null;
+        }
+        if (queryKey) {
+          const params = queryKey.find((part) => part && typeof part === 'object' && !Array.isArray(part));
+          if (params && params.offset != null && Number.isFinite(Number(params.offset))) {
+            offset = Number(params.offset);
+          }
+        }
+      }
+    }
+    out.push({ payload, offset, queryKey });
+  }
+  return out;
+}
+
+/**
+ * Pick the payload block that belongs to the requested collection page.
+ *
+ * Matching is by `offset`, the only value the dehydrated query carries that is
+ * unambiguous: page N is `offset=(N-1)*20`. Fallbacks, in order:
+ *   1. an exact offset match;
+ *   2. when the caller did not say which page it wanted — the LAST candidate
+ *      (the client router appends the requested page after page 1);
+ *   3. otherwise the first candidate (page 1), which is right for `page=1`.
+ */
+function pickPayload(candidates, page) {
+  if (!candidates.length) return null;
+  const requested = Number(page) > 1 ? (Number(page) - 1) * 20 : null;
+  if (requested != null) {
+    const exact = candidates.find((entry) => entry.offset === requested);
+    if (exact) return exact;
+  }
+  if (!Number(page)) return candidates[candidates.length - 1];
+  return candidates[0];
+}
+
+/**
+ * Parse one server-rendered collection page.
+ *
+ * `options.page` is the page number the URL asked for (`?page=N`); its
+ * `queryKey.offset` selects the right payload block. Without it the last
+ * payload wins (the client-side router appends the requested page), which is
+ * the safest guess for a standalone HTML fixture.
+ *
+ * Returns { rows, total, nextPage, pageTotal, offset, offsets }.
+ */
+function parseRscHtml(html, options = {}) {
   const flight = flightFromHtml(html);
   if (!flight) {
     throw new LivelibError(
@@ -436,27 +515,15 @@ function parseRscHtml(html) {
     );
   }
 
-  const anchor = flight.search(/"payload"\s*:\s*\{\s*"pagination"/);
-  if (anchor < 0) {
+  const candidates = payloadCandidates(flight);
+  if (!candidates.length) {
     throw new LivelibError(
       'LiveLib: в RSC-payload нет блока payload/pagination (разметка изменилась).',
       'livelib_parse_error'
     );
   }
-  const brace = flight.indexOf('{', anchor);
-  const raw = sliceBalancedJson(flight, brace);
-  if (!raw) {
-    throw new LivelibError('LiveLib: не удалось разобрать RSC-payload.', 'livelib_parse_error');
-  }
-  let payload;
-  try {
-    payload = JSON.parse(raw);
-  } catch (err) {
-    throw new LivelibError(
-      `LiveLib: RSC-payload не является JSON (${err.message}).`,
-      'livelib_parse_error'
-    );
-  }
+  const chosen = pickPayload(candidates, options.page);
+  const payload = chosen.payload;
 
   const data = Array.isArray(payload.data) ? payload.data : [];
   const rows = data
@@ -520,6 +587,8 @@ function parseRscHtml(html) {
     total,
     nextPage: payload.pagination ? payload.pagination.next_page || null : null,
     pageTotal,
+    offset: chosen.offset,
+    offsets: candidates.map((entry) => entry.offset),
   };
 }
 
@@ -734,12 +803,38 @@ function readDateToIso(readDate) {
 }
 
 /**
- * Scrape all collection pages. Page 1 goes through the public alias (which
- * 308-redirects to the numeric /users/{id}/books/read URL); the numeric id is
- * then reused so the remaining 62 pages need no redirect.
+ * Month precision of a `read_date`.
+ *
+ * LiveLib records an exact day only for some entries; the rest carry
+ * `{year, month, day: null}` (verified live 28.10.2026 on page 40: 20/20 rows
+ * month-only, e.g. 2010-01). A month is a real date signal and must not be
+ * thrown away, but it must never become a fake day: `finishedAt` stays null
+ * and the event enters the month timeline only, not the day calendar/streaks.
+ */
+function readMonthOf(readDate) {
+  if (!readDate || !readDate.year) return null;
+  const year = Number(readDate.year);
+  const month = Number(readDate.month);
+  if (!(year >= 1800 && year <= 2200)) return null;
+  if (!(month >= 1 && month <= 12)) return null;
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}`;
+}
+
+/**
+ * Scrape collection pages.
+ *
+ * Page 1 goes through the public alias (which 308-redirects to the numeric
+ * `/users/{id}/books/read` URL); the numeric id is then reused so the remaining
+ * pages need no redirect. `options.startPage` resumes a deep scan; it needs
+ * `options.userId` (persisted in the profile as `sourceUserId`).
+ *
+ * `options.onPage({page, pageTotal, parsed, rows, collected, maxPages})` is
+ * awaited after every page, so a caller can persist partial results (deep scan
+ * batches) without waiting for the whole profile.
  */
 async function fetchRsc(username, options = {}) {
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const onPage = typeof options.onPage === 'function' ? options.onPage : null;
   const maxPages = Math.min(Math.max(Number(options.maxPages) || MAX_RSC_PAGES, 1), MAX_RSC_PAGES);
   const delayMs = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : null;
   const pageDelay = () => (delayMs == null ? randomDelay() : delayMs);
@@ -748,14 +843,24 @@ async function fetchRsc(username, options = {}) {
   const byUserBook = new Map();
   const warnings = [];
   let requests = 0;
-  let userId = null;
+  let userId = options.userId != null && /^\d+$/.test(String(options.userId))
+    ? String(options.userId)
+    : null;
   let pageTotal = null;
   let total = null;
   let pagesFetched = 0;
 
-  let page = 1;
+  let page = Math.max(1, Math.floor(Number(options.startPage) || 1));
+  const firstPage = page;
+  // A resumed scan must address the numeric URL directly: the public alias
+  // would only ever give page 1.
+  if (page > 1 && !userId) page = 1;
+
+  const firstUrl = page === 1
+    ? `${LIVELIB_ORIGIN}/reader/${encodeURIComponent(username)}/read?ordering=read_at_desc`
+    : `${LIVELIB_ORIGIN}/users/${userId}/books/read?ordering=read_at_desc&page=${page}`;
   const first = await request(
-    `${LIVELIB_ORIGIN}/reader/${encodeURIComponent(username)}/read?ordering=read_at_desc`,
+    firstUrl,
     {
       jar,
       fetchImpl: options.fetchImpl,
@@ -763,21 +868,38 @@ async function fetchRsc(username, options = {}) {
         'User-Agent': USER_AGENT,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'ru-RU,ru;q=0.9',
+        Referer: `${LIVELIB_ORIGIN}/reader/${encodeURIComponent(username)}/read`,
       },
     },
-    'rsc page 1'
+    `rsc page ${page}`
   );
   requests++;
 
   const userIdMatch = String(first.url).match(/\/users\/(\d+)\/books\/read/);
   if (userIdMatch) userId = userIdMatch[1];
 
-  let parsed = parseRscHtml(first.text);
-  if (parsed.rows.length === 0) {
-    throw new LivelibError(
-      `LiveLib: страница 1 профиля ${username} не содержит книг (канарейка: разметка изменилась).`,
-      'livelib_empty'
+  let parsed = parseRscHtml(first.text, { page });
+  const firstOffsetMismatch = page > 1 &&
+    parsed.offset != null &&
+    parsed.offset !== (page - 1) * 20;
+  if (firstOffsetMismatch) {
+    // The server answered with another page's payload (offset:0 for a repeated
+    // page 1, or a stale page): applying its rows would write wrong dates.
+    warnings.push(
+      `Page ${page} returned the payload for offset ${parsed.offset} ` +
+        `instead of ${(page - 1) * 20}; deep scan stopped without applying it.`
     );
+    parsed = { ...parsed, rows: [] };
+  } else if (parsed.rows.length === 0) {
+    // A resumed deep scan lands on the last page which may legitimately be
+    // empty; only a page-1 read is the schema canary.
+    if (page === 1) {
+      throw new LivelibError(
+        `LiveLib: страница 1 профиля ${username} не содержит книг (канарейка: разметка изменилась).`,
+        'livelib_empty'
+      );
+    }
+    warnings.push(`Page ${page} of the collection was empty; deep scan stopped there.`);
   }
   total = parsed.total;
   pageTotal = parsed.pageTotal;
@@ -788,13 +910,27 @@ async function fetchRsc(username, options = {}) {
       rows.push(row);
     }
   }
-  pagesFetched = 1;
+  pagesFetched = firstOffsetMismatch ? page - 1 : page;
   console.log(
-    `[livelib ${username}] rsc page 1/${pageTotal || '?'}: rows=${parsed.rows.length} total=${total}`
+    `[livelib ${username}] rsc page ${page}/${pageTotal || '?'}: rows=${parsed.rows.length} ` +
+      `offset=${parsed.offset} collected=${rows.length}`
   );
-  if (onProgress) onProgress({ stage: 'rsc', page, pageTotal, events: rows.length });
+  if (!firstOffsetMismatch && onProgress) {
+    onProgress({ stage: 'rsc', page, pageTotal, events: rows.length });
+  }
+  if (!firstOffsetMismatch && onPage) {
+    await onPage({
+      page,
+      pageTotal,
+      firstPage,
+      parsed,
+      rows: parsed.rows,
+      collected: rows.length,
+      maxPages,
+    });
+  }
 
-  const limit = Math.min(pageTotal || 1, maxPages);
+  const limit = firstOffsetMismatch ? page : Math.min(pageTotal || 1, maxPages);
   while (page < limit) {
     await sleep(pageDelay());
     page++;
@@ -816,7 +952,17 @@ async function fetchRsc(username, options = {}) {
       `rsc page ${page}`
     );
     requests++;
-    parsed = parseRscHtml(res.text);
+    parsed = parseRscHtml(res.text, { page });
+    if (parsed.offset != null && parsed.offset !== (page - 1) * 20) {
+      warnings.push(
+        `Page ${page} returned the payload for offset ${parsed.offset} ` +
+          `instead of ${(page - 1) * 20}; stopped after ${pagesFetched} page(s).`
+      );
+      console.warn(
+        `[livelib ${username}] page ${page} returned offset ${parsed.offset}; stopping.`
+      );
+      break;
+    }
     if (parsed.pageTotal && parsed.pageTotal > pageTotal) pageTotal = parsed.pageTotal;
     if (parsed.total != null) total = parsed.total;
     if (parsed.rows.length === 0) {
@@ -835,28 +981,31 @@ async function fetchRsc(username, options = {}) {
     pagesFetched = page;
     console.log(
       `[livelib ${username}] rsc page ${page}/${pageTotal || '?'}: rows=${parsed.rows.length} ` +
-        `added=${added} collected=${rows.length}`
+        `offset=${parsed.offset} added=${added} collected=${rows.length}`
     );
     if (onProgress) onProgress({ stage: 'rsc', page, pageTotal, events: rows.length });
+    if (onPage) {
+      await onPage({
+        page,
+        pageTotal,
+        firstPage,
+        parsed,
+        rows: parsed.rows,
+        collected: rows.length,
+        maxPages,
+      });
+    }
 
-    // Pagination is server-side (`?page=N` does return the requested 20 rows,
-    // verified live 28.10.2026). BUT the HTML of page N>1 embeds TWO dehydrated
-    // TanStack queries for the same collection: `offset:0` (page 1) and
-    // `offset:(N-1)*20` (the requested page), and `parseRscHtml` currently takes
-    // the FIRST payload block — i.e. page 1 again. So `added === 0` here means
-    // "our parser read page 1 twice", not "LiveLib ignores ?page=" (docs §2.1.1).
-    // Picking the payload whose offset matches the request is a separate round:
-    // it turns a 2-request import into 63 polite requests per profile.
-    if (added === 0) {
+    // The parser now reads the offset-matched payload, so `added === 0` means
+    // the page really repeated known user_books (a collection that shrank
+    // mid-scan or a server that ignores ?page=) — stop instead of hammering
+    // the remaining pages.
+    if (added === 0 && page > 1) {
       warnings.push(
-        `Collection pagination returned no new books on page ${page} ` +
-          `(the page carried a second, offset-matched payload that this parser does not read yet); ` +
-          `stopped after ${pagesFetched} page(s). ` +
-          `Only books from page 1 have exact read dates; the rest come from the legacy bulk pass and are undated.`
+        `Collection pagination returned no new books on page ${page}; ` +
+          `stopped after ${pagesFetched} page(s).`
       );
-      console.warn(
-        `[livelib ${username}] page ${page} repeated known books; parser picked the offset:0 payload, stopping.`
-      );
+      console.warn(`[livelib ${username}] page ${page} repeated known books; stopping.`);
       break;
     }
     if (page >= MAX_RSC_PAGES) break;
@@ -892,6 +1041,9 @@ function buildEvent(rscRow, bulkRow) {
       ? Math.round(Number(bulkRow.rating5) * 2)
       : null;
   const finishedAt = readDateToIso(rscRow && rscRow.readDate);
+  const readMonth = finishedAt
+    ? null
+    : readMonthOf(rscRow && rscRow.readDate) || (bulkRow && bulkRow.readMonth) || null;
   const authors = (rscRow && rscRow.authors && rscRow.authors.length
     ? rscRow.authors
     : (bulkRow && bulkRow.authors) || []
@@ -927,7 +1079,7 @@ function buildEvent(rscRow, bulkRow) {
     // status filter here — every scraped row is a finished book.
     startedAt: null,
     finishedAt,
-    readMonth: finishedAt ? null : (bulkRow && bulkRow.readMonth) || null,
+    readMonth,
     reread: false,
     readIndex: 1,
     edition: {
@@ -944,22 +1096,201 @@ function buildEvent(rscRow, bulkRow) {
 }
 
 /**
- * Full LiveLib import:
- *   0. browser-like bootstrap GET -> cookie jar (`__ddg*` and friends);
- *   1. legacy bulk pass (metadata, ISBN) with the jar;
- *   2. RSC pages (exact dates, native 10-scale ratings) with the jar.
- * Merged by user_book id. Returns { profile, requests, warnings, totals, session }.
+ * Copy exact dates (and native ratings) from a previously imported profile into
+ * a fresh light re-import. The light phase only reads page 1, so without this
+ * merge a periodic re-check would throw away the dates a previous deep scan
+ * already collected — the reader would see `undatedEventCount` jump back up.
+ * Events that disappeared from LiveLib stay gone: the fresh list wins.
+ */
+function mergeExistingDates(events, existingProfile) {
+  if (!existingProfile || !Array.isArray(existingProfile.events)) return 0;
+  const previous = new Map();
+  for (const event of existingProfile.events) {
+    if (event) previous.set(String(event.id), event);
+  }
+  let restored = 0;
+  for (const event of events) {
+    const old = previous.get(String(event.id));
+    if (!old) continue;
+    if (!event.finishedAt && old.finishedAt) {
+      event.finishedAt = old.finishedAt;
+      event.readMonth = null;
+      restored++;
+    }
+    if (event.rating10 == null && old.rating10 != null) {
+      event.rating10 = old.rating10;
+      event.rating = old.rating;
+      event.ratingScale = old.ratingScale;
+    }
+  }
+  return restored;
+}
+
+/**
+ * Deep scan: read every collection page and put the exact `read_date` on the
+ * already imported events. It never creates or removes events — that is the
+ * light phase's job — and it persists progress in `profile.deepScan` so an
+ * interrupted scan resumes at `lastPage + 1`.
  *
- * `options.cookieHeader` seeds the jar (plan B: cookies copied from a real
- * browser); `options.jar` reuses an existing one. `options.bootstrap === false`
- * skips step 0 (tests only). `options.delayMs === 0` disables the politeness
- * pauses (tests only) — production always waits 1.5-2.5 s.
+ * `options.onBatch(profile, progress)` is awaited every 5 pages (and on the
+ * last page): the caller saves the profile file, which is what makes the
+ * dashboard see freshly dated events without a restart (the stats reader
+ * revalidates the file fingerprint on every read).
+ */
+async function deepScanProfile(username, profile, options = {}) {
+  const startedAt = new Date().toISOString();
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const onBatch = typeof options.onBatch === 'function' ? options.onBatch : null;
+  const events = Array.isArray(profile.events) ? profile.events : [];
+  const byUserBook = new Map();
+  for (const event of events) {
+    const key = String(
+      event.sourceUserBookId || String(event.id || '').replace(/^ll:/, '')
+    );
+    if (key) byUserBook.set(key, event);
+  }
+  const previousDeep = profile.deepScan && typeof profile.deepScan === 'object' ? profile.deepScan : {};
+  const pageTotal = Number(previousDeep.pageTotal) || null;
+  const alreadyDone = previousDeep.done === true &&
+    (!pageTotal || Number(previousDeep.lastPage) >= pageTotal);
+  if (alreadyDone) {
+    return {
+      skipped: true,
+      reason: 'deep scan already complete',
+      deepScan: profile.deepScan,
+      requests: 0,
+      dated: events.filter((event) => event.finishedAt).length,
+      total: events.length,
+    };
+  }
+  const lastPage = Number(previousDeep.lastPage) || 0;
+  // Page 1 is always fresh from the light phase, so a first deep run starts at
+  // page 2; a resumed run continues after its persisted `lastPage`.
+  const startPage = Math.max(2, lastPage + 1);
+  let datedTotal = events.filter((event) => event.finishedAt).length;
+  const monthOnlyCount = () => events.filter(
+    (event) => !event.finishedAt && /^\d{4}-\d{2}$/.test(String(event.readMonth || ''))
+  ).length;
+  let batches = 0;
+  let lastProgress = null;
+
+  const batchSize = Math.max(1, Number(options.batchPages) || 5);
+  const flush = async (page, total, extra = {}) => {
+    batches++;
+    profile.deepScan = {
+      pageTotal: total || pageTotal || null,
+      lastPage: page,
+      dated: datedTotal,
+      monthOnly: monthOnlyCount(),
+      total: events.length,
+      done: Boolean(total && page >= total),
+      startedAt: previousDeep.startedAt || startedAt,
+      updatedAt: new Date().toISOString(),
+      ...extra,
+    };
+    if (onBatch) await onBatch(profile, { ...profile.deepScan, page, pageTotal: total });
+    return profile.deepScan;
+  };
+
+  const rsc = await fetchRsc(username, {
+    jar: options.jar,
+    fetchImpl: options.fetchImpl,
+    delayMs: options.delayMs,
+    userId: options.userId != null ? options.userId : profile.sourceUserId,
+    startPage,
+    maxPages: options.maxPages,
+    onProgress: (progress) => {
+      lastProgress = progress;
+      if (onProgress) onProgress({ ...progress, dated: datedTotal, total: events.length });
+    },
+    onPage: async ({ page, pageTotal: total, rows }) => {
+      let datedHere = 0;
+      for (const row of rows) {
+        const event = byUserBook.get(String(row.userBookId));
+        if (!event) continue;
+        const iso = readDateToIso(row.readDate);
+        if (iso) {
+          if (event.finishedAt !== iso) datedHere++;
+          event.finishedAt = iso;
+          event.readMonth = null;
+        } else {
+          // Month-only entry: keep the month for the timeline, never invent a day.
+          const month = readMonthOf(row.readDate);
+          if (month) event.readMonth = month;
+        }
+        if (row.rating != null && event.rating10 == null) {
+          event.rating10 = Number(row.rating);
+          event.rating = Number(row.rating);
+          event.ratingScale = 10;
+        }
+      }
+      datedTotal = events.filter((event) => event.finishedAt).length;
+      console.log(
+        `[livelib ${username}] deep page ${page}/${total || '?'}: dated=${datedTotal}/${events.length}`
+      );
+      if (onProgress) {
+        onProgress({
+          stage: 'deep',
+          page,
+          pageTotal: total,
+          events: events.length,
+          dated: datedTotal,
+          monthOnly: monthOnlyCount(),
+        });
+      }
+      const isLast = Boolean(total && page >= total);
+      if (isLast || page % batchSize === 0) {
+        await flush(page, total);
+      }
+    },
+  });
+
+  const total = rsc.pageTotal || pageTotal || lastProgress?.pageTotal || null;
+  const lastPageSeen = Math.max(rsc.pagesFetched || 0, startPage - 1, Number(lastPage) || 0);
+  if (!profile.deepScan || profile.deepScan.lastPage !== lastPageSeen) {
+    await flush(lastPageSeen, total);
+  } else if (total && lastPageSeen >= total && profile.deepScan.done !== true) {
+    await flush(lastPageSeen, total);
+  }
+
+  return {
+    skipped: false,
+    requests: rsc.requests,
+    warnings: rsc.warnings,
+    deepScan: profile.deepScan,
+    dated: datedTotal,
+    total: events.length,
+    batches,
+    startPage,
+  };
+}
+
+/**
+ * LiveLib import.
+ *
+ * Two phases, one job:
+ *
+ *   light (default, ~3 requests / ~30-60 s):
+ *     0. browser-like bootstrap GET -> cookie jar (`__ddg*` and friends);
+ *     1. legacy bulk pass (metadata, ISBN, month headers);
+ *     2. RSC page 1 only (20 newest books with exact dates).
+ *     Events: every book in the collection; the ones outside page 1 are
+ *     honestly undated (`summary.undatedEventCount`).
+ *
+ *   deep (`mode: 'deep'`, ~63 polite requests / ~3 min):
+ *     read every RSC page and fill `finishedAt` on the imported events.
+ *     Progress is persisted every 5 pages (`options.onBatch`) and resumed from
+ *     `profile.deepScan.lastPage`.
+ *
+ * `options.existingProfile` keeps dates from a previous deep scan across a
+ * light re-check. Merged by user_book id. Returns { profile, requests, ... }.
  */
 async function importLivelib(username, options = {}) {
   const cleanUsername = String(username == null ? '' : username).trim().replace(/^@/, '');
   if (!/^[\w.-]{1,64}$/.test(cleanUsername)) {
     throw new LivelibError('Некорректное имя пользователя LiveLib.', 'livelib_invalid_username');
   }
+  const mode = options.mode === 'deep' ? 'deep' : 'light';
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const warnings = [];
   const fixedDelay = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : null;
@@ -1028,7 +1359,8 @@ async function importLivelib(username, options = {}) {
 
   const rsc = await fetchRsc(cleanUsername, {
     onProgress,
-    maxPages: options.maxRscPages,
+    // Light phase = page 1 only: the deep scan is a separate, resumable pass.
+    maxPages: options.maxRscPages == null ? 1 : options.maxRscPages,
     jar,
     fetchImpl: options.fetchImpl,
     delayMs: fixedDelay == null ? undefined : fixedDelay,
@@ -1070,8 +1402,20 @@ async function importLivelib(username, options = {}) {
     );
   }
 
+  // A light re-check reads only page 1: keep the exact dates a previous deep
+  // scan already put on the other events.
+  const restoredDates = mergeExistingDates(events, options.existingProfile);
+  if (restoredDates > 0) {
+    console.log(
+      `[livelib ${cleanUsername}] light re-check kept ${restoredDates} deep-scan date(s)`
+    );
+  }
+
   const dated = events.filter((event) => event.finishedAt).length;
-  if (dated === 0) {
+  const monthOnly = events.filter(
+    (event) => !event.finishedAt && /^\d{4}-\d{2}$/.test(String(event.readMonth || ''))
+  ).length;
+  if (dated === 0 && mode !== 'light') {
     warnings.push('No exact read dates found: RSC payload may have changed shape.');
   }
 
@@ -1103,6 +1447,12 @@ async function importLivelib(username, options = {}) {
     importedAt: new Date().toISOString(),
     events,
     warnings,
+    // Deep-scan progress survives a light re-check: a completed scan stays
+    // marked done (no 63 pointless requests on every refresh), an interrupted
+    // one keeps its `lastPage` so the next run resumes there.
+    ...(options.existingProfile && options.existingProfile.deepScan
+      ? { deepScan: options.existingProfile.deepScan }
+      : {}),
   };
 
   return {
@@ -1131,7 +1481,9 @@ async function importLivelib(username, options = {}) {
     totals: {
       events: events.length,
       dated,
-      undated: events.length - dated,
+      undated: events.length - dated - monthOnly,
+      monthOnly,
+      restoredDates,
       bulkEntries: bulk.entries.length,
       pages: rsc.pageTotal,
       pagesFetched: rsc.pagesFetched,
@@ -1157,8 +1509,10 @@ module.exports = {
   parseBulkContent,
   readDateToIso,
   buildEvent,
+  mergeExistingDates,
   request,
   fetchBulk,
   fetchRsc,
+  deepScanProfile,
   importLivelib,
 };

@@ -218,78 +218,79 @@ test('HTTP route: force via query/body, default preserved, invalid force rejecte
 });
 
 test('frontend diff helper counts events numerically (including deletions)', async () => {
-  const { snapshotCounts, diffRefresh, refreshToastMessage } = await import(
+  const { snapshotCounts, diffRefresh, refreshToastMessage, deepBadgeText } = await import(
     '../public/js/books-refresh.js'
   );
 
   const before = snapshotCounts({
-    summary: { eventCount: 100 },
-    sourceBreakdown: [
-      { source: 'hardcover', events: 90 },
-      { source: 'livelib', events: 10 },
-    ],
+    summary: { eventCount: 100, finishedCount: 40, undatedEventCount: 60 },
   });
   assert.equal(before.eventCount, 100);
-  assert.equal(before.bySource.hardcover, 90);
+  assert.equal(before.datedCount, 40);
+  assert.equal(before.undatedCount, 60);
 
   const inserted = snapshotCounts({
-    summary: { eventCount: 103 },
-    sourceBreakdown: [
-      { source: 'hardcover', events: 91 },
-      { source: 'livelib', events: 12 },
-    ],
+    summary: { eventCount: 103, finishedCount: 42, undatedEventCount: 61 },
   });
   assert.deepEqual(diffRefresh(before, inserted), {
     eventDelta: 3,
-    bySource: {
-      hardcover: { before: 90, after: 91, delta: 1 },
-      livelib: { before: 10, after: 12, delta: 2 },
-    },
+    datedDelta: 2,
+    undatedDelta: 1,
   });
   assert.equal(
-    refreshToastMessage(before, inserted, { sources: ['hardcover', 'livelib'] }),
-    'Профиль обновлён: hardcover 91 · livelib 12 (+3 новых событий)'
+    refreshToastMessage(before, inserted, { source: 'hardcover' }),
+    'Профиль обновлён: Hardcover 103 (+3 новых событий)'
   );
 
   const deleted = snapshotCounts({
-    summary: { eventCount: 98 },
-    sourceBreakdown: [
-      { source: 'hardcover', events: 88 },
-      { source: 'livelib', events: 10 },
-    ],
+    summary: { eventCount: 98, finishedCount: 38, undatedEventCount: 60 },
   });
   assert.equal(diffRefresh(before, deleted).eventDelta, -2);
   assert.match(
-    refreshToastMessage(before, deleted),
-    /^Профиль обновлён: hardcover 88 · livelib 10 \(−2 событий/
+    refreshToastMessage(before, deleted, { source: 'livelib' }),
+    /^Профиль обновлён: LiveLib 98 \(−2 событий/
   );
 
   const same = snapshotCounts({
-    summary: { eventCount: 100 },
-    sourceBreakdown: [
-      { source: 'hardcover', events: 90 },
-      { source: 'livelib', events: 10 },
-    ],
+    summary: { eventCount: 100, finishedCount: 40, undatedEventCount: 60 },
   });
   assert.equal(
-    refreshToastMessage(before, same),
-    'Профиль обновлён: hardcover 90 · livelib 10 (данных новых нет)'
+    refreshToastMessage(before, same, { source: 'livelib' }),
+    'Профиль обновлён: LiveLib 100 (данных новых нет)'
   );
 
-  // One source failed: the successful source is still reported, the failure is
-  // named in the same toast.
-  const partial = refreshToastMessage(before, same, {
-    sources: ['hardcover', 'livelib'],
-    failures: { livelib: 'LiveLib недоступен (blocked)' },
+  // A deep scan changes dates without changing the event count.
+  const dated = snapshotCounts({
+    summary: { eventCount: 100, finishedCount: 95, undatedEventCount: 5 },
   });
-  assert.match(partial, /^Профиль обновлён: hardcover 90/);
-  assert.match(partial, /LiveLib: ошибка — LiveLib недоступен \(blocked\)/);
+  assert.equal(
+    refreshToastMessage(before, dated, { source: 'livelib' }),
+    'Профиль обновлён: LiveLib 100 (+55 событий с точной датой)'
+  );
+  assert.match(
+    refreshToastMessage(before, same, {
+      source: 'livelib',
+      deep: { percent: 45, pageTotal: 63, done: false },
+    }),
+    /история датируется в фоне \(45%\)/
+  );
 
-  const allFailed = refreshToastMessage(before, same, {
-    sources: ['hardcover', 'livelib'],
-    failures: { hardcover: 'boom', livelib: 'timeout' },
+  // A failure names the profile's single source instead of pretending a
+  // second source was refreshed.
+  const failed = refreshToastMessage(before, same, {
+    source: 'livelib',
+    failure: 'LiveLib ограничил доступ (HTTP 403)',
   });
-  assert.match(allFailed, /^Не удалось обновить профиль: Hardcover: ошибка — boom · LiveLib: ошибка — timeout$/);
+  assert.equal(
+    failed,
+    'Не удалось обновить профиль LiveLib: LiveLib ограничил доступ (HTTP 403)'
+  );
+
+  // Badge: «История 45%» while the deep scan runs, gone when done/absent.
+  assert.equal(deepBadgeText({ percent: 45, pageTotal: 63, done: false }), 'История 45%');
+  assert.equal(deepBadgeText({ percent: 100, done: false }), '');
+  assert.equal(deepBadgeText({ percent: 45, done: true }), '');
+  assert.equal(deepBadgeText(null), '');
 });
 
 test('books markup wires the real profile-refresh button and tooltip', () => {
@@ -297,11 +298,15 @@ test('books markup wires the real profile-refresh button and tooltip', () => {
   const source = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'books.js'), 'utf8');
 
   assert.match(html, /id="books-refresh"[\s\S]*?Обновить профиль/);
-  assert.match(html, /Полная проверка Hardcover \(всегда, ~10 с\) и LiveLib \(полный скан всех страниц, ~3 мин\)/);
+  assert.match(html, /фоновый глубокий скан истории/);
   assert.match(html, /id="books-refresh-spinner"/);
+  assert.match(html, /id="books-refresh-percent"/);
 
   assert.match(source, /getBooksProfiles/);
-  assert.match(source, /startBooksImportLivelib\(username, \{ force: true \}\)/);
+  assert.match(source, /startBooksImportLivelib\(username, \{ force: true, deep: 'auto' \}\)/);
   assert.match(source, /refreshToastMessage/);
   assert.match(source, /snapshotCounts/);
+  assert.match(source, /deepBadgeText/);
+  // One profile = one source: the stats request carries a single profile key.
+  assert.match(source, /getBooksStats\(\{\s*profile: activeProfileKey\(\)/);
 });
