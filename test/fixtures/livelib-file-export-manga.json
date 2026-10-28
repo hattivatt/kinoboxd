@@ -1,0 +1,77 @@
+[
+  {
+    "title": "Desert Punk. Том 1",
+    "bookHref": "https://www.livelib.ru/book/9000101-desert-punk-1",
+    "coverHref": "https://s1.livelib.ru/boocover/9000101/200x305/desert-punk-1.jpg",
+    "readDate": "Май 2024 г.",
+    "rating": { "overall": "7.9", "user": "4" },
+    "authors": [{ "name": "Масатоси Кё", "href": "https://www.livelib.ru/author/90001-masatoshi-kyo" }],
+    "genres": [
+      { "name": "манга", "href": "https://www.livelib.ru/genre/101" },
+      { "name": "приключения", "href": "https://www.livelib.ru/genre/102" }
+    ],
+    "details": {
+      "publishers": "Истари Комикс",
+      "series": "Desert Punk",
+      "language": "Русский"
+    }
+  },
+  {
+    "title": "Desert Punk. Том 2",
+    "bookHref": "https://www.livelib.ru/book/9000102-desert-punk-2",
+    "readDate": "Июнь 2024 г.",
+    "rating": { "overall": "7.7", "user": "4" },
+    "authors": [{ "name": "Масатоси Кё" }],
+    "genres": [{ "name": "фантастика", "href": "https://www.livelib.ru/genre/103" }],
+    "details": {
+      "publishers": "",
+      "series": "Desert Punk",
+      "language": "Русский"
+    }
+  },
+  {
+    "title": "Триган",
+    "bookHref": "https://www.livelib.ru/book/9000103-trigan",
+    "readDate": "Июль 2024 г.",
+    "rating": { "overall": "8.8", "user": "5" },
+    "authors": [{ "name": "Ясухиро Найто" }],
+    "genres": [
+      { "topPlace": "№3", "name": "Комиксы и манга", "href": "https://www.livelib.ru/genre/104" },
+      { "name": "сёнэн", "href": "https://www.livelib.ru/genre/105" }
+    ],
+    "details": {
+      "publishers": "Комильфо",
+      "series": "Trigun",
+      "language": "Русский"
+    }
+  },
+  {
+    "title": "Пикник на обочине",
+    "bookHref": "https://www.livelib.ru/book/9000104-piknik-na-obochine",
+    "readDate": "Август 2024 г.",
+    "rating": { "overall": "8.2", "user": "5" },
+    "authors": [{ "name": "Аркадий Стругацкий" }, { "name": "Борис Стругацкий" }],
+    "genres": [{ "name": "Фантастика", "href": "https://www.livelib.ru/genre/106" }],
+    "details": {
+      "publishers": "АСТ",
+      "language": "Русский"
+    }
+  },
+  {
+    "title": "Тёмная башня. Стрелок",
+    "bookHref": "https://www.livelib.ru/book/9000105-temnaya-bashnya-strelok",
+    "readDate": "Сентябрь 2024 г.",
+    "rating": { "overall": "7.1", "user": "3" },
+    "authors": [{ "name": "Стивен Кинг" }],
+    "details": {
+      "publishers": "АСТ",
+      "language": "Русский"
+    }
+  },
+  {
+    "title": "Без жанров и издателя",
+    "bookHref": "https://www.livelib.ru/book/9000106-no-columns",
+    "readDate": "Октябрь 2024 г.",
+    "authors": [{ "name": "Безымянный Автор" }]
+  }
+]
