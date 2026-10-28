@@ -128,6 +128,26 @@ function yearOf(...values) {
   return null;
 }
 
+/**
+ * Publication year of a work, negative years included.
+ *
+ * Литрес stores an ancient work as e.g. `-0500-01-01` («Искусство войны» is
+ * ~V century BC); a bare `/(\d{4})/` would read that as +500 and put Sun Tzu
+ * into the 6th century AD. The year chart has an honest «до 1000 г.» bucket for
+ * exactly this, so the sign has to survive the parse.
+ */
+function firstYearOf(...values) {
+  for (const value of values) {
+    const text = String(value == null ? '' : value).trim();
+    if (!text) continue;
+    const match = /^(-?\d{1,4})(?!\d)/.exec(text);
+    if (!match) continue;
+    const year = Number(match[1]);
+    if (Number.isFinite(year) && year !== 0) return year;
+  }
+  return null;
+}
+
 function normalizeLitresIsbn(raw) {
   if (!raw) return null;
   const parts = String(raw).split(/[,;/]\s*/);
@@ -209,7 +229,13 @@ function normalizeLitres(item, detail, input, scored) {
   );
   // The work's first publication is what the year chart should show: the
   // print date of the edition in hand must not move Sun Tzu into the 2020s.
-  const firstPublishedYear = yearOf(
+  // «Дата написания» (`date_written_at`) is the field that carries it, and the
+  // art detail is the authoritative copy — a search hit may omit it. A
+  // translation edition may still carry the translation's year (Гамлет, 1828);
+  // the merge takes the earliest claim across providers for that reason
+  // (providers/index.js `earliestFirstYear`).
+  const firstPublishedYear = firstYearOf(
+    detail && detail.date_written_at,
     item.date_written_at,
     detail && detail.first_published_at,
     item.first_published_at
@@ -379,6 +405,7 @@ module.exports = {
   extractInstances,
   authorNamesOf,
   cleanTitle,
+  firstYearOf,
   isBreakerOpen,
   tripBreaker,
   resetBreaker,

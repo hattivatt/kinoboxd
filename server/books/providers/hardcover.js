@@ -42,7 +42,17 @@ function normalizeDetails(details, editionId) {
     title: details.title || null,
     authors,
     year: details.publicationYear == null ? null : Number(details.publicationYear),
-    firstPublishedYear: details.publicationYear == null ? null : Number(details.publicationYear),
+    // Hardcover names the work (`books`), so `book.release_year` is the first
+    // publication (detailsFromBook stores it as `firstPublishedYear`). Legacy
+    // schema-1 documents have no such field; their `publicationYear` also
+    // prefers `book.release_year` over the edition, so it is the same value —
+    // used as a fallback only until the document is refreshed.
+    firstPublishedYear:
+      details.firstPublishedYear != null
+        ? Number(details.firstPublishedYear)
+        : details.publicationYear == null
+        ? null
+        : Number(details.publicationYear),
     publisher: details.publisher || null,
     series,
     genres,

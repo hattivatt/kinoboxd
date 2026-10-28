@@ -124,14 +124,23 @@ function normalizeSearchDoc(doc, query) {
   const allSubjects = subjectsOf(doc.subject, Number.POSITIVE_INFINITY);
   const key = doc.key || null;
   const isbns = Array.isArray(doc.isbn) ? doc.isbn.map(normalizeIsbn).filter(Boolean) : [];
+  const firstYear = yearOf(doc.first_publish_year);
+  // `first_publish_year` of a search hit is derived from the editions of *that
+  // OL work record*. A translation-only record is its own work in OL: the
+  // Russian «Искусство войны» (OL37431263W) has exactly one edition (2013) and
+  // `first_publish_year: 2013`, which is the print run, not the work. A record
+  // with one edition therefore proves nothing about the first publication and
+  // must not enter the year chart as if it did.
+  const editionCount = Number.isFinite(Number(doc.edition_count)) ? Number(doc.edition_count) : null;
+  const firstPublishedYear = editionCount != null && editionCount < 2 ? null : firstYear;
   return {
     source: NAME,
     sourceId: sourceIdOf(key),
     workId: `ol:${sourceIdOf(key)}`,
     title: String(doc.title),
     authors,
-    year: yearOf(doc.first_publish_year),
-    firstPublishedYear: yearOf(doc.first_publish_year),
+    year: firstYear,
+    firstPublishedYear,
     publisher,
     series: null,
     genres,
@@ -207,7 +216,7 @@ async function byTitle(input, options) {
   params.set('limit', '5');
   params.set(
     'fields',
-    'key,title,author_name,publisher,first_publish_year,cover_i,subject,isbn,number_of_pages_median'
+    'key,title,author_name,publisher,first_publish_year,cover_i,subject,isbn,number_of_pages_median,edition_count'
   );
   const data = await fetchJson(`${SEARCH_URL}?${params.toString()}`, {
     fetchImpl: options.fetchImpl,

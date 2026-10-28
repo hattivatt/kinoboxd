@@ -309,6 +309,8 @@ function normalizeEntry(workId, raw) {
     authors,
     publisher: text(entry.publisher),
     year: numOrNull(entry.year),
+    // The print run in hand (kept apart from the work's first publication).
+    editionYear: numOrNull(entry.editionYear),
     pages: numOrNull(entry.pages != null ? entry.pages : entry.pagesOfEdition),
     genres: genreNames,
     series: text(entry.series),
@@ -398,10 +400,16 @@ function normalizeBooks(raw) {
     return {
       start,
       label,
+      unknown: Boolean(item && item.unknown),
+      ancient: Boolean(item && item.ancient),
       count: Math.max(0, toNum(item && item.count)),
     };
   }).filter((item) => item.label && item.count > 0)
-    .sort((a, b) => b.start - a.start || b.label.localeCompare(a.label, 'ru'));
+    .sort((a, b) => {
+      if (a.unknown) return 1;
+      if (b.unknown) return -1;
+      return b.start - a.start || b.label.localeCompare(a.label, 'ru');
+    });
 
   const years = arr(source.years).map((item) => ({
     year: Math.round(toNum(item && item.year, 0)),
@@ -3125,7 +3133,7 @@ function decadeHint(message) {
   box.append(el('div', { class: 'years-empty-ring', 'aria-hidden': 'true' }));
   box.append(el('p', {
     class: 'years-empty-text',
-    text: message || 'Выбери десятилетие слева — покажем годы издания книг',
+    text: message || 'Выбери десятилетие слева — покажем годы первого издания книг',
   }));
   return box;
 }
@@ -3139,8 +3147,9 @@ function renderDecades(data) {
   const decades = data.decades.slice();
   const total = decades.reduce((sum, item) => sum + item.count, 0);
   if (note) {
-    note.textContent = decades.length
-      ? `${fmtInt(decades.length)} ${plural(decades.length, ['десятилетие', 'десятилетия', 'десятилетий'])}`
+    const real = decades.filter((item) => !item.unknown).length;
+    note.textContent = real
+      ? `${fmtInt(real)} ${plural(real, ['десятилетие', 'десятилетия', 'десятилетий'])}`
       : '';
   }
 
@@ -3156,7 +3165,7 @@ function renderDecades(data) {
     label: item.label,
     value: item.count,
     color: DECADE_COLORS[index % DECADE_COLORS.length],
-    decadeStart: item.start,
+    decadeStart: item.unknown ? null : item.start,
   }));
 
   renderDonut(donutHost, {
@@ -3165,11 +3174,13 @@ function renderDecades(data) {
     selectedKey: state.selectedDecade ? `decade-${state.selectedDecade.start}` : null,
     centerValue: fmtInt(total),
     centerLabel: 'книг',
-    ariaLabel: 'Распределение книг по десятилетиям издания. Выберите десятилетие, чтобы увидеть годы',
+    ariaLabel: 'Распределение книг по десятилетиям первого издания. Выберите десятилетие, чтобы увидеть годы',
     secondary: (seg) => `${fmtPercent(seg.value, total)} всех книг`,
     onSelect: (seg) => {
       const start = toNum(seg.decadeStart);
-      state.selectedDecade = start > 0 ? { start, label: seg.label } : null;
+      // «год неизвестен» is not a decade: nothing to drill into.
+      if (!Number.isFinite(start) || start <= 0) return;
+      state.selectedDecade = { start, label: seg.label };
       renderDecades(data);
       renderYears(data);
     },
@@ -3228,7 +3239,7 @@ function renderYears(data) {
     legendHost,
     centerValue: fmtInt(total),
     centerLabel: 'книг',
-    ariaLabel: `Распределение книг по годам издания: ${selected.label}`,
+    ariaLabel: `Распределение книг по годам первого издания: ${selected.label}`,
     secondary: (seg) => `${fmtPercent(seg.value, total)} книг десятилетия`,
     onSelect: (seg) => {
       const year = Number(seg.label);
@@ -3244,9 +3255,9 @@ function openYearModal(year) {
   const books = Object.values(state.data.booksIndex).filter((entry) => entry.year === target);
   openWorksModal({
     books,
-    kicker: 'Годы издания',
+    kicker: 'Годы первого издания',
     title: `${fmtInt(target)} год`,
-    subtitle: `${fmtInt(books.length)} ${plural(books.length, ['книга', 'книги', 'книг'])} издано в ${target} году`,
+    subtitle: `${fmtInt(books.length)} ${plural(books.length, ['книга', 'книги', 'книг'])} впервые издано в ${target} году`,
     groupLabel: String(target),
   });
 }
@@ -3276,20 +3287,22 @@ function renderYearBarsWidget(data) {
     onYearClick: openYearModal,
     unitForms: ['книга', 'книги', 'книг'],
     shareLabel: 'всех книг',
-    emptyText: 'Нет данных по годам издания',
+    emptyText: 'Нет данных по годам первого издания',
     ariaLabel: years.length
-      ? `Книги по годам издания: ${years[0].year} — ${years[years.length - 1].year}`
-      : 'Книги по годам издания',
+      ? `Книги по годам первого издания: ${years[0].year} — ${years[years.length - 1].year}`
+      : 'Книги по годам первого издания',
   };
   renderYearBars(host, years, options);
 
   if (note) {
     const total = years.reduce((sum, item) => sum + item.count, 0);
     const ancient = toNum(data.summary && data.summary.ancientBookCount);
+    const unknown = toNum(data.summary && data.summary.yearUnknownCount);
     const ancientNote = ancient > 0 ? ` · ${fmtInt(ancient)} ${plural(ancient, ['книга', 'книги', 'книг'])} до 1000 г.` : '';
-    if (!years.length) note.textContent = ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных';
-    else if (years.length === 1) note.textContent = `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}`;
-    else note.textContent = `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}`;
+    const unknownNote = unknown > 0 ? ` · ${fmtInt(unknown)} ${plural(unknown, ['книга', 'книги', 'книг'])} без года` : '';
+    if (!years.length) note.textContent = `${ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных'}${unknownNote}`;
+    else if (years.length === 1) note.textContent = `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${unknownNote}`;
+    else note.textContent = `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${unknownNote}`;
   }
 
   if (typeof ResizeObserver === 'function') {
@@ -3495,6 +3508,12 @@ function bookRow(entry) {
   const info = el('div', { class: 'film-info' });
   const titleNode = el('div', { class: 'film-title', text: title });
   if (entry.year) titleNode.append(el('span', { class: 'film-year', text: String(entry.year) }));
+  if (entry.year) {
+    const edition = entry.editionYear && entry.editionYear !== entry.year
+      ? ` · это издание: ${entry.editionYear}`
+      : '';
+    titleNode.title = `Первое издание: ${entry.year}${edition}`;
+  }
   if (entry.titleOriginal && entry.titleOriginal !== title) titleNode.title = entry.titleOriginal;
   info.append(titleNode);
 

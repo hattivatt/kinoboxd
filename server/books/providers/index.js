@@ -70,6 +70,41 @@ function firstValue(primary, extras, field) {
   return null;
 }
 
+/**
+ * A work's first-publication year, as one provider claims it.
+ *
+ * The bounds mirror `stats.saneFirstYear`: a work may be ancient («Искусство
+ * войны», V century BC), so negative and sub-1000 years are valid here, while a
+ * zero/garbage value is not.
+ */
+function firstYearOf(value) {
+  if (value == null || value === '') return null;
+  const year = Number(value);
+  if (!Number.isFinite(year)) return null;
+  const truncated = Math.trunc(year);
+  return truncated >= -3000 && truncated <= 2100 ? truncated : null;
+}
+
+/**
+ * Earliest *claimed first publication* across the merged providers.
+ *
+ * Provider priority is right for content fields (Hardcover names the work), but
+ * not for this one: the failure mode that matters is an edition year dressed as
+ * a first-publication year (Литрес `publication_date` 2026, an OL work record
+ * built from one 2013 translation). Such a claim is always *later* than the
+ * truth, so the earliest sane claim wins and a modern mistake can never
+ * outvote an older honest year.
+ */
+function earliestFirstYear(entries) {
+  let best = null;
+  for (const entry of entries) {
+    const year = firstYearOf(entry && entry.firstPublishedYear);
+    if (year == null) continue;
+    if (best == null || year < best) best = year;
+  }
+  return best;
+}
+
 function firstList(primary, extras, field) {
   if (primary && Array.isArray(primary[field]) && primary[field].length) return [...primary[field]];
   for (const extra of extras) {
@@ -127,7 +162,9 @@ function mergeResults(primary, extras = []) {
     title: firstValue(primary, others, 'title'),
     authors: firstList(primary, others, 'authors'),
     year: firstValue(primary, others, 'year'),
-    firstPublishedYear: firstValue(primary, others, 'firstPublishedYear'),
+    // Work-level first publication, not the edition in hand (see
+    // `earliestFirstYear`): the year chart uses this and nothing else.
+    firstPublishedYear: earliestFirstYear([primary, ...others]),
     publisher: firstValue(primary, others, 'publisher'),
     series: firstValue(primary, others, 'series'),
     genres,
@@ -253,4 +290,6 @@ module.exports = {
   mergedManga,
   mergedMangaTexts,
   resultToDetails,
+  firstYearOf,
+  earliestFirstYear,
 };

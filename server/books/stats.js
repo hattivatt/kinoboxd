@@ -748,25 +748,31 @@ function filterDetailsSeries(details, fileSeriesNames) {
 }
 
 /**
- * First publication year of the *work*, not of the edition in hand. Chain:
- *   1. Hardcover work release year / Open Library `first_publish_year` /
- *      Литрес `date_written_at`/`first_published_at` (`details.firstPublishedYear`);
- *   2. the details document's publication year (work-level when the provider
- *      knew it);
- *   3. the file/edition year — last resort, it describes this print run.
+ * First publication year of the *work* — and only that (user verdict,
+ * 28.10.2026: «в графах годов/десятилетий — год первого издания»).
+ *
+ * `details.firstPublishedYear` is the single source of truth: Hardcover
+ * `book.release_year`, Open Library `first_publish_year` (only when the record
+ * has more than one edition), Литрес «дата написания». The edition year of the
+ * print run in hand is deliberately NOT a fallback: a 2026 Эксмо reissue of
+ * Rabelais is not «2026», and pretending otherwise is the bug this replaces.
+ * A work whose providers know nothing lands in the honest «год неизвестен»
+ * bucket (`decades[]` with `unknown: true`), while the work itself still
+ * carries `editionYear` for the card/tooltip.
+ *
  * Ancient years are valid here (Сунь Цзы, ~V century BC).
  */
-function firstPublishedYearOf(details, displayEvent, fileMeta) {
-  const fromDetails = saneFirstYear(
-    details && (details.firstPublishedYear != null
-      ? details.firstPublishedYear
-      : details.publicationYear)
+function firstPublishedYearOf(details) {
+  return saneFirstYear(details && details.firstPublishedYear);
+}
+
+/** The print run in hand: the event's edition column, else the file column. */
+function editionYearOf(details, displayEvent, fileMeta) {
+  return (
+    saneYear(
+      (displayEvent && displayEvent.edition && displayEvent.edition.year) || (fileMeta && fileMeta.year)
+    ) || saneYear(details && details.publicationYear)
   );
-  if (fromDetails != null) return fromDetails;
-  const editionYear = saneYear(
-    (displayEvent && displayEvent.edition && displayEvent.edition.year) || (fileMeta && fileMeta.year)
-  );
-  return editionYear;
 }
 
 function workMetadata(workId, events) {
@@ -814,8 +820,11 @@ function workMetadata(workId, events) {
     (displayEvent && displayEvent.edition && displayEvent.edition.publisher) ||
     fileMeta.publisher ||
     null;
-  const rawYear = firstPublishedYearOf(details, displayEvent, fileMeta);
+  const rawYear = firstPublishedYearOf(details);
   const year = saneFirstYear(rawYear);
+  // The print run in hand, kept apart from the chart year (see
+  // `firstPublishedYearOf`): the card shows it, the decade chart does not.
+  const editionYear = editionYearOf(details, displayEvent, fileMeta);
   const pages =
     details && details.pages != null && Number.isFinite(Number(details.pages)) && Number(details.pages) > 0
       ? Number(details.pages)
@@ -893,6 +902,7 @@ function workMetadata(workId, events) {
     seriesTagsFiltered: seriesFilter.removed,
     publisher,
     year: year == null ? null : Number(year),
+    editionYear,
     pages,
     coverUrl,
     isbn13: (details && details.isbn13) || fileMeta.isbn13 || null,
@@ -1017,6 +1027,7 @@ function mergeWorkGroup(list) {
     series,
     publisher: pick('publisher'),
     year: pick('year'),
+    editionYear: pick('editionYear'),
     pages: pick('pages'),
     coverUrl: pick('coverUrl'),
     isbn13: pick('isbn13'),
@@ -1480,6 +1491,9 @@ function buildBooksStats(options = {}) {
     ancientBookCount: [...works.values()].filter(
       (work) => Number.isFinite(work.year) && work.year < 1000
     ).length,
+    // Works whose first publication no provider knows: they are in the
+    // «год неизвестен» bucket, not in a printed-in-2026 one.
+    yearUnknownCount: [...works.values()].filter((work) => !Number.isFinite(work.year)).length,
     yearsSpan: years.length ? { from: years[0], to: years[years.length - 1] } : null,
   };
 
@@ -1564,8 +1578,15 @@ function buildBooksStats(options = {}) {
   const decadeMap = new Map();
   const yearMap = new Map();
   const ANCIENT_LABEL = 'до 1000 г.';
+  const UNKNOWN_YEAR_LABEL = 'год неизвестен';
   for (const work of works.values()) {
-    if (!Number.isFinite(work.year)) continue;
+    if (!Number.isFinite(work.year)) {
+      // No provider knows the work's first publication. The chart says so
+      // instead of painting the print run's year («Эксмо, 2026») as a first
+      // publication; the edition year survives on `work.editionYear`.
+      pushWorks(decadeMap, 'unknown', { decade: null, label: UNKNOWN_YEAR_LABEL, unknown: true }, work);
+      continue;
+    }
     if (work.year < 1000) {
       // Ancient works (Сунь Цзы, античные авторы) get one honest bucket instead
       // of being silently dropped by the old `year > 0` filter.
@@ -1581,10 +1602,16 @@ function buildBooksStats(options = {}) {
       decade: entry.decade,
       ...(entry.label ? { label: entry.label } : {}),
       ...(entry.ancient ? { ancient: true } : {}),
+      ...(entry.unknown ? { unknown: true } : {}),
       count: entry.count,
       avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
     }))
-    .sort((a, b) => a.decade - b.decade);
+    // Ancient first, real decades in order, «год неизвестен» last.
+    .sort((a, b) => {
+      if (a.unknown) return 1;
+      if (b.unknown) return -1;
+      return a.decade - b.decade;
+    });
   const yearsList = [...yearMap.values()]
     .map((entry) => ({
       year: entry.year,
@@ -1753,6 +1780,7 @@ function buildBooksStats(options = {}) {
       publisher: work.publisher,
       pages: work.pages,
       year: work.year,
+      editionYear: work.editionYear,
       coverUrl: work.coverUrl,
       isbn13: work.isbn13,
       isbn10: work.isbn10,

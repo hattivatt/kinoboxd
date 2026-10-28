@@ -519,6 +519,11 @@ function detailsFromBook(book, edition, fetchedAt) {
       ? Number(edition.pages)
       : null,
     publicationYear: yearOf(book.release_year, book.release_date, edition && edition.release_year, edition && edition.release_date),
+    // Work-level first publication: both fields below live on the `books`
+    // record (Hardcover's canonical work entity), never on the print edition.
+    // Deliberately *not* the `publicationYear` fallback: an edition date must
+    // not become a first-publication claim.
+    firstPublishedYear: yearOf(book.release_year, book.release_date),
     isbn13: (edition && edition.isbn_13) || null,
     isbn10: (edition && edition.isbn_10) || null,
     publisher,

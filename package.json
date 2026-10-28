@@ -14,6 +14,7 @@
     "backfill:mcu": "node server/backfill.js mcu",
     "rematch": "node server/backfill.js rematch",
     "backfill:manga": "node server/books/manga-backfill.js",
+    "backfill:years": "node server/books/years-backfill.js",
     "backfill:authors": "node server/books/authors-backfill.js",
     "test": "node --test test/*.test.js"
   },
