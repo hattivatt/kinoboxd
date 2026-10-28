@@ -455,7 +455,12 @@ function normalizeBooks(raw) {
 
   const timeline = arr(source.timeline).map((item) => ({
     month: text(item && item.month),
-    finished: Math.max(0, toNum(item && (item.finished ?? item.read ?? item.watched))),
+    // The bar counts every read of that month: exact-day events plus
+    // month-only ones (LiveLib stores only {year, month} for part of the
+    // history). Days never enter the calendar/streaks.
+    finished: Math.max(0, toNum(item && (item.finished ?? item.read ?? item.watched)))
+      + Math.max(0, toNum(item && item.monthOnly)),
+    monthOnly: Math.max(0, toNum(item && item.monthOnly)),
     reRead: Math.max(0, toNum(item && (item.reRead ?? item.reReadCount))),
     livelib: Math.max(0, toNum(item && (item.livelib ?? (item.bySource && item.bySource.livelib)))),
     hardcover: Math.max(0, toNum(item && (item.hardcover ?? (item.bySource && item.bySource.hardcover)))),
@@ -2162,11 +2167,16 @@ function renderHead(data) {
     const chain = metadata.length
       ? `, метадата — ${metadata.map((source) => (METADATA_LABEL[source] || [source])[1]).join(', ')}`
       : '';
-    const undated = data.summary.undatedEventCount > 0
-      ? ` Без даты: ${fmtInt(data.summary.undatedEventCount)} — вне календаря.`
-      : data.summary.monthOnlyEventCount > 0
-      ? ` Дата по месяцу у ${fmtInt(data.summary.monthOnlyEventCount)} событий — они в таймлайне, но не в календаре и стриках.`
-      : '';
+    const undatedParts = [];
+    if (data.summary.monthOnlyEventCount > 0) {
+      undatedParts.push(
+        `у ${fmtInt(data.summary.monthOnlyEventCount)} дата по месяцу — в таймлайне, но не в календаре и стриках`
+      );
+    }
+    if (data.summary.undatedEventCount > 0) {
+      undatedParts.push(`без даты: ${fmtInt(data.summary.undatedEventCount)}`);
+    }
+    const undated = undatedParts.length ? ` ${undatedParts.join('; ')}.` : '';
     const sourceNote = scoped.length
       ? `${scopeNote} Оценки и даты — только ${scoped.map(sourceLabel).join('')}${chain}.${undated}`
       : `${scopeNote} Подключите источник, чтобы увидеть оценки, жанры и календарь.`;
