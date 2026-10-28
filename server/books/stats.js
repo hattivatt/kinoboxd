@@ -30,6 +30,9 @@ const bookCache = require('./book-cache');
 const { surnameOf } = require('./normalize');
 const { detectManga } = require('./providers/manga');
 
+/** `origin`/`metadataSources` value of the `livelib-backup` file import. */
+const FILE_METADATA_SOURCE = 'livelib-file';
+
 const PAGE_BUCKETS = [
   { key: '<100', min: 0, max: 99 },
   { key: '100-199', min: 100, max: 199 },
@@ -326,6 +329,22 @@ function recordStatusExclusion(filter, event) {
   if (statusId == null) filter.missingStatusId++;
 }
 
+/**
+ * Resolve-cache key of a profile event. Must stay identical to `eventKeyOf` in
+ * resolve.js: the chain writes `links/<key>.json`, the payload reads it back.
+ *
+ * A `livelib-backup` file row may have no «Ссылка на книгу» column at all, so
+ * its `sourceBookId` is null. Keying such a row by `fileKey` (`file:tk:<sha1>`)
+ * keeps it addressable; keying it by the empty string would make every such row
+ * share one work (`ll:`) and collapse the whole profile into a single book.
+ */
+function eventLinkKeyOf(event) {
+  if (!event) return null;
+  if (event.sourceBookId) return String(event.sourceBookId);
+  if (event.fileKey) return `file:${String(event.fileKey)}`;
+  return null;
+}
+
 /** Attach workId / reread flags to raw profile events. */
 function prepareEvents(profiles) {
   const events = [];
@@ -359,13 +378,17 @@ function prepareEvents(profiles) {
       if (legacyStatus && source === 'hardcover') profileAudit.missingStatusId++;
       profileAudit.kept++;
       const sourceBookId = String(raw.sourceBookId || '');
+      const linkKey = eventLinkKeyOf(raw);
       let workId = raw.workId || null;
-      if (!workId && source === 'livelib' && sourceBookId) {
-        const link = bookCache.getLink(sourceBookId);
+      if (!workId && source === 'livelib' && linkKey) {
+        const link = bookCache.getLink(linkKey);
         workId = link && link.workId ? link.workId : null;
       }
       if (!workId) {
-        workId = `${source === 'hardcover' ? 'hc' : 'll'}:${sourceBookId}`;
+        // File rows without a link column have no numeric id: the synthetic
+        // `file:tk:…` key is their identity (see eventLinkKeyOf).
+        const fallback = sourceBookId || linkKey || String(raw.id || 'unknown');
+        workId = `${source === 'hardcover' ? 'hc' : 'll'}:${fallback}`;
       }
       events.push({
         ...raw,
@@ -454,6 +477,71 @@ function metadataSourcesOf(details) {
   return details.hcWorkId != null ? ['hardcover'] : [];
 }
 
+/** Identity of a genre/series name for dedupe (case, «ё», punctuation). */
+function nameKeyOf(value) {
+  return String(value == null ? '' : value)
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+/**
+ * Union of the metadata chain's genres and the file columns' genres.
+ *
+ * They are not the same vocabulary: Литрес calls a book «Зарубежное фэнтези»,
+ * the export says «фэнтези», Hardcover says «Fantasy». The previous rule
+ * (`details.genres` wins, else file) silently dropped what the user's own
+ * export said the moment the chain resolved the work. Union keeps both, deduped
+ * by normalized name; the chain's labels come first, so a donut still has one
+ * entry per concept when the labels match.
+ */
+function mergeGenreLists(primary, extra) {
+  const out = [];
+  const seen = new Set();
+  for (const list of [primary, extra]) {
+    for (const name of Array.isArray(list) ? list : []) {
+      const clean = String(name == null ? '' : name).trim();
+      const key = nameKeyOf(clean);
+      if (!clean || !key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(clean);
+    }
+  }
+  return out;
+}
+
+/**
+ * Union of series entries: the chain knows ids/positions, the file knows the
+ * RU series label (`edition.series`). Same name → the richer entry (one with a
+ * position/hcId) wins; a file-only name is kept as a positionless entry.
+ */
+function mergeSeriesLists(primary, extra) {
+  const out = [];
+  const index = new Map();
+  for (const entry of Array.isArray(primary) ? primary : []) {
+    if (!entry || !entry.name) continue;
+    const key = nameKeyOf(entry.name);
+    if (!key || index.has(key)) continue;
+    index.set(key, out.length);
+    out.push({ ...entry });
+  }
+  for (const entry of Array.isArray(extra) ? extra : []) {
+    if (!entry || !entry.name) continue;
+    const key = nameKeyOf(entry.name);
+    if (!key) continue;
+    if (index.has(key)) {
+      const current = out[index.get(key)];
+      if (current.position == null && entry.position != null) current.position = entry.position;
+      if (current.hcId == null && entry.hcId != null) current.hcId = entry.hcId;
+      continue;
+    }
+    index.set(key, out.length);
+    out.push({ ...entry });
+  }
+  return out;
+}
+
 /**
  * Effective manga/comics flag for one work.
  *
@@ -521,8 +609,8 @@ function profileShelfCounts(events) {
  * «Серия», «ISBN» — the same fields the resolve chain would fetch. When they
  * are present they are used directly: a file-imported profile renders genres,
  * series and publishers without a single network request (the point of the
- * safe path). The chain still wins when a details document exists, and
- * `metadataSources` says which one it was.
+ * safe path). When the chain resolves a work too, the two corpora are unioned
+ * (`mergeGenreLists`/`mergeSeriesLists`) and `metadataSources` lists both.
  *
  * Two flags, because "the file was parsed" and "the file says something about
  * this book" are different questions:
@@ -547,7 +635,7 @@ function fileMetadataOf(events) {
     isbn10: null,
     language: null,
   };
-  const rows = (events || []).filter((event) => event && event.origin === 'livelib-file');
+  const rows = (events || []).filter((event) => event && event.origin === FILE_METADATA_SOURCE);
   if (!rows.length) return empty;
 
   const genres = [];
@@ -633,10 +721,14 @@ function workMetadata(workId, events) {
     details && details.pages != null && Number.isFinite(Number(details.pages)) && Number(details.pages) > 0
       ? Number(details.pages)
       : null;
-  const genres = details && Array.isArray(details.genres) && details.genres.length
-    ? [...details.genres]
-    : fileMeta.genres;
-  const series = detailsSeries(details).length ? detailsSeries(details) : fileMeta.series;
+  const genres = mergeGenreLists(
+    details && Array.isArray(details.genres) ? details.genres : [],
+    fileMeta.genres
+  );
+  const series = mergeSeriesLists(
+    detailsSeries(details),
+    fileMeta.series
+  );
   const coverUrl =
     (details && details.coverUrl) ||
     (displayEvent && displayEvent.coverUrl) ||
@@ -651,7 +743,11 @@ function workMetadata(workId, events) {
   // an LL link in links.json; provider page URLs come from the details doc.
   const links = {};
   const llSourceId = String(workId).startsWith('ll:') ? String(workId).slice(3) : null;
-  if (llSourceId) links.livelib = `https://www.livelib.ru/book/${llSourceId}`;
+  // Only a real LiveLib book id makes a LiveLib URL; a file-keyed stub
+  // (`ll:file:tk:<sha1>`) is an internal identity, not a page.
+  if (llSourceId && /^\d+$/.test(llSourceId)) {
+    links.livelib = `https://www.livelib.ru/book/${llSourceId}`;
+  }
   if (String(workId).startsWith('hc:')) {
     const workLink = bookCache.getWorkLink(workId);
     const llId = workLink && Array.isArray(workLink.livelib)
@@ -672,7 +768,12 @@ function workMetadata(workId, events) {
   }
 
   const metadataSources = metadataSourcesOf(details);
-  if (!metadataSources.length && fileMeta.present) metadataSources.push('livelib-file');
+  // Union, not either/or: a file-imported work keeps the «livelib-file»
+  // provenance after the chain adds litres/hardcover — the file is still where
+  // the event's own columns (genres/publisher/series) came from (§5).
+  if (fileMeta.present && !metadataSources.includes(FILE_METADATA_SOURCE)) {
+    metadataSources.push(FILE_METADATA_SOURCE);
+  }
 
   return {
     workId,

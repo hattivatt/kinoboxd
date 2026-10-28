@@ -41,6 +41,9 @@ const csvFixture = fs.readFileSync(path.join(FIXTURES, 'livelib-file-export.csv'
 
 function form({ file = jsonFixture, filename = 'livelib-routeprobe-read-28.10.2026.json', ...fields } = {}) {
   const body = new FormData();
+  // These tests pin the pure parse path: opt out of the (now default) network
+  // resolve job unless a test asks for it explicitly.
+  if (fields.resolve === undefined) fields.resolve = "0";
   for (const [key, value] of Object.entries(fields)) {
     if (value != null) body.append(key, String(value));
   }

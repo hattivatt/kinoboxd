@@ -53,6 +53,9 @@ let base = '';
 
 function form({ file = mangaFixture, filename = 'livelib-file-manga-read-28.10.2026.json', ...fields } = {}) {
   const body = new FormData();
+  // Opt out of the (now default) metadata chain: this file pins the parse +
+  // filter contract and must not touch the network.
+  if (fields.resolve === undefined) fields.resolve = '0';
   for (const [key, value] of Object.entries(fields)) {
     if (value != null) body.append(key, String(value));
   }

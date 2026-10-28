@@ -164,6 +164,10 @@ async function resolveAllLivelibProfiles(job, options = {}) {
       // Same anonymous session for the card pages: with plan-B cookies the
       // enrichment must not fall back to a cold, blockable IP.
       jar: options.jar,
+      // A file-import-triggered pass must not scrape livelib.ru (§9): only a
+      // scrape import (which already has a bootstrapped session) may use the
+      // LiveLib card provider.
+      allowLivelibCard: options.allowLivelibCard !== false,
       onProgress: (progress) => {
         job.resolved = progress.resolved;
         job.resolveTotal = progress.total;
@@ -212,6 +216,7 @@ async function resolveAllLivelibProfiles(job, options = {}) {
     enriched: reports.reduce((sum, report) => sum + report.enriched, 0),
     ambiguous: reports.reduce((sum, report) => sum + report.ambiguous, 0),
     unmatched: reports.reduce((sum, report) => sum + report.unmatched, 0),
+    planShelfSkipped: reports.reduce((sum, report) => sum + (report.skippedPlanShelf || 0), 0),
     requests: reports.reduce((sum, report) => sum + report.requests, 0),
     providerChain,
     cardBudget: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
@@ -681,20 +686,30 @@ function startHardcoverImport(userId) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Optional metadata enrichment for a `livelib-file` import.
+ * Metadata enrichment job for LiveLib profiles.
  *
- * Importing the export file itself is pure parsing — zero network requests is
- * the whole point. The user may still ask for the metadata chain (Hardcover →
- * Литрес → GB → OL → LiveLib card) so a work gets a canonical `hc:` id,
- * series/author ids and pages. That pass is the same one a scraped import runs,
- * so it reuses `resolveAllLivelibProfiles` and the regular job bookkeeping
- * (`getResolveState` drives the «Метадата: N%» badge while it runs).
+ * The regular resolve stage of a scraped import does the same work, so a
+ * resolve-only job reuses `resolveAllLivelibProfiles` and the regular job
+ * bookkeeping (`getResolveState` drives the «Метадата: N%» badge while it runs).
+ *
+ * A `livelib-file` import starts this job BY DEFAULT (§3.3.2): the export file
+ * is reading history first and bibliographic columns second, and a profile that
+ * was just merged must not wait for a manual click to get pages/series/editions.
+ *
+ * `options.coalesce` (default true) joins an already-running resolve stage —
+ * that is what a duplicate click wants. A file import passes `false`: it has
+ * just written new events, so it needs a *later* pass over the merged profile,
+ * not the pass that may have already walked it. The import chain still
+ * serializes the jobs, so the second pass starts right after the first.
  */
-function startResolveJob() {
-  const running = [...jobs.values()].find(
-    (job) => job && job.source === 'livelib' && !job.done && job.stage === 'resolve'
-  );
-  if (running) return publicStatus(running);
+function startResolveJob(options = {}) {
+  const coalesce = options.coalesce !== false;
+  if (coalesce) {
+    const running = [...jobs.values()].find(
+      (job) => job && job.source === 'livelib' && !job.done && job.stage === 'resolve'
+    );
+    if (running) return publicStatus(running);
+  }
 
   const job = {
     id: newJobId('resolve', 'livelib'),
@@ -714,7 +729,9 @@ function startResolveJob() {
   rememberJob(job);
 
   enqueue(job, async () => {
-    const report = await resolveAllLivelibProfiles(job, {});
+    const report = await resolveAllLivelibProfiles(job, {
+      allowLivelibCard: options.allowLivelibCard !== false,
+    });
     job.events = report.total || 0;
   });
 
@@ -795,7 +812,13 @@ function resolveStateFromJobs(jobList, source) {
   const idle = { running: false, jobId: null, budgetRemaining: null };
   if (source !== 'livelib') return idle;
   for (const job of jobList) {
-    if (!job || job.done || job.stage !== 'resolve') continue;
+    if (!job || job.done) continue;
+    // A resolve-only job is `queued` for a moment before its stage opens (the
+    // import chain may still be draining). The badge must say "догружается"
+    // from the first refresh after a file import, not only once the network
+    // stage literally starts.
+    const queuedResolve = job.stage === 'queued' && String(job.id || '').startsWith('resolve-');
+    if (job.stage !== 'resolve' && !queuedResolve) continue;
     const litres = job.liveBudget && job.liveBudget.litres;
     return {
       running: true,

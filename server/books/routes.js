@@ -202,6 +202,38 @@ const fileUpload = multer({
   limits: { fileSize: FILE_IMPORT_MAX_BYTES, files: 1 },
 });
 
+/**
+ * Does this file import also run the metadata chain?
+ *
+ * Default is YES: a `livelib-backup` file is reading history first and
+ * bibliographic columns second, and the user asked for the same enrichment a
+ * scraped import gets (pages, editions/years, series position, canonical work
+ * id). `resolve=0`/`false`/`no`/`off` in the multipart body **or** the query is
+ * the explicit opt-out (offline/one-shot import). Anything unrecognised keeps
+ * the default instead of silently disabling enrichment.
+ */
+const RESOLVE_FALSE_TOKENS = new Set(['0', 'false', 'no', 'off', 'skip']);
+const RESOLVE_TRUE_TOKENS = new Set(['1', 'true', 'yes', 'on']);
+
+function resolveFlagOf(value) {
+  if (value == null) return null;
+  if (typeof value === 'boolean') return value;
+  const token = String(value).trim().toLowerCase();
+  if (!token) return null;
+  if (RESOLVE_FALSE_TOKENS.has(token)) return false;
+  if (RESOLVE_TRUE_TOKENS.has(token)) return true;
+  return null;
+}
+
+function wantsResolve(req) {
+  const fromBody = resolveFlagOf(req.body && req.body.resolve);
+  if (fromBody != null) return fromBody;
+  const query = req.query && typeof req.query.resolve === 'string' ? req.query.resolve : null;
+  const fromQuery = resolveFlagOf(query);
+  if (fromQuery != null) return fromQuery;
+  return true;
+}
+
 /** Accept `Margaret`, `@Margaret`, `/reader/Margaret` or `livelib-Margaret`. */
 function parseImportUserKey(body) {
   const raw = body && (body.username || body.userKey || body.profileKey);
@@ -223,7 +255,8 @@ function parseImportUserKey(body) {
  *             (aliases: `userKey`, `profileKey` = `livelib-<name>`)
  *   shelf     read|dnf|reading|wish (RU labels accepted); sniffed from the
  *             filename (`livelib-margaret-read-28.10.2026.json`) when omitted
- *   resolve   1 = also run the metadata chain (network, optional)
+ *   resolve   0 = skip the metadata chain (network); default is ON
+ *             (aliases: `false|no|off`, or `?resolve=0` in the query)
  *
  * **No request ever leaves the server for livelib.ru**: this is the safe path
  * (see §9 «ban risk»). The parsed rows are merged into
@@ -231,9 +264,16 @@ function parseImportUserKey(body) {
  * never loses a date it already had, and a shelf upload is additive, so the
  * four pages can be imported in any order.
  *
- * The response is single-shot (no job to poll): counts, shelf tallies and the
- * parser warnings. `resolve: 1` starts the usual background enrichment job,
- * whose progress the dashboard already shows as «Метадата: N%».
+ * The response is single-shot for the parse itself (counts, shelf tallies and
+ * the parser warnings); the metadata chain then runs as the usual background
+ * resolve job — the same one a scraped import runs, with the same budget and
+ * the same «Метадата: N%» badge (`summary.metadata.running`). A file row is a
+ * first-class resolve input (§3.3.2): its ISBN goes straight into the batched
+ * Hardcover lookup, and its Cyrillic title makes Литрес the first matcher. The
+ * pass runs with `allowLivelibCard: false`, so the chain still never touches
+ * livelib.ru: Hardcover → Литрес → GB → OL only.
+ * `resolve: 0` is the explicit opt-out for an offline "just show me the file"
+ * import; it is a per-request choice, never a stored mode.
  */
 router.post('/import/livelib-file', (req, res, next) => {
   fileUpload.single('file')(req, res, (uploadError) => {
@@ -341,16 +381,20 @@ async function handleLivelibFileImport(req, res) {
     importedAt: merged.profile.importedAt,
   });
 
-  const resolveJob = body.resolve === true || ['1', 'true', 'yes', 'on'].includes(
-    String(body.resolve || '').trim().toLowerCase()
-  )
-    ? importJobs.startResolveJob()
+  // Metadata chain: ON unless the caller explicitly opts out. The file path
+  // used to depend on a checkbox nobody ticked, so a file profile stayed a
+  // list of titles with no pages/series/editions forever. `resolve=0`
+  // (body or query) keeps an offline import possible.
+  const resolveRequested = wantsResolve(req);
+  const resolveJob = resolveRequested
+    ? importJobs.startResolveJob({ coalesce: false, allowLivelibCard: false })
     : null;
 
   console.log(
     `[books-import livelib-file] ${userKey}/${resolvedShelf}: ${parsed.books.length} rows, ` +
       `+${merged.added} new, ${merged.enriched} enriched, ${merged.skipped} unchanged ` +
-      `(${parsed.format}, ${parsed.stats.withIsbn} isbn)`
+      `(${parsed.format}, ${parsed.stats.withIsbn} isbn, ` +
+      `resolve=${resolveJob ? resolveJob.id : 'skipped'})`
   );
 
   res.status(201).json({

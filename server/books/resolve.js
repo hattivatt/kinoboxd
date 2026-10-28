@@ -20,6 +20,13 @@
  *      then Google Books/Open Library;
  *   7. otherwise unmatched (NOT cached: a later import may resolve it).
  *
+ * `livelib-file` events are first-class inputs to the same pass (§3.3.2): the
+ * `livelib-backup` export often carries ISBN, genres, publisher, year and
+ * series, so a file row usually starts at step 2 (no LiveLib card round-trip),
+ * and a row without «Ссылка на книгу» is keyed by its `fileKey` (`file:tk:…`)
+ * instead of being dropped. Plan shelves (`reading`/`wish`) are skipped: they
+ * never reach the stats payload, so they must not spend the network budget.
+ *
  * Provider negatives are memoised per run only (soft TTL, no disk cache) so a
  * growing source is queried again on the next run. All broad decisions are
  * appended to match-log.jsonl.
@@ -267,8 +274,41 @@ function createChainReport(providerList) {
   return report;
 }
 
+/**
+ * ISBN of an event, whatever shape the source used.
+ *
+ * A scraped LiveLib event carries `edition.isbn` (fetched from the card); a
+ * `livelib-backup` file row carries the export columns `edition.isbn13` /
+ * `edition.isbn10` as well. The ISBN is a first-class resolve input — a file
+ * import can skip the LiveLib card round-trip entirely and go straight to the
+ * batched Hardcover lookup — so every shape is read here.
+ */
 function isbnOfEvent(event) {
-  return normalizeIsbn(event && event.edition && event.edition.isbn);
+  const edition = event && event.edition && typeof event.edition === 'object' ? event.edition : {};
+  return (
+    normalizeIsbn(edition.isbn13) ||
+    normalizeIsbn(edition.isbn) ||
+    normalizeIsbn(edition.isbn10)
+  );
+}
+
+/**
+ * Identity of an event inside the resolve caches (`links/<key>.json`,
+ * `index.json`). Mirrors `eventKeyOf` in stats.js — the two must agree or a
+ * resolved link would never be found by the payload.
+ *
+ * A scraped LiveLib event always has a numeric `sourceBookId`. A file row may
+ * not: the default `livelib-backup` column set has no «Ссылка на книгу», so the
+ * service exports no book id. Such a row is still a first-class resolve input
+ * (it carries title, author and often ISBN), so it gets a stable synthetic key
+ * from its `fileKey` — `file:tk:<sha1(title|surname)>` — instead of being
+ * dropped from the pool or (worse) keyed by its position in the file.
+ */
+function eventKeyOf(event) {
+  if (!event) return null;
+  if (event.sourceBookId) return String(event.sourceBookId);
+  if (event.fileKey) return `file:${String(event.fileKey)}`;
+  return null;
 }
 
 function chainInput(event, extra) {
@@ -375,7 +415,11 @@ function makeLink(bookId, merged, now) {
 }
 
 async function saveCardMetadata(event, card, now) {
-  const bookId = String(event.sourceBookId);
+  const bookId = eventKeyOf(event);
+  // Only events with an identity reach this point (see the pending pool), so a
+  // null here means a caller bug, not a data shape: skip instead of writing a
+  // shared `ll:` details document for unrelated rows.
+  if (!bookId) return null;
   const doc = providers.resultToDetails(
     {
       ...card,
@@ -404,16 +448,24 @@ async function saveCardMetadata(event, card, now) {
  * Resolve all livelib events of one profile.
  *
  * Returns a report:
- *   { total, cached, resolvedIsbn, resolvedTitle, resolvedGoogle,
- *     resolvedOpenLibrary, resolvedLitres, resolvedLivelibCard,
- *     resolvedHardcoverCard, resolvedHardcoverFromLitres, enriched,
- *     withMetadata, ambiguous, unmatched, requests, corpusSize,
+ *   { total, skippedPlanShelf, cached, resolvedIsbn, resolvedTitle,
+ *     resolvedGoogle, resolvedOpenLibrary, resolvedLitres,
+ *     resolvedLivelibCard, resolvedHardcoverCard, resolvedHardcoverFromLitres,
+ *     enriched, withMetadata, ambiguous, unmatched, requests, corpusSize,
  *     resolvedWorkIds, providerChain, cardBudget, litresBudget }
  */
 async function resolveProfile(llProfile, options = {}) {
   const force = Boolean(options.force);
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-  const events = Array.isArray(llProfile && llProfile.events) ? llProfile.events : [];
+  const allEvents = Array.isArray(llProfile && llProfile.events) ? llProfile.events : [];
+  // Plan shelves of a file export («Читаю сейчас», «Хочу прочитать») are not
+  // reading history: stats never renders them, so spending the network budget
+  // (Litres: 2 s + 2 requests per book) on them would starve the books the user
+  // actually sees. They keep their file columns and are resolved if the book
+  // ever moves to a history shelf and the chain runs again.
+  const PLAN_SHELVES = new Set(['reading', 'wish']);
+  const events = allEvents.filter((event) => !(event && PLAN_SHELVES.has(event.shelf)));
+  const skippedPlanShelf = allEvents.length - events.length;
   const now = options.now || new Date().toISOString();
   const cardBudget = options.cardBudget || livelibCard.budgetFromEnv();
   const litresBudget = options.litresBudget || litres.budgetFromEnv();
@@ -426,6 +478,7 @@ async function resolveProfile(llProfile, options = {}) {
 
   const report = {
     total: events.length,
+    skippedPlanShelf,
     cached: 0,
     resolvedIsbn: 0,
     resolvedTitle: 0,
@@ -452,7 +505,9 @@ async function resolveProfile(llProfile, options = {}) {
   const links = new Map(); // bookId -> link doc
   const pending = [];
   for (const event of events) {
-    const bookId = event && event.sourceBookId ? String(event.sourceBookId) : null;
+    const bookId = eventKeyOf(event);
+    // No identity at all (no LiveLib id, no file key): nothing to cache a link
+    // under. A row carrying only a date is data noise, not an enrichment input.
     if (!bookId) continue;
     if (!force) {
       const cached = bookCache.getLink(bookId);
@@ -477,7 +532,7 @@ async function resolveProfile(llProfile, options = {}) {
     const isbn = isbnOfEvent(event);
     if (!isbn) continue;
     if (!isbnToBookIds.has(isbn)) isbnToBookIds.set(isbn, new Set());
-    isbnToBookIds.get(isbn).add(String(event.sourceBookId));
+    isbnToBookIds.get(isbn).add(eventKeyOf(event));
   }
 
   if (isbnToBookIds.size > 0) {
@@ -512,7 +567,7 @@ async function resolveProfile(llProfile, options = {}) {
   report.corpusSize = corpus.works.length;
 
   for (const event of pending) {
-    const bookId = String(event.sourceBookId);
+    const bookId = eventKeyOf(event);
     if (links.has(bookId)) continue;
     const candidates = corpusCandidates(corpus, event.title);
     if (candidates.length === 0) continue;
@@ -562,7 +617,15 @@ async function resolveProfile(llProfile, options = {}) {
   }
 
   // 4. Provider chain for everything still unresolved.
-  const providerList = providers.selectProviders(options.providers);
+  //
+  // `allowLivelibCard: false` drops the LiveLib card provider. A resolve pass
+  // that a `livelib-backup` file import triggered must never touch livelib.ru
+  // (the whole point of the safe path, §9 ban risk): the file rows are enriched
+  // by Hardcover/Литрес/GB/OL only, and a row that needs the card waits for a
+  // regular scrape import instead of silently scraping.
+  const providerList = providers
+    .selectProviders(options.providers)
+    .filter((provider) => options.allowLivelibCard !== false || provider.NAME !== 'livelib-card');
   const chain = createChainReport(providerList);
   const chainByName = new Map(providerList.map((provider) => [provider.NAME, provider]));
   const chainOptions = { ...options, cardBudget, litresBudget, negativeMemo };
@@ -571,15 +634,22 @@ async function resolveProfile(llProfile, options = {}) {
   const googleProvider = chainByName.get('googlebooks');
   const openLibraryProvider = chainByName.get('openlibrary');
   const hardcoverProvider = require('./providers/hardcover');
-  let remaining = pending.filter((event) => !links.has(String(event.sourceBookId)));
+  let remaining = pending.filter((event) => !links.has(eventKeyOf(event)));
 
   // 4. Litres first for Cyrillic titles: Hardcover does not know RU editions,
   // but the litres card returns an ISBN that can still close a Hardcover work.
+  //
+  // The order inside the chain is: (a) ISBN batch — the cheapest and most
+  // precise key, and a `livelib-backup` file already carries it, so a file row
+  // never needs the LiveLib card just to learn its ISBN; (b) for Cyrillic
+  // titles Litres is the first *title* matcher (user rule «литрес первым для
+  // русских названий»), and its ISBN is fed back into Hardcover; (c) GB → OL →
+  // LiveLib card fill whatever is left.
   if (litresProvider) {
     const ruEvents = remaining.filter((event) => CYRILLIC_TITLE.test(String(event.title || '')));
     const litresByBook = new Map();
     for (const event of ruEvents) {
-      const bookId = String(event.sourceBookId);
+      const bookId = eventKeyOf(event);
       const result = await tryProvider(litresProvider, chainInput(event), chainOptions, chain);
       if (result) litresByBook.set(bookId, result);
     }
@@ -600,7 +670,7 @@ async function resolveProfile(llProfile, options = {}) {
     }
 
     for (const event of ruEvents) {
-      const bookId = String(event.sourceBookId);
+      const bookId = eventKeyOf(event);
       if (links.has(bookId)) continue;
       const litresResult = litresByBook.get(bookId);
       if (!litresResult) continue;
@@ -638,7 +708,7 @@ async function resolveProfile(llProfile, options = {}) {
     }
   }
 
-  remaining = pending.filter((event) => !links.has(String(event.sourceBookId)));
+  remaining = pending.filter((event) => !links.has(eventKeyOf(event)));
   const withIsbn = [];
   const withoutIsbn = [];
   for (const event of remaining) {
@@ -651,7 +721,7 @@ async function resolveProfile(llProfile, options = {}) {
   const cardByBook = new Map();
   if (cardProvider) {
     for (const event of withoutIsbn) {
-      const bookId = String(event.sourceBookId);
+      const bookId = eventKeyOf(event);
       // Positive card metadata is persisted at ll:{bookId}; never re-fetch it.
       if (!force && bookCache.getWorkDetails(`ll:${bookId}`)) continue;
       const card = await tryProvider(cardProvider, chainInput(event), chainOptions, chain);
@@ -676,7 +746,7 @@ async function resolveProfile(llProfile, options = {}) {
   }
 
   for (const event of withoutIsbn) {
-    const bookId = String(event.sourceBookId);
+    const bookId = eventKeyOf(event);
     if (links.has(bookId)) continue;
     if (!force && bookCache.getWorkDetails(`ll:${bookId}`)) {
       report.enriched++;
@@ -742,7 +812,7 @@ async function resolveProfile(llProfile, options = {}) {
 
   // 4c. Events with an ISBN: Google Books -> Open Library -> LiveLib card.
   for (const event of withIsbn) {
-    const bookId = String(event.sourceBookId);
+    const bookId = eventKeyOf(event);
     if (links.has(bookId)) continue;
     if (!force && bookCache.getWorkDetails(`ll:${bookId}`)) {
       report.enriched++;
@@ -819,7 +889,7 @@ async function resolveProfile(llProfile, options = {}) {
     report.resolvedHardcoverCard + report.resolvedHardcoverFromLitres;
   report.withMetadata = report.resolved + report.enriched;
   report.unmatched = pending.filter((event) => {
-    const bookId = String(event.sourceBookId);
+    const bookId = eventKeyOf(event);
     return !links.has(bookId) && !bookCache.getWorkDetails(`ll:${bookId}`);
   }).length;
 
@@ -835,7 +905,8 @@ async function resolveProfile(llProfile, options = {}) {
       `google=${report.resolvedGoogle}, openlibrary=${report.resolvedOpenLibrary}, ` +
       `litres=${report.resolvedLitres}, litres-hc=${report.resolvedHardcoverFromLitres}, ` +
       `card=${report.resolvedLivelibCard}, hc-card=${report.resolvedHardcoverCard}, ` +
-      `ambiguous=${report.ambiguous}, unmatched=${report.unmatched}, requests=${report.requests}) ` +
+      `ambiguous=${report.ambiguous}, unmatched=${report.unmatched}, requests=${report.requests}` +
+      `${report.skippedPlanShelf ? `, plan-shelf-skipped=${report.skippedPlanShelf}` : ''}) ` +
       `[${providerSummary}] card-budget=${cardBudget.used}/${cardBudget.limit} ` +
       `litres-budget=${litresBudget.used}/${litresBudget.limit}`
   );
@@ -862,6 +933,8 @@ module.exports = {
   surnameOf,
   authorKeySet,
   authorsOverlap,
+  eventKeyOf,
+  isbnOfEvent,
   normalizeIsbn,
   isbn10to13,
   isbn10Of,
