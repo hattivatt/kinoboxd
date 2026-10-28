@@ -764,6 +764,24 @@ function parseExportFile(input, options = {}) {
     books = parseCsvDocument(trimmed);
   }
 
+  // Export artifacts: the very same book id repeated with byte-identical
+  // fields is one row, not a volume. Rows *without* a book id are deliberately
+  // kept even when identical — the user's verdict (28.10.2026) is that every
+  // export row is a volume of a `/work/` page, and deduping those erased manga
+  // volumes ("Вторжение гигантов" ×6, "Большой куш" ×13).
+  let exactDuplicateRows = 0;
+  const exactSeen = new Set();
+  books = books.filter((book) => {
+    if (!book.bookId) return true;
+    const signature = JSON.stringify(book);
+    if (exactSeen.has(signature)) {
+      exactDuplicateRows++;
+      return false;
+    }
+    exactSeen.add(signature);
+    return true;
+  });
+
   if (!books.length) {
     throw new LivelibFileError(
       'В файле не найдено ни одной книги — проверьте, что выбрана страница «Прочитал» и хотя бы колонка «Название».',
@@ -817,6 +835,11 @@ function parseExportFile(input, options = {}) {
       `${withYearOnly} ${withYearOnly === 1 ? 'книга' : 'книг'} с датой «только год»: у них нет даже месяца, в таймлайн и календарь они не попадут.`
     );
   }
+  if (exactDuplicateRows > 0) {
+    warnings.push(
+      `${exactDuplicateRows} ${exactDuplicateRows === 1 ? 'точная копия строки удалена' : 'точных копий строк удалено'}: одна и та же книга с одинаковыми полями была выгружена несколько раз.`
+    );
+  }
 
   // The shelf is a property of the exported page, not of a row. A file-level
   // hint wins; a per-row `shelf` column (Goodreads flavour) fills the rest.
@@ -839,6 +862,7 @@ function parseExportFile(input, options = {}) {
       withIsbn,
       withGenres,
       duplicateBookIds: duplicates,
+      exactDuplicateRows,
     },
   };
 }
@@ -1029,21 +1053,18 @@ function mergeFileIntoProfile(existingProfile, input) {
   const seenInFile = new Map();
   for (const book of input.books) {
     if (!book) continue;
-    const incoming = buildFileEvent(book, shelf, 1);
-    const key = incoming.fileKey ? `key:${incoming.fileKey}` : null;
+    const preliminary = buildFileEvent(book, shelf, 1);
+    const key = preliminary.fileKey ? `key:${preliminary.fileKey}` : null;
     const position = key ? (seenInFile.get(key) || 0) + 1 : 1;
     if (key) seenInFile.set(key, position);
-    if (position > 1) {
-      // A repeated book inside one file (a re-read, or the same edition on the
-      // shelf twice) is a separate event, not an enrichment.
-      const repeated = buildFileEvent(book, shelf, position);
-      profile.events.push(repeated);
-      added++;
-      continue;
-    }
-
+    const incoming = position > 1 ? buildFileEvent(book, shelf, position) : preliminary;
     const candidates = key ? index.get(key) || [] : [];
-    const target = candidates[0] || null;
+    // Match by the stable per-record id (position included). A re-import of the
+    // same file must enrich the same rows, not append a second copy of every
+    // repeated title/volume.
+    const target =
+      candidates.find((event) => event && event.id === incoming.id) ||
+      (position === 1 ? candidates[0] || null : null);
     if (target) {
       if (fillMissing(target, incoming) > 0) enriched++;
       else skipped++;
@@ -1051,6 +1072,10 @@ function mergeFileIntoProfile(existingProfile, input) {
     }
     profile.events.push(incoming);
     added++;
+    if (key) {
+      if (!index.has(key)) index.set(key, []);
+      index.get(key).push(incoming);
+    }
   }
 
   profile.importedAt = now;

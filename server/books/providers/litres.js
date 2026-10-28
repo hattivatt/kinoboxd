@@ -163,6 +163,9 @@ function seriesOf(item, detail) {
   return {
     name: String(first.name),
     position: Number.isFinite(position) && position > 0 ? position : null,
+    // A positionless Литрес "series" is usually a catalogue tag («Книга на все
+    // времена»). Stats keeps it only when the user's export names it too.
+    source: NAME,
   };
 }
 
@@ -204,6 +207,13 @@ function normalizeLitres(item, detail, input, scored) {
     item.release_date,
     item.available_from
   );
+  // The work's first publication is what the year chart should show: the
+  // print date of the edition in hand must not move Sun Tzu into the 2020s.
+  const firstPublishedYear = yearOf(
+    item.date_written_at,
+    detail && detail.first_published_at,
+    item.first_published_at
+  );
   const confidence = scored && scored.exact ? 0.95 : Number((0.68 + (scored ? scored.score : 0) * 0.2).toFixed(2));
   return {
     source: NAME,
@@ -212,6 +222,7 @@ function normalizeLitres(item, detail, input, scored) {
     title,
     authors,
     year,
+    firstPublishedYear,
     publisher,
     series,
     genres,

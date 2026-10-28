@@ -23,8 +23,16 @@ function normalizeDetails(details, editionId) {
   const genres = Array.isArray(details.genres) ? details.genres.filter(Boolean) : [];
   const tags = Array.isArray(details.tags) ? details.tags.filter(Boolean) : [];
   const authors = (Array.isArray(details.authors) ? details.authors : [])
-    .map((author) => (author && typeof author === 'object' ? author.name : author))
-    .filter(Boolean);
+    .map((author) => {
+      if (author && typeof author === 'object') {
+        return {
+          name: author.name,
+          ...(author.hcId != null ? { hcId: author.hcId } : {}),
+        };
+      }
+      return { name: author };
+    })
+    .filter((author) => author.name);
   const sourceId = details.hcWorkId != null ? String(details.hcWorkId) : null;
   if (!sourceId) return null;
   return {
@@ -34,6 +42,7 @@ function normalizeDetails(details, editionId) {
     title: details.title || null,
     authors,
     year: details.publicationYear == null ? null : Number(details.publicationYear),
+    firstPublishedYear: details.publicationYear == null ? null : Number(details.publicationYear),
     publisher: details.publisher || null,
     series,
     genres,

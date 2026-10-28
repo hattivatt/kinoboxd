@@ -52,6 +52,7 @@ test('JSON export parses into the normalized record shape', () => {
     withIsbn: 1,
     withGenres: 2,
     duplicateBookIds: 0,
+    exactDuplicateRows: 0,
   });
 
   const [annihilation, martinEden, picnic] = parsed.books;

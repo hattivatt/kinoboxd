@@ -27,6 +27,7 @@
  */
 
 const bookCache = require('./book-cache');
+const authors = require('./authors');
 const { surnameOf } = require('./normalize');
 const { detectManga } = require('./providers/manga');
 
@@ -230,10 +231,23 @@ function selectProfiles(profileScope) {
   };
 }
 
+/** An edition year: the physical book cannot be older than the printed codex. */
 function saneYear(value) {
   const year = Number(value);
   if (!Number.isFinite(year)) return null;
   return year >= 1000 && year <= 2100 ? year : null;
+}
+
+/**
+ * A work's *first publication* year may be ancient («Искусство войны» is
+ * ~5th century BC). It is kept in the payload and bucketed as «до 1000 г.»
+ * instead of being filtered out like a bad edition year.
+ */
+function saneFirstYear(value) {
+  if (value == null || value === '') return null;
+  const year = Number(value);
+  if (!Number.isFinite(year)) return null;
+  return year >= -3000 && year <= 2100 ? Math.trunc(year) : null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -379,11 +393,20 @@ function prepareEvents(profiles) {
       profileAudit.kept++;
       const sourceBookId = String(raw.sourceBookId || '');
       const linkKey = eventLinkKeyOf(raw);
-      let workId = raw.workId || null;
-      if (!workId && source === 'livelib' && linkKey) {
-        const link = bookCache.getLink(linkKey);
-        workId = link && link.workId ? link.workId : null;
+      const cachedLink = !raw.workId && source === 'livelib' && linkKey
+        ? bookCache.getLink(linkKey)
+        : null;
+      // `metadataWorkId` is the canonical (Hardcover/Литрес/GB/OL) work used
+      // for metadata only. It must never decide *how many books* the profile
+      // has: LiveLib records volumes under one work page, and the user's verdict
+      // is one export row = one book. `workId` below stays the per-record book
+      // identity; a later pass suffixes the volumes that share a work.
+      const rawWorkId = raw.workId == null ? null : String(raw.workId);
+      let metadataWorkId = rawWorkId && !rawWorkId.startsWith('ll:') ? rawWorkId : null;
+      if (!metadataWorkId && cachedLink && cachedLink.workId) {
+        metadataWorkId = String(cachedLink.workId);
       }
+      let workId = metadataWorkId;
       if (!workId) {
         // File rows without a link column have no numeric id: the synthetic
         // `file:tk:…` key is their identity (see eventLinkKeyOf).
@@ -395,9 +418,10 @@ function prepareEvents(profiles) {
         source,
         userKey: profile.userKey,
         workId,
+        metadataWorkId,
         // `resolved` here means "points at a canonical (non-LiveLib-stub) work";
         // metadata may also come from a LiveLib card, which is checked later.
-        resolved: !String(workId).startsWith('ll:'),
+        resolved: Boolean(metadataWorkId),
         rating10: ratingOf(raw),
         finishedAt: raw.finishedAt || null,
         reread: Boolean(raw.reread),
@@ -406,9 +430,32 @@ function prepareEvents(profiles) {
     }
   }
 
+  // One LiveLib export row = one book/volume (user verdict, 28.10.2026). Rows
+  // that resolve to the same canonical work (all volumes of one manga under a
+  // `/work/…` page) must not collapse into one book: the first keeps the
+  // canonical id, the rest get a `#n` suffix, while `metadataWorkId` stays
+  // shared so metadata/enrichment is not duplicated. Hardcover is different:
+  // its repeated `workId` are re-reads of the same book and must stay one work.
+  const liveLibWorkCounts = new Map();
+  for (const event of events) {
+    if (event.source !== 'livelib') continue;
+    const base = String(event.workId);
+    const count = (liveLibWorkCounts.get(base) || 0) + 1;
+    liveLibWorkCounts.set(base, count);
+    if (count > 1) event.workId = `${base}#${count}`;
+  }
+
   // Re-read flags per (source, user_book/edition): extras beyond the first.
+  // LiveLib has no re-read phenomenon (user verdict, 28.10.2026): every export
+  // row is its own book, and linkless rows share `sourceBookId: null` — grouping
+  // them would mark hundreds of unrelated books as re-reads.
   const groups = new Map();
   for (const event of events) {
+    if (event.source === 'livelib') {
+      event.reread = false;
+      event.readIndex = 1;
+      continue;
+    }
     const key = `${event.source}:${event.userKey}:${event.sourceBookId}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(event);
@@ -460,6 +507,7 @@ function detailsSeries(details) {
         hcId: entry.hcId == null ? null : entry.hcId,
         name: entry.name,
         position: entry.position == null ? null : entry.position,
+        ...(entry.source ? { source: String(entry.source) } : {}),
       });
     }
   }
@@ -669,10 +717,64 @@ function fileMetadataOf(events) {
   return { present, coverage, genres, series, publisher, year, isbn13, isbn10, language };
 }
 
+/**
+ * Series entries of a details document, with the Литрес pseudo-series trap
+ * removed (§7.4, 28.10.2026).
+ *
+ * Литрес exposes its catalogue tags in the same `series` array as a real
+ * literary series: «Книга на все времена», «Азбука-классика» are shelves, not
+ * series. A real series carries a volume order (`art_order` ≥ 1); a positionless
+ * Литрес entry is kept only when the user's own export names the same series
+ * (the file column is the authority). Hardcover/LiveLib-card series are never
+ * filtered by this rule.
+ */
+function filterDetailsSeries(details, fileSeriesNames) {
+  const list = detailsSeries(details);
+  const sourceNames = metadataSourcesOf(details);
+  const litresOnly = sourceNames.length === 1 && sourceNames[0] === 'litres';
+  const fileKeys = new Set(
+    (Array.isArray(fileSeriesNames) ? fileSeriesNames : [])
+      .map((name) => nameKeyOf(name))
+      .filter(Boolean)
+  );
+  return list.filter((entry) => {
+    const fromLitres = entry.source === 'litres' || (entry.source == null && litresOnly);
+    if (!fromLitres) return true;
+    const position = Number(entry.position);
+    if (Number.isFinite(position) && position >= 1) return true;
+    return fileKeys.has(nameKeyOf(entry.name));
+  });
+}
+
+/**
+ * First publication year of the *work*, not of the edition in hand. Chain:
+ *   1. Hardcover work release year / Open Library `first_publish_year` /
+ *      Литрес `date_written_at`/`first_published_at` (`details.firstPublishedYear`);
+ *   2. the details document's publication year (work-level when the provider
+ *      knew it);
+ *   3. the file/edition year — last resort, it describes this print run.
+ * Ancient years are valid here (Сунь Цзы, ~V century BC).
+ */
+function firstPublishedYearOf(details, displayEvent, fileMeta) {
+  const fromDetails = saneFirstYear(
+    details && (details.firstPublishedYear != null
+      ? details.firstPublishedYear
+      : details.publicationYear)
+  );
+  if (fromDetails != null) return fromDetails;
+  const editionYear = saneYear(
+    (displayEvent && displayEvent.edition && displayEvent.edition.year) || (fileMeta && fileMeta.year)
+  );
+  return editionYear;
+}
+
 function workMetadata(workId, events) {
   const hcEvents = events.filter((event) => event.source === 'hardcover');
   const llEvents = events.filter((event) => event.source === 'livelib');
-  const details = bookCache.getWorkDetails(workId);
+  // Volumes of one work share `metadataWorkId`; the book identity `workId` may
+  // carry a `#n` suffix that no details file knows about.
+  const metadataWorkId = (events.find((event) => event.metadataWorkId) || {}).metadataWorkId || workId;
+  const details = bookCache.getWorkDetails(metadataWorkId);
   // Bibliographic columns of a `livelib-backup` file export (genres,
   // publisher, series, language, ISBN) are already in the file, so a
   // file-imported profile does not have to wait for the metadata chain.
@@ -711,12 +813,8 @@ function workMetadata(workId, events) {
     (displayEvent && displayEvent.edition && displayEvent.edition.publisher) ||
     fileMeta.publisher ||
     null;
-  const rawYear =
-    (details && details.publicationYear) ||
-    (displayEvent && displayEvent.edition && Number(displayEvent.edition.year)) ||
-    fileMeta.year ||
-    null;
-  const year = saneYear(rawYear);
+  const rawYear = firstPublishedYearOf(details, displayEvent, fileMeta);
+  const year = saneFirstYear(rawYear);
   const pages =
     details && details.pages != null && Number.isFinite(Number(details.pages)) && Number(details.pages) > 0
       ? Number(details.pages)
@@ -726,7 +824,7 @@ function workMetadata(workId, events) {
     fileMeta.genres
   );
   const series = mergeSeriesLists(
-    detailsSeries(details),
+    filterDetailsSeries(details, fileMeta.series.map((entry) => entry.name)),
     fileMeta.series
   );
   const coverUrl =
@@ -742,14 +840,16 @@ function workMetadata(workId, events) {
   // Link menu (§6.3): LiveLib is derivable for every work with an LL event or
   // an LL link in links.json; provider page URLs come from the details doc.
   const links = {};
-  const llSourceId = String(workId).startsWith('ll:') ? String(workId).slice(3) : null;
+  const llSourceId = String(metadataWorkId).startsWith('ll:') ? String(metadataWorkId).slice(3) : null;
   // Only a real LiveLib book id makes a LiveLib URL; a file-keyed stub
-  // (`ll:file:tk:<sha1>`) is an internal identity, not a page.
-  if (llSourceId && /^\d+$/.test(llSourceId)) {
-    links.livelib = `https://www.livelib.ru/book/${llSourceId}`;
+  // (`ll:file:tk:<sha1>`) is an internal identity, not a page. A file row may
+  // know its own id even when the resolve link is a HardCover work.
+  const llBookId = (events.find((event) => event.sourceBookId) || {}).sourceBookId || llSourceId;
+  if (llBookId && /^\d+$/.test(String(llBookId))) {
+    links.livelib = `https://www.livelib.ru/book/${llBookId}`;
   }
-  if (String(workId).startsWith('hc:')) {
-    const workLink = bookCache.getWorkLink(workId);
+  if (String(metadataWorkId).startsWith('hc:')) {
+    const workLink = bookCache.getWorkLink(metadataWorkId);
     const llId = workLink && Array.isArray(workLink.livelib)
       ? workLink.livelib.map(String).find(Boolean)
       : null;
@@ -777,13 +877,14 @@ function workMetadata(workId, events) {
 
   return {
     workId,
+    metadataWorkId,
     title: hcTitle || llTitle,
     titleRu: hcTitle && llTitle && hcTitle !== llTitle ? llTitle : hcTitle ? hcTitle : llTitle,
     authors,
     genres,
     series,
     publisher,
-    year: Number.isFinite(Number(year)) ? Number(year) : null,
+    year: year == null ? null : Number(year),
     pages,
     coverUrl,
     isbn13: (details && details.isbn13) || fileMeta.isbn13 || null,
@@ -1062,6 +1163,7 @@ function applyManualMangaFlags(works, flags) {
       Array.isArray(work.mergedWorkIds) && work.mergedWorkIds.length
         ? work.mergedWorkIds
         : [work.workId];
+    if (work.metadataWorkId && !ids.includes(work.metadataWorkId)) ids.push(work.metadataWorkId);
     let entry = null;
     for (const id of ids) {
       const candidate = flags[id];
@@ -1079,6 +1181,60 @@ function applyManualMangaFlags(works, flags) {
     applied.set(work.workId, { mangaComics: entry.mangaComics, previous });
   }
   return applied;
+}
+
+/**
+ * Sub-series dedupe (user rule, 28.10.2026): «если у нас несколько серий с
+ * одинаковыми книгами, показываем только ту, в которой книг больше всего».
+ *
+ * Works are compared by exact book identity, so two volumes of one manga are
+ * two works (matching the bookCount contract). Equal sets keep the plain name
+ * («The Witcher» beats «The Witcher (Publication order)»); a strict subset is
+ * dropped in favour of its superset; a partial overlap keeps both series.
+ */
+function dedupeSeriesSubsets(list) {
+  const entries = (Array.isArray(list) ? list : []).map((entry, index) => ({
+    entry,
+    index,
+    works: new Set((entry.works || []).map((work) => String(work.workId))),
+    name: String(entry.name || ''),
+  }));
+  const dropped = new Set();
+  const plainName = (name) => normalizeSeriesName(name);
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      if (dropped.has(entries[i].index) || dropped.has(entries[j].index)) continue;
+      const a = entries[i];
+      const b = entries[j];
+      if (!a.works.size || !b.works.size) continue;
+      let aSubset = true;
+      let bSubset = true;
+      for (const id of a.works) if (!b.works.has(id)) { aSubset = false; break; }
+      for (const id of b.works) if (!a.works.has(id)) { bSubset = false; break; }
+      if (!aSubset && !bSubset) continue;
+      let drop = null;
+      if (aSubset && bSubset) {
+        // Same books: prefer the plain/shorter name, then the more generic
+        // (both names normalize to the same series) one.
+        const aPlain = plainName(a.name) === plainName(b.name);
+        const aSimple = !/\([^()]*\)\s*$/u.test(a.name);
+        const bSimple = !/\([^()]*\)\s*$/u.test(b.name);
+        const aBetter = aSimple !== bSimple
+          ? aSimple
+          : a.name.length !== b.name.length
+          ? a.name.length < b.name.length
+          : a.name.localeCompare(b.name, 'ru') <= 0 || aPlain;
+        drop = aBetter ? b : a;
+      } else {
+        // Strict subset: keep the series with more books.
+        if (a.works.size > b.works.size) drop = b;
+        else if (b.works.size > a.works.size) drop = a;
+        else drop = b.name.length >= a.name.length ? b : a;
+      }
+      if (drop) dropped.add(drop.index);
+    }
+  }
+  return entries.filter((entry) => !dropped.has(entry.index)).map((entry) => entry.entry);
 }
 
 /**
@@ -1154,12 +1310,60 @@ function buildBooksStats(options = {}) {
     event.reread = event.reread || (extras > 0 && event.groupIndex > 1);
   }
 
+  /* ---------------- author identity (RU/EN dedupe) ---------------- */
+  // One author can arrive as «Агата Кристи» from LiveLib and «Agatha
+  // Christie» from the metadata chain. Group the spellings, prefer the
+  // canonical English one, and persist the table so a manual merge survives a
+  // rebuild. See server/books/authors.js for the safety rules.
+  const authorEntries = [];
+  for (const work of works.values()) {
+    const idsByKey = new Map();
+    const detailAuthors = work.details && Array.isArray(work.details.authors) ? work.details.authors : [];
+    for (const entry of detailAuthors) {
+      const name = entry && typeof entry === 'object' ? entry.name : entry;
+      const id = entry && typeof entry === 'object' ? entry.hcId : null;
+      if (name && id != null) idsByKey.set(authors.normalizeAuthorName(name), String(id));
+    }
+    for (const name of work.authors) {
+      if (!name) continue;
+      authorEntries.push({
+        name,
+        id: idsByKey.get(authors.normalizeAuthorName(name)) || null,
+        workId: work.workId,
+      });
+    }
+  }
+  const persistedAuthors = bookCache.getAuthorsMap();
+  const authorMerge = authors.groupAuthors(authorEntries, persistedAuthors);
+  for (const work of works.values()) {
+    const seen = new Set();
+    const merged = [];
+    for (const name of work.authors) {
+      const canonical = authorMerge.canonicalOf.get(authors.normalizeAuthorName(name)) || name;
+      const key = authors.normalizeAuthorName(canonical);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(canonical);
+    }
+    work.authors = merged;
+  }
+  const authorsFingerprint = authors.fingerprintOfNames(authorEntries.map((entry) => entry.name));
+  if (persistedAuthors.fingerprint !== authorsFingerprint) {
+    // Writing is best-effort: a read-only cache must never break the payload.
+    void bookCache
+      .saveAuthorsMap({
+        fingerprint: authorsFingerprint,
+        canonical: Object.fromEntries(authorMerge.canonicalOf),
+      })
+      .catch(() => {});
+  }
+
   /* ---------------- summary ---------------- */
   const ratedWorks = [...works.values()].filter((work) => work.rating10 != null);
   const pagesWorks = [...works.values()].filter((work) => work.pages != null);
   const years = [...works.values()]
     .map((work) => work.year)
-    .filter((year) => Number.isFinite(year) && year > 0)
+    .filter((year) => Number.isFinite(year) && year >= 1000)
     .sort((a, b) => a - b);
   const authorSet = new Set();
   for (const work of works.values()) for (const name of work.authors) authorSet.add(name);
@@ -1239,7 +1443,11 @@ function buildBooksStats(options = {}) {
     pagesTotal,
     pageCount: pagesTotal,
     authorsCount: authorSet.size,
+    authorsMergedCount: authorMerge.mergedGroups,
     seriesCount: seriesSet.size,
+    ancientBookCount: [...works.values()].filter(
+      (work) => Number.isFinite(work.year) && work.year < 1000
+    ).length,
     yearsSpan: years.length ? { from: years[0], to: years[years.length - 1] } : null,
   };
 
@@ -1323,8 +1531,15 @@ function buildBooksStats(options = {}) {
 
   const decadeMap = new Map();
   const yearMap = new Map();
+  const ANCIENT_LABEL = 'до 1000 г.';
   for (const work of works.values()) {
-    if (!Number.isFinite(work.year) || work.year <= 0) continue;
+    if (!Number.isFinite(work.year)) continue;
+    if (work.year < 1000) {
+      // Ancient works (Сунь Цзы, античные авторы) get one honest bucket instead
+      // of being silently dropped by the old `year > 0` filter.
+      pushWorks(decadeMap, 'ancient', { decade: 0, label: ANCIENT_LABEL, ancient: true }, work);
+      continue;
+    }
     const decade = Math.floor(work.year / 10) * 10;
     pushWorks(decadeMap, decade, { decade }, work);
     pushWorks(yearMap, work.year, { year: work.year }, work);
@@ -1332,6 +1547,8 @@ function buildBooksStats(options = {}) {
   const decades = [...decadeMap.values()]
     .map((entry) => ({
       decade: entry.decade,
+      ...(entry.label ? { label: entry.label } : {}),
+      ...(entry.ancient ? { ancient: true } : {}),
       count: entry.count,
       avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
     }))
@@ -1350,13 +1567,17 @@ function buildBooksStats(options = {}) {
       pushWorks(authorMap, name.toLowerCase(), { name }, work);
     }
   }
-  const authors = [...authorMap.values()]
-    .map((entry) => ({
-      name: entry.name,
-      count: entry.count,
-      avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
-      works: entry.works,
-    }))
+  const authorsList = [...authorMap.values()]
+    .map((entry) => {
+      const aliases = authorMerge.aliases[entry.name] || [];
+      return {
+        name: entry.name,
+        count: entry.count,
+        avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
+        works: entry.works,
+        ...(aliases.length ? { aliases, merged: true } : {}),
+      };
+    })
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
   const seriesMap = new Map();
@@ -1366,15 +1587,18 @@ function buildBooksStats(options = {}) {
       pushWorks(seriesMap, key, { seriesId: entry.hcId || null, name: entry.name }, work);
     }
   }
-  const series = [...seriesMap.values()]
-    .map((entry) => ({
-      seriesId: entry.seriesId,
-      name: entry.name,
-      count: entry.count,
-      avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
-      works: entry.works,
-    }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  const series = dedupeSeriesSubsets(
+    [...seriesMap.values()]
+      .map((entry) => ({
+        seriesId: entry.seriesId,
+        name: entry.name,
+        count: entry.count,
+        avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
+        works: entry.works,
+      }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+  );
+  summary.seriesCount = series.length;
 
   const publisherMap = new Map();
   for (const work of works.values()) {
@@ -1446,16 +1670,29 @@ function buildBooksStats(options = {}) {
     .sort((a, b) => a.date.localeCompare(b.date));
   const streaks = computeStreaks(readDays);
 
-  const recentlyFinished = [...finishedEvents]
+  // "Recently read" is a strip of the last finished books, not a calendar:
+  // LiveLib's export often carries only a month («март 2023»), and hiding those
+  // events left the strip empty for a whole file profile. Month precision is
+  // rendered as a month (`precision: 'month'`), never invented into a day, so
+  // streaks/calendar stay untouched.
+  const recentEvents = events
+    .filter((event) => event.finishedAt || /^\d{4}-\d{2}$/.test(String(event.readMonth || '')))
+    .map((event) => ({
+      event,
+      date: event.finishedAt ? String(event.finishedAt).slice(0, 10) : String(event.readMonth),
+      precision: event.finishedAt ? 'day' : 'month',
+    }));
+  const recentlyFinished = recentEvents
     .sort((a, b) => {
-      if (a.finishedAt !== b.finishedAt) return a.finishedAt < b.finishedAt ? 1 : -1;
-      return String(a.id) < String(b.id) ? -1 : 1;
+      if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+      return String(a.event.id) < String(b.event.id) ? -1 : 1;
     })
     .slice(0, 15)
-    .map((event) => {
+    .map(({ event, date, precision }) => {
       const work = works.get(event.workId);
       return {
-        date: event.finishedAt,
+        date,
+        precision,
         workId: event.workId,
         title: (work && work.title) || event.title,
         authors: (work && work.authors.length ? work.authors : event.authors) || [],
@@ -1470,6 +1707,9 @@ function buildBooksStats(options = {}) {
   for (const work of works.values()) {
     booksIndex[work.workId] = {
       workId: work.workId,
+      ...(work.metadataWorkId && work.metadataWorkId !== work.workId
+        ? { metadataWorkId: work.metadataWorkId }
+        : {}),
       title: work.title,
       titleRu: work.titleRu,
       authors: work.authors,
@@ -1545,7 +1785,7 @@ function buildBooksStats(options = {}) {
     readDays,
     streaks,
     recentlyFinished,
-    authors,
+    authors: authorsList,
     series,
     publishers,
     pagesHistogram,
@@ -1691,6 +1931,7 @@ module.exports = {
   canonicalKeyOf,
   dedupeWorks,
   mergeWorkGroup,
+  dedupeSeriesSubsets,
   propagateSeriesManga,
   applyManualMangaFlags,
   buildBooksStats,

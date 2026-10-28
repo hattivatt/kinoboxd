@@ -479,7 +479,7 @@ test('litres normalizes a RU search hit with art detail', async () => {
   assert.equal(result.isbn10, '5699780491');
   assert.equal(result.year, 2014);
   assert.deepEqual(result.genres, ['научная фантастика', 'зарубежная фантастика']);
-  assert.deepEqual(result.series, { name: 'Зона Икс', position: 1 });
+  assert.deepEqual(result.series, { name: 'Зона Икс', position: 1, source: 'litres' });
   assert.equal(result.pages, 256);
   assert.equal(result.cover, 'https://www.litres.ru/pub/c/cover/8981462.jpg');
   assert.equal(

@@ -45,6 +45,7 @@ const INDEX_PATH = path.join(BOOK_CACHE_DIR, 'index.json');
 const LINKS_JSON_PATH = path.join(BOOK_CACHE_DIR, 'links.json');
 const FLAGS_PATH = path.join(FLAGS_DIR, 'book-flags.json');
 const MATCH_LOG_PATH = path.join(BOOK_CACHE_DIR, 'match-log.jsonl');
+const AUTHORS_PATH = path.join(BOOK_CACHE_DIR, 'authors.json');
 
 for (const dir of [PROFILES_DIR, DETAILS_DIR, LINKS_DIR, IMPORTS_DIR, FLAGS_DIR]) {
   fs.mkdirSync(dir, { recursive: true });
@@ -581,6 +582,89 @@ function clearMangaFlag(workId) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Author alias table: cache-book/authors.json                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Durable author merge table. A false merge is expensive (two people become
+ * one), a missed merge is cheap (two rows until the next resolve), so the file
+ * is the place where a manual decision lives forever:
+ *
+ *   {
+ *     schemaVersion: 1,
+ *     fingerprint: "агата кристи|...",     // corpus that produced `canonical`
+ *     canonical: { "нормализованное имя": "Отображаемое имя" },
+ *     manual:    { "нормализованное имя": "Отображаемое имя" }
+ *   }
+ *
+ * `canonical` is applied on every stats build; `manual` is never overwritten
+ * by an automatic rebuild.
+ */
+let authorsMap = null;
+let authorsMapFingerprint = null;
+
+function emptyAuthorsMap() {
+  return { schemaVersion: 1, fingerprint: null, canonical: {}, manual: {} };
+}
+
+function refreshAuthorsMapIfChanged() {
+  const current = fingerprintOf(AUTHORS_PATH);
+  if (current === authorsMapFingerprint && authorsMap) return false;
+  const found = current === null ? null : readJsonWithFingerprint(AUTHORS_PATH);
+  if (!found || !found.data || typeof found.data !== 'object' || Array.isArray(found.data)) {
+    authorsMap = emptyAuthorsMap();
+    authorsMapFingerprint = current;
+    return true;
+  }
+  const data = found.data;
+  authorsMap = {
+    schemaVersion: 1,
+    fingerprint: data.fingerprint == null ? null : String(data.fingerprint),
+    canonical:
+      data.canonical && typeof data.canonical === 'object' && !Array.isArray(data.canonical)
+        ? { ...data.canonical }
+        : {},
+    manual:
+      data.manual && typeof data.manual === 'object' && !Array.isArray(data.manual)
+        ? { ...data.manual }
+        : {},
+  };
+  authorsMapFingerprint = found.fingerprint;
+  return true;
+}
+
+function getAuthorsMap() {
+  refreshAuthorsMapIfChanged();
+  return {
+    schemaVersion: 1,
+    fingerprint: authorsMap.fingerprint,
+    canonical: { ...authorsMap.canonical },
+    manual: { ...authorsMap.manual },
+  };
+}
+
+/**
+ * Persist the table. `canonical` is merged over the stored one (an older
+ * profile's aliases stay valid); `manual` is preserved unless passed
+ * explicitly. Resolves to the map that is now effective.
+ */
+async function saveAuthorsMap(next = {}) {
+  refreshAuthorsMapIfChanged();
+  const merged = {
+    schemaVersion: 1,
+    fingerprint: next.fingerprint === undefined ? authorsMap.fingerprint : next.fingerprint,
+    canonical: { ...authorsMap.canonical, ...(next.canonical || {}) },
+    manual: next.manual === undefined
+      ? { ...authorsMap.manual }
+      : { ...authorsMap.manual, ...(next.manual || {}) },
+  };
+  const fingerprint = await writeJsonAtomic(AUTHORS_PATH, merged);
+  authorsMap = merged;
+  authorsMapFingerprint = fingerprint;
+  return getAuthorsMap();
+}
+
+/* ------------------------------------------------------------------ */
 /* Import snapshots + match audit log                                  */
 /* ------------------------------------------------------------------ */
 
@@ -615,6 +699,8 @@ function clearMemory() {
   flags = {};
   flagsFingerprint = null;
   flagsSaving = Promise.resolve();
+  authorsMap = null;
+  authorsMapFingerprint = null;
 }
 
 module.exports = {
@@ -628,6 +714,7 @@ module.exports = {
   MATCH_LOG_PATH,
   FLAGS_DIR,
   FLAGS_PATH,
+  AUTHORS_PATH,
   fingerprintOf,
   readJsonWithFingerprint,
   writeJsonAtomic,
@@ -657,6 +744,8 @@ module.exports = {
   getMangaFlag,
   setMangaFlag,
   clearMangaFlag,
+  getAuthorsMap,
+  saveAuthorsMap,
   saveRawImport,
   appendMatchLog,
   clearMemory,

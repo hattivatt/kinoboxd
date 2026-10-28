@@ -127,6 +127,7 @@ function mergeResults(primary, extras = []) {
     title: firstValue(primary, others, 'title'),
     authors: firstList(primary, others, 'authors'),
     year: firstValue(primary, others, 'year'),
+    firstPublishedYear: firstValue(primary, others, 'firstPublishedYear'),
     publisher: firstValue(primary, others, 'publisher'),
     series: firstValue(primary, others, 'series'),
     genres,
@@ -156,13 +157,23 @@ function resultToDetails(result, options = {}) {
   const workId = result.workId || `${result.source}:${result.sourceId}`;
   const authors = (result.authors || [])
     .filter(Boolean)
-    .map((name) => (typeof name === 'object' ? { name: name.name } : { name: String(name) }));
+    .map((name) => {
+      if (name && typeof name === 'object') {
+        return {
+          name: name.name ? String(name.name) : '',
+          ...(name.hcId != null ? { hcId: name.hcId } : {}),
+        };
+      }
+      return { name: String(name) };
+    })
+    .filter((author) => author.name);
   const series = result.series
     ? [
         {
           hcId: (result.series && result.series.hcId) || null,
           name: result.series.name || null,
           position: result.series.position == null ? null : Number(result.series.position),
+          ...(result.series.source ? { source: String(result.series.source) } : {}),
         },
       ]
     : [];
@@ -184,6 +195,15 @@ function resultToDetails(result, options = {}) {
         ? null
         : Number.isFinite(Number(result.year))
         ? Number(result.year)
+        : null,
+    // Work-level first publication (year chart), distinct from the edition
+    // year above. Providers fill it when they know it (Hardcover work release,
+    // Open Library first_publish_year, Литрес date_written_at).
+    firstPublishedYear:
+      result.firstPublishedYear == null || result.firstPublishedYear === ''
+        ? null
+        : Number.isFinite(Number(result.firstPublishedYear))
+        ? Number(result.firstPublishedYear)
         : null,
     isbn13: result.isbn13 || null,
     isbn10: result.isbn10 || null,

@@ -131,6 +131,7 @@ function normalizeSearchDoc(doc, query) {
     title: String(doc.title),
     authors,
     year: yearOf(doc.first_publish_year),
+    firstPublishedYear: yearOf(doc.first_publish_year),
     publisher,
     series: null,
     genres,
@@ -173,7 +174,28 @@ async function byIsbn(isbn, input, options) {
   const key = `ISBN:${isbn}`;
   const record = data && data[key] ? data[key] : null;
   if (!record) return null;
-  return normalizeEdition(record, input);
+  const result = normalizeEdition(record, input);
+  if (!result) return null;
+  // `publish_date` of an edition is not first publication: «Искусство войны»
+  // is an ancient work whose АСТ edition is from 2013. The work record knows
+  // `first_publish_year`; one extra request, only when the edition points at a
+  // work and the first-publish year is still unknown.
+  const workKey = Array.isArray(record.works) && record.works[0] && record.works[0].key;
+  if (workKey) {
+    try {
+      await delayThen(options, 'work');
+      const work = await fetchJson(`https://openlibrary.org${workKey}.json`, {
+        fetchImpl: options.fetchImpl,
+        sleep: options.sleep,
+        label: `${NAME} work`,
+      });
+      const firstYear = yearOf(work && work.first_publish_year);
+      if (firstYear != null) result.firstPublishedYear = firstYear;
+    } catch (err) {
+      // The edition is still usable without the work-level year.
+    }
+  }
+  return result;
 }
 
 async function byTitle(input, options) {
