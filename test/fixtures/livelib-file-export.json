@@ -1,0 +1,42 @@
+[
+  {
+    "title": "Аннигиляция",
+    "bookHref": "https://www.livelib.ru/book/1002745594-annigilyatsiya-dzheff-vandermeer",
+    "coverHref": "https://s1.livelib.ru/boocover/1002745594/200x305/a33c/annigilyatsiya.jpg",
+    "readDate": "Сентябрь 2026 г.",
+    "annotation": "Первая книга трилогии «Южного предела».",
+    "rating": { "overall": "7.4", "user": "4.5" },
+    "authors": [{ "name": "Джефф Вандермеер", "href": "https://www.livelib.ru/author/157197-dzheff-vandermeer" }],
+    "genres": [
+      { "topPlace": "№10", "name": "фэнтези", "href": "https://www.livelib.ru/genre/1" },
+      { "name": "ужасы", "href": "https://www.livelib.ru/genre/2" }
+    ],
+    "stats": { "loved": 0, "reviews": 5, "quotes": 2, "read": 2327 },
+    "details": {
+      "isbn": "978-5-699-98967-6",
+      "year": "2018 г.",
+      "publishers": "Эксмо",
+      "series": "Южный предел",
+      "language": "Русский"
+    }
+  },
+  {
+    "title": "Мартин Иден",
+    "bookHref": "https://www.livelib.ru/book/1000123456-martin-iden-dzhek-london",
+    "coverHref": "https://s1.livelib.ru/boocover/1000123456/200x305/martin-iden.jpg",
+    "readDate": "прочитано в марте 2023",
+    "annotation": "",
+    "rating": { "overall": "8.9", "user": "5" },
+    "authors": [{ "name": "Джек Лондон", "href": "https://www.livelib.ru/author/123-dzhek-london" }],
+    "genres": [{ "name": "классическая проза", "href": "https://www.livelib.ru/genre/3" }],
+    "stats": { "loved": 3, "reviews": 41, "quotes": 12, "read": 58120 },
+    "details": { "isbn": "", "year": "", "publishers": "АСТ", "series": "", "language": "Русский" }
+  },
+  {
+    "title": "Пикник на обочине",
+    "bookHref": "https://www.livelib.ru/book/1000987654-piknik-na-obochine",
+    "readDate": "2021 г.",
+    "rating": { "overall": "8.2" },
+    "authors": [{ "name": "Аркадий Стругацкий" }, { "name": "Борис Стругацкий" }]
+  }
+]
