@@ -127,15 +127,16 @@ test('keepHardcoverProfileEvent prefers statusId, falls back to the label', () =
 });
 
 test('stale wish/reading events are dropped from every aggregate', () => {
-  const stats = buildBooksStats({});
+  const stats = buildBooksStats({ profile: 'hardcover-34748' });
   const summary = stats.summary;
 
-  // 9 read + dnf(5) + legacy read + unknown-schema = 12 Hardcover events,
-  // plus one LiveLib event. Wish/reading never enter.
+  // 9 read + dnf(5) + legacy read + unknown-schema = 12 Hardcover events.
+  // Wish/reading never enter; the LiveLib profile is a different profile and
+  // its event is not part of this payload.
   assert.equal(summary.hardcoverStatusExcluded, 4);
-  assert.equal(summary.eventCount, 13);
-  assert.equal(summary.bookCount, 13);
-  assert.equal(summary.finishedCount, 12); // 9 read + legacy read + unknown + LiveLib
+  assert.equal(summary.eventCount, 12);
+  assert.equal(summary.bookCount, 12);
+  assert.equal(summary.finishedCount, 11); // 9 read + legacy read + unknown
   assert.equal(summary.undatedEventCount, 1); // dnf only
   assert.equal(stats.meta.statusFilter.excluded, 4);
   assert.deepEqual(stats.meta.statusFilter.keepStatusIds, [3, 5]);
@@ -161,12 +162,9 @@ test('stale wish/reading events are dropped from every aggregate', () => {
   assert.equal(stats.booksIndex['hc:2001'], undefined);
   assert.equal(stats.booksIndex['hc:2002'], undefined);
   assert.equal(stats.booksIndex['hc:2006'], undefined);
-
-  // LiveLib events never pass the Hardcover status filter.
-  assert.ok(stats.booksIndex['ll:7001']);
-  const livelib = stats.meta.profiles.find((profile) => profile.source === 'livelib');
-  assert.equal(livelib.statusExcluded, 0);
-  assert.equal(livelib.needsReimport, false);
+  // The LiveLib profile's event does not leak into the Hardcover payload.
+  assert.equal(stats.booksIndex['ll:7001'], undefined);
+  assert.equal(stats.meta.profiles.length, 1);
 
   const hardcover = stats.meta.profiles.find((profile) => profile.source === 'hardcover');
   assert.equal(hardcover.keptEvents, 12);
@@ -175,17 +173,23 @@ test('stale wish/reading events are dropped from every aggregate', () => {
   assert.equal(hardcover.needsReimport, true);
 });
 
+test('LiveLib profile: no Hardcover status filter, own counters only', () => {
+  const stats = buildBooksStats({ profile: 'livelib-tester' });
+  assert.equal(stats.summary.hardcoverStatusExcluded, 0);
+  assert.equal(stats.summary.eventCount, 1);
+  assert.ok(stats.booksIndex['ll:7001']);
+  const livelib = stats.meta.profiles.find((profile) => profile.source === 'livelib');
+  assert.equal(livelib.statusExcluded, 0);
+  assert.equal(livelib.needsReimport, false);
+});
+
 test('summary counters stay consistent with the dropped events', () => {
-  const stats = buildBooksStats({});
-  // sourceBreakdown is computed from the filtered event list, not the file.
-  const hardcover = stats.sourceBreakdown.find((entry) => entry.source === 'hardcover');
-  assert.equal(hardcover.events, 12);
-  assert.equal(hardcover.undated, 1);
-  const livelib = stats.sourceBreakdown.find((entry) => entry.source === 'livelib');
-  assert.equal(livelib.events, 1);
+  const stats = buildBooksStats({ profile: 'hardcover-34748' });
   // No double counting: the work-level and event-level totals agree.
+  assert.equal(Object.keys(stats.booksIndex).length, stats.summary.bookCount);
+  assert.equal(stats.summary.finishedCount + stats.summary.undatedEventCount, stats.summary.eventCount);
   assert.equal(
-    stats.sourceBreakdown.reduce((sum, entry) => sum + entry.events, 0),
-    stats.summary.eventCount
+    stats.timeline.reduce((sum, entry) => sum + entry.finished, 0),
+    stats.summary.finishedCount
   );
 });

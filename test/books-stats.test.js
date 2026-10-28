@@ -1,8 +1,13 @@
 'use strict';
 
 /**
- * /api/books/stats aggregation: union of sources, work dedupe, option A rating
- * priority, calendar only for dated events, ?sources= filter.
+ * /api/books/stats aggregation under the single-profile contract:
+ *   - a profile is ONE source + ONE account (`livelib-tester` / `hardcover-34748`);
+ *   - events of another profile never leak into the payload (no union);
+ *   - work metadata may still come from the shared metadata chain (Hardcover
+ *     details resolved for a LiveLib book) — that is metadata, not an event merge;
+ *   - `?sources=` is ignored and reported as such;
+ *   - calendar/timeline/streaks only use dated events.
  */
 
 const test = require('node:test');
@@ -105,6 +110,7 @@ async function seed() {
         id: 'll:1',
         source: 'livelib',
         sourceBookId: '9001',
+        sourceUserBookId: '1',
         title: 'Дюна',
         authors: ['Фрэнк Герберт'],
         rating: 7,
@@ -118,6 +124,7 @@ async function seed() {
         id: 'll:2',
         source: 'livelib',
         sourceBookId: '9002',
+        sourceUserBookId: '2',
         title: 'Неизвестная книга',
         authors: ['Автор Один'],
         rating: 6,
@@ -131,6 +138,7 @@ async function seed() {
         id: 'll:3',
         source: 'livelib',
         sourceBookId: '9003',
+        sourceUserBookId: '3',
         title: 'Без даты',
         authors: ['Автор Два'],
         rating: null,
@@ -145,106 +153,138 @@ async function seed() {
   });
 }
 
-test('union aggregation with work dedupe and option A ratings', async () => {
+test('a LiveLib profile aggregates only its own events (metadata may come from Hardcover)', async () => {
   await seed();
-  const stats = buildBooksStats();
+  const stats = buildBooksStats({ profile: 'livelib-tester' });
 
+  assert.deepEqual(stats.sources.selected, ['livelib']);
+  assert.deepEqual(stats.sources.profile, {
+    key: 'livelib-tester',
+    source: 'livelib',
+    userKey: 'tester',
+    importedAt: '2026-10-27T00:00:00.000Z',
+    eventCount: 3,
+  });
+  // `connected` still lists every profile on the server: it is the switcher's
+  // catalogue, not the scope.
   assert.deepEqual(stats.sources.connected.sort(), ['hardcover', 'livelib']);
-  assert.deepEqual(stats.sources.selected.sort(), ['hardcover', 'livelib']);
 
-  assert.equal(stats.summary.eventCount, 5);
-  // hc:100, hc:101, ll:9002, ll:9003 (unresolved stub)
-  assert.equal(stats.summary.bookCount, 4);
-  assert.equal(stats.summary.finishedCount, 4);
+  assert.equal(stats.summary.eventCount, 3);
+  // hc:100 (via the LL link), ll:9002, ll:9003 (unresolved stub).
+  assert.equal(stats.summary.bookCount, 3);
+  assert.equal(stats.summary.finishedCount, 2);
   assert.equal(stats.summary.undatedEventCount, 1);
   assert.equal(stats.summary.resolvedCount, 1);
   assert.equal(stats.summary.unresolvedCount, 2);
+  assert.deepEqual(stats.summary.sources, ['livelib']);
 
-  // Hardcover priority for the shared work, LiveLib keeps its own value.
+  // The LiveLib rating is the one shown; the Hardcover account's 9/10 for the
+  // same work belongs to a different profile and must not appear.
   const dune = stats.booksIndex['hc:100'];
-  assert.equal(dune.rating, 9);
-  assert.equal(dune.ratingsBySource.hardcover.rating10, 9);
+  assert.equal(dune.rating, 7);
   assert.equal(dune.ratingsBySource.livelib.rating10, 7);
+  assert.equal(dune.ratingsBySource.hardcover, undefined);
+  assert.deepEqual(dune.sources, ['livelib']);
 
   const merged = Object.fromEntries(stats.ratings.merged.map((entry) => [entry.score, entry.count]));
-  assert.deepEqual(merged, { 6: 1, 8: 1, 9: 1 });
-  const ll = Object.fromEntries(stats.ratings.bySource.livelib.map((entry) => [entry.score, entry.count]));
-  assert.deepEqual(ll, { 6: 1, 7: 1 });
-  const hc = Object.fromEntries(stats.ratings.bySource.hardcover.map((entry) => [entry.score, entry.count]));
-  assert.deepEqual(hc, { 8: 1, 9: 1 });
+  assert.deepEqual(merged, { 6: 1, 7: 1 });
+  assert.deepEqual(stats.ratings.bySource.livelib.map((entry) => entry.score), [6, 7]);
+  assert.deepEqual(stats.ratings.bySource.hardcover, []);
 
-  // Calendar/timeline only for dated events; both sources count separately.
+  // Calendar/timeline/streaks only for this profile's dated events.
   const timelineSum = stats.timeline.reduce((sum, entry) => sum + entry.finished, 0);
   assert.equal(timelineSum, stats.summary.finishedCount);
-  assert.equal(stats.timeline.length, 2);
   assert.deepEqual(
     stats.timeline.map((entry) => [entry.month, entry.finished, entry.livelib, entry.hardcover]),
     [
-      ['2024-03', 3, 1, 2],
+      ['2024-03', 1, 1, 0],
       ['2024-04', 1, 1, 0],
     ]
   );
-  assert.equal(stats.readDays.length, 3);
+  assert.equal(stats.readDays.length, 2);
   assert.equal(stats.streaks.lastReadDate, '2024-04-01');
-  assert.equal(stats.streaks.best >= 1, true);
 
-  // Widgets from Hardcover metadata.
+  // Metadata for the resolved work still comes from the details chain.
+  assert.equal(dune.title, 'Дюна');
   assert.equal(stats.genres.find((genre) => genre.name === 'Science Fiction').count, 1);
   const herbert = stats.authors.find((author) => author.name === 'Фрэнк Герберт');
   assert.equal(herbert.count, 1);
-  assert.equal(herbert.avgRating, 9);
-  const duneSeries = stats.series.find((entry) => entry.name === 'Дюны');
-  assert.equal(duneSeries.count, 1);
-  assert.equal(duneSeries.works[0].workId, 'hc:100');
+  assert.equal(herbert.avgRating, 7);
+  assert.equal(stats.series.find((entry) => entry.name === 'Дюны').count, 1);
   assert.equal(stats.publishers.find((entry) => entry.name === 'Chilton').count, 1);
-  assert.equal(stats.summary.pagesTotal, 912);
-  assert.equal(stats.summary.avgPages, 456);
-  // Film-contract aliases consumed by the frontend (period card, pages tile).
+  assert.equal(stats.summary.pagesTotal, 512);
+  assert.equal(stats.summary.avgPages, 512);
   assert.equal(stats.summary.pageCount, stats.summary.pagesTotal);
   assert.equal(stats.summary.dateFrom, '2024-03-02');
   assert.equal(stats.summary.dateTo, '2024-04-01');
-  // Link menu is derivable from links.json for merged works.
   assert.equal(stats.booksIndex['hc:100'].links.livelib, 'https://www.livelib.ru/book/9001');
   assert.equal(stats.unmatchedCount, 2);
-  assert.equal(stats.recentlyFinished.length, 4);
+  assert.equal(stats.recentlyFinished.length, 2);
   assert.equal(stats.recentlyFinished[0].date, '2024-04-01');
 });
 
-test('?sources=livelib filters events but keeps work metadata', async () => {
+test('a Hardcover profile aggregates only the journal events', async () => {
   await seed();
-  const stats = buildBooksStats({ sources: 'livelib' });
-  assert.deepEqual(stats.sources.selected, ['livelib']);
-  assert.equal(stats.summary.eventCount, 3);
-  assert.equal(stats.summary.bookCount, 3); // hc:100 via link + two stubs
-  assert.equal(stats.summary.finishedCount, 2);
-  assert.equal(stats.summary.undatedEventCount, 1);
-  assert.equal(stats.sourceBreakdown.length, 1);
-  assert.equal(stats.sourceBreakdown[0].source, 'livelib');
-  // Metadata for the resolved work still comes from Hardcover details.
-  assert.equal(stats.booksIndex['hc:100'].title, 'Дюна');
-  assert.equal(stats.booksIndex['hc:100'].rating, 7);
-  const timelineSum = stats.timeline.reduce((sum, entry) => sum + entry.finished, 0);
-  assert.equal(timelineSum, 2);
-});
+  const stats = buildBooksStats({ profile: 'hardcover-34748' });
 
-test('?sources=hardcover excludes LiveLib events', async () => {
-  await seed();
-  const stats = buildBooksStats({ sources: 'hardcover' });
+  assert.deepEqual(stats.sources.selected, ['hardcover']);
   assert.equal(stats.summary.eventCount, 2);
   assert.equal(stats.summary.bookCount, 2);
   assert.equal(stats.summary.unresolvedCount, 0);
   assert.deepEqual(stats.ratings.bySource.livelib, []);
+  assert.deepEqual(
+    Object.fromEntries(stats.ratings.bySource.hardcover.map((entry) => [entry.score, entry.count])),
+    { 8: 1, 9: 1 }
+  );
+  assert.equal(stats.booksIndex['hc:100'].rating, 9);
+  assert.deepEqual(stats.booksIndex['hc:100'].sources, ['hardcover']);
+  assert.equal(stats.timeline.length, 1);
+  assert.equal(stats.timeline[0].hardcover, 2);
+  assert.equal(stats.summary.pagesTotal, 912);
+  assert.equal(stats.summary.avgPages, 456);
+  assert.equal(stats.summary.dateFrom, '2024-03-02');
+  assert.equal(stats.summary.dateTo, '2024-03-03');
 });
 
-test('empty profile returns a stable empty payload', () => {
-  for (const name of fs.readdirSync(bookCache.PROFILES_DIR)) {
-    fs.unlinkSync(path.join(bookCache.PROFILES_DIR, name));
-  }
-  bookCache.clearMemory();
-  const stats = buildBooksStats();
+test('?sources= is ignored for books and reported honestly', async () => {
+  await seed();
+  const stats = buildBooksStats({ profile: 'livelib-tester', sources: 'hardcover' });
+  assert.deepEqual(stats.sources.selected, ['livelib']);
+  assert.equal(stats.sources.filter.sourcesIgnored, true);
+  assert.equal(stats.sources.filter.requestedSources, 'hardcover');
+  assert.equal(stats.sources.filter.mode, 'profile');
+  assert.equal(stats.summary.eventCount, 3);
+
+  const plain = buildBooksStats({ profile: 'livelib-tester' });
+  assert.equal(plain.sources.filter.sourcesIgnored, false);
+  assert.equal(plain.sources.filter.requestedSources, null);
+});
+
+test('a missing or ambiguous profile is a 400-shaped error, never a union', () => {
+  assert.throws(
+    () => buildBooksStats({}),
+    (error) => error.code === 'profile_required' && error.status === 400
+  );
+  assert.throws(
+    () => buildBooksStats({ profile: 'livelib-tester,hardcover-34748' }),
+    (error) => error.code === 'profile_required' && /Exactly one/.test(error.message)
+  );
+});
+
+test('empty profile returns a stable empty payload', async () => {
+  await bookCache.saveProfile('livelib', 'nobody', {
+    schemaVersion: 1,
+    source: 'livelib',
+    userKey: 'nobody',
+    importedAt: '2026-10-27T00:00:00.000Z',
+    events: [],
+    warnings: [],
+  });
+  const stats = buildBooksStats({ profile: 'livelib-nobody' });
   assert.equal(stats.summary.bookCount, 0);
   assert.equal(stats.summary.eventCount, 0);
-  assert.deepEqual(stats.sources.connected, []);
+  assert.equal(stats.summary.undatedEventCount, 0);
   assert.deepEqual(stats.timeline, []);
   assert.equal(stats.streaks.current, 0);
+  assert.deepEqual(stats.booksIndex, {});
 });

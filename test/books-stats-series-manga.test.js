@@ -153,7 +153,7 @@ test('propagateSeriesManga flags every volume of a comics series only', () => {
 });
 
 test('default payload excludes all Fables/Homunculus volumes', () => {
-  const stats = buildBooksStats({});
+  const stats = buildBooksStats({ profile: 'hardcover-34748' });
   assert.equal(stats.summary.includeMangaComics, false);
   // 5 excluded (3 Fables + 2 Homunculus), 4 kept (2 standalone + 2 clean).
   assert.equal(stats.summary.mangaExcluded, 5);
@@ -184,7 +184,7 @@ test('default payload excludes all Fables/Homunculus volumes', () => {
 });
 
 test('includeMangaComics=1 restores them and marks the series provenance', () => {
-  const stats = buildBooksStats({ includeMangaComics: true });
+  const stats = buildBooksStats({ profile: 'hardcover-34748', includeMangaComics: true });
   assert.equal(stats.summary.bookCount, 9);
   assert.equal(stats.summary.eventCount, 9);
   assert.equal(stats.summary.mangaExcluded, 0);

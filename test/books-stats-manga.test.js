@@ -170,11 +170,11 @@ test.before(async () => {
 });
 
 test('default payload excludes manga works but keeps unknown flags', () => {
-  const stats = buildBooksStats({});
+  const stats = buildBooksStats({ profile: 'livelib-tester' });
   assert.equal(stats.summary.includeMangaComics, false);
   assert.equal(stats.summary.mangaExcluded, 1);
-  assert.equal(stats.summary.bookCount, 2);
-  assert.equal(stats.summary.eventCount, 4);
+  assert.equal(stats.summary.bookCount, 3);
+  assert.equal(stats.summary.eventCount, 3);
   assert.equal(Object.keys(stats.booksIndex).length, stats.summary.bookCount);
 
   assert.equal(stats.booksIndex['gb:vol-naruto'], undefined);
@@ -197,29 +197,34 @@ test('default payload excludes manga works but keeps unknown flags', () => {
 });
 
 test('includeMangaComics=1 brings manga back into every widget', () => {
-  const stats = buildBooksStats({ includeMangaComics: true });
+  const stats = buildBooksStats({ profile: 'livelib-tester', includeMangaComics: true });
   assert.equal(stats.summary.includeMangaComics, true);
   assert.equal(stats.summary.mangaExcluded, 0);
-  assert.equal(stats.summary.bookCount, 3);
-  assert.equal(stats.summary.eventCount, 5);
-  assert.equal(Object.keys(stats.booksIndex).length, 3);
+  assert.equal(stats.summary.bookCount, 4);
+  assert.equal(stats.summary.eventCount, 4);
+  assert.equal(Object.keys(stats.booksIndex).length, 4);
   assert.ok(stats.genres.some((entry) => entry.name === 'Manga'));
   assert.ok(stats.authors.some((entry) => entry.name === 'Масаси Кисимото'));
   assert.ok(stats.readDays.some((entry) => entry.date === '2024-03-03'));
 });
 
-test('the same book via LiveLib links + Google Books dedupes into one work', () => {
+test('works linked to different metadata docs stay separate (no stats-level union)', () => {
   for (const options of [{}, { includeMangaComics: true }]) {
-    const stats = buildBooksStats(options);
-    assert.equal(stats.booksIndex['gb:vol-dupe'], undefined);
+    const stats = buildBooksStats({ profile: 'livelib-tester', ...options });
+    // Two LiveLib books resolved by the metadata chain to different works are
+    // two works. Stats must not re-merge them by title — that was the union
+    // model's job and it is gone.
     const dune = stats.booksIndex['hc:100'];
+    const gbDune = stats.booksIndex['gb:vol-dupe'];
     assert.ok(dune);
-    assert.deepEqual(dune.mergedWorkIds.sort(), ['gb:vol-dupe', 'hc:100'].sort());
-    assert.deepEqual(dune.sources, ['hardcover', 'livelib']);
-    assert.deepEqual(dune.metadataSources.sort(), ['googlebooks', 'hardcover'].sort());
-    // One work, both LL events + the hardcover event.
+    assert.ok(gbDune);
+    assert.equal(dune.mergedWorkIds, undefined);
+    assert.deepEqual(dune.sources, ['livelib']);
+    assert.deepEqual(dune.metadataSources, ['hardcover']);
+    assert.deepEqual(gbDune.metadataSources, ['googlebooks']);
     assert.equal(dune.pages, 512);
-    assert.equal(stats.genres.find((entry) => entry.name === 'Science Fiction').count, 1);
+    assert.equal(gbDune.pages, 704);
+    assert.equal(stats.genres.find((entry) => entry.name === 'Science Fiction').count, 2);
   }
 });
 
@@ -234,7 +239,7 @@ test('HTTP route: includeMangaComics default off, 1 includes, invalid rejected',
   });
   const server = app.listen(5811);
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const base = 'http://127.0.0.1:5811/api/books/stats';
+  const base = 'http://127.0.0.1:5811/api/books/stats?profile=livelib-tester';
 
   const off = await fetch(base);
   assert.equal(off.status, 200);
@@ -243,13 +248,13 @@ test('HTTP route: includeMangaComics default off, 1 includes, invalid rejected',
   assert.equal(offBody.summary.mangaExcluded, 1);
   assert.equal(offBody.booksIndex['gb:vol-naruto'], undefined);
 
-  const on = await fetch(`${base}?includeMangaComics=1`);
+  const on = await fetch(`${base}&includeMangaComics=1`);
   assert.equal(on.status, 200);
   const onBody = await on.json();
   assert.equal(onBody.summary.includeMangaComics, true);
   assert.ok(onBody.booksIndex['gb:vol-naruto']);
 
-  const bad = await fetch(`${base}?includeMangaComics=2`);
+  const bad = await fetch(`${base}&includeMangaComics=2`);
   assert.equal(bad.status, 400);
   const badBody = await bad.json();
   assert.equal(badBody.code, 'invalid_include_manga');
@@ -312,12 +317,11 @@ test('litres works are metadata-resolved and outrank Google/OL in dedupe', async
   assert.equal(mergeWorkGroup([gb, lr]).workId, 'lr:500');
 });
 
-test('payload schema stays compatible: old fields keep their place and meaning', () => {
-  const stats = buildBooksStats({});
+test('payload schema stays compatible: single-profile fields keep their place', () => {
+  const stats = buildBooksStats({ profile: 'livelib-tester' });
   for (const key of [
     'sources',
     'summary',
-    'sourceBreakdown',
     'ratings',
     'genres',
     'decades',
@@ -339,9 +343,11 @@ test('payload schema stays compatible: old fields keep their place and meaning',
   }
   assert.equal(stats.ratings.scale, 10);
   assert.deepEqual(stats.sources.connected.sort(), ['hardcover', 'livelib']);
-  assert.deepEqual(stats.sources.selected.sort(), ['hardcover', 'livelib']);
-  assert.equal(stats.summary.sources.length, 2);
-  assert.equal(stats.sourceBreakdown.reduce((sum, entry) => sum + entry.events, 0), stats.summary.eventCount);
+  assert.deepEqual(stats.sources.selected, ['livelib']);
+  assert.equal(stats.sources.profile.key, 'livelib-tester');
+  assert.equal(stats.sources.filter.mode, 'profile');
+  assert.deepEqual(stats.summary.sources, ['livelib']);
+  assert.equal(stats.sourceBreakdown, undefined);
   assert.equal(stats.ratings.merged.length > 0, true);
   // Extension only: new fields are additive.
   assert.equal(typeof stats.summary.mangaExcluded, 'number');

@@ -82,7 +82,7 @@ test.before(async () => {
 });
 
 test('payload exposes authors with counts, works and summary.authorsCount', () => {
-  const stats = buildBooksStats({});
+  const stats = buildBooksStats({ profile: 'hardcover-authors-test' });
 
   assert.ok(Array.isArray(stats.authors), 'authors must be an array');
   assert.equal(stats.authors.length, 2);

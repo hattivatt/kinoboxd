@@ -28,8 +28,6 @@ const { LivelibError } = require('./livelib');
 
 const router = express.Router();
 
-const KNOWN_SOURCES = PROFILE_SOURCES;
-
 function mapError(err) {
   if (err instanceof HttpError) return err;
   if (err instanceof livelibCookies.CookieError) {
@@ -78,6 +76,8 @@ router.get('/profiles', (req, res) => {
       key: `${meta.source}-${meta.userKey}`,
       sourceKey: `${meta.source}/${meta.userKey}`,
       summary: profileSummary(data),
+      // `/api/books/stats?profile=` tokens. One profile = one source.
+      deepScan: (data && data.deepScan) || null,
       cookies:
         meta.source === 'livelib'
           ? livelibCookies.cookieStatus('livelib', meta.userKey)
@@ -87,7 +87,7 @@ router.get('/profiles', (req, res) => {
   res.status(200).json({
     profiles,
     connected: [...new Set(profiles.map((profile) => profile.source))],
-    // Echoed for the frontend/docs: `?profiles=` accepts only these tokens.
+    // Echoed for the frontend/docs: `?profile=` accepts one of these tokens.
     availableProfileKeys: profiles.map((profile) => profile.key),
     hardcoverToken: hardcoverTokenInfo(),
     cacheDir: bookCache.BOOK_CACHE_DIR,
@@ -115,8 +115,31 @@ function parseForce(bodyValue, queryValue) {
   );
 }
 
+function parseDeep(bodyValue, queryValue) {
+  const raw = bodyValue != null ? bodyValue : queryValue;
+  if (raw == null || raw === '') return false;
+  if (raw === true) return true;
+  if (raw === false) return false;
+  const value = String(raw).trim().toLowerCase();
+  if (['auto', '1', 'true', 'yes', 'on'].includes(value)) {
+    return value === 'auto' ? 'auto' : true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(value)) return false;
+  throw new HttpError(
+    400,
+    'Body/query field "deep" must be true, false or "auto" (default false).',
+    'invalid_deep'
+  );
+}
+
 /**
- * POST /api/books/import/livelib { username, force?, cookieHeader? }
+ * POST /api/books/import/livelib { username, force?, deep?, cookieHeader? }
+ *
+ * `deep` (task two-phase import):
+ *   - false (default, ~3 requests): bulk + RSC page 1, dates for the newest 20;
+ *   - true: also read every collection page (~63 polite requests) and fill the
+ *     exact dates of the already imported events;
+ *   - "auto": deep only when the stored profile still has undated events.
  *
  * `cookieHeader` is the plan-B escape hatch for a DDoS-Guard-flagged host: the
  * `Cookie:` value copied from a browser where the profile opens. Accepted as
@@ -138,9 +161,10 @@ router.post('/import/livelib', (req, res, next) => {
     const nameMatch = String(username).match(/\/(?:reader|users)\/([^/?#]+)/);
     const value = nameMatch ? nameMatch[1] : username;
     const force = parseForce(req.body && req.body.force, req.query && req.query.force);
+    const deep = parseDeep(req.body && req.body.deep, req.query && req.query.deep);
     const cookieHeader =
       (req.body && (req.body.cookieHeader != null ? req.body.cookieHeader : req.body.cookies)) || null;
-    const job = importJobs.startLivelibImport(value, { force, cookieHeader });
+    const job = importJobs.startLivelibImport(value, { force, deep, cookieHeader });
     res.status(202).json(job);
   } catch (err) {
     next(mapError(err));
@@ -238,69 +262,76 @@ router.get('/import/status', (req, res, next) => {
 });
 
 /**
- * Validate `?profiles=` strictly and return the resolved scope.
+ * Validate the single `?profile=` parameter strictly and return the resolved
+ * scope.
  *
- * A malformed token, a token that names no cached profile, or a scope that
- * resolves to zero profiles is a 400 — silently widening the scope to
- * "everything" would be worse than an explicit client error.
+ * A missing parameter, a repeated/CSV parameter, a malformed token or a token
+ * that names no cached profile is a 400 — silently widening the scope to
+ * "everything" (the old union behaviour) is exactly what this contract
+ * removes. `?profiles=` with ONE token is still accepted for one release so a
+ * cached frontend does not hard-fail during the deploy.
  */
-function resolveProfileScopeOrThrow(raw) {
+function resolveProfileScopeOrThrow(req) {
+  const raw = req.query.profile != null ? req.query.profile : req.query.profiles;
+  const legacy = req.query.profile == null && req.query.profiles != null;
   const scope = resolveProfileScope(raw);
-  if (!scope.explicit) return scope;
+  const available = scope.availableProfileKeys;
+  const availableText = available.length ? available.join(', ') : '(none)';
+  if (!scope.explicit || scope.empty) {
+    throw new HttpError(
+      400,
+      'Query parameter "profile" is required: exactly one source-userKey token ' +
+        `(${PROFILE_SOURCES.join('|')}). Available: ${availableText}.`,
+      'profile_required'
+    );
+  }
+  if (scope.multi) {
+    throw new HttpError(
+      400,
+      'Query parameter "profile" accepts exactly ONE profile (source-userKey); ' +
+        `a books profile is one source + one account. Available: ${availableText}.`,
+      'invalid_profile'
+    );
+  }
   if (scope.malformed.length > 0) {
     throw new HttpError(
       400,
-      `Query parameter "profiles": expected "source-userKey" tokens ` +
+      `Query parameter "profile": expected "source-userKey" tokens ` +
         `(${PROFILE_SOURCES.join('|')}), got: ${scope.malformed.join(', ')}.`,
-      'invalid_profiles'
+      'invalid_profile'
     );
   }
   if (scope.unknown.length > 0) {
-    const available = scope.profiles.map((profile) => `${profile.source}-${profile.userKey}`);
     throw new HttpError(
       400,
-      `Query parameter "profiles": not a cached profile: ${scope.unknown.join(', ')}. ` +
-        `Available: ${available.length ? available.join(', ') : '(none)'}.`,
+      `Query parameter "profile": not a cached profile: ${scope.unknown.join(', ')}. ` +
+        `Available: ${availableText}.`,
       'unknown_profile'
     );
   }
-  if (scope.selected.length === 0) {
+  if (scope.selected.length !== 1) {
     throw new HttpError(
       400,
-      'Query parameter "profiles" must name at least one cached profile.',
-      'invalid_profiles'
+      `Query parameter "profile" must name one cached profile. Available: ${availableText}.`,
+      'invalid_profile'
     );
   }
-  return scope;
+  return { scope, legacy };
 }
 
 /**
- * GET /api/books/stats
- *   ?sources=livelib,hardcover      coarse axis (all profiles of those sources)
- *   ?profiles=livelib-Margaret,hardcover-34748   exact profile documents
- *   ?includeMangaComics=0|1
+ * GET /api/books/stats?profile=livelib-Margaret&includeMangaComics=0|1
  *
- * `profiles=` wins over `sources=` (a parallel `sources=` is echoed as ignored
- * in `sources.filter`).
+ * `profile` is mandatory and single: the payload is built from that profile's
+ * events only (no union with another account/service). `?sources=` is ignored
+ * for backward compatibility and reported as `sources.filter.sourcesIgnored`.
  */
 router.get('/stats', (req, res, next) => {
   try {
-    const raw = req.query.sources;
-    if (raw != null && String(raw).trim() !== '') {
-      const wanted = String(raw)
-        .split(',')
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean);
-      if (!wanted.some((value) => KNOWN_SOURCES.includes(value))) {
-        throw new HttpError(
-          400,
-          `Query parameter "sources" must be a comma separated subset of: ${KNOWN_SOURCES.join(', ')}.`,
-          'invalid_sources'
-        );
-      }
+    const { scope, legacy } = resolveProfileScopeOrThrow(req);
+    if (legacy) {
+      res.set('X-Books-Legacy-Profiles', '1');
     }
-
-    const profileScope = resolveProfileScopeOrThrow(req.query.profiles);
 
     const includeMangaRaw = req.query.includeMangaComics;
     let includeMangaComics = false;
@@ -316,8 +347,8 @@ router.get('/stats', (req, res, next) => {
       }
     }
     const stats = buildBooksStats({
-      sources: raw,
-      profileScope,
+      sources: req.query.sources,
+      profileScope: scope,
       includeMangaComics,
     });
     res.set('X-Books-Build-Ms', String(stats.meta.buildMs));
@@ -367,11 +398,11 @@ router.delete('/work/flag', async (req, res, next) => {
   }
 });
 
-/** GET /api/books/unmatched?sources=livelib&profiles=livelib-Margaret */
+/** GET /api/books/unmatched?profile=livelib-Margaret (single profile). */
 router.get('/unmatched', (req, res, next) => {
   try {
-    const profileScope = resolveProfileScopeOrThrow(req.query.profiles);
-    res.status(200).json(listUnmatched({ sources: req.query.sources, profileScope }));
+    const { scope } = resolveProfileScopeOrThrow(req);
+    res.status(200).json(listUnmatched({ sources: req.query.sources, profileScope: scope }));
   } catch (err) {
     next(mapError(err));
   }

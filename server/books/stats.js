@@ -1,26 +1,27 @@
 'use strict';
 
 /**
- * /api/books/stats payload (КНИГИ-АРХИТЕКТУРА.md §5, v3 + K1 refinements).
+ * /api/books/stats payload (КНИГИ-АРХИТЕКТУРА.md §5, v4: single-profile).
  *
- * Profile = union of independent sources. Events are never merged; only
- * "unique books" are deduplicated by workId (`hc:{books.id}`), and an
- * unresolved LiveLib book keeps its own stub id `ll:{sourceBookId}` so it is
- * still counted as a book while its events stay visible.
+ * A books profile IS one source + one account: `livelib-Margaret` OR
+ * `hardcover-34748`. Two readers never merge, and two services never merge
+ * either — `/api/books/stats` requires exactly one `?profile=` token and every
+ * widget is computed from that profile's events only.
  *
- * Merge rules:
- *   - events are tagged by source, both dates remain in the calendar;
- *   - rating conflict = option A: Hardcover wins, LiveLib is the fallback;
- *     `ratings.bySource` is always present, no averaging between sources;
- *   - every rating in the payload is on the unified 1..10 scale
- *     (hardcover native 0..5 * 2, livelib native 0..10);
+ * Consequences, all deliberate:
+ *   - events are never merged across sources; a LiveLib event stays a LiveLib
+ *     event even when its *metadata* was resolved through Hardcover/Litres/GB;
+ *   - `booksIndex` keys are the LiveLib stub `ll:{sourceBookId}` or the resolved
+ *     canonical work `hc:{books.id}` that the resolve chain linked *for this
+ *     LiveLib book*; no cross-source title dedupe happens in stats;
+ *   - `ratings.bySource` still exists for wire compatibility but carries only
+ *     the active source (it equals `ratings.merged`);
  *   - only events with `finishedAt` enter timeline/calendar/streaks;
  *     `summary.undatedEventCount` reports the rest honestly;
- *   - `sources=` filters events before aggregation, metadata may still come
- *     from Hardcover details;
- *   - `profiles=` scopes the aggregation to exact profile documents
- *     (`livelib-Margaret`, `hardcover-34748`) and takes priority over
- *     `sources=`; every widget is computed from the scoped events only.
+ *   - `?sources=` is accepted and ignored (`sources.filter.sourcesIgnored`),
+ *     one release of compatibility for pre-K6 clients;
+ *   - `metadataSources` on a work says where the *bibliographic metadata* came
+ *     from. That is a metadata chain, not an event union.
  */
 
 const bookCache = require('./book-cache');
@@ -110,24 +111,28 @@ function profileKeyOf(profile) {
 }
 
 /**
- * Parse `?profiles=` — a comma separated list of `source-userKey` tokens that
- * name profile *documents* (`cache-book/profiles/{source}-{userKey}.json`),
- * e.g. `livelib-Margaret,hardcover-34748`.
+ * Parse `?profile=` — exactly ONE `source-userKey` token naming a profile
+ * document (`cache-book/profiles/{source}-{userKey}.json`).
  *
  * There is no second separator on purpose: the first `-` after the source is
  * the boundary, so a LiveLib username with dashes (`my-reader`) stays intact.
  * The userKey grammar matches what the importers accept (letters, digits,
  * `_`, `.`, `-`), so no token can address a file outside profiles/.
+ *
+ * A repeated parameter (`?profile=a&profile=b`) or a CSV (`?profile=a,b`) is
+ * reported as `multi` — the caller answers 400 instead of picking one.
  */
-function parseProfilesParam(raw) {
-  if (raw == null) return { present: false, tokens: [], malformed: [] };
-  const values = Array.isArray(raw) ? raw : [raw];
+function parseProfileParam(raw) {
+  const values = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+  const present = raw != null;
   const tokens = [];
   const malformed = [];
+  let parts = 0;
   for (const value of values) {
     for (const part of String(value).split(',')) {
       const token = part.trim();
       if (!token) continue;
+      parts++;
       const match = /^(livelib|hardcover)-(.+)$/i.exec(token);
       const userKey = match ? match[2].trim() : '';
       if (!match || !/^[\w.-]{1,120}$/.test(userKey)) {
@@ -137,19 +142,22 @@ function parseProfilesParam(raw) {
       tokens.push({ token, source: match[1].toLowerCase(), userKey });
     }
   }
-  return { present: true, tokens, malformed };
+  // The contract is exactly one token. `?profile=a&profile=` is still one;
+  // `?profile=a,b` and `?profile=a&profile=b` are multi and get a 400.
+  const multi = parts > 1;
+  return { present, tokens, malformed, multi, empty: present && parts === 0 };
 }
 
 /**
- * Resolve `?profiles=` against the profile documents that exist on disk.
+ * Resolve the single `?profile=` token against the profiles on disk.
  *
  * Matching is case-insensitive (a client may lower-case the token) but the
  * result always carries the canonical `userKey` from the file, and a token
  * that names no cached profile is reported as `unknown` instead of silently
- * widening the selection — that is what keeps `?profiles=` honest.
+ * widening the selection — that is what keeps the scope honest.
  *
  * `explicit` is true whenever the parameter was present at all (including an
- * empty `?profiles=`), so the caller can distinguish "no scope asked" from
+ * empty `?profile=`), so the caller can distinguish "no scope asked" from
  * "scope asked but resolved to nothing" (the latter is a 400 at the route).
  */
 function resolveProfileScope(raw, profilesIn) {
@@ -159,19 +167,21 @@ function resolveProfileScope(raw, profilesIn) {
     source: profile.source,
     userKey: profile.userKey,
   }));
-  const parsed = parseProfilesParam(raw);
-  if (!parsed.present) {
-    return {
-      explicit: false,
-      requested: [],
-      selected: available,
-      unknown: [],
-      malformed: [],
-      profiles,
-    };
-  }
+  const parsed = parseProfileParam(raw);
+  const base = {
+    explicit: parsed.present,
+    multi: parsed.multi,
+    empty: parsed.empty,
+    requested: parsed.tokens.map((entry) => entry.token),
+    selected: [],
+    unknown: [],
+    malformed: parsed.malformed,
+    profiles,
+    availableProfileKeys: available.map((entry) => entry.key),
+  };
+  if (!parsed.present) return base;
+  if (parsed.multi) return base;
   const byLowerKey = new Map(available.map((entry) => [entry.key.toLowerCase(), entry]));
-  const selected = [];
   const unknown = [];
   for (const { token, source, userKey } of parsed.tokens) {
     const hit = byLowerKey.get(`${source}-${userKey}`.toLowerCase());
@@ -179,69 +189,42 @@ function resolveProfileScope(raw, profilesIn) {
       unknown.push(token);
       continue;
     }
-    if (!selected.some((entry) => entry.key === hit.key)) selected.push(hit);
+    base.selected.push(hit);
   }
-  return {
-    explicit: true,
-    requested: parsed.tokens.map((entry) => entry.token),
-    selected,
-    unknown,
-    malformed: parsed.malformed,
-    profiles,
-  };
+  base.unknown = unknown;
+  return base;
 }
 
 /**
- * Load the profiles that feed the aggregation.
+ * Load the one profile that feeds the aggregation.
  *
- * Two selection axes, in priority order:
- *   1. `?profiles=` (profileScope) — exact profile documents, `sources` is
- *      then only a label and is ignored for selection;
- *   2. `?sources=` — every profile of those sources (the coarse axis).
- * Neither → all cached profiles.
- *
- * Unresolvable values are ignored here (an unknown-only filter returns an
- * empty profile rather than an error); `/api/books/stats` validates the raw
- * parameter first and answers 400 instead.
+ * `?sources=` is accepted only to be ignored (`sourcesIgnored`), so a client
+ * built before the single-profile contract keeps rendering instead of
+ * hard-failing on a 400. No parameter at all means "no profile": the caller
+ * (route) answers 400 before this point, internal callers get an empty scope.
  */
-function selectProfiles(requested, profileScope) {
+function selectProfiles(requestedSources, profileScope) {
   const scope = profileScope || resolveProfileScope(undefined);
   const profiles = scope.profiles;
   const connected = [...new Set(profiles.map((profile) => profile.source))];
   const allProfileKeys = profiles.map(profileKeyOf);
-
-  const sourcesRequested = requested != null && String(requested).trim() !== '';
-  let mode = 'all';
-  let selected = connected;
-  let chosen = profiles;
-
-  if (scope.explicit) {
-    mode = 'profiles';
-    const keys = new Set(scope.selected.map((entry) => entry.key));
-    chosen = profiles.filter((profile) => keys.has(profileKeyOf(profile)));
-    selected = [...new Set(chosen.map((profile) => profile.source))];
-  } else if (sourcesRequested) {
-    mode = 'sources';
-    const wanted = (Array.isArray(requested) ? requested : String(requested).split(','))
-      .map((value) => String(value).trim().toLowerCase())
-      .filter(Boolean);
-    selected = connected.filter((source) => wanted.includes(source));
-    chosen = profiles.filter((profile) => selected.includes(profile.source));
-  }
+  const sourcesRequested = requestedSources != null && String(requestedSources).trim() !== '';
+  const chosenMeta = scope.selected.length ? scope.selected : [];
 
   const loaded = [];
-  for (const meta of chosen) {
+  for (const meta of chosenMeta) {
     const data = bookCache.getProfile(meta.source, meta.userKey);
     if (data && Array.isArray(data.events)) loaded.push(data);
   }
+  const selected = [...new Set(chosenMeta.map((entry) => entry.source))];
   return {
     connected,
     selected,
     profiles: loaded,
-    mode,
+    mode: chosenMeta.length ? 'profile' : 'none',
     sourcesRequested,
     requestedProfiles: scope.requested,
-    selectedProfileKeys: chosen.map(profileKeyOf),
+    selectedProfileKeys: chosenMeta.map(profileKeyOf),
     allProfileKeys,
   };
 }
@@ -868,22 +851,34 @@ function applyManualMangaFlags(works, flags) {
 }
 
 /**
- * Build the whole /api/books/stats payload. `options.sources` is the raw
- * `?sources=` value (string or array), `options.profiles` the raw `?profiles=`
- * value; `options.now` is injectable for tests.
+ * Build the whole /api/books/stats payload for ONE profile.
+ *
+ * `options.profile` is the raw `?profile=` value (`livelib-Margaret`);
+ * `options.profileScope` may carry an already-resolved scope (routes resolve it
+ * to answer 400 with a good message). `options.sources` is accepted only to be
+ * echoed as ignored. `options.now` is injectable for tests.
  */
 function buildBooksStats(options = {}) {
   const startedAt = process.hrtime.bigint();
   const includeMangaComics = options.includeMangaComics === true;
   const selection = selectProfiles(
     options.sources,
-    options.profileScope ||
-      resolveProfileScope(options.profiles, options.profilesOnDisk)
+    options.profileScope || resolveProfileScope(options.profile, options.profilesOnDisk)
   );
+  if (selection.profiles.length !== 1) {
+    const error = new Error(
+      'Exactly one books profile is required: /api/books/stats?profile=<source>-<userKey>.'
+    );
+    error.code = 'profile_required';
+    error.status = 400;
+    error.availableProfileKeys = selection.allProfileKeys;
+    throw error;
+  }
   const { connected, selected, profiles, mode } = selection;
+  const profile = profiles[0];
   const prepared = prepareEvents(profiles);
   const reReadCounts = prepared.reReadCounts;
-  let events = prepared.events.filter((event) => selected.includes(event.source));
+  let events = prepared.events;
 
   const byWork = new Map();
   for (const event of events) {
@@ -892,16 +887,6 @@ function buildBooksStats(options = {}) {
   }
   let works = new Map();
   for (const [workId, list] of byWork) works.set(workId, workMetadata(workId, list));
-
-  // Cross-source dedupe: one book can arrive via LiveLib + Google Books.
-  const deduped = dedupeWorks(works);
-  works = deduped.works;
-  if (deduped.remap.size > 0) {
-    for (const event of events) {
-      const target = deduped.remap.get(event.workId);
-      if (target) event.workId = target;
-    }
-  }
 
   // Manga/comics filter (default OFF = manga excluded). A work is comics when
   // its own flag is true *or* any volume of the same series is comics
@@ -958,6 +943,14 @@ function buildBooksStats(options = {}) {
   }
 
   const finishedEvents = events.filter((event) => event.finishedAt);
+  // Month-only events (LiveLib records an exact day for ~28% of a long
+  // history; the rest carry `{year, month}`). They are NOT calendar days —
+  // inventing a day would corrupt streaks — but they are not "undated" either:
+  // they enter the month timeline and the coverage counters.
+  const monthOnlyEvents = events.filter(
+    (event) => !event.finishedAt && /^\d{4}-\d{2}$/.test(String(event.readMonth || ''))
+  );
+  const monthOnlyCount = monthOnlyEvents.length;
   const llEvents = events.filter((event) => event.source === 'livelib');
   const llResolved = llEvents.filter((event) => {
     const work = works.get(event.workId);
@@ -978,7 +971,9 @@ function buildBooksStats(options = {}) {
     finishedCount: finishedEvents.length,
     readCount: events.filter((event) => event.status === 'read').length,
     reReadCount,
-    undatedEventCount: events.filter((event) => !event.finishedAt).length,
+    // Events with neither an exact day nor a month: truly undated.
+    undatedEventCount: events.length - finishedEvents.length - monthOnlyCount,
+    monthOnlyEventCount: monthOnlyCount,
     // Reading period of the selected sources (film contract: dateFrom/dateTo).
     dateFrom: finishedDates.length ? finishedDates[0].slice(0, 10) : null,
     dateTo: finishedDates.length ? finishedDates[finishedDates.length - 1].slice(0, 10) : null,
@@ -1011,30 +1006,6 @@ function buildBooksStats(options = {}) {
     yearsSpan: years.length ? { from: years[0], to: years[years.length - 1] } : null,
   };
 
-  /* ---------------- per-source breakdown ---------------- */
-  const sourceBreakdown = selected.map((source) => {
-    const sourceEvents = events.filter((event) => event.source === source);
-    const sourceWorks = new Map();
-    for (const event of sourceEvents) {
-      if (!sourceWorks.has(event.workId)) {
-        sourceWorks.set(event.workId, works.get(event.workId) || null);
-      }
-    }
-    const ratings = [];
-    for (const work of sourceWorks.values()) {
-      const entry = work && work.ratingsBySource ? work.ratingsBySource[source] : null;
-      if (entry && entry.rating10 != null) ratings.push(entry.rating10);
-    }
-    return {
-      source,
-      events: sourceEvents.length,
-      books: sourceWorks.size,
-      avgRating: mean(ratings),
-      finishedWithDate: sourceEvents.filter((event) => event.finishedAt).length,
-      undated: sourceEvents.filter((event) => !event.finishedAt).length,
-    };
-  });
-
   /* ---------------- ratings ---------------- */
   function distribution(list) {
     const counts = new Map();
@@ -1047,22 +1018,18 @@ function buildBooksStats(options = {}) {
       .map(([score, count]) => ({ score, count }));
   }
 
+  // `bySource` survives on the wire for old clients, but with a single profile
+  // there is exactly one populated key: the active source. It is the same
+  // distribution as `merged`, never a union of two services.
+  const mergedDistribution = distribution(
+    [...works.values()].map((work) => work.rating10).filter((v) => v != null)
+  );
   const ratings = {
     scale: 10,
-    merged: distribution([...works.values()].map((work) => work.rating10).filter((v) => v != null)),
+    merged: mergedDistribution,
     bySource: {
-      livelib: distribution(
-        [...works.values()]
-          .map((work) => work.ratingsBySource.livelib)
-          .filter(Boolean)
-          .map((entry) => entry.rating10)
-      ),
-      hardcover: distribution(
-        [...works.values()]
-          .map((work) => work.ratingsBySource.hardcover)
-          .filter(Boolean)
-          .map((entry) => entry.rating10)
-      ),
+      livelib: profile.source === 'livelib' ? mergedDistribution : [],
+      hardcover: profile.source === 'hardcover' ? mergedDistribution : [],
     },
   };
 
@@ -1182,13 +1149,29 @@ function buildBooksStats(options = {}) {
   /* ---------------- timeline / calendar / streaks ---------------- */
   const monthMap = new Map();
   const dayMap = new Map();
+  function monthBucket(month) {
+    if (!monthMap.has(month)) {
+      monthMap.set(month, {
+        month,
+        finished: 0,
+        reRead: 0,
+        livelib: 0,
+        hardcover: 0,
+        monthOnly: 0,
+      });
+    }
+    return monthMap.get(month);
+  }
+  for (const event of monthOnlyEvents) {
+    const bucket = monthBucket(String(event.readMonth).slice(0, 7));
+    bucket.monthOnly++;
+    bucket[event.source] = (bucket[event.source] || 0) + 1;
+    if (event.reread) bucket.reRead++;
+  }
   for (const event of finishedEvents) {
     const month = String(event.finishedAt).slice(0, 7);
     const day = String(event.finishedAt).slice(0, 10);
-    if (!monthMap.has(month)) {
-      monthMap.set(month, { month, finished: 0, reRead: 0, livelib: 0, hardcover: 0 });
-    }
-    const monthEntry = monthMap.get(month);
+    const monthEntry = monthBucket(month);
     monthEntry.finished++;
     if (event.reread) monthEntry.reRead++;
     monthEntry[event.source] = (monthEntry[event.source] || 0) + 1;
@@ -1277,29 +1260,35 @@ function buildBooksStats(options = {}) {
   const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
 
   return {
+    // Which profile produced this payload, plus (for compatibility) the
+    // sources visible on the server. `selected` is always exactly one source:
+    // a profile is one account of one service.
     sources: {
       connected,
       selected,
-      // Which profile documents (not sources) produced this payload: the
-      // `?profiles=` scope lives here so the frontend can show "LiveLib
-      // Margaret + Hardcover 34748" without guessing from cache files.
+      profile: {
+        key: profileKeyOf(profile),
+        source: profile.source,
+        userKey: profile.userKey,
+        importedAt: profile.importedAt || null,
+        eventCount: profile.events.length,
+      },
       profiles: {
         connected: selection.allProfileKeys,
         selected: selection.selectedProfileKeys,
       },
       filter: {
-        mode, // all | sources | profiles
+        mode, // profile (the only mode a valid request can produce)
+        requestedProfile: selection.requestedProfiles[0] || null,
+        requestedProfiles: selection.requestedProfiles,
+        // `?sources=` is not applied any more; echoed so a legacy client can
+        // see that its filter was dropped instead of silently reinterpreting it.
         requestedSources:
           selection.sourcesRequested ? [].concat(options.sources).join(',') : null,
-        requestedProfiles: selection.requestedProfiles,
-        // `?profiles=` is authoritative; a parallel `?sources=` is not applied.
-        sourcesIgnored:
-          mode === 'profiles' &&
-          selection.sourcesRequested,
+        sourcesIgnored: selection.sourcesRequested,
       },
     },
     summary,
-    sourceBreakdown,
     ratings,
     genres,
     decades,
@@ -1323,18 +1312,18 @@ function buildBooksStats(options = {}) {
         keepStatusIds: HARDCOVER_PROFILE_STATUS_IDS,
         legacyExcluded: prepared.statusFilter.missingStatusId,
       },
-      profiles: profiles.map((profile) => {
-        const audit = prepared.profileStatus.get(`${profile.source}:${profile.userKey}`) || {
-          kept: profile.events.length,
+      profiles: profiles.map((entry) => {
+        const audit = prepared.profileStatus.get(`${entry.source}:${entry.userKey}`) || {
+          kept: entry.events.length,
           excluded: 0,
           missingStatusId: 0,
         };
         return {
-          key: `${profile.source}-${profile.userKey}`,
-          source: profile.source,
-          userKey: profile.userKey,
-          importedAt: profile.importedAt || null,
-          events: profile.events.length,
+          key: `${entry.source}-${entry.userKey}`,
+          source: entry.source,
+          userKey: entry.userKey,
+          importedAt: entry.importedAt || null,
+          events: entry.events.length,
           keptEvents: audit.kept,
           statusExcluded: audit.excluded,
           // Events without `statusId` come from imports made before the
@@ -1342,9 +1331,12 @@ function buildBooksStats(options = {}) {
           // refresh is advised (the label fallback keeps the numbers honest
           // in the meantime).
           missingStatusId: audit.missingStatusId,
-          needsReimport: profile.source === 'hardcover' && audit.missingStatusId > 0,
+          needsReimport: entry.source === 'hardcover' && audit.missingStatusId > 0,
         };
       }),
+      // Deep Scan progress of a LiveLib profile: the frontend shows it on the
+      // "Обновить профиль" button without blocking the dashboard.
+      deepScan: profile.deepScan || null,
     },
   };
 }
@@ -1369,6 +1361,7 @@ function profileSummary(profile) {
       bookCount: 0,
       finishedCount: 0,
       undatedEventCount: 0,
+      monthOnlyEventCount: 0,
       readCount: 0,
       reReadCount: 0,
       avgRating: null,
@@ -1380,6 +1373,9 @@ function profileSummary(profile) {
   const events = prepared.events;
   const workIds = new Set(events.map((event) => event.workId));
   const finished = events.filter((event) => event.finishedAt);
+  const monthOnly = events.filter(
+    (event) => !event.finishedAt && /^\d{4}-\d{2}$/.test(String(event.readMonth || ''))
+  ).length;
   const dates = finished
     .map((event) => String(event.finishedAt).slice(0, 10))
     .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
@@ -1394,7 +1390,8 @@ function profileSummary(profile) {
     eventCount: events.length,
     bookCount: workIds.size,
     finishedCount: finished.length,
-    undatedEventCount: events.length - finished.length,
+    undatedEventCount: events.length - finished.length - monthOnly,
+    monthOnlyEventCount: monthOnly,
     readCount: events.filter((event) => event.status === 'read').length,
     reReadCount,
     avgRating: mean(
@@ -1405,12 +1402,13 @@ function profileSummary(profile) {
   };
 }
 
-/** Unmatched list for GET /api/books/unmatched (livelib-only by contract). */
+/** Unmatched list for GET /api/books/unmatched (one profile by contract). */
 function listUnmatched(options = {}) {
   const stats = buildBooksStats(options);
   return {
     count: stats.unmatchedCount,
     items: stats.unmatched,
+    profile: stats.sources.profile,
     sources: stats.sources,
   };
 }
@@ -1425,7 +1423,7 @@ module.exports = {
   computeStreaks,
   connectedProfiles,
   profileKeyOf,
-  parseProfilesParam,
+  parseProfileParam,
   resolveProfileScope,
   selectProfiles,
   keepHardcoverProfileEvent,

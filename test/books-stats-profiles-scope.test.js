@@ -1,17 +1,20 @@
 'use strict';
 
 /**
- * K5 / task 1: `?profiles=` scoping of /api/books/stats.
+ * Single-profile contract of /api/books/stats (`?profile=`).
  *
- * The book tab aggregates every profile document in `cache-book/profiles/`
- * (LiveLib Margaret + Hardcover 34748 + anyone else who was imported). This
- * suite pins:
- *   - profile selection by exact `source-userKey` tokens (case-insensitive,
- *     canonical userKey from the file),
- *   - `?profiles=` priority over `?sources=` and their combination,
- *   - *every* widget respects the scope (not only summary/booksIndex),
- *   - 400 validation: malformed token, unknown profile, empty scope,
- *   - /api/books/profiles exposes the tokens + per-profile summaries,
+ * Model fixed by the user (28.10.2026): a books profile is ONE source + ONE
+ * account — `livelib-Margaret` OR `hardcover-34748`. Two readers, and a reader
+ * and a service account, never merge into one statistics payload.
+ *
+ * This suite pins:
+ *   - `?profile=` is mandatory and single: missing / repeated / CSV → 400;
+ *   - an unknown token → 400 with the list of available keys;
+ *   - every widget is computed from that profile's events only;
+ *   - `?sources=` is ignored and reported (`sourcesIgnored`), one release of
+ *     compatibility;
+ *   - `?profiles=` with ONE token is still accepted (deprecated, one release);
+ *   - /api/books/profiles exposes the keys + per-profile summaries;
  *   - /api/books/unmatched is scoped the same way.
  */
 
@@ -157,37 +160,28 @@ async function seed() {
 }
 
 /** Build the payload the way the route does (validated scope object). */
-function statsFor(profilesParam, extra = {}) {
+function statsFor(profileParam, extra = {}) {
   return buildBooksStats(
-    Object.assign({ profileScope: resolveProfileScope(profilesParam) }, extra)
+    Object.assign({ profileScope: resolveProfileScope(profileParam) }, extra)
   );
 }
 
-test('?profiles= scopes every widget to the named profile documents', async () => {
+test('?profile= scopes every widget to exactly one profile document', async () => {
   await seed();
 
-  const all = statsFor(undefined);
-  assert.deepEqual(all.sources.connected, ['hardcover', 'livelib']);
-  assert.deepEqual(all.sources.profiles.connected, [
-    'hardcover-34748',
-    'livelib-Alpha',
-    'livelib-Beta',
-  ]);
-  assert.equal(all.sources.filter.mode, 'all');
-  assert.equal(all.summary.eventCount, 5);
-  assert.equal(all.summary.bookCount, 4); // hc:900, ll:102, hc:901, ll:202
-
   const alpha = statsFor('livelib-Alpha');
-  assert.equal(alpha.sources.filter.mode, 'profiles');
+  assert.equal(alpha.sources.filter.mode, 'profile');
   assert.deepEqual(alpha.sources.profiles.selected, ['livelib-Alpha']);
   assert.deepEqual(alpha.sources.selected, ['livelib']);
+  assert.equal(alpha.sources.profile.key, 'livelib-Alpha');
   assert.equal(alpha.summary.eventCount, 2);
   assert.equal(alpha.summary.bookCount, 2); // hc:900 (linked) + ll:102
 
-  // booksIndex: only the scoped works, never Beta's.
+  // booksIndex: only the scoped works, never Beta's or the HC account's.
   assert.deepEqual(Object.keys(alpha.booksIndex).sort(), ['hc:900', 'll:102']);
   assert.equal(alpha.booksIndex['hc:900'].title, 'Alpha Book');
   assert.equal(alpha.booksIndex['hc:900'].rating, 7);
+  assert.equal(alpha.booksIndex['hc:901'], undefined);
 
   // Genres / series / publishers / years / pages — all from Alpha only.
   assert.deepEqual(alpha.genres.map((entry) => entry.name), ['Fantasy']);
@@ -200,7 +194,7 @@ test('?profiles= scopes every widget to the named profile documents', async () =
   assert.deepEqual(alpha.authors.map((entry) => entry.name), ['Ann Alpha']);
   assert.equal(alpha.pagesHistogram.find((bucket) => bucket.bucket === '100-199').count, 1);
 
-  // Ratings: merged and bySource from the scoped events.
+  // Ratings: one active source, identical to `merged`.
   const merged = Object.fromEntries(alpha.ratings.merged.map((entry) => [entry.score, entry.count]));
   assert.deepEqual(merged, { 7: 1, 8: 1 });
   assert.deepEqual(alpha.ratings.bySource.hardcover, []);
@@ -213,6 +207,7 @@ test('?profiles= scopes every widget to the named profile documents', async () =
   assert.equal(alpha.timeline.length, 1);
   assert.equal(alpha.timeline[0].month, '2024-01');
   assert.equal(alpha.timeline[0].finished, 2);
+  assert.equal(alpha.timeline[0].hardcover, 0);
   assert.equal(alpha.readDays.length, 2);
   assert.equal(alpha.streaks.current, 2);
   assert.equal(alpha.streaks.lastReadDate, '2024-01-02');
@@ -226,25 +221,15 @@ test('?profiles= scopes every widget to the named profile documents', async () =
   // Per-profile audit block follows the scope too.
   assert.deepEqual(alpha.meta.profiles.map((entry) => entry.key), ['livelib-Alpha']);
 
-  // Hardcover-only scope: its work still gets shared metadata, Beta LiveLib
-  // events stay out.
+  // Hardcover profile: its work still gets shared metadata, but no LiveLib
+  // event or rating from the Beta/Alpha accounts leaks in.
   const hc = statsFor('hardcover-34748');
   assert.equal(hc.summary.eventCount, 1);
   assert.equal(hc.summary.bookCount, 1);
   assert.equal(hc.booksIndex['hc:901'].rating, 10); // native 5 * 2
   assert.equal(hc.booksIndex['hc:901'].ratingsBySource.livelib, undefined);
   assert.equal(hc.summary.finishedCount, 1);
-
-  // Union of two explicit profiles = Alpha + Hardcover.
-  const pair = statsFor('livelib-Alpha,hardcover-34748');
-  assert.deepEqual(pair.sources.profiles.selected.slice().sort(), [
-    'hardcover-34748',
-    'livelib-Alpha',
-  ]);
-  assert.equal(pair.summary.eventCount, 3);
-  assert.deepEqual(pair.sources.selected, ['hardcover', 'livelib']);
-  assert.equal(pair.summary.bookCount, 3); // hc:900, ll:102, hc:901
-  assert.equal(pair.summary.bookCount, new Set(Object.keys(pair.booksIndex)).size);
+  assert.equal(hc.timeline[0].livelib, 0);
 
   // Profile keys are matched case-insensitively but resolve to the file's key.
   const lower = statsFor('LIVELIB-alpha');
@@ -252,36 +237,48 @@ test('?profiles= scopes every widget to the named profile documents', async () =
   assert.equal(lower.summary.eventCount, 2);
 });
 
-test('?profiles= beats ?sources= and is reported honestly', async () => {
+test('any multi-profile scope is rejected instead of unioned', () => {
+  const parsed = resolveProfileScope('livelib-Alpha,hardcover-34748');
+  assert.equal(parsed.multi, true);
+  assert.deepEqual(parsed.selected, []);
+  // A repeated parameter is a multi too.
+  assert.equal(resolveProfileScope(['livelib-Alpha', 'livelib-Beta']).multi, true);
+  // ... but a repeated parameter with only one real token is still one profile.
+  const single = resolveProfileScope(['livelib-Alpha', '']);
+  assert.equal(single.multi, false);
+  assert.deepEqual(single.selected.map((entry) => entry.key), ['livelib-Alpha']);
+});
+
+test('?sources= is ignored for books and reported honestly', async () => {
   await seed();
   const stats = statsFor('livelib-Beta', { sources: 'hardcover' });
-  assert.equal(stats.sources.filter.mode, 'profiles');
+  assert.equal(stats.sources.filter.mode, 'profile');
   assert.equal(stats.sources.filter.sourcesIgnored, true);
   assert.equal(stats.sources.filter.requestedSources, 'hardcover');
   assert.deepEqual(stats.sources.filter.requestedProfiles, ['livelib-Beta']);
   assert.deepEqual(stats.sources.selected, ['livelib']);
   assert.equal(stats.summary.eventCount, 2);
 
-  // sources= alone keeps its old coarse behaviour (all profiles of a source).
-  const hc = statsFor(undefined, { sources: 'hardcover' });
-  assert.equal(hc.sources.filter.mode, 'sources');
-  assert.equal(hc.sources.filter.sourcesIgnored, false);
-  assert.deepEqual(hc.sources.profiles.selected, ['hardcover-34748']);
-  assert.equal(hc.summary.eventCount, 1);
-
-  // ... and it is reported as not ignored when no profiles= came in.
-  assert.equal(hc.sources.filter.requestedProfiles.length, 0);
+  // Without `sources=` the flag is false; there is no coarse "all of source"
+  // mode any more.
+  const plain = statsFor('hardcover-34748');
+  assert.equal(plain.sources.filter.sourcesIgnored, false);
+  assert.deepEqual(plain.sources.selected, ['hardcover']);
+  assert.equal(plain.summary.eventCount, 1);
 });
 
 test('profile scope parsing rejects malformed tokens and reports unknown ones', () => {
   const empty = resolveProfileScope('');
   assert.equal(empty.explicit, true);
+  assert.equal(empty.empty, true);
   assert.deepEqual(empty.selected, []);
   assert.deepEqual(empty.malformed, []);
 
   const malformed = resolveProfileScope('Margaret,nonsense,livelib-');
-  assert.deepEqual(malformed.malformed.sort(), ['Margaret', 'livelib-', 'nonsense']);
-  assert.deepEqual(malformed.selected, []);
+  assert.equal(malformed.multi, true);
+  const singleMalformed = resolveProfileScope('Margaret');
+  assert.deepEqual(singleMalformed.malformed, ['Margaret']);
+  assert.deepEqual(singleMalformed.selected, []);
 
   const unknown = resolveProfileScope('livelib-Nobody');
   assert.deepEqual(unknown.unknown, ['livelib-Nobody']);
@@ -292,10 +289,14 @@ test('profile scope parsing rejects malformed tokens and reports unknown ones', 
   assert.deepEqual(dashed.unknown, ['livelib-my-reader']);
   assert.deepEqual(dashed.malformed, []);
 
-  // Absent parameter = no explicit scope.
+  // Absent parameter = no explicit scope (the route turns that into a 400).
   const absent = resolveProfileScope(undefined);
   assert.equal(absent.explicit, false);
-  assert.equal(absent.selected.length, 3);
+  assert.deepEqual(absent.selected, []);
+  // Pass an explicit empty profile list to prove no implicit "all" selection.
+  const noProfiles = resolveProfileScope('livelib-Alpha', []);
+  assert.deepEqual(noProfiles.availableProfileKeys, []);
+  assert.deepEqual(noProfiles.unknown, ['livelib-Alpha']);
 });
 
 test('profileSummary reports per-profile numbers for /api/books/profiles', async () => {
@@ -306,6 +307,7 @@ test('profileSummary reports per-profile numbers for /api/books/profiles', async
   assert.equal(summary.bookCount, 2);
   assert.equal(summary.finishedCount, 2);
   assert.equal(summary.undatedEventCount, 0);
+  assert.equal(summary.monthOnlyEventCount, 0);
   assert.equal(summary.readCount, 2);
   assert.equal(summary.avgRating, 7.5);
   assert.equal(summary.dateFrom, '2024-01-01');
@@ -321,6 +323,7 @@ test('profileSummary reports per-profile numbers for /api/books/profiles', async
     bookCount: 0,
     finishedCount: 0,
     undatedEventCount: 0,
+    monthOnlyEventCount: 0,
     readCount: 0,
     reReadCount: 0,
     avgRating: null,
@@ -329,7 +332,7 @@ test('profileSummary reports per-profile numbers for /api/books/profiles', async
   });
 });
 
-test('HTTP routes: profiles= validation, combos, /profiles and /unmatched', async (t) => {
+test('HTTP routes: profile= validation, sources compat, /profiles and /unmatched', async (t) => {
   await seed();
   const express = require('express');
   const routes = require('../server/books/routes');
@@ -343,45 +346,60 @@ test('HTTP routes: profiles= validation, combos, /profiles and /unmatched', asyn
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const base = 'http://127.0.0.1:6311/api/books';
 
-  const ok = await fetch(`${base}/stats?profiles=livelib-Alpha`);
+  const ok = await fetch(`${base}/stats?profile=livelib-Alpha`);
   assert.equal(ok.status, 200);
   const okBody = await ok.json();
   assert.equal(okBody.summary.eventCount, 2);
   assert.deepEqual(okBody.sources.profiles.selected, ['livelib-Alpha']);
-  assert.equal(okBody.sources.filter.mode, 'profiles');
+  assert.equal(okBody.sources.filter.mode, 'profile');
 
-  // Repeated parameters are merged.
-  const repeated = await fetch(`${base}/stats?profiles=livelib-Alpha&profiles=livelib-Beta`);
-  assert.equal(repeated.status, 200);
-  assert.equal((await repeated.json()).summary.eventCount, 4);
+  // Legacy single-token ?profiles= still answers (deprecated, one release).
+  const legacy = await fetch(`${base}/stats?profiles=livelib-Alpha`);
+  assert.equal(legacy.status, 200);
+  assert.equal(legacy.headers.get('x-books-legacy-profiles'), '1');
+  assert.equal((await legacy.json()).summary.eventCount, 2);
 
-  // Empty scope -> 400, not "everything".
-  const empty = await fetch(`${base}/stats?profiles=`);
-  assert.equal(empty.status, 400);
-  assert.equal((await empty.json()).code, 'invalid_profiles');
+  // Missing profile -> 400, never "everything".
+  const missing = await fetch(`${base}/stats`);
+  assert.equal(missing.status, 400);
+  const missingBody = await missing.json();
+  assert.equal(missingBody.code, 'profile_required');
+  assert.match(missingBody.error, /livelib-Alpha/);
 
-  const malformed = await fetch(`${base}/stats?profiles=Margaret`);
+  // Empty, repeated and CSV scopes -> 400 invalid_profile.
+  for (const query of [
+    'profile=',
+    'profile=livelib-Alpha&profile=livelib-Beta',
+    'profile=livelib-Alpha,livelib-Beta',
+  ]) {
+    const response = await fetch(`${base}/stats?${query}`);
+    assert.equal(response.status, 400, query);
+    const body = await response.json();
+    assert.equal(body.code === 'invalid_profile' || body.code === 'profile_required', true, query);
+  }
+
+  const malformed = await fetch(`${base}/stats?profile=Margaret`);
   assert.equal(malformed.status, 400);
-  assert.equal((await malformed.json()).code, 'invalid_profiles');
+  assert.equal((await malformed.json()).code, 'invalid_profile');
 
-  const unknown = await fetch(`${base}/stats?profiles=livelib-Nobody`);
+  const unknown = await fetch(`${base}/stats?profile=livelib-Nobody`);
   assert.equal(unknown.status, 400);
   const unknownBody = await unknown.json();
   assert.equal(unknownBody.code, 'unknown_profile');
   assert.match(unknownBody.error, /livelib-Alpha/); // available list helps the client
 
-  // profiles= wins over a parallel sources=.
-  const combo = await fetch(`${base}/stats?profiles=livelib-Beta&sources=hardcover`);
+  // A parallel sources= is ignored, not applied.
+  const combo = await fetch(`${base}/stats?profile=livelib-Beta&sources=hardcover`);
   assert.equal(combo.status, 200);
   const comboBody = await combo.json();
   assert.equal(comboBody.summary.eventCount, 2);
   assert.deepEqual(comboBody.sources.selected, ['livelib']);
   assert.equal(comboBody.sources.filter.sourcesIgnored, true);
 
-  // Invalid sources still rejected on the coarse axis.
+  // sources= without profile= is still a 400: no coarse mode.
   const badSources = await fetch(`${base}/stats?sources=letterboxd`);
   assert.equal(badSources.status, 400);
-  assert.equal((await badSources.json()).code, 'invalid_sources');
+  assert.equal((await badSources.json()).code, 'profile_required');
 
   const list = await fetch(`${base}/profiles`);
   assert.equal(list.status, 200);
@@ -396,18 +414,25 @@ test('HTTP routes: profiles= validation, combos, /profiles and /unmatched', asyn
   assert.equal(alphaEntry.summary.eventCount, 2);
   assert.equal(alphaEntry.summary.bookCount, 2);
   assert.deepEqual(alphaEntry.cookies, { present: false, savedAt: null, count: 0 });
+  assert.equal(alphaEntry.deepScan, null);
   const hcEntry = listBody.profiles.find((entry) => entry.key === 'hardcover-34748');
   assert.equal(hcEntry.sourceKey, 'hardcover/34748');
   assert.equal(hcEntry.summary.avgRating, 10);
 
-  // /unmatched follows the same scope.
-  const scopedUnmatched = await fetch(`${base}/unmatched?profiles=livelib-Alpha`);
+  // /unmatched follows the same single-profile contract.
+  const scopedUnmatched = await fetch(`${base}/unmatched?profile=livelib-Alpha`);
   assert.equal(scopedUnmatched.status, 200);
   const scopedBody = await scopedUnmatched.json();
   assert.equal(scopedBody.count, 1);
   assert.equal(scopedBody.items[0].bookId, '102');
   assert.deepEqual(scopedBody.sources.profiles.selected, ['livelib-Alpha']);
+  assert.equal(scopedBody.profile.key, 'livelib-Alpha');
 
-  const unionUnmatched = await (await fetch(`${base}/unmatched`)).json();
-  assert.equal(unionUnmatched.count, 2); // ll:102 + ll:202
+  const missingUnmatched = await fetch(`${base}/unmatched`);
+  assert.equal(missingUnmatched.status, 400);
+  assert.equal((await missingUnmatched.json()).code, 'profile_required');
+
+  const betaUnmatched = await (await fetch(`${base}/unmatched?profile=livelib-Beta`)).json();
+  assert.equal(betaUnmatched.count, 1); // ll:202 only — Alpha's stub is not here
+  assert.equal(betaUnmatched.items[0].bookId, '202');
 });

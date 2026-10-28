@@ -220,7 +220,7 @@ test('manual override dominates detection, series propagation and counts', async
   await bookCache.setMangaFlag('hc:902', true);
   await bookCache.setMangaFlag('hc:903', false);
 
-  const stats = buildBooksStats({});
+  const stats = buildBooksStats({ profile: 'hardcover-tester' });
   // 901, 903(series/self), 904(series), 905, 906 auto-excluded; 902 manual.
   assert.equal(stats.summary.mangaExcluded, 5);
   assert.equal(stats.summary.mangaManualExcluded, 1);
@@ -234,7 +234,7 @@ test('manual override dominates detection, series propagation and counts', async
   assert.equal(stats.booksIndex['hc:904'], undefined);
   assert.equal(stats.booksIndex['hc:906'], undefined);
 
-  const all = buildBooksStats({ includeMangaComics: true });
+  const all = buildBooksStats({ profile: 'hardcover-tester', includeMangaComics: true });
   assert.equal(all.summary.mangaExcluded, 0);
   assert.equal(all.booksIndex['hc:902'].mangaComics, true);
   assert.equal(all.booksIndex['hc:902'].mangaComicsSource, 'manual');
@@ -245,7 +245,7 @@ test('manual override dominates detection, series propagation and counts', async
 
 test('flags file is fingerprint-revalidated (external write, no restart)', async () => {
   await resetFlags({ 'hc:900': { mangaComics: true, updatedAt: new Date().toISOString() } });
-  const stats = buildBooksStats({});
+  const stats = buildBooksStats({ profile: 'hardcover-tester' });
   assert.equal(stats.booksIndex['hc:900'], undefined);
   assert.equal(stats.summary.mangaManualExcluded, 1);
   assert.equal(bookCache.getMangaFlag('hc:900').mangaComics, true);
@@ -284,7 +284,7 @@ test('HTTP POST/DELETE /api/books/work/flag upserts and resets', async (t) => {
   assert.equal(createdBody.mangaComics, true);
   assert.ok(createdBody.updatedAt);
 
-  const hidden = await (await fetch(`${base}/stats`)).json();
+  const hidden = await (await fetch(`${base}/stats?profile=hardcover-tester`)).json();
   assert.equal(hidden.booksIndex['hc:900'], undefined);
 
   const removed = await fetch(`${base}/work/flag?workId=${encodeURIComponent('hc:900')}`, {
@@ -293,7 +293,7 @@ test('HTTP POST/DELETE /api/books/work/flag upserts and resets', async (t) => {
   assert.equal(removed.status, 200);
   assert.equal((await removed.json()).removed, true);
 
-  const shown = await (await fetch(`${base}/stats`)).json();
+  const shown = await (await fetch(`${base}/stats?profile=hardcover-tester`)).json();
   assert.ok(shown.booksIndex['hc:900']);
 });
 
