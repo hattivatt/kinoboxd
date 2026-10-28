@@ -839,18 +839,23 @@ async function fetchRsc(username, options = {}) {
     );
     if (onProgress) onProgress({ stage: 'rsc', page, pageTotal, events: rows.length });
 
-    // Pagination is client-side in the current Next.js app: `?page=N` may
-    // render page 1 again (verified live 27.10.2026). Stop at the first page
-    // that brings no new user_book ids instead of re-reading the same 20 cards
-    // 62 times; the bulk pass still carries the rest of the profile.
+    // Pagination is server-side (`?page=N` does return the requested 20 rows,
+    // verified live 28.10.2026). BUT the HTML of page N>1 embeds TWO dehydrated
+    // TanStack queries for the same collection: `offset:0` (page 1) and
+    // `offset:(N-1)*20` (the requested page), and `parseRscHtml` currently takes
+    // the FIRST payload block — i.e. page 1 again. So `added === 0` here means
+    // "our parser read page 1 twice", not "LiveLib ignores ?page=" (docs §2.1.1).
+    // Picking the payload whose offset matches the request is a separate round:
+    // it turns a 2-request import into 63 polite requests per profile.
     if (added === 0) {
       warnings.push(
         `Collection pagination returned no new books on page ${page} ` +
-          `(server ignores ?page= for anonymous users); stopped after ${pagesFetched} page(s). ` +
+          `(the page carried a second, offset-matched payload that this parser does not read yet); ` +
+          `stopped after ${pagesFetched} page(s). ` +
           `Only books from page 1 have exact read dates; the rest come from the legacy bulk pass and are undated.`
       );
       console.warn(
-        `[livelib ${username}] page ${page} repeated known books; pagination seems ignored, stopping.`
+        `[livelib ${username}] page ${page} repeated known books; parser picked the offset:0 payload, stopping.`
       );
       break;
     }
