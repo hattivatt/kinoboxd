@@ -37,6 +37,15 @@
  * that marker a re-run would re-ask Hardcover/Литрес/OL for every hopeless book
  * forever — the same "repeat the run" idempotency the film backfills have.
  * `--force` (or `--ids`, an explicit request) bypasses the marker.
+ *
+ * The marker means «every provider was asked and answered nothing», never
+ * «this run ran out of budget». An exhausted Литрес budget (`BOOKS_LITRES_BUDGET`
+ * is per-run) or a provider network error leaves the document *unchecked*, so
+ * the next scheduled run asks it again. The first version of this job did not
+ * distinguish the two: with `BOOKS_LITRES_BUDGET=40` and `--limit 200`, one run
+ * poisoned the remaining ~160 Cyrillic documents for 30 days and the queue
+ * could never converge (user report, 29.10.2026). `report.deferred` lists those
+ * documents and why they were left alone.
  */
 
 const fs = require('fs');
@@ -47,6 +56,8 @@ const providers = require('./providers');
 const litres = require('./providers/litres');
 const openlibrary = require('./providers/openlibrary');
 const hardcover = require('./providers/hardcover');
+const editions = require('./hardcover-editions');
+const { normalizeIsbn } = require('./normalize');
 
 const DEFAULT_LIMIT = 20;
 const DEFAULT_PAUSE_MS = 2000; // Литрес politeness (AGENTS.md)
@@ -111,7 +122,13 @@ function workIdOf(doc) {
 
 /**
  * Ask the chain for one work's first publication.
- * Returns `{year, source, candidates}`; `year` is null when nobody knows.
+ *
+ * Returns `{year, source, candidates, incomplete}`:
+ *   - `year` is null when no provider returned a claim;
+ *   - `incomplete` lists the reasons the answer cannot be treated as final
+ *     (`litres-budget`, `litres-breaker`, `litres-error`, `hardcover-error`,
+ *     `openlibrary-error`). A null year with a non-empty `incomplete` is «not
+ *     answered yet», so the caller must not write the negative cache.
  */
 async function firstYearForDoc(doc, options = {}) {
   const sleep = options.sleep || sleepDefault;
@@ -127,6 +144,7 @@ async function firstYearForDoc(doc, options = {}) {
   const openlibraryProvider = options.openlibraryProvider || openlibrary;
 
   const candidates = [];
+  const incomplete = [];
   const push = (result, label) => {
     if (!result) return;
     const year = providers.firstYearOf(result.firstPublishedYear);
@@ -141,30 +159,60 @@ async function firstYearForDoc(doc, options = {}) {
   // first-publication claim, so a legacy document that only has one contributes
   // nothing here (the other providers still get their turn).
   if (isbn13 || isbn10) {
-    try {
-      push(
-        await hardcoverProvider.getWork(input, {
-          lookupIsbns,
-          sleep,
-          requestDelayMs: pause,
-          requireWorkClaim: true,
-        }),
-        'hardcover'
-      );
-    } catch (err) {
-      // ISBN lookups degrade quietly: the other providers still run.
+    if (options.hardcoverUnavailable === true) {
+      // The slice's batched lookup failed before any book was asked: every
+      // ISBN document is «not answered», never «nobody knows».
+      incomplete.push('hardcover-error');
+    } else {
+      try {
+        push(
+          await hardcoverProvider.getWork(input, {
+            lookupIsbns,
+            sleep,
+            requestDelayMs: pause,
+            requireWorkClaim: true,
+          }),
+          'hardcover'
+        );
+      } catch (err) {
+        // ISBN lookups degrade quietly: the other providers still run, but a
+        // failed request is not an answer, so the night's verdict is not final.
+        incomplete.push('hardcover-error');
+      }
     }
   }
 
   // 2. Литрес is the RU metadata source («дата написания»).
   if (title && CYRILLIC_TITLE.test(title)) {
-    try {
-      push(
-        await litresProvider.getWork(input, { budget, sleep, litresPauseMs: pause }),
-        'litres'
-      );
-    } catch (err) {
-      // Breaker/429 → the other providers still run.
+    const breakerOpen =
+      typeof litresProvider.isBreakerOpen === 'function' && litresProvider.isBreakerOpen();
+    if (breakerOpen) {
+      // Asking again would be a wasted request (the breaker is a 30 min global
+      // stop); the document stays pending for the next run.
+      incomplete.push('litres-breaker');
+    } else {
+      const usedBefore = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
+      try {
+        const result = await litresProvider.getWork(input, {
+          budget,
+          sleep,
+          litresPauseMs: pause,
+        });
+        // `getWork` returns null both for "no match" and for "budget is gone".
+        // Only the second one is an incomplete answer: the book was never
+        // asked. Distinguish by the mutation of the shared budget counter.
+        const usedAfter = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
+        const budgetBlocked =
+          budget &&
+          usedBefore != null &&
+          usedAfter === usedBefore &&
+          Number(budget.remaining) === 0;
+        if (budgetBlocked) incomplete.push('litres-budget');
+        else push(result, 'litres');
+      } catch (err) {
+        // Breaker/429 → the other providers still run; retry on the next run.
+        incomplete.push('litres-error');
+      }
     }
   }
 
@@ -172,7 +220,8 @@ async function firstYearForDoc(doc, options = {}) {
   try {
     push(await openlibraryProvider.getWork(input, { sleep, requestDelayMs: 250 }), 'openlibrary');
   } catch (err) {
-    // Offline/5xx is not fatal for a backfill.
+    // Offline/5xx is not fatal for a backfill, but it is not an answer either.
+    incomplete.push('openlibrary-error');
   }
 
   const year = candidates.reduce(
@@ -180,7 +229,55 @@ async function firstYearForDoc(doc, options = {}) {
     null
   );
   const winner = year == null ? null : candidates.find((entry) => entry.year === year);
-  return { year, source: winner ? winner.source : null, candidates };
+  return { year, source: winner ? winner.source : null, candidates, incomplete };
+}
+
+/** Normalised ISBN of a details document, or null. */
+function isbnOfDoc(doc) {
+  return normalizeIsbn(doc && doc.isbn13) || normalizeIsbn(doc && doc.isbn10);
+}
+
+/**
+ * One batched Hardcover ISBN lookup for the whole selected slice.
+ *
+ * The chain's per-document Hardcover call would be one GraphQL request per
+ * book; `lookupIsbns` takes 100 ISBNs per request, so a 200-document run costs
+ * two requests instead of ~190. That is the difference between a bounded,
+ * polite job and a rate-limit incident (AGENTS.md: Hardcover free plan counts
+ * every top-level field as a query). Returns a Map<isbn,{details,editionId}>
+ * or null when the slice has no ISBNs / the batch failed (then the providers
+ * are still asked per document, and the error path marks them incomplete).
+ */
+async function prefetchHardcover(docs, options = {}) {
+  const lookup = options.lookupIsbns || editions.lookupIsbns;
+  const isbns = new Set();
+  for (const doc of docs) {
+    const isbn = isbnOfDoc(doc);
+    if (isbn) isbns.add(isbn);
+  }
+  if (!isbns.size) return { byIsbn: new Map(), requests: 0 };
+  try {
+    const found = await lookup([...isbns], { onProgress: options.onProgress });
+    return {
+      byIsbn: found && found.byIsbn instanceof Map ? found.byIsbn : new Map(),
+      requests: Number(found && found.requests) || 0,
+    };
+  } catch (err) {
+    return { byIsbn: new Map(), requests: 0, error: (err && err.code) || 'isbn_lookup_failed' };
+  }
+}
+
+/** A `lookupIsbns` override that answers from the prefetched batch only. */
+function prefetchedLookup(index) {
+  return async (isbns) => {
+    const byIsbn = new Map();
+    for (const raw of isbns) {
+      const isbn = normalizeIsbn(raw);
+      const entry = isbn && index.get(isbn);
+      if (entry) byIsbn.set(isbn, entry);
+    }
+    return { byIsbn, works: new Map(), queries: [], requests: 0 };
+  };
 }
 
 /**
@@ -235,22 +332,70 @@ async function backfill(options = {}) {
     checked: 0,
     resolved: [],
     unknown: [],
+    // Budget/breaker/network stopped the question before a provider could
+    // answer. These documents stay unchecked (no negative cache): the next
+    // run asks again instead of losing them for `DEFAULT_RECHECK_DAYS`.
+    deferred: [],
     errors: [],
     byProvider: {},
+    hardcoverRequests: 0,
     litresBudgetUsed: 0,
+    litresBudgetLimit: budget && Number.isFinite(Number(budget.limit)) ? Number(budget.limit) : null,
+    litresBudgetRemaining: budget && Number.isFinite(Number(budget.remaining))
+      ? Number(budget.remaining)
+      : null,
+    pending: 0,
+    runsLeft: 0,
   };
+
+  // One batched Hardcover lookup for the whole slice: 100 ISBNs per request,
+  // not one request per book. Fake providers in tests skip it (they assert the
+  // exact per-document calls), and an explicit `lookupIsbns` is respected.
+  let hardcoverLookup = null;
+  if (!options.hardcoverProvider && !options.dryRun) {
+    hardcoverLookup = await prefetchHardcover(
+      selected.map((entry) => entry.doc),
+      options
+    );
+    report.hardcoverRequests = hardcoverLookup.requests;
+    if (hardcoverLookup.error) report.hardcoverLookupError = hardcoverLookup.error;
+  }
+  const lookupIsbns = hardcoverLookup && !hardcoverLookup.error
+    ? prefetchedLookup(hardcoverLookup.byIsbn)
+    : options.lookupIsbns;
+  const hardcoverUnavailable = Boolean(hardcoverLookup && hardcoverLookup.error);
 
   for (const { key, doc, workId } of selected) {
     report.checked++;
     try {
       const found = await firstYearForDoc(doc, {
         ...options,
+        lookupIsbns,
+        hardcoverUnavailable,
         budget,
       });
       if (found.year == null) {
-        report.unknown.push({ workId, title: doc.title || null });
-        log(`— ${workId} ${doc.title || ''} :: no first-publication claim`);
-        // Negative cache: the next run must not repeat these requests.
+        // Only an answer from every applicable provider is a verdict. A
+        // budget-exhausted or failed question is a deferral: write nothing, so
+        // the next run sees the document as a candidate again.
+        if (found.incomplete.length) {
+          report.deferred.push({
+            workId,
+            title: doc.title || null,
+            reasons: [...new Set(found.incomplete)],
+          });
+          log(
+            `… ${workId} ${doc.title || ''} :: deferred (${[...new Set(found.incomplete)].join(',')})`
+          );
+          continue;
+        }
+        const asked = found.candidates.length
+          ? [...new Set(found.candidates.map((entry) => entry.source))].join(',')
+          : 'hardcover,litres,openlibrary';
+        report.unknown.push({ workId, title: doc.title || null, asked });
+        log(`— ${workId} ${doc.title || ''} :: no first-publication claim (${asked})`);
+        // Negative cache: the next run must not repeat these requests. This is
+        // only reached when every applicable provider really answered.
         if (!dryRun) {
           await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), {
             ...doc,
@@ -290,6 +435,58 @@ async function backfill(options = {}) {
     if (budget && typeof budget.remaining === 'number') report.litresBudgetUsed = budget.used;
   }
   if (budget && typeof budget.used === 'number') report.litresBudgetUsed = budget.used;
+  if (budget && typeof budget.remaining === 'number') {
+    report.litresBudgetRemaining = Number(budget.remaining);
+  }
+  report.litresBudgetExhausted = report.litresBudgetRemaining === 0;
+
+  // Pending queue after the run: a fresh scan, so newly written years and the
+  // freshly written negative cache are both taken into account. This is the
+  // number the journal and the UI promise: «осталось ~K прогонов».
+  let pending = 0;
+  for (const { key, doc } of detailDocs()) {
+    const workId = workIdOf(doc);
+    if (!workId) continue;
+    if (ids && ![...ids].some((id) => id === workId || id === key)) continue;
+    if (!force && providers.firstYearOf(doc.firstPublishedYear) != null) continue;
+    if (!force && recentlyChecked(doc, nowMs, recheckDays)) continue;
+    pending++;
+  }
+  report.pending = pending;
+  const perRun = limit > 0 ? limit : Math.max(pending, 1);
+  report.runsLeft = pending > 0 ? Math.ceil(pending / perRun) : 0;
+
+  // «Честно неизвестные» grouped by who was asked: the journal line below
+  // names the providers that answered nothing, so an operator can tell a
+  // provider outage from a genuinely undocumented book.
+  report.unknownByAsked = {};
+  for (const entry of report.unknown) {
+    report.unknownByAsked[entry.asked] = (report.unknownByAsked[entry.asked] || 0) + 1;
+  }
+  const unknownCounts = Object.entries(report.unknownByAsked)
+    .map(([asked, count]) => `${asked}: ${count}`)
+    .join('; ');
+  const sourceCounts = Object.entries(report.byProvider)
+    .map(([source, count]) => `${source} ${count}`)
+    .join(', ');
+  log(
+    `[years-backfill] scanned=${report.scanned} candidates=${report.candidates} ` +
+      `selected=${report.selected} checked=${report.checked} ` +
+      `resolved=${report.resolved.length}${sourceCounts ? ` (${sourceCounts})` : ''} ` +
+      `unknown=${report.unknown.length}${unknownCounts ? ` [${unknownCounts}]` : ''} ` +
+      `deferred=${report.deferred.length} ` +
+      `errors=${report.errors.length} ` +
+      `litres=${report.litresBudgetUsed}/${report.litresBudgetLimit == null ? '?' : report.litresBudgetLimit}` +
+      `${report.litresBudgetExhausted ? ' (exhausted)' : ''} ` +
+      `hardcoverRequests=${report.hardcoverRequests} pending=${report.pending} runsLeft=${report.runsLeft}`
+  );
+  log(
+    `[years-backfill] итог: год получили ${report.resolved.length}` +
+      `${sourceCounts ? ` (${sourceCounts})` : ''}; честно неизвестны ${report.unknown.length}; ` +
+      `отложено (бюджет/сеть/breaker) ${report.deferred.length}; ` +
+      `в очереди ${report.pending}` +
+      (report.runsLeft ? ` — это ~${report.runsLeft} прогон(ов) по ${perRun}` : ' — очередь пуста')
+  );
   return report;
 }
 
@@ -324,9 +521,17 @@ if (require.main === module) {
         checked: report.checked,
         resolved: report.resolved.length,
         unknown: report.unknown.length,
+        unknownByAsked: report.unknownByAsked,
+        deferred: report.deferred.length,
         errors: report.errors.length,
         byProvider: report.byProvider,
+        hardcoverRequests: report.hardcoverRequests,
         litresBudgetUsed: report.litresBudgetUsed,
+        litresBudgetLimit: report.litresBudgetLimit,
+        litresBudgetRemaining: report.litresBudgetRemaining,
+        litresBudgetExhausted: report.litresBudgetExhausted,
+        pending: report.pending,
+        runsLeft: report.runsLeft,
       };
       console.log(JSON.stringify({ summary, resolved: report.resolved }, null, 2));
       if (report.errors.length) process.exitCode = 1;
@@ -345,6 +550,7 @@ module.exports = {
   workIdOf,
   recentlyChecked,
   firstYearForDoc,
+  prefetchHardcover,
   backfill,
   parseArgs,
 };
