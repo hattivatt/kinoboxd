@@ -23,9 +23,16 @@
  *     and publisher strings ("VIZ Media", "Image Comics", "Комильфо").
  */
 
-/** Case-insensitive keyword set; Cyrillic prefixes cover all inflections. */
+/**
+ * Case-insensitive keyword set; Cyrillic prefixes cover all inflections.
+ *
+ * Russian columns of a `livelib-backup` export use human genre labels
+ * («Манга», «Комиксы и манга», «Графический роман», «Сёнэн»), so the RU part
+ * of the set is not optional: it is the only classification signal a
+ * file-imported profile has (§3.3.2).
+ */
 const MANGA_PATTERN =
-  /(?:\bmanga\b|\bmanhwa\b|\bmanhua\b|\bcomics?\b|\bgraphic[\s-]?novels?\b|\bsingle[\s-]?issues?\b|\bcollected[\s-]?editions?\b|\bwebtoons?\b|\bshonen\b|\bshōnen\b|\bshoujo\b|\bshōjo\b|\bseinen\b|\bjosei\b|\banime\b|манга|манхва|манхуа|комикс|сёнэн|сёнен|сёдзё|сэйнэн|сэйнен|вебтун|аниме)/iu;
+  /(?:\bmanga\b|\bmanhwa\b|\bmanhua\b|\bcomics?\b|\bgraphic[\s-]?novels?\b|\bsingle[\s-]?issues?\b|\bcollected[\s-]?editions?\b|\bwebtoons?\b|\bshonen\b|\bshōnen\b|\bshoujo\b|\bshōjo\b|\bseinen\b|\bjosei\b|\banime\b|манга|манхва|манхуа|комикс|сёнэн|сёнен|сёдзё|сёдзе|сэйнэн|сэйнен|вебтун|веб-?комикс|додзинси|аниме|графическ[\p{L}]*\s+роман[\p{L}]*)/iu;
 
 /**
  * Publishers whose catalogue is comics/manga (a publisher hit is a strong
@@ -88,8 +95,10 @@ const MANGA_PUBLISHERS = [
   'jpop',
   // Russian comics/manga
   'комильфо',
+  'komilfo',
   'bubble',
   'истари комикс',
+  'istari comics',
   'фабрика комиксов',
   'alt graph',
   'xl media',

@@ -455,7 +455,7 @@ function metadataSourcesOf(details) {
 }
 
 /**
- * Effective provider-level flag for one work.
+ * Effective manga/comics flag for one work.
  *
  * The detector is re-run on every read over the full persisted corpus
  * (`mangaTexts`, `tags`) instead of trusting a stale `details.mangaComics`
@@ -463,20 +463,42 @@ function metadataSourcesOf(details) {
  * must start filtering without a full re-import. The stored boolean stays as an
  * additive `true` (a provider may have known a signal we cannot reconstruct)
  * and as the fallback when the current corpus has no classification fields.
+ *
+ * `fileMeta` (§3.3.2) is a second, independent signal source. A
+ * `livelib-backup` file export carries «Жанры»/«Серия»/«Издатель» on the event
+ * itself; without it a file-imported profile has no details document at all,
+ * so the flag used to be `null` and manga/comics leaked into the statistics.
+ * Both corpora are consulted (details *and* file) and `true` wins, because a
+ * provider tag on one volume is as valid as a file genre on another: the
+ * detector is deliberately greedy and the user can always restore a work with
+ * a manual `false` (§5, `POST /api/books/work/flag`).
  */
-function mangaOfDetails(details, genres, series, publisher) {
-  if (!details) return null;
-  const detected = detectManga({
+function mangaOfDetails(details, genres, series, publisher, fileMeta) {
+  const sources = [{
     genres,
-    tags: Array.isArray(details.tags) ? details.tags : [],
-    texts: Array.isArray(details.mangaTexts) ? details.mangaTexts : [],
+    tags: details && Array.isArray(details.tags) ? details.tags : [],
+    texts: details && Array.isArray(details.mangaTexts) ? details.mangaTexts : [],
     series,
     publisher,
-  });
-  if (detected === true) return true;
-  if (details.mangaComics === true) return true;
-  if (detected === false) return false;
-  return typeof details.mangaComics === 'boolean' ? details.mangaComics : null;
+  }];
+  if (fileMeta && fileMeta.present) {
+    sources.push({
+      genres: fileMeta.genres,
+      series: fileMeta.series.map((entry) => entry.name),
+      publisher: fileMeta.publisher,
+    });
+  }
+
+  let clean = false;
+  for (const input of sources) {
+    const detected = detectManga(input);
+    if (detected === true) return true;
+    if (detected === false) clean = true;
+  }
+  // A stored provider `true` is additive: it survives a clean re-detection.
+  if (details && details.mangaComics === true) return true;
+  if (clean) return false;
+  return details && typeof details.mangaComics === 'boolean' ? details.mangaComics : null;
 }
 
 /** Per-shelf counts of a profile document (read/dnf/reading/wish). */
@@ -501,14 +523,37 @@ function profileShelfCounts(events) {
  * series and publishers without a single network request (the point of the
  * safe path). The chain still wins when a details document exists, and
  * `metadataSources` says which one it was.
+ *
+ * Two flags, because "the file was parsed" and "the file says something about
+ * this book" are different questions:
+ *   - `present` — at least one bibliographic value was extracted (genres,
+ *     series, publisher, year, ISBN or language); it drives
+ *     `metadataSources: ['livelib-file']`;
+ *   - `coverage` — the fields the «Метадата: N%» badge speaks about
+ *     (genres, series, year — exactly what its hint lists). A minimal export
+ *     (title + date only, or a publisher column without genres) leaves the
+ *     profile genuinely unenriched, so it must count as unresolved instead of
+ *     pretending to be 100% covered.
  */
 function fileMetadataOf(events) {
-  const empty = { present: false, genres: [], series: [], isbn13: null, isbn10: null, language: null };
+  const empty = {
+    present: false,
+    coverage: false,
+    genres: [],
+    series: [],
+    publisher: null,
+    year: null,
+    isbn13: null,
+    isbn10: null,
+    language: null,
+  };
   const rows = (events || []).filter((event) => event && event.origin === 'livelib-file');
   if (!rows.length) return empty;
 
   const genres = [];
   const series = [];
+  let publisher = null;
+  let year = null;
   let isbn13 = null;
   let isbn10 = null;
   let language = null;
@@ -522,12 +567,18 @@ function fileMetadataOf(events) {
     if (seriesName && !series.some((entry) => entry.name === seriesName)) {
       series.push({ hcId: null, name: seriesName, position: null });
     }
+    const publisherName = String(edition.publisher || '').trim();
+    if (!publisher && publisherName) publisher = publisherName;
+    if (year == null) year = saneYear(edition.year);
     if (!isbn13 && edition.isbn13) isbn13 = String(edition.isbn13);
     if (!isbn13 && edition.isbn) isbn13 = String(edition.isbn);
     if (!isbn10 && edition.isbn10) isbn10 = String(edition.isbn10);
     if (!language && edition.language) language = String(edition.language);
   }
-  return { present: true, genres, series, isbn13, isbn10, language };
+  const coverage = genres.length > 0 || series.length > 0 || year != null;
+  const present =
+    coverage || Boolean(publisher) || Boolean(isbn13) || Boolean(isbn10) || Boolean(language);
+  return { present, coverage, genres, series, publisher, year, isbn13, isbn10, language };
 }
 
 function workMetadata(workId, events) {
@@ -570,10 +621,12 @@ function workMetadata(workId, events) {
   const publisher =
     (details && details.publisher) ||
     (displayEvent && displayEvent.edition && displayEvent.edition.publisher) ||
+    fileMeta.publisher ||
     null;
   const rawYear =
     (details && details.publicationYear) ||
     (displayEvent && displayEvent.edition && Number(displayEvent.edition.year)) ||
+    fileMeta.year ||
     null;
   const year = saneYear(rawYear);
   const pages =
@@ -636,7 +689,7 @@ function workMetadata(workId, events) {
     isbn10: (details && details.isbn10) || fileMeta.isbn10 || null,
     language: (details && details.editionLanguage) || fileMeta.language || null,
     metadataSources,
-    mangaComics: mangaOfDetails(details, genres, series, publisher),
+    mangaComics: mangaOfDetails(details, genres, series, publisher, fileMeta),
     details,
     links,
     finishedDate,
@@ -644,9 +697,12 @@ function workMetadata(workId, events) {
     // simply the rating of the profile's own event(s).
     rating10: hcWithRating ? hcWithRating.rating10 : llEvents.find((e) => e.rating10 != null)?.rating10 ?? null,
     sources: [...new Set(events.map((event) => event.source))].sort(),
-    // "Unresolved" means "no metadata at all": a details document from the
-    // chain or the columns of a file export both count.
-    unresolved: !details && !fileMeta.present,
+    // "Unresolved" means "no bibliographic metadata at all": a details
+    // document from the chain or the meaningful columns of a file export
+    // (genres/series/publisher/year) both count. A file row carrying only a
+    // title and a date is real reading history but not enrichment, so it stays
+    // unresolved and the «Метадата: N%» badge keeps telling the truth.
+    unresolved: !details && !fileMeta.coverage,
   };
 }
 
