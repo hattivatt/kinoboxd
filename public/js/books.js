@@ -2170,7 +2170,7 @@ function renderHead(data) {
     const undatedParts = [];
     if (data.summary.monthOnlyEventCount > 0) {
       undatedParts.push(
-        `у ${fmtInt(data.summary.monthOnlyEventCount)} дата по месяцу — в таймлайне, но не в календаре и стриках`
+        `У ${fmtInt(data.summary.monthOnlyEventCount)} дата по месяцу — в таймлайне, но не в календаре и стриках`
       );
     }
     if (data.summary.undatedEventCount > 0) {
