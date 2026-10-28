@@ -24,6 +24,11 @@ const zlib = require('node:zlib');
 
 const BOOK_CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-book-two-phase-'));
 process.env.KINOBOXD_CACHE_BOOK_DIR = BOOK_CACHE_DIR;
+// The import job ends with the metadata resolve stage. These tests are about
+// the scrape, so the network budget is zeroed: no Lитрес pause per book and no
+// LiveLib card fetch — resolve must be a no-op here, never a live request.
+process.env.BOOKS_LITRES_BUDGET = '0';
+process.env.BOOKS_LIVELIB_CARD_BUDGET = '0';
 
 const bookCache = require('../server/books/book-cache');
 const livelib = require('../server/books/livelib');
@@ -220,6 +225,34 @@ test('light re-check keeps deep-scan dates instead of throwing them away', () =>
 test('job status exposes deep percent; auto-deep runs while dates are missing', async () => {
   await freshCache();
   global.fetch = fakeLivelib().fetchImpl;
+  // This file pins the scrape/deep contract, not the metadata chain (that is
+  // covered by books-resolve*.test.js and books-livelib-file-resolve.test.js).
+  // Without the stub the job's resolve stage would walk 100 ISBN-less events
+  // through Литрес/GB/OL with their politeness pauses — minutes of wall clock
+  // and, worse, real requests if a provider ever bypassed the fake fetch.
+  const resolveModule = require('../server/books/resolve');
+  const realResolveProfile = resolveModule.resolveProfile;
+  resolveModule.resolveProfile = async (profile) => ({
+    total: profile.events.length,
+    skippedPlanShelf: 0,
+    cached: 0,
+    resolvedIsbn: 0,
+    resolvedTitle: 0,
+    resolvedGoogle: 0,
+    resolvedOpenLibrary: 0,
+    resolvedLitres: 0,
+    resolvedLivelibCard: 0,
+    resolvedHardcoverCard: 0,
+    resolvedHardcoverFromLitres: 0,
+    enriched: 0,
+    withMetadata: 0,
+    ambiguous: 0,
+    unmatched: profile.events.length,
+    requests: 0,
+    resolved: 0,
+    providerChain: {},
+    lookupErrors: [],
+  });
   try {
     const job = importJobs.startLivelibImport('jobtester', { force: true, deep: 'auto' });
     await importJobs.idle();
@@ -238,6 +271,7 @@ test('job status exposes deep percent; auto-deep runs while dates are missing', 
     assert.equal(status.undatedEventCount, 0);
     assert.equal(status.deep.monthOnly, 40);
   } finally {
+    resolveModule.resolveProfile = realResolveProfile;
     delete global.fetch;
   }
 });

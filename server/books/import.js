@@ -217,6 +217,7 @@ async function resolveAllLivelibProfiles(job, options = {}) {
     ambiguous: reports.reduce((sum, report) => sum + report.ambiguous, 0),
     unmatched: reports.reduce((sum, report) => sum + report.unmatched, 0),
     planShelfSkipped: reports.reduce((sum, report) => sum + (report.skippedPlanShelf || 0), 0),
+    isbnLookupErrors: [...new Set(reports.flatMap((report) => report.lookupErrors || []))],
     requests: reports.reduce((sum, report) => sum + report.requests, 0),
     providerChain,
     cardBudget: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },

@@ -452,7 +452,11 @@ async function saveCardMetadata(event, card, now) {
  *     resolvedGoogle, resolvedOpenLibrary, resolvedLitres,
  *     resolvedLivelibCard, resolvedHardcoverCard, resolvedHardcoverFromLitres,
  *     enriched, withMetadata, ambiguous, unmatched, requests, corpusSize,
- *     resolvedWorkIds, providerChain, cardBudget, litresBudget }
+ *     resolvedWorkIds, providerChain, cardBudget, litresBudget, lookupErrors }
+ *
+ * `lookupErrors` lists the ISBN-batch failures (e.g. `hardcover_token_missing`)
+ * that were degraded to a warning: the pass continues with the other providers
+ * instead of failing the import job.
  */
 async function resolveProfile(llProfile, options = {}) {
   const force = Boolean(options.force);
@@ -527,6 +531,22 @@ async function resolveProfile(llProfile, options = {}) {
   }
 
   // 2. ISBN bulk lookup (only events that have an ISBN and no cached link).
+  //
+  // A Hardcover outage (or a deployment without `HARDCOVER_API_TOKEN`) must not
+  // abort the whole pass: ISBN is only the first, cheapest strategy, and Литрес/
+  // GB/OL can still enrich the book. The failure is reported as
+  // `report.lookupErrors` instead of throwing, so a resolve job started by a
+  // file import does not die before trying the providers that need no token.
+  const lookupErrors = [];
+  const lookupSafe = async (isbns) => {
+    try {
+      return await lookupFn(isbns, { onProgress });
+    } catch (err) {
+      const code = (err && err.code) || 'isbn_lookup_failed';
+      if (!lookupErrors.includes(code)) lookupErrors.push(code);
+      return { byIsbn: new Map(), works: new Map(), queries: [...isbns], requests: 0 };
+    }
+  };
   const isbnToBookIds = new Map();
   for (const event of pending) {
     const isbn = isbnOfEvent(event);
@@ -536,7 +556,7 @@ async function resolveProfile(llProfile, options = {}) {
   }
 
   if (isbnToBookIds.size > 0) {
-    const lookup = await lookupFn([...isbnToBookIds.keys()], { onProgress });
+    const lookup = await lookupSafe([...isbnToBookIds.keys()]);
     report.requests += lookup.requests;
     for (const [isbn, entry] of lookup.byIsbn) {
       const workId = `hc:${entry.details.hcWorkId}`;
@@ -661,7 +681,7 @@ async function resolveProfile(llProfile, options = {}) {
     }
     const hardcoverByLitresIsbn = new Map();
     if (litresIsbns.size > 0 && chainByName.has('hardcover')) {
-      const lookup = await lookupFn([...litresIsbns], { onProgress });
+      const lookup = await lookupSafe([...litresIsbns]);
       report.requests += lookup.requests;
       for (const [isbn, entry] of lookup.byIsbn) hardcoverByLitresIsbn.set(isbn, entry);
       for (const details of lookup.works.values()) {
@@ -737,7 +757,7 @@ async function resolveProfile(llProfile, options = {}) {
   }
   const hardcoverByIsbn = new Map();
   if (cardIsbns.size > 0 && chainByName.has('hardcover')) {
-    const lookup = await lookupFn([...cardIsbns], { onProgress });
+    const lookup = await lookupSafe([...cardIsbns]);
     report.requests += lookup.requests;
     for (const [isbn, entry] of lookup.byIsbn) hardcoverByIsbn.set(isbn, entry);
     for (const details of lookup.works.values()) {
@@ -892,6 +912,7 @@ async function resolveProfile(llProfile, options = {}) {
     const bookId = eventKeyOf(event);
     return !links.has(bookId) && !bookCache.getWorkDetails(`ll:${bookId}`);
   }).length;
+  report.lookupErrors = lookupErrors;
 
   if (onProgress) {
     onProgress({ stage: 'resolve', resolved: report.withMetadata, total: report.total });
@@ -906,7 +927,8 @@ async function resolveProfile(llProfile, options = {}) {
       `litres=${report.resolvedLitres}, litres-hc=${report.resolvedHardcoverFromLitres}, ` +
       `card=${report.resolvedLivelibCard}, hc-card=${report.resolvedHardcoverCard}, ` +
       `ambiguous=${report.ambiguous}, unmatched=${report.unmatched}, requests=${report.requests}` +
-      `${report.skippedPlanShelf ? `, plan-shelf-skipped=${report.skippedPlanShelf}` : ''}) ` +
+      `${report.skippedPlanShelf ? `, plan-shelf-skipped=${report.skippedPlanShelf}` : ''}` +
+      `${report.lookupErrors.length ? `, isbn-lookup-errors=${report.lookupErrors.join('|')}` : ''}) ` +
       `[${providerSummary}] card-budget=${cardBudget.used}/${cardBudget.limit} ` +
       `litres-budget=${litresBudget.used}/${litresBudget.limit}`
   );

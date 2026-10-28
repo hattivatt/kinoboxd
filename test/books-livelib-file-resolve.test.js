@@ -471,6 +471,55 @@ test('allowLivelibCard: false keeps the card provider out of a file-import pass'
   assert.equal(report.providerChain['livelib-card'], undefined);
 });
 
+test('a Hardcover ISBN-lookup failure degrades to a warning, not a dead pass', async () => {
+  const calls = [];
+  const fakeLitres = {
+    NAME: 'litres',
+    getWork: async (input) => {
+      calls.push(input.title);
+      return {
+        source: 'litres',
+        sourceId: '9100',
+        workId: 'lr:9100',
+        title: input.title,
+        authors: input.authors,
+        year: 2018,
+        publisher: 'Эксмо',
+        pages: 256,
+        genres: ['Зарубежное фэнтези'],
+        isbn13: '9785699000011',
+        series: null,
+        confidence: 0.9,
+        match: { method: 'title', score: 0.9 },
+        links: { pageUrl: 'https://www.litres.ru/book/9100' },
+      };
+    },
+  };
+  const profile = fileProfile(
+    [
+      book('Токен не настроен (тест)', 'Тестовый Автор', {
+        details: { isbn: '9785699000011' },
+      }),
+    ],
+    'read',
+    'NoTokenProbe'
+  );
+  const failingLookup = async () => {
+    const error = new Error('Hardcover-токен не настроен');
+    error.code = 'hardcover_token_missing';
+    throw error;
+  };
+  const report = await resolve.resolveProfile(profile, {
+    providers: [fakeLitres],
+    lookupIsbns: failingLookup,
+    sleep: async () => {},
+  });
+  assert.deepEqual(report.lookupErrors, ['hardcover_token_missing']);
+  assert.deepEqual(calls, ['Токен не настроен (тест)'], 'Литрес still runs');
+  assert.equal(report.resolvedLitres, 1);
+  assert.equal(report.withMetadata, 1);
+});
+
 test('a queued resolve-only job already reports the badge as running', () => {
   const queued = { id: 'resolve-livelib-x', source: 'livelib', done: false, stage: 'queued', startedAt: 1 };
   const scrapeQueued = { id: 'livelib-x-1', source: 'livelib', done: false, stage: 'queued', startedAt: 1 };
