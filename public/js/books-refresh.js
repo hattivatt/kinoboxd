@@ -7,6 +7,10 @@
  *
  * A profile is ONE source (single-profile contract), so there is no per-source
  * breakdown any more: the toast compares the profile's own event count.
+ *
+ * LiveLib no longer has a scrape refresh (28.10.2026): «Обновить» opens the
+ * export-file upload, whose counts come straight from the 201 answer, so this
+ * toast covers the Hardcover job only.
  */
 
 const SOURCE_TITLE = { hardcover: 'Hardcover', livelib: 'LiveLib' };
@@ -58,7 +62,7 @@ function deltaSuffix(diff) {
  *
  * @param {{eventCount:number,datedCount:number,undatedCount:number}} before
  * @param {{eventCount:number,datedCount:number,undatedCount:number}} after
- * @param {{source?:string, failure?:string, deep?:object}} [options]
+ * @param {{source?:string, failure?:string}} [options]
  */
 export function refreshToastMessage(before, after, options = {}) {
   const source = String(options.source || 'livelib').toLowerCase();
@@ -69,23 +73,7 @@ export function refreshToastMessage(before, after, options = {}) {
   }
   const diff = diffRefresh(before, after);
   const count = toCount(after && after.eventCount);
-  const deep = options.deep && typeof options.deep === 'object' ? options.deep : null;
-  const tail = deep && deep.done !== true && deep.pageTotal
-    ? ` · история датируется в фоне (${Math.round(Number(deep.percent) || 0)}%)`
-    : '';
-  return `Профиль обновлён: ${title} ${count} (${deltaSuffix(diff)})${tail}`;
-}
-
-/**
- * Badge text for the "Обновить профиль" button while a deep scan runs in the
- * background. Empty string = no badge (job done or nothing running).
- */
-export function deepBadgeText(deep) {
-  if (!deep || typeof deep !== 'object') return '';
-  if (deep.done === true) return '';
-  const percent = Math.round(Number(deep.percent));
-  if (!Number.isFinite(percent) || percent >= 100) return '';
-  return `История ${Math.max(0, Math.min(99, percent))}%`;
+  return `Профиль обновлён: ${title} ${count} (${deltaSuffix(diff)})`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -169,7 +157,7 @@ export function metadataBadge(meta) {
     : '';
   const next = running
     ? ' Метадата догружается прямо сейчас — цифра обновится сама.'
-    : ' Следующая порция — при обновлении профиля.';
+    : ' Следующая порция — при следующей загрузке файла LiveLib.';
   return {
     percent,
     resolved,

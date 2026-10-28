@@ -527,13 +527,12 @@
             </nav>
           </div>
           <div class="topbar-actions">
-            <button type="button" class="btn btn-ghost books-refresh" id="books-refresh" hidden title="Обновить профиль: Hardcover — журнал (~10 с), LiveLib — лёгкая проверка и фоновый глубокий скан истории (~3 мин)" aria-label="Обновить книжный профиль">
+            <button type="button" class="btn btn-ghost books-refresh" id="books-refresh" hidden title="Обновить профиль: Hardcover — журнал (~10 с), LiveLib — новая выгрузка файла">
               <span class="spinner spinner-sm" id="books-refresh-spinner" hidden aria-hidden="true"></span>
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/>
               </svg>
               <span id="books-refresh-label">Обновить профиль</span>
-              <span class="books-refresh-percent" id="books-refresh-percent" hidden></span>
             </button>
             <button type="button" class="btn btn-ghost" id="books-reimport" hidden title="Переимпортировать профиль чтения" aria-label="Переимпортировать профиль чтения">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -606,44 +605,21 @@
                   <span class="book-source-hint">Прочитанные книги, личные оценки и даты</span>
                 </span>
               </div>
-              <form class="books-source-form" id="books-livelib-form" novalidate>
-                <label class="books-field" for="books-livelib-username">
-                  <span class="books-field-label">Имя пользователя <span>livelib.ru/reader/&lt;username&gt;</span></span>
-                  <input class="books-input" id="books-livelib-username" name="username" type="text" autocomplete="off" spellcheck="false" placeholder="Margaret">
-                </label>
-                <div class="books-source-error" id="books-livelib-error" role="alert" hidden></div>
-                <button type="submit" class="btn btn-primary books-source-submit" id="books-livelib-submit">
-                  <span class="spinner spinner-sm" id="books-livelib-spinner" hidden aria-hidden="true"></span>
-                  <span>Импорт</span>
-                </button>
-              </form>
-              <div class="books-cookie" id="books-livelib-cookie-panel" role="region" aria-label="LiveLib заблокировал сервер" hidden>
-                <p class="books-cookie-title">LiveLib заблокировал сервер (403)</p>
-                <p class="books-cookie-text">
-                  Скопируй заголовок <code>Cookie</code> из браузера, где livelib.ru открывается без блокировки:
-                  DevTools → Network → любой запрос → Request Headers → <code>Cookie: __ddg1=…</code>.
-                  Вставь строку целиком (можно без префикса «Cookie:»). Значение уходит на сервер и хранится только там — в этом браузере оно не сохраняется.
-                </p>
-                <label class="books-field" for="books-livelib-cookie">
-                  <span class="books-field-label">Заголовок Cookie <span>не сохраняется в браузере</span></span>
-                  <textarea class="books-input books-cookie-input" id="books-livelib-cookie" rows="3" autocomplete="off" spellcheck="false" placeholder="__ddg1=...; __ddg2=..."></textarea>
-                </label>
-                <div class="books-source-error" id="books-livelib-cookie-error" role="alert" hidden></div>
-                <div class="books-cookie-actions">
-                  <button type="button" class="btn btn-primary" id="books-livelib-cookie-submit">
-                    <span class="spinner spinner-sm" id="books-livelib-cookie-spinner" hidden aria-hidden="true"></span>
-                    <span>Импорт с cookie</span>
-                  </button>
-                  <button type="button" class="btn btn-link" id="books-livelib-cookie-cancel">Скрыть</button>
-                </div>
-              </div>
-              <p class="book-source-note">Публичный профиль. Импорт идёт страницами по 20 книг — около 2–3 минут на 1 200 книг.</p>
+              <p class="book-source-note" id="books-livelib-note">
+                LiveLib импортируется и обновляется <b>файлом выгрузки</b> — сервер не обращается к livelib.ru.
+                Новые прочитанные книги? Выгрузите файл заново и загрузите его сюда: повторная загрузка
+                ничего не дублирует, а уже загруженные даты и метадата не затираются.
+              </p>
 
               <div class="books-file" id="books-livelib-file-panel">
                 <div class="books-file-head">
                   <span class="books-file-title">Файл экспорта</span>
                   <span class="books-file-badge">безопасный режим · без скрапинга</span>
                 </div>
+                <p class="books-file-refresh-note" id="books-livelib-file-refresh-note" hidden>
+                  Обновление профиля LiveLib: выберите свежую выгрузку. Существующие события
+                  обновятся, новые добавятся, ничего не удалится.
+                </p>
                 <p class="books-file-text">
                   Выгрузи историю сервисом <a href="https://chimildic.github.io/livelib-backup/" target="_blank" rel="noopener">livelib-backup</a>
                   и загрузи файл сюда. Сервер только читает файл — ни одного запроса на livelib.ru не уходит,

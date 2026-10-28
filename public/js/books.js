@@ -12,6 +12,10 @@
  *    profile's events only (no `?sources=` chip any more);
  *  - no IndexedDB cache for books in the MVP: a cold start either returns
  *    stats or opens the import screen;
+ *  - a LiveLib profile is created and refreshed **from a livelib-backup export
+ *    file** (28.10.2026 verdict): «Обновить» opens the file panel, and the merge
+ *    → auto-resolve pipeline runs there with its own spinner/result. No scrape
+ *    of livelib.ru is ever started from this module;
  *  - the payload is parsed tolerantly: the quick API contract (`score`,
  *    `finished`, `reReadCount`, `summary.sources: [names]`) and the fuller
  *    doc version (`rating`, `read`, `decades[].decade`, `sources.connected`)
@@ -19,7 +23,7 @@
  */
 
 import {
-  getBooksStats, startBooksImportLivelib, startBooksImportHardcover, getBooksImportStatus,
+  getBooksStats, startBooksImportHardcover, getBooksImportStatus,
   getBooksProfiles, setBookMangaFlag, clearBookMangaFlag, importBooksLivelibFile,
 } from './api.js';
 import {
@@ -33,7 +37,7 @@ import {
   renderBooksTimeline, renderReadingCalendar, renderStreaks, normalizeStreaks,
   fmtDayRu, fmtDayShortRu,
 } from './books-charts.js';
-import { snapshotCounts, refreshToastMessage, deepBadgeText, metadataBadge, withPreservedScroll } from './books-refresh.js';
+import { snapshotCounts, refreshToastMessage, metadataBadge, withPreservedScroll } from './books-refresh.js';
 import {
   LEGACY_ACCOUNTS_KEY, MAX_PROFILES,
   loadRegistry, listProfiles as listBooksProfiles, saveProfile as saveBooksProfile,
@@ -41,7 +45,7 @@ import {
   migrateLegacyAccounts, adoptServerProfiles, normalizeProfile, profileKey,
   profileSourceNames, profileSummary, sourceAccount,
   normalizeSource, isValidLivelibUsername, isValidHardcoverUser, scopeSourceNames,
-  sanitizeCookieHeader, isLivelibBlocked,
+  isLivelibBlocked,
 } from './books-profiles.js';
 
 /* =========================================================
@@ -120,18 +124,15 @@ const state = {
   jobs: {}, // source -> { jobId, status, failed, account, profileId }
   refresh: null, // { before, source, failures, startedAt } while "Обновить профиль" runs
   refreshStarting: false, // guards the profile fetch/baseline window before state.refresh exists
-  deep: null, // { jobId, source, percent, page, pageTotal } — background deep scan
   starting: {},
   profiles: [],
   profilesReady: false,
   profile: null, // active local profile record
   profileMenuOpen: false,
   restoreCandidate: null, // server-side profiles adoptable (one per source)
-  cookie: { username: '', busy: false }, // cookie value itself is never kept
-  fileImport: { busy: false, result: null }, // livelib-backup export upload
+  fileImport: { busy: false, result: null }, // livelib-backup export upload = LiveLib refresh
   pollTimer: 0,
   pollSeq: 0,
-  deepTimer: 0,
   metadataTimer: 0,
   mangaBusy: false,
   onActivate: null,
@@ -574,12 +575,17 @@ function normalizeBooks(raw) {
  * Visible only on the books tab (the whole section is hidden on Films anyway)
  * when the *active local profile* has at least one source, and during its own
  * progress screen so the user still sees the spinner they started.
+ *
+ * The button is the *Hardcover* job entry point: a LiveLib profile has no
+ * server job for its refresh, so the click opens the export-file panel and the
+ * upload form's own spinner takes over.
  */
 function updateRefreshButton() {
   const refresh = $('books-refresh');
   if (!refresh) return;
   const busy = Boolean(state.refresh || state.refreshStarting);
   const sources = activeProfileSources();
+  const livelib = sources.includes('livelib') && !sources.includes('hardcover');
   const viewAllows = state.view === 'dashboard' || (state.view === 'progress' && busy);
   refresh.hidden = !(sources.length && viewAllows);
   refresh.disabled = busy;
@@ -588,24 +594,13 @@ function updateRefreshButton() {
   const spinner = $('books-refresh-spinner');
   if (spinner) spinner.hidden = !busy;
   const label = $('books-refresh-label');
-  if (label) label.textContent = busy ? 'Обновляем…' : 'Обновить профиль';
+  if (label) {
+    label.textContent = busy ? 'Обновляем…' : livelib ? 'Обновить LiveLib' : 'Обновить профиль';
+  }
   if (sources.length) {
     const scope = sources.map(sourceLabel).join('');
-    const title = sourceScopeTitle(sources);
-    refresh.title = title;
+    refresh.title = sourceScopeTitle(sources);
     refresh.setAttribute('aria-label', `Обновить профиль: ${scope}`);
-  }
-  // Deep scan badge: «История 45%» while the background pass dates the history.
-  const badge = $('books-refresh-percent');
-  if (badge) {
-    const text = deepBadgeText(state.deep);
-    badge.textContent = text;
-    badge.hidden = !text;
-    if (text) {
-      const total = Number(state.deep && state.deep.pageTotal) || 0;
-      const page = Number(state.deep && state.deep.page) || 0;
-      badge.title = `Глубокий скан LiveLib: ${fmtInt(page)} из ${fmtInt(total)} страниц. Дашборд уже показывает датированные книги.`;
-    }
   }
   const reimport = $('books-reimport');
   if (reimport) reimport.hidden = state.view !== 'dashboard' || busy;
@@ -616,7 +611,7 @@ function sourceScopeTitle(sources) {
   const hardcover = sources.includes('hardcover');
   const livelib = sources.includes('livelib');
   if (livelib) {
-    return 'Обновить профиль LiveLib: лёгкая проверка (2 запроса), затем история датируется в фоне (~3 мин)';
+    return 'Обновить профиль LiveLib: загрузите свежую выгрузку livelib-backup. Скрейп livelib.ru не выполняется.';
   }
   if (hardcover) {
     return 'Обновить профиль Hardcover: только новое с прошлой синхронизации (~2 с). Shift+клик — полная перепроверка журнала.';
@@ -823,8 +818,6 @@ function profileSavedLabel(savedAt) {
  * the old hardcoded `34748` / «Margaret» defaults are gone on purpose.
  */
 function applyProfileToForms() {
-  const livelib = $('books-livelib-username');
-  if (livelib) livelib.value = profileAccount('livelib');
   const livelibFile = $('books-livelib-file-user');
   if (livelibFile) livelibFile.value = profileAccount('livelib');
   const hardcover = $('books-hardcover-userid');
@@ -1286,90 +1279,14 @@ function openProfileModal(draft = {}) {
 }
 
 /* =========================================================
-   LiveLib 403 → cookie header
-   ========================================================= */
-
-function hideCookiePanel({ clear = true } = {}) {
-  const panel = $('books-livelib-cookie-panel');
-  if (panel) panel.hidden = true;
-  const input = $('books-livelib-cookie');
-  if (input && clear) input.value = '';
-  const error = $('books-livelib-cookie-error');
-  if (error) {
-    error.textContent = '';
-    error.hidden = true;
-  }
-}
-
-function showCookiePanel(username = '') {
-  state.cookie.username = text(username) || profileAccount('livelib');
-  const panel = $('books-livelib-cookie-panel');
-  if (panel) panel.hidden = false;
-  const error = $('books-livelib-cookie-error');
-  if (error) {
-    error.textContent = '';
-    error.hidden = true;
-  }
-  const input = $('books-livelib-cookie');
-  if (input) input.value = '';
-  const field = $('books-livelib-username');
-  if (field && state.cookie.username) field.value = state.cookie.username;
-}
-
-function setCookieBusy(busy) {
-  state.cookie.busy = Boolean(busy);
-  const spinner = $('books-livelib-cookie-spinner');
-  if (spinner) spinner.hidden = !busy;
-  const button = $('books-livelib-cookie-submit');
-  if (button) {
-    button.disabled = Boolean(busy);
-    button.classList.toggle('is-busy', Boolean(busy));
-  }
-}
-
-async function submitCookieImport() {
-  if (state.cookie.busy) return;
-  const input = $('books-livelib-cookie');
-  const raw = input ? input.value : '';
-  const header = sanitizeCookieHeader(raw);
-  const error = $('books-livelib-cookie-error');
-  const fail = (message) => {
-    if (!error) return;
-    error.textContent = message;
-    error.hidden = false;
-  };
-  if (!header) {
-    fail('Похоже, это не заголовок Cookie. Нужна строка вида «__ddg1=…; __ddg2=…» (можно с префиксом «Cookie:»).');
-    return;
-  }
-  // The value leaves the DOM as soon as it is read: it is never stored in
-  // localStorage/IndexedDB and never rendered again.
-  if (input) input.value = '';
-  if (error) error.hidden = true;
-
-  const username = state.cookie.username
-    || profileAccount('livelib')
-    || text($('books-livelib-username') && $('books-livelib-username').value);
-  if (!username) {
-    fail('Введите имя пользователя LiveLib.');
-    return;
-  }
-
-  setCookieBusy(true);
-  try {
-    const result = await startImport('livelib', username, { cookieHeader: header });
-    if (result && result.ok) hideCookiePanel();
-    else if (result && result.blocked) {
-      fail('LiveLib снова ответил 403 — cookie, похоже, устарел. Скопируйте заголовок заново.');
-    }
-  } finally {
-    setCookieBusy(false);
-  }
-}
-
-/* =========================================================
    LiveLib export FILE import (livelib-backup, safe path)
    ========================================================= */
+
+/* The LiveLib 403 → cookie panel and the scrape form are gone (28.10.2026):
+ * a LiveLib profile is imported and refreshed from a `livelib-backup` export
+ * file, so the browser never waits on a scrape and the server never touches
+ * livelib.ru. The server keeps the scrape endpoint for the job tests and as the
+ * documented plan-B escape hatch of §9, but nothing here calls it. */
 
 /** Same ceiling as the route's multer limit; the browser can refuse earlier. */
 const FILE_IMPORT_MAX_BYTES = 24 * 1024 * 1024;
@@ -1465,9 +1382,7 @@ async function submitFileImport() {
   const resolveInput = $('books-livelib-file-resolve');
   const file = input && input.files && input.files[0] ? input.files[0] : null;
 
-  const username = text(userInput && userInput.value)
-    || text($('books-livelib-username') && $('books-livelib-username').value)
-    || profileAccount('livelib');
+  const username = text(userInput && userInput.value) || profileAccount('livelib');
   const fail = (message, focus) => {
     setFileImportError(message);
     if (focus && focus.focus) focus.focus();
@@ -1620,32 +1535,31 @@ function setSourceError(source, message) {
 }
 
 /**
- * Start one source import *inside the active profile*.
+ * Start the Hardcover import *inside the active profile*.
  *
  * The account becomes the profile's only source (a profile is created or
  * activated lazily on the first import), so a fresh browser never imports into
  * "someone else's" record and the `profile=` scope keeps matching the request.
  *
- * @returns {Promise<{ok:boolean, blocked?:boolean}>} `blocked` means LiveLib
- *   answered 403 and the cookie panel was opened.
+ * LiveLib has no source-import job any more: its profile is created by the
+ * export-file form (`submitFileImport`), which owns its own spinner/result.
+ *
+ * @returns {Promise<{ok:boolean}>}
  */
-async function startImport(source, account, { cookieHeader = '' } = {}) {
+async function startImport(source, account) {
   if (state.starting[source]) return { ok: false };
   setSourceError(source, '');
   setSourceBusy(source, true);
   try {
     await ensureProfileForImport(source, account);
 
-    const response = source === 'livelib'
-      ? await startBooksImportLivelib(account, { cookieHeader, deep: 'auto' })
-      : await startBooksImportHardcover(account);
+    const response = await startBooksImportHardcover(account);
     const jobId = text(response && (response.jobId || response.job_id || response.id || (response.job && response.job.id)));
 
     if (!jobId) {
       // Some server versions can answer "already done" without a job id.
       if (response && (response.done || response.stage === 'done')) {
         hideJobs();
-        hideCookiePanel();
         await loadStats({ force: true });
         return { ok: true };
       }
@@ -1661,23 +1575,15 @@ async function startImport(source, account, { cookieHeader = '' } = {}) {
       startedAt: Date.now(),
     };
     saveJobs();
-    if (source === 'livelib') hideCookiePanel({ clear: false });
     showScreen('progress');
     renderProgress();
     startPolling();
     return { ok: true };
   } catch (error) {
     if (error && error.status === 401) return { ok: false };
-    const blocked = source === 'livelib' && isLivelibBlocked(error);
-    if (blocked) {
-      setSourceError('livelib', '');
-      showCookiePanel(account);
-      toast('LiveLib ответил 403 — нужен заголовок Cookie из браузера', 'error', { duration: 9000 });
-    } else {
-      setSourceError(source, shortErrorMessage(error));
-      toast(`Не удалось запустить импорт ${sourceLabel(source)}`, 'error', { duration: 6500 });
-    }
-    return { ok: false, blocked };
+    setSourceError(source, shortErrorMessage(error));
+    toast(`Не удалось запустить импорт ${sourceLabel(source)}`, 'error', { duration: 6500 });
+    return { ok: false };
   } finally {
     setSourceBusy(source, false);
   }
@@ -1913,10 +1819,10 @@ function renderProgressError(jobs) {
   ];
   if (blockedJob) {
     actions.unshift({
-      label: 'Вставить cookie LiveLib',
+      label: 'Загрузить файл LiveLib',
       onClick: () => {
         showScreen('import');
-        showCookiePanel(blockedJob[1].account || '');
+        openFileRefresh();
       },
     });
   }
@@ -1930,101 +1836,6 @@ function stopPolling() {
     state.pollTimer = 0;
   }
   state.pollSeq += 1;
-}
-
-/* ---------------- background deep scan (LiveLib history dates) ------------- */
-
-/**
- * The deep scan is a long (~3 min) background pass: it must not keep the user
- * on the progress screen. When the only pending job is `livelib-deep`, the
- * foreground flow finishes (dashboard + toast) and this poller keeps updating
- * the «История 45%» badge until the job is done, then silently re-renders.
- */
-function startDeepPolling() {
-  stopDeepPolling();
-  if (!state.deep) return;
-  state.deepTimer = window.setTimeout(pollDeepOnce, POLL_INTERVAL * 2);
-}
-
-function stopDeepPolling() {
-  if (state.deepTimer) {
-    window.clearTimeout(state.deepTimer);
-    state.deepTimer = 0;
-  }
-}
-
-async function pollDeepOnce() {
-  const deep = state.deep;
-  if (!deep) return;
-  try {
-    const status = await getBooksImportStatus(deep.jobId, { source: deep.source || 'livelib' });
-    if (!state.deep || state.deep.jobId !== deep.jobId) return;
-    const block = status && status.deep && typeof status.deep === 'object' ? status.deep : {};
-    const done = Boolean(status && (status.done || status.stage === 'done' || status.stage === 'failed' || status.error));
-    state.deep = {
-      ...deep,
-      percent: block.percent != null ? Number(block.percent) : deep.percent,
-      page: block.page != null ? Number(block.page) : deep.page,
-      pageTotal: block.pageTotal != null ? Number(block.pageTotal) : deep.pageTotal,
-      dated: block.dated != null ? Number(block.dated) : deep.dated,
-      total: block.total != null ? Number(block.total) : deep.total,
-      done,
-      failed: Boolean(status && (status.stage === 'failed' || status.error)),
-    };
-    updateRefreshButton();
-    if (done) {
-      const finished = state.deep;
-      state.deep = null;
-      updateRefreshButton();
-      // Silent refresh: the stats reader revalidated the profile file, so this
-      // only re-renders with the dates that were written while we polled.
-      await loadStats({ force: true, silent: true });
-      if (finished.failed) {
-        toast('Глубокий скан истории прервался — даты можно добрать кнопкой «Обновить профиль»', 'error', { duration: 8000 });
-      } else {
-        toast(
-          `История датирована: ${fmtInt(finished.dated || 0)} из ${fmtInt(finished.total || 0)}`,
-          'success',
-          { duration: 6000 }
-        );
-      }
-      return;
-    }
-  } catch (error) {
-    if (error && (error.status === 404 || error.status === 410)) {
-      state.deep = null;
-      updateRefreshButton();
-      return;
-    }
-    if (error && error.status === 401) return;
-  }
-  state.deepTimer = window.setTimeout(pollDeepOnce, POLL_INTERVAL * 2);
-}
-
-/** Move a `livelib-deep` job out of the foreground progress flow. */
-function detachDeepJob(source, job) {
-  const status = (job && job.status) || {};
-  const block = status.deep && typeof status.deep === 'object' ? status.deep : {};
-  state.deep = {
-    jobId: job.jobId,
-    source,
-    percent: block.percent != null ? Number(block.percent) : numOrNull(status.percent) || 0,
-    page: block.page != null ? Number(block.page) : numOrNull(status.page),
-    pageTotal: block.pageTotal != null ? Number(block.pageTotal) : numOrNull(status.pageTotal),
-    dated: block.dated != null ? Number(block.dated) : null,
-    total: block.total != null ? Number(block.total) : null,
-    done: false,
-  };
-  updateRefreshButton();
-}
-
-function deepOnlyPending(jobs) {
-  const pending = jobs.filter(([, job]) => job && !job.failed &&
-    !(job.status && (job.status.done || job.status.stage === 'done')));
-  if (!pending.length) return null;
-  const allDeep = pending.every(([, job]) => job.status && job.status.stage === 'livelib-deep');
-  if (!allDeep) return null;
-  return pending[0];
 }
 
 function startPolling() {
@@ -2075,16 +1886,6 @@ async function pollOnce(pollId) {
   if (changed) saveJobs();
   if (!stillPolling()) return;
 
-  // Deep scan finished the foreground part (profile saved, stats usable): do
-  // not keep the progress screen for the remaining ~3 minutes of dating.
-  const deepOnly = deepOnlyPending(jobList());
-  if (deepOnly) {
-    detachDeepJob(deepOnly[0], deepOnly[1]);
-    await finishForeground();
-    startDeepPolling();
-    return;
-  }
-
   renderProgress();
 
   const pending = jobList().filter(([, job]) => !job.failed && !(job.status && (job.status.done || job.status.stage === 'done')));
@@ -2120,27 +1921,8 @@ async function finishImport() {
   }
 }
 
-/** Leave the progress screen while a deep scan keeps running in background. */
-async function finishForeground() {
-  if (state.refresh) {
-    await finishRefresh(state.refresh);
-    return;
-  }
-  const jobs = jobList();
-  const names = jobs.map(([source]) => sourceLabel(source));
-  hideJobs();
-  await loadStats({ force: true });
-  if (state.view === 'dashboard' && names.length) {
-    toast(
-      `Импорт завершён: ${names.join('')} · история датируется в фоне`,
-      'success',
-      { duration: 5600 }
-    );
-  }
-}
-
 /* =========================================================
-   manual profile refresh (only the sources of the active profile)
+   manual profile refresh (only the source of the active profile)
    ========================================================= */
 
 function refreshJobId(response) {
@@ -2150,8 +1932,8 @@ function refreshJobId(response) {
 function attachRefreshJob(source, response, account) {
   const jobId = refreshJobId(response);
   if (!jobId) {
-    // Hardcover always opens a job; LiveLib with { force: true } never takes
-    // the reuse path. A done-without-id answer here means a contract drift.
+    // Hardcover always opens a job. A done-without-id answer here means a
+    // contract drift.
     if (response && (response.done || response.stage === 'done')) return;
     throw new Error('Сервер не вернул идентификатор задачи обновления.');
   }
@@ -2203,37 +1985,82 @@ async function finishRefresh(refresh) {
     toast('Не удалось пересчитать статистику после обновления', 'error', { duration: 8000 });
     return;
   }
-  const message = refreshToastMessage(refresh.before, after, {
-    source,
-    failure,
-    deep: state.deep,
-  });
+  const message = refreshToastMessage(refresh.before, after, { source, failure });
   toast(message, hadFailure ? 'error' : 'success', { duration: hadFailure ? 10000 : 6000 });
-  // A LiveLib 403 during a full scan is the one failure the user can fix:
-  // prepare the cookie panel with the exact instruction and, if there is no
-  // dashboard to keep, drop the user straight onto the import card.
-  if (isLivelibBlocked(failure)) {
-    showCookiePanel(sourceAccount(state.profile, 'livelib'));
-    if (!state.data) showScreen('import');
+}
+
+/**
+ * Open the LiveLib refresh = file upload flow.
+ *
+ * A LiveLib profile is refreshed by uploading a fresh `livelib-backup` export;
+ * nothing is scraped (user verdict, 28.10.2026). The upload form owns its own
+ * progress — the button spinner + the result panel — so there is no fake
+ * spinner and no polling: `POST /api/books/import/livelib-file` answers 201 with
+ * the counts, and the metadata chain continues in the background behind the
+ * «Метадата: N%» badge.
+ */
+function openFileRefresh() {
+  if (state.fileImport.busy) {
+    toast('Файл уже загружается — дождитесь ответа.', 'info', { duration: 5000 });
+    return;
+  }
+  showScreen('import');
+  const panel = $('books-livelib-file-panel');
+  if (panel) {
+    panel.classList.add('is-refresh-target');
+    if (typeof panel.scrollIntoView === 'function') {
+      try {
+        panel.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      } catch {
+        /* older engines: the panel is simply visible already */
+      }
+    }
+  }
+  const note = $('books-livelib-file-refresh-note');
+  if (note) note.hidden = false;
+  const userInput = $('books-livelib-file-user');
+  if (userInput && !text(userInput.value)) userInput.value = profileAccount('livelib');
+  const input = $('books-livelib-file');
+  if (input) {
+    setFileImportError('');
+    renderFileImportResult(null);
+    // The click is a user gesture, so the picker opens right away. Cancelling
+    // it leaves the user on the highlighted panel with the instruction.
+    try {
+      input.click();
+    } catch {
+      if (userInput) userInput.focus();
+    }
+  } else if (userInput) {
+    userInput.focus();
   }
 }
 
 /**
  * "↻ Обновить профиль" for the ONE source of the active profile.
  *
- *  - Hardcover: `/api/books/import/hardcover` has no reuse TTL — every click
- *    re-fetches the whole journal (~8 GraphQL requests).
- *  - LiveLib: `{ force: true, deep: 'auto' }` = light re-check (bulk + page 1)
- *    then, when the stored events still lack exact dates, a background deep
- *    scan. The foreground flow returns as soon as the light phase is done and
- *    the button shows «История N%»; the dashboard stays usable.
+ *  - Hardcover: `/api/books/import/hardcover` — incremental journal diff by
+ *    default (one page, ~2 s); Shift+click = full re-read.
+ *  - LiveLib: **no scrape**. The click opens the export-file upload panel; the
+ *    merge → auto-resolve pipeline runs there with its own progress. A scrape
+ *    refresh used to keep the button busy for the whole scan + resolve chain
+ *    (minutes), which the user saw as a spinner that never ended.
  *
- * The job runs on the server while the user may switch to Films; polling
- * keeps going.
+ * The Hardcover job runs on the server while the user may switch to Films;
+ * polling keeps going.
  */
 async function refreshProfiles(options = {}) {
-  if (state.refresh || state.refreshStarting || state.loading ||
-      state.starting.hardcover || state.starting.livelib) return;
+  const sources = activeProfileSources();
+  const source = sources[0] || '';
+  if (!state.profile || !source) {
+    toast('Нет активного книжного профиля — создайте профиль и импортируйте источник', 'info', { duration: 6000 });
+    return;
+  }
+  if (source === 'livelib') {
+    openFileRefresh();
+    return;
+  }
+  if (state.refresh || state.refreshStarting || state.loading || state.starting.hardcover) return;
   state.refreshStarting = true;
   updateRefreshButton();
   try {
@@ -2246,9 +2073,8 @@ async function refreshProfiles(options = {}) {
 
 async function runRefreshProfiles(options = {}) {
   const profile = state.profile;
-  const sources = activeProfileSources();
-  const source = sources[0] || '';
-  if (!profile || !source) {
+  const source = 'hardcover';
+  if (!profile || !activeProfileSources().includes(source)) {
     toast('Нет активного книжного профиля — создайте профиль и импортируйте источник', 'info', { duration: 6000 });
     return;
   }
@@ -2278,45 +2104,25 @@ async function runRefreshProfiles(options = {}) {
   showScreen('progress');
   renderProgress();
 
-  if (source === 'hardcover') {
-    // The profile owns the account: no token-owner fallback, no 34748.
-    const userId = sourceAccount(profile, 'hardcover');
-    if (!userId) {
-      state.refresh.failures.hardcover = 'в профиле нет ID Hardcover';
-    } else {
-      try {
-        const response = await startBooksImportHardcover(userId, {
-          force: Boolean(state.refresh && state.refresh.force),
-        });
-        attachRefreshJob('hardcover', response, userId);
-      } catch (error) {
-        if (error && error.status === 401) return;
-        state.refresh.failures.hardcover = refreshErrorMessage(error);
-      }
-    }
+  // The profile owns the account: no token-owner fallback, no 34748.
+  const userId = sourceAccount(profile, 'hardcover');
+  if (!userId) {
+    state.refresh.failures.hardcover = 'в профиле нет ID Hardcover';
   } else {
-    const username = sourceAccount(profile, 'livelib');
-    if (!username) {
-      state.refresh.failures.livelib = 'в профиле нет имени LiveLib';
-    } else {
-      try {
-        // `deep: 'auto'` — light re-check now, deep scan only if dates are
-        // missing (a fully dated profile costs 3 polite requests, not 63).
-        const response = await startBooksImportLivelib(username, { force: true, deep: 'auto' });
-        attachRefreshJob('livelib', response, username);
-      } catch (error) {
-        if (error && error.status === 401) return;
-        state.refresh.failures.livelib = isLivelibBlocked(error)
-          ? '403 от LiveLib — нужен заголовок Cookie'
-          : refreshErrorMessage(error);
-      }
+    try {
+      const response = await startBooksImportHardcover(userId, {
+        force: Boolean(state.refresh && state.refresh.force),
+      });
+      attachRefreshJob('hardcover', response, userId);
+    } catch (error) {
+      if (error && error.status === 401) return;
+      state.refresh.failures.hardcover = refreshErrorMessage(error);
     }
   }
   saveJobs();
 
   if (!state.refresh) return; // 401 tore the view down
   if (!jobList().length) {
-    // finishRefresh opens the cookie panel by itself when LiveLib is blocked.
     await finishRefresh(state.refresh);
     return;
   }
@@ -3902,26 +3708,6 @@ export function initBooks({ onActivate } = {}) {
   state.onActivate = typeof onActivate === 'function' ? onActivate : null;
   state.includeManga = readJson(MANGA_STORAGE_KEY, false) === true;
 
-  const livelibForm = $('books-livelib-form');
-  if (livelibForm) {
-    livelibForm.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const input = $('books-livelib-username');
-      const username = text(input && input.value).replace(/^@/, '');
-      if (!username) {
-        setSourceError('livelib', 'Введите имя пользователя LiveLib.');
-        if (input) input.focus();
-        return;
-      }
-      if (!isValidLivelibUsername(username)) {
-        setSourceError('livelib', 'Имя пользователя LiveLib: латиница, цифры, «_», «.», «-».');
-        if (input) input.focus();
-        return;
-      }
-      startImport('livelib', username);
-    });
-  }
-
   const hardcoverForm = $('books-hardcover-form');
   if (hardcoverForm) {
     hardcoverForm.addEventListener('submit', (event) => {
@@ -3942,22 +3728,6 @@ export function initBooks({ onActivate } = {}) {
       startImport('hardcover', raw);
     });
   }
-
-  const cookieSubmit = $('books-livelib-cookie-submit');
-  if (cookieSubmit) {
-    cookieSubmit.addEventListener('click', () => submitCookieImport());
-  }  const cookieInput = $('books-livelib-cookie');
-  if (cookieInput) {
-    cookieInput.addEventListener('keydown', (event) => {
-      // Enter submits, Shift+Enter keeps a newline (a pasted header may be wrapped).
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        submitCookieImport();
-      }
-    });
-  }
-  const cookieCancel = $('books-livelib-cookie-cancel');
-  if (cookieCancel) cookieCancel.addEventListener('click', () => hideCookiePanel());
 
   const fileForm = $('books-livelib-file-form');
   if (fileForm) {
@@ -4141,7 +3911,6 @@ export function hideBooks() {
 /** Drop every in-memory book artefact (logout / different user session). */
 export function resetBooks() {
   stopPolling();
-  stopDeepPolling();
   stopMetadataPolling();
   closeBookMenu();
   closeProfileMenu();
@@ -4150,14 +3919,12 @@ export function resetBooks() {
   state.jobs = {};
   state.refresh = null;
   state.refreshStarting = false;
-  state.deep = null;
   state.selectedDecade = null;
   // The registry itself is device-scoped (IndexedDB), not session-scoped: a
   // logout must not delete the user's book profiles, only the in-memory view.
   state.profilesReady = false;
   state.profile = null;
   state.profiles = [];
-  hideCookiePanel();
   authorsState.visible = AUTHORS_INITIAL;
   authorsState.expanded = false;
   authorsState.query = '';

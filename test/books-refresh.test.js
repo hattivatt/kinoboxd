@@ -218,7 +218,7 @@ test('HTTP route: force via query/body, default preserved, invalid force rejecte
 });
 
 test('frontend diff helper counts events numerically (including deletions)', async () => {
-  const { snapshotCounts, diffRefresh, refreshToastMessage, deepBadgeText } = await import(
+  const { snapshotCounts, diffRefresh, refreshToastMessage } = await import(
     '../public/js/books-refresh.js'
   );
 
@@ -259,20 +259,18 @@ test('frontend diff helper counts events numerically (including deletions)', asy
     'Профиль обновлён: LiveLib 100 (данных новых нет)'
   );
 
-  // A deep scan changes dates without changing the event count.
+  // A deep-scan tail no longer exists: LiveLib refreshes by file upload. The
+  // dated/undated deltas still describe a profile whose dates improved.
   const dated = snapshotCounts({
     summary: { eventCount: 100, finishedCount: 95, undatedEventCount: 5 },
   });
   assert.equal(
+    refreshToastMessage(before, same, { source: 'livelib' }),
+    'Профиль обновлён: LiveLib 100 (данных новых нет)'
+  );
+  assert.equal(
     refreshToastMessage(before, dated, { source: 'livelib' }),
     'Профиль обновлён: LiveLib 100 (+55 событий с точной датой)'
-  );
-  assert.match(
-    refreshToastMessage(before, same, {
-      source: 'livelib',
-      deep: { percent: 45, pageTotal: 63, done: false },
-    }),
-    /история датируется в фоне \(45%\)/
   );
 
   // A failure names the profile's single source instead of pretending a
@@ -285,28 +283,32 @@ test('frontend diff helper counts events numerically (including deletions)', asy
     failed,
     'Не удалось обновить профиль LiveLib: LiveLib ограничил доступ (HTTP 403)'
   );
-
-  // Badge: «История 45%» while the deep scan runs, gone when done/absent.
-  assert.equal(deepBadgeText({ percent: 45, pageTotal: 63, done: false }), 'История 45%');
-  assert.equal(deepBadgeText({ percent: 100, done: false }), '');
-  assert.equal(deepBadgeText({ percent: 45, done: true }), '');
-  assert.equal(deepBadgeText(null), '');
 });
 
-test('books markup wires the real profile-refresh button and tooltip', () => {
+test('books markup: «Обновить» for LiveLib opens the file upload, no scrape UI', () => {
   const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   const source = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'books.js'), 'utf8');
 
   assert.match(html, /id="books-refresh"[\s\S]*?Обновить профиль/);
-  assert.match(html, /фоновый глубокий скан истории/);
   assert.match(html, /id="books-refresh-spinner"/);
-  assert.match(html, /id="books-refresh-percent"/);
+  // The old scrape form / cookie panel / deep-scan badge are gone: a LiveLib
+  // profile is created and refreshed from a livelib-backup export file.
+  assert.doesNotMatch(html, /id="books-livelib-form"/);
+  assert.doesNotMatch(html, /id="books-livelib-username"/);
+  assert.doesNotMatch(html, /id="books-livelib-cookie-panel"/);
+  assert.doesNotMatch(html, /id="books-refresh-percent"/);
+  // The file panel is the refresh target and says so.
+  assert.match(html, /id="books-livelib-file-panel"/);
+  assert.match(html, /id="books-livelib-file-refresh-note"/);
+  assert.match(html, /обновляется <b>файлом выгрузки<\/b>/);
 
   assert.match(source, /getBooksProfiles/);
-  assert.match(source, /startBooksImportLivelib\(username, \{ force: true, deep: 'auto' \}\)/);
+  // LiveLib refresh = file flow, never a scrape call.
+  assert.doesNotMatch(source, /startBooksImportLivelib/);
+  assert.match(source, /if \(source === 'livelib'\) \{\s*openFileRefresh\(\);/);
+  assert.match(source, /function openFileRefresh\(\)/);
   assert.match(source, /refreshToastMessage/);
   assert.match(source, /snapshotCounts/);
-  assert.match(source, /deepBadgeText/);
   // One profile = one source: the stats request carries a single profile key.
   assert.match(source, /getBooksStats\(\{\s*profile: activeProfileKey\(\)/);
 });
@@ -340,7 +342,7 @@ test('metadata badge view model: hidden at 100%, running suffix, budget hint', a
   });
   assert.equal(idle.text, 'Метадата: 42%');
   assert.equal(idle.running, false);
-  assert.match(idle.hint, /Следующая порция — при обновлении профиля/);
+  assert.match(idle.hint, /Следующая порция — при следующей загрузке файла LiveLib/);
   assert.doesNotMatch(idle.hint, /Литрес-бюджет/);
 
   // 100% / empty / legacy payloads hide the badge entirely.

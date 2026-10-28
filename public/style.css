@@ -3342,46 +3342,21 @@ img { display: block; }
 }
 .books-profile-hint code { font-size: 10.5px; color: var(--text-soft); }
 
-/* ---------------- books: LiveLib 403 cookie panel ---------------- */
+/* ---------------- books: file refresh (LiveLib update path) ---------------- */
 
-.books-cookie {
-  margin-top: 12px;
-  padding: 12px 13px;
-  background: rgba(255, 128, 0, 0.06);
-  border: 1px solid rgba(255, 128, 0, 0.28);
-  border-radius: 9px;
-}
-.books-cookie-title {
-  margin: 0 0 5px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #ffc182;
-}
-.books-cookie-text {
+.books-file-refresh-note {
   margin: 0 0 10px;
+  padding: 8px 10px;
   font-size: 10.5px;
   line-height: 1.55;
-  color: var(--muted);
+  color: #9fe8bd;
+  background: rgba(0, 224, 84, 0.07);
+  border: 1px solid rgba(0, 224, 84, 0.24);
+  border-radius: 8px;
 }
-.books-cookie-text code {
-  padding: 1px 4px;
-  font-size: 10px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 4px;
-  color: var(--text-soft);
-}
-.books-cookie-input {
-  min-height: 62px;
-  resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-.books-cookie-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 10px;
+.books-file.is-refresh-target {
+  border-color: rgba(0, 224, 84, 0.5);
+  box-shadow: 0 0 0 3px rgba(0, 224, 84, 0.1);
 }
 
 /* ---------------- books: new profile modal ---------------- */
@@ -3796,18 +3771,6 @@ img { display: block; }
   border-color: rgba(255, 128, 0, 0.42);
   background: rgba(255, 128, 0, 0.13);
   color: #ffd1a1;
-}
-.books-refresh-percent {
-  margin-left: 2px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: rgba(64, 188, 244, 0.18);
-  border: 1px solid rgba(64, 188, 244, 0.42);
-  color: #bfe9ff;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  font-variant-numeric: tabular-nums;
 }
 .books-filters-note { margin-left: auto; font-size: 10.5px; color: var(--muted-2); }
 
