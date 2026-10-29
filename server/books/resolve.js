@@ -322,7 +322,14 @@ function chainInput(event, extra) {
       event && event.edition && Number.isFinite(Number(event.edition.year))
         ? Number(event.edition.year)
         : null,
+    // `llBookId` is the *scrape* identity the LiveLib card provider fetches.
+    // A file row without «Ссылка на книгу» has none, but it still has a
+    // resolve-cache key (`file:tk:…`); `eventKey` carries that key so the
+    // provider bookkeeping (attempted/hopeless) can name the row. Without it
+    // 240 file-keyed works were invisible to `attempted`/`unmatchedKeys` and
+    // the metadata badge kept them in the resolvable pool forever.
     llBookId: event && event.sourceBookId ? String(event.sourceBookId) : null,
+    eventKey: eventKeyOf(event),
     coverUrl: (event && event.coverUrl) || null,
     ...(extra || {}),
   };
@@ -342,6 +349,7 @@ function providerOptionsFor(options, provider) {
     lookupIsbns: options.lookupIsbns,
     budget: provider.NAME === 'litres' ? options.litresBudget : options.cardBudget,
     cardPauseMs: options.cardPauseMs,
+    litresPauseMs: options.litresPauseMs,
     requestDelayMs: options.requestDelayMs,
     onProgress: options.onProgress,
   };
@@ -357,8 +365,11 @@ async function tryProvider(provider, input, options, chain) {
   }
   // "Providers were asked": recorded per event so the metadata badge can keep
   // its denominator on the resolvable pool. A breaker/budget skip is NOT an
-  // answer, so those keys are removed again below.
-  const key = input && input.llBookId ? String(input.llBookId) : null;
+  // answer, so those keys are removed again below. The key is the resolve-cache
+  // key (`sourceBookId` OR `file:<fileKey>`), not the scrape-only `llBookId`:
+  // a file row without «Ссылка на книгу» must be addressable too.
+  const key = input ? input.eventKey || input.llBookId || null : null;
+  const keyString = key == null ? null : String(key);
   const budget = provider.NAME === 'litres' ? options.litresBudget : options.cardBudget;
   const usedBefore = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
   stat.calls++;
@@ -367,11 +378,18 @@ async function tryProvider(provider, input, options, chain) {
     const usedAfter = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
     const budgetBlocked =
       budget && usedBefore != null && usedAfter === usedBefore && Number(budget.remaining) === 0;
-    if (key && !budgetBlocked) {
+    if (keyString && !budgetBlocked) {
+      options.askedKeys && options.askedKeys.add(keyString);
       if (result) {
-        options.attemptedKeys && options.attemptedKeys.delete(key);
+        options.attemptedKeys && options.attemptedKeys.delete(keyString);
       } else if (!budgetBlocked) {
-        options.attemptedKeys && options.attemptedKeys.add(key);
+        options.attemptedKeys && options.attemptedKeys.add(keyString);
+        // Per-candidate provenance for the scheduled resolve negative cache:
+        // which providers really answered "nothing" for this key.
+        if (options.missedByKey instanceof Map) {
+          if (!options.missedByKey.has(keyString)) options.missedByKey.set(keyString, new Set());
+          options.missedByKey.get(keyString).add(provider.NAME);
+        }
       }
     }
     if (result) {
@@ -380,15 +398,21 @@ async function tryProvider(provider, input, options, chain) {
       stat.methods[method] = (stat.methods[method] || 0) + 1;
     } else if (typeof provider.isBreakerOpen === 'function' && provider.isBreakerOpen()) {
       stat.skipped++;
-      if (key) options.attemptedKeys && options.attemptedKeys.delete(key);
+      if (keyString) {
+        options.attemptedKeys && options.attemptedKeys.delete(keyString);
+        if (options.missedByKey instanceof Map) options.missedByKey.delete(keyString);
+      }
     }
     return result;
   } catch (err) {
     stat.errors++;
     stat.lastError = (err && err.code) || 'provider_error';
-    if (key) {
-      options.attemptedKeys && options.attemptedKeys.delete(key);
-      options.providerErrorKeys && options.providerErrorKeys.add(key);
+    if (keyString) {
+      options.attemptedKeys && options.attemptedKeys.delete(keyString);
+      options.providerErrorKeys && options.providerErrorKeys.add(keyString);
+      // Keep any real "answered nothing" provenance collected before the
+      // error: Литрес may already have answered for this Cyrillic title, and
+      // the scheduled resolve is allowed to remember that verdict.
     }
     if (typeof provider.noteError === 'function') provider.noteError(err);
     return null;
@@ -505,7 +529,16 @@ async function resolveProfile(llProfile, options = {}) {
   // the import job so stats does not count such books in the metadata percent.
   const attemptedKeys = new Set();
   const providerErrorKeys = new Set();
-  options = { ...options, attemptedKeys, providerErrorKeys };
+  // Every key a provider was really asked about (hit or miss). Cumulative
+  // `attempted` in resolve-state is the size of this set across passes; the
+  // hit keys are removed from `attemptedKeys` below, so it cannot be reused
+  // for that purpose.
+  const askedKeys = new Set();
+  // key -> Set(provider names) that were really asked and answered nothing.
+  // Used by the scheduled resolve to persist a per-candidate negative cache;
+  // the stats payload only needs the derived `unmatchedKeys`.
+  const missedByKey = new Map();
+  options = { ...options, attemptedKeys, providerErrorKeys, missedByKey, askedKeys };
 
   const report = {
     total: events.length,
@@ -611,6 +644,7 @@ async function resolveProfile(llProfile, options = {}) {
     // batch is not an answer (the event stays pending, never "hopeless").
     for (const bookIds of isbnToBookIds.values()) {
       for (const bookId of bookIds) {
+        askedKeys.add(String(bookId));
         if (lookupErrors.length) providerErrorKeys.add(String(bookId));
         else attemptedKeys.add(String(bookId));
       }
@@ -952,8 +986,8 @@ async function resolveProfile(llProfile, options = {}) {
   // matcher is that provider stays pending instead of being written off as
   // hopeless (otherwise the badge could claim "готово" while 200 Cyrillic
   // books are still waiting for the next Litres allowance).
-  const litresExhausted = litresBudget.used >= litresBudget.limit;
-  const cardExhausted = cardBudget.used >= cardBudget.limit;
+  const litresExhausted = Boolean(litresProvider) && litresBudget.used >= litresBudget.limit;
+  const cardExhausted = Boolean(cardProvider) && cardBudget.used >= cardBudget.limit;
   const budgetPendingKeys = new Set();
   if (litresExhausted) {
     for (const event of pending) {
@@ -978,6 +1012,16 @@ async function resolveProfile(llProfile, options = {}) {
       !providerErrorKeys.has(bookId) &&
       !budgetPendingKeys.has(bookId)
   );
+  // Raw bookkeeping for callers that persist per-candidate state (the
+  // scheduled resolve). `attemptedKeys` now contains `file:tk:…` keys too, so
+  // `attempted` is the honest size of the asked set.
+  report.attemptedKeys = [...attemptedKeys];
+  report.askedKeys = [...askedKeys];
+  report.providerErrorKeys = [...providerErrorKeys];
+  report.missedByKey = {};
+  for (const [key, providers] of missedByKey) {
+    if (providers && providers.size) report.missedByKey[String(key)] = [...providers].sort();
+  }
   report.lookupErrors = lookupErrors;
 
   if (onProgress) {

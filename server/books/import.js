@@ -24,6 +24,8 @@ const livelib = require('./livelib');
 const livelibCookies = require('./livelib-cookies');
 const livelibFile = require('./livelib-file');
 const resolve = require('./resolve');
+const resolveLock = require('./resolve-lock');
+const scheduledResolve = require('./scheduled-resolve');
 
 const jobs = new Map();
 const jobOrder = [];
@@ -153,48 +155,63 @@ async function resolveAllLivelibProfiles(job, options = {}) {
     litres: { limit: litresBudget.limit, used: litresBudget.used, remaining: litresBudget.remaining },
     card: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
   };
-  for (const meta of profiles) {
-    const data = bookCache.getProfile('livelib', meta.userKey);
-    if (!data) continue;
-    job.page++;
-    const report = await resolve.resolveProfile(data, {
-      force: Boolean(options.force),
-      cardBudget,
-      litresBudget,
-      // Same anonymous session for the card pages: with plan-B cookies the
-      // enrichment must not fall back to a cold, blockable IP.
-      jar: options.jar,
-      // A file-import-triggered pass must not scrape livelib.ru (§9): only a
-      // scrape import (which already has a bootstrapped session) may use the
-      // LiveLib card provider.
-      allowLivelibCard: options.allowLivelibCard !== false,
-      onProgress: (progress) => {
-        job.resolved = progress.resolved;
-        job.resolveTotal = progress.total;
-      },
-    });
-    job.liveBudget = {
-      litres: { limit: litresBudget.limit, used: litresBudget.used, remaining: litresBudget.remaining },
-      card: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
-    };
-    reports.push({ userKey: meta.userKey, ...report });
-    // Persist the pass outcome for the metadata badge: which event keys the
-    // providers were asked about and answered nothing. Best-effort — a
-    // read-only cache must not turn a successful enrich into a failed job.
-    try {
-      await bookCache.saveResolveState('livelib', meta.userKey, {
-        schemaVersion: 1,
-        ranAt: new Date().toISOString(),
-        total: report.total,
-        attempted: report.attempted == null ? 0 : report.attempted,
-        matched: report.withMetadata == null ? 0 : report.withMetadata,
-        skippedPlanShelf: report.skippedPlanShelf || 0,
-        lookupErrors: report.lookupErrors || [],
-        unmatchedKeys: Array.isArray(report.unmatchedKeys) ? report.unmatchedKeys : [],
+  // One resolve pass at a time across processes: the scheduled
+  // `kinoboxd-resolve-books` oneshot takes the same `cache-book/resolve.lock`.
+  // Both spend the Литрес budget and write links/details, so running them in
+  // parallel would double the politeness debt and race the cache. An import
+  // waits a bounded time, then skips this pass (the next import retries).
+  const lockWaitMs = Number(process.env.BOOKS_RESOLVE_LOCK_WAIT_MS);
+  const lock = await resolveLock.acquireLock({
+    owner: `import:${job.id}`,
+    waitMs: Number.isFinite(lockWaitMs) && lockWaitMs >= 0 ? lockWaitMs : 10 * 60 * 1000,
+  });
+  if (!lock.ok) {
+    job.warning = 'resolve-lock-busy';
+    console.warn(
+      `[books-import ${job.id}] resolve lock busy for ${lock.waitedMs}ms — ` +
+        'metadata pass skipped (a scheduled resolve is running)'
+    );
+    return reports;
+  }
+  try {
+    for (const meta of profiles) {
+      const data = bookCache.getProfile('livelib', meta.userKey);
+      if (!data) continue;
+      job.page++;
+      const report = await resolve.resolveProfile(data, {
+        force: Boolean(options.force),
+        cardBudget,
+        litresBudget,
+        // Same anonymous session for the card pages: with plan-B cookies the
+        // enrichment must not fall back to a cold, blockable IP.
+        jar: options.jar,
+        // A file-import-triggered pass must not scrape livelib.ru (§9): only a
+        // scrape import (which already has a bootstrapped session) may use the
+        // LiveLib card provider.
+        allowLivelibCard: options.allowLivelibCard !== false,
+        onProgress: (progress) => {
+          job.resolved = progress.resolved;
+          job.resolveTotal = progress.total;
+        },
       });
-    } catch (err) {
-      console.warn(`[books-import ${job.id}] resolve-state save failed: ${err.message}`);
+      job.liveBudget = {
+        litres: { limit: litresBudget.limit, used: litresBudget.used, remaining: litresBudget.remaining },
+        card: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
+      };
+      reports.push({ userKey: meta.userKey, ...report });
+      // Persist the pass outcome for the metadata badge: which event keys the
+      // providers were asked about and answered nothing, plus the cumulative
+      // asked set. Shared with the scheduled resolve so `attempted` stays an
+      // honest number (file-keyed rows included). Best-effort — a read-only
+      // cache must not turn a successful enrich into a failed job.
+      try {
+        await scheduledResolve.mergeResolveState(data, report);
+      } catch (err) {
+        console.warn(`[books-import ${job.id}] resolve-state save failed: ${err.message}`);
+      }
     }
+  } finally {
+    resolveLock.releaseLock(lock.token);
   }
   const providerChain = {};
   for (const report of reports) {

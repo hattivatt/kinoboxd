@@ -112,8 +112,12 @@ test('metadata coverage counts works with a details document', async () => {
   assert.deepEqual(stats.summary.metadata, {
     resolved: 2,
     total: 4,
+    linked: 1,
+    withDetails: 2,
+    unlinked: 2,
     resolvable: 4,
     hopeless: 0,
+    keyless: 0,
     percent: 50,
     done: false,
     running: false,
@@ -141,8 +145,12 @@ test('running + budgetRemaining are forwarded only for a LiveLib profile', async
   assert.deepEqual(hc.summary.metadata, {
     resolved: 1,
     total: 1,
+    linked: 1,
+    withDetails: 1,
+    unlinked: 0,
     resolvable: 1,
     hopeless: 0,
+    keyless: 0,
     percent: 100,
     done: true,
     running: false,
@@ -183,10 +191,14 @@ test('hopeless works leave the metadata denominator (99% -> 100%)', async () => 
   assert.deepEqual(stats.summary.metadata, {
     resolved: 2,
     total: 4,
+    linked: 1,
+    withDetails: 2,
+    unlinked: 2,
     // 200 and 400 are dark for every provider -> not part of the pool, so the
     // badge can honestly read 100% instead of freezing at 99% forever.
     resolvable: 2,
     hopeless: 2,
+    keyless: 0,
     percent: 100,
     done: true,
     running: false,
@@ -203,8 +215,12 @@ test('hopeless works leave the metadata denominator (99% -> 100%)', async () => 
   assert.deepEqual(partial.summary.metadata, {
     resolved: 2,
     total: 4,
+    linked: 1,
+    withDetails: 2,
+    unlinked: 2,
     resolvable: 3,
     hopeless: 1,
+    keyless: 0,
     percent: 67,
     done: false,
     running: false,
@@ -253,4 +269,59 @@ test('resolveStateFromJobs recognises only a live LiveLib resolve stage', () => 
     null
   );
   assert.equal(resolveStateFromJobs([], 'livelib').running, false);
+});
+
+test('file genres alone do not count as resolved metadata', async () => {
+  await bookCache.saveProfile('livelib', 'GenresOnly', {
+    schemaVersion: 1,
+    source: 'livelib',
+    userKey: 'GenresOnly',
+    importedAt: '2026-10-27T00:00:00.000Z',
+    events: [
+      event(600, {
+        genres: ['Фантастика'],
+        edition: { publisher: 'Эксмо', year: 2020, isbn: null },
+      }),
+    ],
+    warnings: [],
+  });
+  const stats = buildBooksStats({ profile: 'livelib-GenresOnly' });
+  assert.equal(stats.summary.metadata.total, 1);
+  // The file export has genres, but no provider link and no details document:
+  // the old badge counted this as resolved (99% forever bug).
+  assert.equal(stats.summary.metadata.resolved, 0);
+  assert.equal(stats.summary.metadata.linked, 0);
+  assert.equal(stats.summary.metadata.unlinked, 1);
+  assert.equal(stats.summary.metadata.resolvable, 1);
+  assert.equal(stats.summary.metadata.percent, 0);
+  assert.equal(stats.summary.metadata.done, false);
+});
+
+test('a keyless work leaves the denominator instead of pinning it below 100%', async () => {
+  await bookCache.saveProfile('livelib', 'Keyless', {
+    schemaVersion: 1,
+    source: 'livelib',
+    userKey: 'Keyless',
+    importedAt: '2026-10-27T00:00:00.000Z',
+    events: [
+      {
+        id: 'll:orphan',
+        source: 'livelib',
+        title: 'Строка без ключа',
+        authors: ['Автор'],
+        rating: 7,
+        ratingScale: 10,
+        status: 'read',
+        finishedAt: '2024-01-02',
+      },
+    ],
+    warnings: [],
+  });
+  const stats = buildBooksStats({ profile: 'livelib-Keyless' });
+  assert.equal(stats.summary.metadata.total, 1);
+  assert.equal(stats.summary.metadata.unlinked, 1);
+  assert.equal(stats.summary.metadata.keyless, 1);
+  assert.equal(stats.summary.metadata.resolvable, 0);
+  assert.equal(stats.summary.metadata.percent, 100);
+  assert.equal(stats.summary.metadata.done, true);
 });

@@ -164,11 +164,17 @@ test('file import: metadata coverage counts real columns, not "the file was pars
   // nothing but title/author/date.
   const on = statsFor('livelib-MangaFile', true);
   assert.deepEqual(on.summary.metadata, {
-    resolved: 4,
+    // File columns (genres/series/publisher) are not the metadata chain: a row
+    // without a provider link/details document is unlinked, not resolved.
+    resolved: 0,
     total: 6,
+    linked: 0,
+    withDetails: 0,
+    unlinked: 6,
     resolvable: 6,
     hopeless: 0,
-    percent: 67,
+    keyless: 0,
+    percent: 0,
     done: false,
     running: false,
     budgetRemaining: null,
@@ -184,11 +190,15 @@ test('file import: metadata coverage counts real columns, not "the file was pars
   // works that actually reach the dashboard (same rule as before this round).
   const off = statsFor('livelib-MangaFile', false);
   assert.deepEqual(off.summary.metadata, {
-    resolved: 1,
+    resolved: 0,
     total: 3,
+    linked: 0,
+    withDetails: 0,
+    unlinked: 3,
     resolvable: 3,
     hopeless: 0,
-    percent: 33,
+    keyless: 0,
+    percent: 0,
     done: false,
     running: false,
     budgetRemaining: null,
@@ -196,11 +206,11 @@ test('file import: metadata coverage counts real columns, not "the file was pars
 
   /* ---------------- badge behaviour ---------------- */
   const partial = await badgeOf(on.summary.metadata);
-  assert.ok(partial, 'a 67% file profile must show the pill');
-  assert.equal(partial.percent, 67);
-  assert.equal(partial.pending, 2);
-  assert.equal(partial.text, 'Метадата: 67%');
-  assert.match(partial.hint, /2 книги ждут метадату/);
+  assert.ok(partial, 'an unlinked file profile must show the pill');
+  assert.equal(partial.percent, 0);
+  assert.equal(partial.pending, 6);
+  assert.equal(partial.text, 'Метадата: 0%');
+  assert.match(partial.hint, /6 книг ждут метадату/);
 
   // A file profile whose export carried every column stays at 100 % and the
   // pill is hidden by design (nothing to apologise for).
@@ -239,8 +249,12 @@ test('file import: a minimal export keeps the filter open and the badge honest',
   assert.deepEqual(stats.summary.metadata, {
     resolved: 0,
     total: 2,
+    linked: 0,
+    withDetails: 0,
+    unlinked: 2,
     resolvable: 2,
     hopeless: 0,
+    keyless: 0,
     percent: 0,
     done: false,
     running: false,

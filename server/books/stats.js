@@ -1563,21 +1563,32 @@ function buildBooksStats(options = {}) {
     yearsSpan: years.length ? { from: years[0], to: years[years.length - 1] } : null,
   };
 
-  // Metadata coverage of the profile: a work is "covered" when a details
-  // document exists (shared metadata chain: Hardcover/Litres/GB/OL/LiveLib
-  // card). `running` is only true while the resolve stage of an import job is
-  // alive; it lets the UI say "догружается" instead of showing empty genres as
-  // final. A Hardcover profile takes its metadata from the journal, so it is
-  // never "loading" here.
+  // Metadata coverage of the profile: a work is "covered" when it has a
+  // canonical work link (`metadataWorkId`) or a details document (shared
+  // metadata chain: Hardcover/Litres/GB/OL/LiveLib card). `running` is only
+  // true while the resolve stage of an import job is alive; it lets the UI say
+  // "догружается" instead of showing empty genres as final. A Hardcover
+  // profile takes its metadata from the journal, so it is never "loading" here.
   //
-  // The denominator is the RESOLVABLE pool, not every work (user report,
-  // 28.10.2026: the badge stuck at 99% forever). `resolve-state` records the
-  // event keys a provider was really asked about and answered nothing; such a
-  // work can never reach 100%, so it is reported separately as `hopeless` and
-  // excluded from `resolvable`. Plan shelves were already dropped by
-  // `prepareEvents`, so they never inflate either number.
-  const metadataResolved = [...works.values()].filter((work) => !work.unresolved).length;
+  // The badge used to count a work as resolved when the *file export* carried
+  // genres/series/publisher (`work.unresolved === false`), so 444 works with
+  // no link and no details document read as "resolved" and the badge sat at
+  // 99% forever (user report, 28.10.2026; explore round 29.10.2026). The
+  // counters below separate the three states:
+  //
+  //   linked      — a canonical provider work id (hc:/litres:/gb:/ol:);
+  //   withDetails — a details document exists (link may be absent for a card);
+  //   unlinked    — neither: the honest tail the scheduled resolve walks.
+  //
+  // The denominator is the RESOLVABLE pool, not every work. `hopeless` are
+  // unlinked works whose every resolve key was asked and answered nothing
+  // (resolve-state); `keyless` are works with no resolve key at all — they can
+  // never be resolved, so they must not pin the badge below 100% either. Both
+  // are reported separately instead of being silently folded into `total`.
   const metadataTotal = works.size;
+  let metadataLinked = 0;
+  let metadataWithDetails = 0;
+  let metadataUnlinked = 0;
   const resolveArchive =
     profile.source === 'livelib' ? bookCache.getResolveState('livelib', profile.userKey) : null;
   const hopelessKeys = new Set(
@@ -1586,14 +1597,29 @@ function buildBooksStats(options = {}) {
       : []
   );
   let metadataHopeless = 0;
-  if (hopelessKeys.size) {
-    for (const [workId, work] of works) {
-      if (!work.unresolved) continue;
-      const keys = workLinkKeys.get(workId) || [];
-      if (keys.length && keys.every((key) => hopelessKeys.has(String(key)))) metadataHopeless++;
+  let metadataKeyless = 0;
+  for (const [workId, work] of works) {
+    // `work.metadataWorkId` falls back to the book's own `ll:` id when no
+    // canonical link exists, so the prefix is what separates the two states.
+    const canonicalWorkId = work.metadataWorkId && !String(work.metadataWorkId).startsWith('ll:');
+    if (canonicalWorkId) metadataLinked++;
+    if (work.details) metadataWithDetails++;
+    if (canonicalWorkId || work.details) continue;
+    metadataUnlinked++;
+    const keys = workLinkKeys.get(workId) || [];
+    if (keys.length === 0) {
+      metadataKeyless++;
+      continue;
+    }
+    if (hopelessKeys.size && keys.every((key) => hopelessKeys.has(String(key)))) {
+      metadataHopeless++;
     }
   }
-  const metadataResolvable = Math.max(0, metadataTotal - metadataHopeless);
+  const metadataResolved = metadataTotal - metadataUnlinked;
+  const metadataResolvable = Math.max(
+    0,
+    metadataTotal - metadataHopeless - metadataKeyless
+  );
   const resolveState = options.resolveState && typeof options.resolveState === 'object'
     ? options.resolveState
     : {};
@@ -1608,13 +1634,17 @@ function buildBooksStats(options = {}) {
   summary.metadata = {
     resolved: metadataResolved,
     total: metadataTotal,
+    linked: metadataLinked,
+    withDetails: metadataWithDetails,
+    unlinked: metadataUnlinked,
     resolvable: metadataResolvable,
     hopeless: metadataHopeless,
+    keyless: metadataKeyless,
     percent: metadataPercent,
     // "done" = nothing left to load for the resolvable pool. The badge uses it
-    // to stop saying «догружается» once the job finished, even if `hopeless`
-    // works remain dark.
-    done: !metadataRunning && metadataPercent >= 100,
+    // to stop saying «догружается» once the job finished, even if `hopeless` /
+    // `keyless` works remain dark.
+    done: !metadataRunning && metadataResolved >= metadataResolvable,
     running: metadataRunning,
     budgetRemaining: metadataRunning ? budgetRemaining : null,
   };
