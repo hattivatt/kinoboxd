@@ -346,6 +346,19 @@ test('summary.yearBackfill splits the unknown bucket into queue / honest / unlin
   });
 });
 
+test('the years note never calls unlinked works an honest «providers do not know»', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'public', 'js', 'books.js'),
+    'utf8'
+  );
+  // Queue still open: progress wording with the estimate and the unlinked tail.
+  assert.match(source, /бэкфилл идёт, осталось ~/);
+  assert.match(source, /ждут привязки к метаданным/);
+  // Queue drained but unlinked works remain: the note must not collapse them
+  // into «провайдеры не знают» (that branch requires honestUnknown > 0).
+  assert.match(source, /backfill\.honestUnknown > 0/);
+});
+
 test('a fully filled cache reports no queue', async () => {
   process.env.BOOKS_BACKFILL_LIMIT = '200';
   const stats = buildBooksStats({ profile: 'livelib-YearsProgress' });

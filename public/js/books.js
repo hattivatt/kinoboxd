@@ -3181,19 +3181,36 @@ function renderYearBarsWidget(data) {
     const ancient = toNum(data.summary && data.summary.ancientBookCount);
     const unknown = toNum(data.summary && data.summary.yearUnknownCount);
     const ancientNote = ancient > 0 ? ` · ${fmtInt(ancient)} ${plural(ancient, ['книга', 'книги', 'книг'])} до 1000 г.` : '';
-    // «Год неизвестен» while the backfill queue is open is a snapshot, not a
-    // verdict: say so instead of letting the user read the bucket as final.
+    // «Год неизвестен» is three states in one bucket. While the year queue is
+    // open it is a backfill snapshot; once it drains, the remainder is either
+    // an honest «providers don't know» verdict or a work still waiting for the
+    // metadata link (the resolve chain), which the years backfill cannot fix.
+    // Never call the whole bucket «провайдеры не знают» while unlinked works
+    // are still in it — that was the misleading final verdict.
     const backfill = data.summary && data.summary.yearBackfill;
-    const unknownNote = unknown > 0
-      ? backfill && backfill.open
-        ? ` · ${fmtInt(unknown)} без года — бэкфилл идёт, осталось ~${fmtInt(backfill.runsLeft)} ` +
+    let unknownNote = '';
+    if (unknown > 0) {
+      if (backfill && backfill.open) {
+        unknownNote =
+          ` · ${fmtInt(unknown)} без года — бэкфилл идёт, осталось ~${fmtInt(backfill.runsLeft)} ` +
           `${plural(backfill.runsLeft, ['прогон', 'прогона', 'прогонов'])}` +
-          `${backfill.unlinked > 0 ? ` (${fmtInt(backfill.unlinked)} ждут привязки к метаданным)` : ''}`
-        : backfill
-          ? ` · ${fmtInt(unknown)} без года — провайдеры не знают` +
-            `${backfill.unlinked > 0 ? ` (${fmtInt(backfill.unlinked)} без метаданных)` : ''}`
-          : ` · ${fmtInt(unknown)} ${plural(unknown, ['книга', 'книги', 'книг'])} без года`
-      : '';
+          `${backfill.unlinked > 0 ? ` (${fmtInt(backfill.unlinked)} ждут привязки к метаданным)` : ''}`;
+      } else if (backfill && backfill.unlinked > 0) {
+        unknownNote =
+          ` · ${fmtInt(unknown)} без года — ` +
+          (backfill.honestUnknown > 0
+            ? `${fmtInt(backfill.honestUnknown)} ` +
+              `${plural(backfill.honestUnknown, ['книга', 'книги', 'книг'])}: провайдеры не знают, `
+            : '') +
+          `${fmtInt(backfill.unlinked)} ` +
+          `${plural(backfill.unlinked, ['книга', 'книги', 'книг'])} ждут привязки к метаданным`;
+      } else if (backfill) {
+        unknownNote = ` · ${fmtInt(unknown)} без года — провайдеры не знают`;
+      } else {
+        unknownNote =
+          ` · ${fmtInt(unknown)} ${plural(unknown, ['книга', 'книги', 'книг'])} без года`;
+      }
+    }
     if (!years.length) note.textContent = `${ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных'}${unknownNote}`;
     else if (years.length === 1) note.textContent = `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${unknownNote}`;
     else note.textContent = `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${unknownNote}`;
