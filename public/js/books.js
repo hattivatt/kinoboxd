@@ -319,6 +319,12 @@ function normalizeEntry(workId, raw) {
     firstPublishedYearSource: text(entry.firstPublishedYearSource) || '',
     // The print run in hand (kept apart from the work's first publication).
     editionYear: numOrNull(entry.editionYear),
+    // Which legacy channel supplied the edition year: `file` (the reader's own
+    // «Год издания» column of the LiveLib export) or `details` (the print run
+    // a metadata provider knows).
+    editionYearSource: ['file', 'details'].includes(entry.editionYearSource)
+      ? entry.editionYearSource
+      : null,
     pages: numOrNull(entry.pages != null ? entry.pages : entry.pagesOfEdition),
     genres: genreNames,
     series: text(entry.series),
@@ -3076,9 +3082,88 @@ function decadeHint(message) {
   box.append(el('div', { class: 'years-empty-ring', 'aria-hidden': 'true' }));
   box.append(el('p', {
     class: 'years-empty-text',
-    text: message || 'Выбери десятилетие слева — покажем годы первого издания книг',
+    text: message || 'Выбери десятилетие слева — покажем годы издания книг',
   }));
   return box;
+}
+
+/**
+ * «N книг без года» — the honest summary line of the year charts.
+ *
+ * Works with no year at all (no first publication, no edition year, no manual
+ * correction) are NOT painted as a bar/slice: the pre-ef593a8 chart silently
+ * dropped them, and the 29.10.2026 verdict is «make it look like before, but
+ * say the number out loud». The count is a button that opens the drilldown
+ * list, where every row has the «Исправить год» action (manual override).
+ */
+function unknownYearsButton(count) {
+  const btn = el('button', {
+    type: 'button',
+    class: 'note-link',
+    text: `${fmtInt(count)} ${plural(count, ['книга', 'книги', 'книг'])} без года`,
+  });
+  btn.title = 'Показать книги без года и исправить год вручную';
+  btn.addEventListener('click', () => openUnknownYearModal());
+  return btn;
+}
+
+/** Why the year is missing — the honest reason, never a fake verdict. */
+function unknownYearsReason(backfill) {
+  if (!backfill) return '';
+  const fileColumn = backfill.fileColumn;
+  if (backfill.open) {
+    return (
+      `бэкфилл идёт, осталось ~${fmtInt(backfill.runsLeft)} ` +
+      `${plural(backfill.runsLeft, ['прогон', 'прогона', 'прогонов'])}` +
+      `${backfill.unlinked > 0 ? ` (${fmtInt(backfill.unlinked)} ждут привязки к метаданным)` : ''}`
+    );
+  }
+  // The root cause of the 28.10.2026 regression: the export file itself had no
+  // «Год издания» column, so the legacy channel had nothing to read.
+  if (fileColumn && fileColumn.rows > 0 && fileColumn.withYear === 0) {
+    return (
+      'в файле-выгрузке не было колонки «Год издания» — переэкспортируйте файл с ней, ' +
+      'годы подхватятся при повторном импорте'
+    );
+  }
+  if (backfill.unlinked > 0) {
+    return (
+      (backfill.honestUnknown > 0
+        ? `${fmtInt(backfill.honestUnknown)} ` +
+          `${plural(backfill.honestUnknown, ['книга', 'книги', 'книг'])}: провайдеры не знают, `
+        : '') +
+      `${fmtInt(backfill.unlinked)} ` +
+      `${plural(backfill.unlinked, ['книга', 'книги', 'книг'])} ждут привязки к метаданным`
+    );
+  }
+  return 'провайдеры не знают';
+}
+
+/** Drilldown of the year-less works; the row menu fixes a year manually. */
+function openUnknownYearModal() {
+  const data = state.data || {};
+  const books = Object.values(data.booksIndex || {}).filter((entry) => entry.year == null);
+  const backfill = data.summary && data.summary.yearBackfill;
+  const hints = [];
+  const fileColumn = backfill && backfill.fileColumn;
+  if (fileColumn && fileColumn.rows > 0 && fileColumn.withYear === 0) {
+    hints.push(
+      'В файле-выгрузке не было колонки «Год издания»: переэкспортируйте его с этой колонкой ' +
+        'и загрузите снова — годы подхватятся при повторном импорте.'
+    );
+  }
+  hints.push('Год можно исправить вручную: меню «…» у книги → «Исправить год».');
+  openWorksModal({
+    books,
+    kicker: 'Год неизвестен',
+    title: 'Книги без года',
+    subtitle:
+      `${fmtInt(books.length)} ${plural(books.length, ['книга', 'книги', 'книг'])}: ` +
+      'ни первоиздание, ни год издания не известны',
+    hint: hints.join(' '),
+    groupLabel: 'Без года',
+    emptyText: 'У всех книг есть год',
+  });
 }
 
 function renderDecades(data) {
@@ -3087,17 +3172,27 @@ function renderDecades(data) {
   const note = $('books-decades-note');
   if (!donutHost || !legendHost) return;
 
-  const decades = data.decades.slice();
+  // Works without any year are not a decade: the chart paints real decades
+  // only and the note carries the honest «…и N книг без года» line. That is
+  // the pre-ef593a8 chart shape, minus its silent drop.
+  const all = data.decades.slice();
+  const decades = all.filter((item) => !item.unknown);
+  const unknown = all
+    .filter((item) => item.unknown)
+    .reduce((sum, item) => sum + item.count, 0);
   const total = decades.reduce((sum, item) => sum + item.count, 0);
   const editionTotal = decades.reduce((sum, item) => sum + (item.editionCount || 0), 0);
   if (note) {
-    const real = decades.filter((item) => !item.unknown).length;
-    note.textContent = real
-      ? `${fmtInt(real)} ${plural(real, ['десятилетие', 'десятилетия', 'десятилетий'])}` +
+    note.textContent = decades.length
+      ? `${fmtInt(decades.length)} ${plural(decades.length, ['десятилетие', 'десятилетия', 'десятилетий'])}` +
         (editionTotal > 0
           ? ` · * — год издания у ${fmtInt(editionTotal)} ${plural(editionTotal, ['книга', 'книги', 'книг'])}`
           : '')
       : '';
+    if (unknown > 0) {
+      if (note.textContent) note.append(document.createTextNode(' · '));
+      note.append(unknownYearsButton(unknown));
+    }
   }
 
   clear(legendHost);
@@ -3107,19 +3202,12 @@ function renderDecades(data) {
     return;
   }
 
-  const backfill = data.summary && data.summary.yearBackfill;
   const segments = decades.map((item, index) => ({
     key: `decade-${item.start}`,
-    // The unknown slice is the backfill queue while it is open; the legend
-    // says so instead of presenting it as a settled «nobody knows» decade.
-    label: item.unknown && backfill && backfill.open
-      ? `${item.label} · бэкфилл идёт`
-      : item.editionCount > 0
-      ? `${item.label}*`
-      : item.label,
+    label: item.editionCount > 0 ? `${item.label}*` : item.label,
     value: item.count,
     color: DECADE_COLORS[index % DECADE_COLORS.length],
-    decadeStart: item.unknown ? null : item.start,
+    decadeStart: item.start,
   }));
 
   renderDonut(donutHost, {
@@ -3128,11 +3216,10 @@ function renderDecades(data) {
     selectedKey: state.selectedDecade ? `decade-${state.selectedDecade.start}` : null,
     centerValue: fmtInt(total),
     centerLabel: 'книг',
-    ariaLabel: 'Распределение книг по десятилетиям первого издания. Выберите десятилетие, чтобы увидеть годы',
-    secondary: (seg) => `${fmtPercent(seg.value, total)} всех книг`,
+    ariaLabel: 'Распределение книг по десятилетиям издания. Выберите десятилетие, чтобы увидеть годы',
+    secondary: (seg) => `${fmtPercent(seg.value, total)} всех книг с годом`,
     onSelect: (seg) => {
       const start = toNum(seg.decadeStart);
-      // «год неизвестен» is not a decade: nothing to drill into.
       if (!Number.isFinite(start) || start <= 0) return;
       state.selectedDecade = { start, label: seg.label };
       renderDecades(data);
@@ -3199,7 +3286,7 @@ function renderYears(data) {
     legendHost,
     centerValue: fmtInt(total),
     centerLabel: 'книг',
-    ariaLabel: `Распределение книг по годам первого издания: ${selected.label}`,
+    ariaLabel: `Распределение книг по годам издания: ${selected.label}`,
     secondary: (seg) => `${fmtPercent(seg.value, total)} книг десятилетия`,
     onSelect: (seg) => {
       const year = Number(seg.year);
@@ -3258,10 +3345,10 @@ function renderYearBarsWidget(data) {
     onYearClick: openYearModal,
     unitForms: ['книга', 'книги', 'книг'],
     shareLabel: 'всех книг',
-    emptyText: 'Нет данных по годам первого издания',
+    emptyText: 'Нет данных по годам издания',
     ariaLabel: years.length
-      ? `Книги по годам первого издания: ${years[0].year} — ${years[years.length - 1].year}`
-      : 'Книги по годам первого издания',
+      ? `Книги по годам издания: ${years[0].year} — ${years[years.length - 1].year}`
+      : 'Книги по годам издания',
     // Honest tooltip: a year taken from the print run is marked, never called
     // a first publication.
     yearNote: (year, item) =>
@@ -3287,37 +3374,23 @@ function renderYearBarsWidget(data) {
       : '';
     // «Год неизвестен» is three states in one bucket. While the year queue is
     // open it is a backfill snapshot; once it drains, the remainder is either
-    // an honest «providers don't know» verdict or a work still waiting for the
-    // metadata link (the resolve chain), which the years backfill cannot fix.
-    // Never call the whole bucket «провайдеры не знают» while unlinked works
-    // are still in it — that was the misleading final verdict.
+    // an honest «providers don't know» verdict, a work still waiting for the
+    // metadata link (the resolve chain) or — the 28.10.2026 root cause — an
+    // export file that simply had no «Год издания» column. Never call the whole
+    // bucket «провайдеры не знают» while unlinked works are still in it.
     const backfill = data.summary && data.summary.yearBackfill;
-    let unknownNote = '';
+    const base = !years.length
+      ? `${ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных'}${editionNote}${manualNote}`
+      : years.length === 1
+        ? `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${editionNote}${manualNote}`
+        : `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${editionNote}${manualNote}`;
+    note.textContent = base;
     if (unknown > 0) {
-      if (backfill && backfill.open) {
-        unknownNote =
-          ` · ${fmtInt(unknown)} без года — бэкфилл идёт, осталось ~${fmtInt(backfill.runsLeft)} ` +
-          `${plural(backfill.runsLeft, ['прогон', 'прогона', 'прогонов'])}` +
-          `${backfill.unlinked > 0 ? ` (${fmtInt(backfill.unlinked)} ждут привязки к метаданным)` : ''}`;
-      } else if (backfill && backfill.unlinked > 0) {
-        unknownNote =
-          ` · ${fmtInt(unknown)} без года — ` +
-          (backfill.honestUnknown > 0
-            ? `${fmtInt(backfill.honestUnknown)} ` +
-              `${plural(backfill.honestUnknown, ['книга', 'книги', 'книг'])}: провайдеры не знают, `
-            : '') +
-          `${fmtInt(backfill.unlinked)} ` +
-          `${plural(backfill.unlinked, ['книга', 'книги', 'книг'])} ждут привязки к метаданным`;
-      } else if (backfill) {
-        unknownNote = ` · ${fmtInt(unknown)} без года — провайдеры не знают`;
-      } else {
-        unknownNote =
-          ` · ${fmtInt(unknown)} ${plural(unknown, ['книга', 'книги', 'книг'])} без года`;
-      }
+      note.append(document.createTextNode(' · '));
+      note.append(unknownYearsButton(unknown));
+      const reason = unknownYearsReason(backfill);
+      if (reason) note.append(document.createTextNode(` — ${reason}`));
     }
-    if (!years.length) note.textContent = `${ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных'}${editionNote}${manualNote}${unknownNote}`;
-    else if (years.length === 1) note.textContent = `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${editionNote}${manualNote}${unknownNote}`;
-    else note.textContent = `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${editionNote}${manualNote}${unknownNote}`;
   }
 
   if (typeof ResizeObserver === 'function') {
@@ -3528,7 +3601,10 @@ function bookYearTitle(entry) {
     return `Ручная правка: ${entry.year}`;
   }
   if (entry.yearSource === 'edition') {
-    return `Год издания: ${entry.year} · первоиздание неизвестно`;
+    const channel = entry.editionYearSource === 'file'
+      ? 'год издания из выгрузки LiveLib'
+      : 'год издания от провайдера';
+    return `Год издания: ${entry.year} · ${channel} · первоиздание неизвестно`;
   }
   const edition = entry.editionYear && entry.editionYear !== entry.year
     ? ` · это издание: ${entry.editionYear}`
@@ -3724,7 +3800,10 @@ function bookYearSourceText(book) {
   if (!book) return '';
   if (book.yearSource === 'manual') return `Ручная правка: ${book.yearOverride ?? book.year}`;
   if (book.yearSource === 'edition') {
-    return `Год издания ${book.editionYear ?? book.year} · первоиздание неизвестно`;
+    const channel = book.editionYearSource === 'file'
+      ? 'из выгрузки LiveLib'
+      : 'от провайдера';
+    return `Год издания ${book.editionYear ?? book.year} (${channel}) · первоиздание неизвестно`;
   }
   if (book.yearSource === 'first') {
     const source = book.firstPublishedYearSource
