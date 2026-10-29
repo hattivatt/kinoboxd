@@ -307,8 +307,10 @@ const HARDCOVER_STATUS_LABELS = {
 /**
  * Statuses that belong to the *reading profile*: finished books (3) and books
  * the user abandoned (5, "did not finish"). `1`/`2`/`4` are shelf state, not
- * reading history — importing them inflated bookCount with books that were
- * never read (user report, 27.10.2026).
+ * reading history — counting them as finished inflated bookCount with books
+ * that were never read (user report, 27.10.2026). Status 2 is still *stored*
+ * as a plan event for the strip (`HARDCOVER_READING_STATUS_IDS`), just never
+ * counted here.
  */
 const HARDCOVER_KEEP_STATUS_IDS = [3, 5];
 
