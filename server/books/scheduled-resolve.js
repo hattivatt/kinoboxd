@@ -46,6 +46,7 @@ const path = require('path');
 const bookCache = require('./book-cache');
 const resolve = require('./resolve');
 const litres = require('./providers/litres');
+const googlebooks = require('./providers/googlebooks');
 const resolveLock = require('./resolve-lock');
 
 const DEFAULT_LIMIT = 200;
@@ -280,6 +281,8 @@ async function resolveOneProfile(profile, options = {}) {
     requests: 0,
     litresUsed: 0,
     litresLimit: null,
+    gbUsed: 0,
+    gbLimit: null,
     hardcoverRequests: 0,
     remaining: pool.length,
     activeRemaining: active.length,
@@ -315,6 +318,7 @@ async function resolveOneProfile(profile, options = {}) {
     sleep: options.sleep,
     providers: options.providers,
     litresBudget: options.litresBudget,
+    gbBudget: options.gbBudget,
     cardBudget: options.cardBudget,
     litresPauseMs: options.pause == null ? DEFAULT_PAUSE_MS : Number(options.pause),
     requestDelayMs: options.requestDelayMs,
@@ -324,6 +328,8 @@ async function resolveOneProfile(profile, options = {}) {
   report.requests = countRequests(pass);
   report.litresUsed = pass.litresBudget && Number(pass.litresBudget.used);
   report.litresLimit = pass.litresBudget && Number(pass.litresBudget.limit);
+  report.gbUsed = pass.gbBudget && Number(pass.gbBudget.used);
+  report.gbLimit = pass.gbBudget && Number(pass.gbBudget.limit);
   report.hardcoverRequests = Number(pass.requests) || 0;
   report.breaker = typeof litres.isBreakerOpen === 'function' && litres.isBreakerOpen();
 
@@ -332,6 +338,11 @@ async function resolveOneProfile(profile, options = {}) {
   const missKeys = new Set((pass.unmatchedKeys || []).map(String));
   const askedKeys = new Set((pass.askedKeys || []).map(String));
   const providerErrors = new Set((pass.providerErrorKeys || []).map(String));
+  // A provider budget (Литрес books, Google Books books) that ran out before
+  // this key was asked is not a verdict. The pass names those keys explicitly;
+  // without this a GB-budget skip would still be written off as "nothing found"
+  // for the whole re-check window.
+  const budgetPending = new Set((pass.budgetPendingKeys || []).map(String));
   const nowIso = options.nowIso || new Date(nowMs).toISOString();
   const newMissKeys = new Set();
   for (const entry of selected) {
@@ -340,6 +351,10 @@ async function resolveOneProfile(profile, options = {}) {
     if (linked) {
       report.linked++;
       delete state.candidates[key];
+      continue;
+    }
+    if (budgetPending.has(key)) {
+      report.deferred++;
       continue;
     }
     // A strict miss (every provider answered nothing) is a verdict. For a
@@ -431,6 +446,7 @@ async function runScheduledResolve(options = {}) {
   const pause = options.pause == null ? DEFAULT_PAUSE_MS : Number(options.pause);
 
   const litresBudget = options.litresBudget || litres.createBudget(process.env.BOOKS_LITRES_BUDGET);
+  const gbBudget = options.gbBudget || googlebooks.createBudget(process.env.BOOKS_GB_BUDGET);
   const cardBudget = options.cardBudget || resolve.createCardBudget(process.env.BOOKS_LIVELIB_CARD_BUDGET);
 
   const summary = {
@@ -444,6 +460,8 @@ async function runScheduledResolve(options = {}) {
     requests: 0,
     litresUsed: 0,
     litresLimit: litresBudget.limit,
+    gbUsed: 0,
+    gbLimit: gbBudget.limit,
     hardcoverRequests: 0,
     remaining: 0,
     activeRemaining: 0,
@@ -517,6 +535,7 @@ async function runScheduledResolve(options = {}) {
         recheckDays,
         pause,
         litresBudget,
+        gbBudget,
         cardBudget,
       });
       summary.selected += report.selected;
@@ -533,6 +552,7 @@ async function runScheduledResolve(options = {}) {
         `[scheduled-resolve] profile=${source}-${meta.userKey} pool=${report.pool} ` +
           `selected=${report.selected} linked=${report.linked} misses=${report.misses} ` +
           `deferred=${report.deferred} budget=${report.litresUsed}/${report.litresLimit} ` +
+          `gb=${report.gbUsed}/${report.gbLimit} ` +
           `hc=${report.hardcoverRequests} requests=${report.requests} ` +
           `remaining=${report.remaining} active=${report.activeRemaining} runsLeft=${report.runsLeft}` +
           `${report.breaker ? ' BREAKER' : ''}`
@@ -543,11 +563,13 @@ async function runScheduledResolve(options = {}) {
   }
 
   summary.litresUsed = litresBudget.used;
+  summary.gbUsed = gbBudget.used;
   summary.elapsedMs = Date.now() - started;
   log(
     `[scheduled-resolve] итог: pool=${summary.pool} selected=${summary.selected} ` +
       `linked=${summary.linked} misses=${summary.misses} deferred=${summary.deferred} ` +
-      `litres=${summary.litresUsed}/${summary.litresLimit} hc=${summary.hardcoverRequests} ` +
+      `litres=${summary.litresUsed}/${summary.litresLimit} gb=${summary.gbUsed}/${summary.gbLimit} ` +
+      `hc=${summary.hardcoverRequests} ` +
       `requests=${summary.requests} remaining=${summary.remaining} ` +
       `active=${summary.activeRemaining} ` +
       (summary.runsLeft ? `~${summary.runsLeft} прогон(ов) до конца` : 'очередь пуста') +

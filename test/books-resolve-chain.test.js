@@ -13,6 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 process.env.KINOBOXD_CACHE_BOOK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-chain-'));
+process.env.GB_API_KEY = 'AIzaSy_TEST_FIXTURE_KEY';
 
 const bookCache = require('../server/books/book-cache');
 const resolve = require('../server/books/resolve');

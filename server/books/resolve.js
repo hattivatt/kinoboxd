@@ -52,6 +52,7 @@ const {
 const providers = require('./providers');
 const livelibCard = require('./providers/livelib-card');
 const litres = require('./providers/litres');
+const googlebooks = require('./providers/googlebooks');
 
 const FUZZY_ACCEPT = 0.9;
 const FUZZY_GUARDED = 0.8;
@@ -335,6 +336,12 @@ function chainInput(event, extra) {
   };
 }
 
+function providerBudgetFor(options, provider) {
+  if (provider.NAME === 'litres') return options.litresBudget;
+  if (provider.NAME === 'googlebooks') return options.gbBudget;
+  return options.cardBudget;
+}
+
 function providerOptionsFor(options, provider) {
   return {
     fetchImpl: options.fetchImpl,
@@ -347,7 +354,10 @@ function providerOptionsFor(options, provider) {
         ? options.negativeMemo[provider.NAME]
         : null,
     lookupIsbns: options.lookupIsbns,
-    budget: provider.NAME === 'litres' ? options.litresBudget : options.cardBudget,
+    // Each network provider has its own per-run allowance: Литрес books,
+    // Google Books books (BOOKS_GB_BUDGET), LiveLib cards. Sharing one counter
+    // would let a GB-only tail eat the card budget (and vice versa).
+    budget: providerBudgetFor(options, provider),
     cardPauseMs: options.cardPauseMs,
     litresPauseMs: options.litresPauseMs,
     requestDelayMs: options.requestDelayMs,
@@ -370,7 +380,7 @@ async function tryProvider(provider, input, options, chain) {
   // a file row without «Ссылка на книгу» must be addressable too.
   const key = input ? input.eventKey || input.llBookId || null : null;
   const keyString = key == null ? null : String(key);
-  const budget = provider.NAME === 'litres' ? options.litresBudget : options.cardBudget;
+  const budget = providerBudgetFor(options, provider);
   const usedBefore = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
   stat.calls++;
   try {
@@ -378,6 +388,9 @@ async function tryProvider(provider, input, options, chain) {
     const usedAfter = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
     const budgetBlocked =
       budget && usedBefore != null && usedAfter === usedBefore && Number(budget.remaining) === 0;
+    if (keyString && budgetBlocked) {
+      options.budgetBlockedKeys && options.budgetBlockedKeys.add(keyString);
+    }
     if (keyString && !budgetBlocked) {
       options.askedKeys && options.askedKeys.add(keyString);
       if (result) {
@@ -518,6 +531,7 @@ async function resolveProfile(llProfile, options = {}) {
   const now = options.now || new Date().toISOString();
   const cardBudget = options.cardBudget || livelibCard.budgetFromEnv();
   const litresBudget = options.litresBudget || litres.budgetFromEnv();
+  const gbBudget = options.gbBudget || googlebooks.budgetFromEnv();
   const negativeMemo = options.negativeMemo || {
     googlebooks: new Map(),
     openlibrary: new Map(),
@@ -529,6 +543,10 @@ async function resolveProfile(llProfile, options = {}) {
   // the import job so stats does not count such books in the metadata percent.
   const attemptedKeys = new Set();
   const providerErrorKeys = new Set();
+  // Keys whose question a provider could not even ask because its per-run
+  // budget was gone (`budget.take()` returned false). They are NOT misses:
+  // the scheduled resolve must keep them candidates for the next run.
+  const budgetBlockedKeys = new Set();
   // Every key a provider was really asked about (hit or miss). Cumulative
   // `attempted` in resolve-state is the size of this set across passes; the
   // hit keys are removed from `attemptedKeys` below, so it cannot be reused
@@ -538,7 +556,7 @@ async function resolveProfile(llProfile, options = {}) {
   // Used by the scheduled resolve to persist a per-candidate negative cache;
   // the stats payload only needs the derived `unmatchedKeys`.
   const missedByKey = new Map();
-  options = { ...options, attemptedKeys, providerErrorKeys, missedByKey, askedKeys };
+  options = { ...options, attemptedKeys, providerErrorKeys, missedByKey, askedKeys, budgetBlockedKeys };
 
   const report = {
     total: events.length,
@@ -563,6 +581,7 @@ async function resolveProfile(llProfile, options = {}) {
     providerChain: {},
     cardBudget: { limit: cardBudget.limit, used: 0, remaining: cardBudget.limit },
     litresBudget: { limit: litresBudget.limit, used: 0, remaining: litresBudget.limit },
+    gbBudget: { limit: gbBudget.limit, used: 0, remaining: gbBudget.limit },
   };
 
   // 1. Existing positive links.
@@ -717,7 +736,7 @@ async function resolveProfile(llProfile, options = {}) {
     .filter((provider) => options.allowLivelibCard !== false || provider.NAME !== 'livelib-card');
   const chain = createChainReport(providerList);
   const chainByName = new Map(providerList.map((provider) => [provider.NAME, provider]));
-  const chainOptions = { ...options, cardBudget, litresBudget, negativeMemo };
+  const chainOptions = { ...options, cardBudget, litresBudget, gbBudget, negativeMemo };
   const cardProvider = chainByName.get('livelib-card');
   const litresProvider = chainByName.get('litres');
   const googleProvider = chainByName.get('googlebooks');
@@ -942,6 +961,11 @@ async function resolveProfile(llProfile, options = {}) {
     used: litresBudget.used,
     remaining: litresBudget.remaining,
   };
+  report.gbBudget = {
+    limit: gbBudget.limit,
+    used: gbBudget.used,
+    remaining: gbBudget.remaining,
+  };
 
   // 5. Persist links + index + links.json.
   for (const [bookId, link] of links) {
@@ -988,7 +1012,7 @@ async function resolveProfile(llProfile, options = {}) {
   // books are still waiting for the next Litres allowance).
   const litresExhausted = Boolean(litresProvider) && litresBudget.used >= litresBudget.limit;
   const cardExhausted = Boolean(cardProvider) && cardBudget.used >= cardBudget.limit;
-  const budgetPendingKeys = new Set();
+  const budgetPendingKeys = new Set(budgetBlockedKeys);
   if (litresExhausted) {
     for (const event of pending) {
       if (CYRILLIC_TITLE.test(String((event && event.title) || ''))) {
@@ -1018,6 +1042,10 @@ async function resolveProfile(llProfile, options = {}) {
   report.attemptedKeys = [...attemptedKeys];
   report.askedKeys = [...askedKeys];
   report.providerErrorKeys = [...providerErrorKeys];
+  // Keys a provider could not ask because of its per-run budget. The scheduled
+  // resolve uses this to refuse a "nothing found" verdict for a book that
+  // Google Books simply never got to this run.
+  report.budgetPendingKeys = [...budgetPendingKeys];
   report.missedByKey = {};
   for (const [key, providers] of missedByKey) {
     if (providers && providers.size) report.missedByKey[String(key)] = [...providers].sort();
@@ -1040,7 +1068,8 @@ async function resolveProfile(llProfile, options = {}) {
       `${report.skippedPlanShelf ? `, plan-shelf-skipped=${report.skippedPlanShelf}` : ''}` +
       `${report.lookupErrors.length ? `, isbn-lookup-errors=${report.lookupErrors.join('|')}` : ''}) ` +
       `[${providerSummary}] card-budget=${cardBudget.used}/${cardBudget.limit} ` +
-      `litres-budget=${litresBudget.used}/${litresBudget.limit}`
+      `litres-budget=${litresBudget.used}/${litresBudget.limit} ` +
+      `gb-budget=${gbBudget.used}/${gbBudget.limit}`
   );
   return report;
 }
@@ -1059,6 +1088,7 @@ module.exports = {
   createChainReport,
   createCardBudget: livelibCard.createBudget,
   createLitresBudget: litres.createBudget,
+  createGbooksBudget: googlebooks.createBudget,
   normalizeTitle,
   tokensOf,
   tokenJaccard,

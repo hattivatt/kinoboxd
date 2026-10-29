@@ -13,11 +13,21 @@
  *   2. HARDCOVER_READ_TOKEN    (alias)
  *   3. config/hardcover-token  (local dev fallback, gitignored)
  *
+ * Google Books credentials are resolved once, in this order:
+ *   1. GB_API_KEY              (API key, raises the anonymous per-IP quota)
+ *   2. BOOKS_GOOGLE_API_KEY    (alias kept from the first provider version)
+ *   3. config/gbooks-token     (local dev fallback, gitignored)
+ * Unlike the other two, a missing Google Books key is NOT an error: the
+ * provider still works anonymously, so `loadGbooksKey()` returns null.
+ *
  * Tokens are loaded lazily: requiring this module never touches the
  * environment or the filesystem, and a missing Hardcover token does not
  * affect server startup (the book feature is not wired in yet). The caller
  * decides how to report a missing credential. Missing credentials are a
  * normal startup/feature condition, so the errors have no stack trace.
+ *
+ * Never log a token value: `*TokenSource()`/`gbooksKeySource()` name the
+ * source (`GB_API_KEY`, `file`, …) and nothing else.
  */
 
 const fs = require('fs');
@@ -34,6 +44,9 @@ const HARDCOVER_TOKEN_PATH = path.join(
 );
 const HARDCOVER_ENV_KEYS = ['HARDCOVER_API_TOKEN', 'HARDCOVER_READ_TOKEN'];
 
+const GBOOKS_KEY_PATH = path.join(__dirname, '..', 'config', 'gbooks-token');
+const GBOOKS_ENV_KEYS = ['GB_API_KEY', 'BOOKS_GOOGLE_API_KEY'];
+
 const TOKEN_MISSING_MESSAGE =
   'TMDB-токен не найден: задай TMDB_API_TOKEN (read access token v4) в окружении';
 
@@ -45,6 +58,10 @@ let cachedSource = null;
 
 let cachedHardcoverToken = null;
 let cachedHardcoverSource = null;
+
+let gbooksLoaded = false;
+let cachedGbooksKey = null;
+let cachedGbooksSource = null;
 
 function fromEnv(keys = ENV_KEYS) {
   for (const key of keys) {
@@ -113,6 +130,27 @@ function hardcoverTokenSource() {
   return cachedHardcoverSource;
 }
 
+/**
+ * Return the Google Books API key, or null when none is configured.
+ *
+ * Anonymous Google Books still works (a per-IP quota), so a missing key is a
+ * normal condition, not a startup error. Never log the returned value: callers
+ * that want to report the source use `gbooksKeySource()`.
+ */
+function loadGbooksKey() {
+  if (gbooksLoaded) return cachedGbooksKey;
+  const found = fromEnv(GBOOKS_ENV_KEYS) || fromFile(GBOOKS_KEY_PATH);
+  cachedGbooksKey = found ? found.token : null;
+  cachedGbooksSource = found ? found.source : null;
+  gbooksLoaded = true;
+  return cachedGbooksKey;
+}
+
+function gbooksKeySource() {
+  if (!gbooksLoaded) loadGbooksKey();
+  return cachedGbooksSource;
+}
+
 module.exports = {
   TOKEN_PATH,
   TOKEN_MISSING_MESSAGE,
@@ -124,4 +162,8 @@ module.exports = {
   loadHardcoverToken,
   getHardcoverToken: loadHardcoverToken,
   hardcoverTokenSource,
+  GBOOKS_KEY_PATH,
+  loadGbooksKey,
+  getGbooksKey: loadGbooksKey,
+  gbooksKeySource,
 };

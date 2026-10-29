@@ -5,6 +5,8 @@
  * budget rules. No network: every provider gets an injected fetch + sleep.
  */
 
+process.env.GB_API_KEY = 'AIzaSy_TEST_FIXTURE_KEY';
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
