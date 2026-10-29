@@ -487,6 +487,9 @@ test('RU title without a Hardcover match becomes a litres work', async () => {
   assert.deepEqual(details.genres, ['классическая литература']);
   assert.deepEqual(details.metadataSources, ['litres']);
   assert.equal(details.sources[0].source, 'litres');
+  // A litres hit that already has ISBN + year + pages must not spend the
+  // Google Books budget on enrichment: that budget belongs to the tail.
+  assert.equal(fetchImpl.calls.filter((url) => url.includes('googleapis')).length, 0);
 });
 
 test('Latin titles never call litres', async () => {

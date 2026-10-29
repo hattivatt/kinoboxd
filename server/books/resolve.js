@@ -802,11 +802,19 @@ async function resolveProfile(llProfile, options = {}) {
       }
 
       // Litres is the RU canonical card; GB/OL may only fill missing fields.
+      // They are *fallbacks*, and their per-run budgets (BOOKS_GB_BUDGET) must
+      // serve the unlinked tail, not re-enrich a litres hit that already has an
+      // ISBN, a year and pages. Ask them only when something is missing.
+      const needsExtra =
+        !litresResult.isbn13 || litresResult.year == null || litresResult.pages == null;
       const extraInput = isbn
         ? chainInput(event, { isbn13: isbn, isbn10: isbn10Of(isbn) })
         : chainInput(event);
-      let extra = await tryProvider(googleProvider, extraInput, chainOptions, chain);
-      if (!extra) extra = await tryProvider(openLibraryProvider, extraInput, chainOptions, chain);
+      let extra = null;
+      if (needsExtra) {
+        extra = await tryProvider(googleProvider, extraInput, chainOptions, chain);
+        if (!extra) extra = await tryProvider(openLibraryProvider, extraInput, chainOptions, chain);
+      }
       const merged = providers.mergeResults(litresResult, extra ? [extra] : []);
       const saved = await saveProviderWork(merged, now);
       if (saved) {
