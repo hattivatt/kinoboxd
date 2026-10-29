@@ -812,13 +812,32 @@ function firstPublishedYearOf(details) {
   return saneFirstYear(details && details.firstPublishedYear);
 }
 
-/** The print run in hand: the event's edition column, else the file column. */
+/**
+ * The print run in hand — the «год издания» of the copy the reader actually
+ * holds, i.e. the legacy year channel of the pre-ef593a8 chart.
+ *
+ * Two sources, in this order:
+ *   1. the export/event column (`edition.year` of a `livelib-file` row, the
+ *      reader's own LiveLib card «Год издания») — the file column wins because
+ *      it is the user's data, not a provider's guess;
+ *   2. the details document's `publicationYear` — the print run the metadata
+ *      provider knows (Литрес `publication_date`, an OL/HC edition record).
+ *      Before ef593a8 this field went through `saneFirstYear`, so a reprint of
+ *      an ancient text keeps its ancient year instead of vanishing from the
+ *      chart; that bound is preserved here.
+ *
+ * `source` is echoed as `editionYearSource` so the payload/UI can say *which*
+ * legacy channel answered instead of lumping them together.
+ */
 function editionYearOf(details, displayEvent, fileMeta) {
-  return (
-    saneYear(
-      (displayEvent && displayEvent.edition && displayEvent.edition.year) || (fileMeta && fileMeta.year)
-    ) || saneYear(details && details.publicationYear)
+  const fromFile = saneYear(
+    (displayEvent && displayEvent.edition && displayEvent.edition.year) || (fileMeta && fileMeta.year)
   );
+  if (fromFile != null) return { year: fromFile, source: 'file' };
+  const legacy = saneFirstYear(details && details.publicationYear);
+  // There is no year zero; a 0 is a typo, not an ancient date.
+  if (legacy != null && legacy !== 0) return { year: legacy, source: 'details' };
+  return { year: null, source: null };
 }
 
 /**
@@ -846,7 +865,9 @@ function saneManualYear(value) {
 
 function resolveWorkYear(details, displayEvent, fileMeta, override) {
   const firstPublishedYear = firstPublishedYearOf(details);
-  const editionYear = editionYearOf(details, displayEvent, fileMeta);
+  const edition = editionYearOf(details, displayEvent, fileMeta);
+  const editionYear = edition.year;
+  const editionYearSource = edition.source;
   const manualYear = override ? saneManualYear(override.year) : null;
   const firstPublishedYearSource =
     details && details.firstPublishedYearSource ? String(details.firstPublishedYearSource) : null;
@@ -858,6 +879,7 @@ function resolveWorkYear(details, displayEvent, fileMeta, override) {
       firstPublishedYear,
       firstPublishedYearSource,
       editionYear,
+      editionYearSource,
     };
   }
   if (firstPublishedYear != null) {
@@ -868,6 +890,7 @@ function resolveWorkYear(details, displayEvent, fileMeta, override) {
       firstPublishedYear,
       firstPublishedYearSource,
       editionYear,
+      editionYearSource,
     };
   }
   if (editionYear != null) {
@@ -878,6 +901,7 @@ function resolveWorkYear(details, displayEvent, fileMeta, override) {
       firstPublishedYear: null,
       firstPublishedYearSource,
       editionYear,
+      editionYearSource,
     };
   }
   return {
@@ -887,6 +911,7 @@ function resolveWorkYear(details, displayEvent, fileMeta, override) {
     firstPublishedYear: null,
     firstPublishedYearSource,
     editionYear: null,
+    editionYearSource: null,
   };
 }
 
@@ -977,6 +1002,7 @@ function workMetadata(workId, events, options = {}) {
   const yearInfo = resolveWorkYear(details, displayEvent, fileMeta, yearOverride);
   const year = yearInfo.year;
   const editionYear = yearInfo.editionYear;
+  const editionYearSource = yearInfo.editionYearSource;
   const firstPublishedYear = yearInfo.firstPublishedYear;
   const firstPublishedYearSource = yearInfo.firstPublishedYearSource;
   const pages =
@@ -1061,6 +1087,7 @@ function workMetadata(workId, events, options = {}) {
     firstPublishedYear,
     firstPublishedYearSource,
     editionYear,
+    editionYearSource,
     pages,
     coverUrl,
     isbn13: (details && details.isbn13) || fileMeta.isbn13 || null,
@@ -1197,6 +1224,7 @@ function mergeWorkGroup(list) {
     firstPublishedYear: yearWork ? yearWork.firstPublishedYear : null,
     firstPublishedYearSource: yearWork ? yearWork.firstPublishedYearSource : null,
     editionYear: pick('editionYear'),
+    editionYearSource: yearWork ? yearWork.editionYearSource || null : null,
     pages: pick('pages'),
     coverUrl: pick('coverUrl'),
     isbn13: pick('isbn13'),
@@ -1812,11 +1840,19 @@ function buildBooksStats(options = {}) {
   let yearsHonest = 0;
   let yearsUnlinked = 0;
   const yearsBySource = { first: 0, edition: 0, manual: 0 };
+  // Which legacy channel supplied an edition fallback: the export/file column
+  // («Год издания» of the reader's own card) or the details document's print
+  // run (`publicationYear`). Split so «восстановлено из файла» never hides
+  // behind «провайдер знает год издания».
+  const editionChannels = { file: 0, details: 0 };
   for (const work of works.values()) {
     if (Number.isFinite(work.year)) {
       yearsKnown++;
       if (work.yearSource && yearsBySource[work.yearSource] != null) {
         yearsBySource[work.yearSource]++;
+      }
+      if (work.yearSource === 'edition' && work.editionYearSource && editionChannels[work.editionYearSource] != null) {
+        editionChannels[work.editionYearSource]++;
       }
       continue;
     }
@@ -1836,6 +1872,19 @@ function buildBooksStats(options = {}) {
     Number.isFinite(backfillLimit) && backfillLimit > 0
       ? Math.floor(backfillLimit)
       : Math.max(yearsPending, 1);
+  // Does the export itself carry a «Год издания» column? The 28.10.2026 file
+  // export did not (0 of 1245 rows), which is why the legacy year channel
+  // looked dead: the field the chart used to read was simply absent from the
+  // file, not from the code. Counted over the profile document (before any
+  // shelf/status filter) so the UI can tell the user «переэкспортируйте файл с
+  // колонкой года» instead of blaming the providers.
+  let fileRows = 0;
+  let fileRowsWithYear = 0;
+  for (const event of profile.events || []) {
+    if (!event || event.origin !== FILE_METADATA_SOURCE) continue;
+    fileRows++;
+    if (event.edition && saneYear(event.edition.year) != null) fileRowsWithYear++;
+  }
   summary.yearBackfill = {
     known: yearsKnown,
     unknown: yearsPending + yearsHonest + yearsUnlinked,
@@ -1845,6 +1894,10 @@ function buildBooksStats(options = {}) {
     // How the known years were obtained: an edition fallback is honest but not
     // a first publication, so the UI can say how many books are marked.
     sources: yearsBySource,
+    // Split of the `edition` bucket by legacy channel (see `editionYearOf`).
+    editionChannels,
+    // The profile's own export: how many file rows carry «Год издания».
+    fileColumn: { rows: fileRows, withYear: fileRowsWithYear },
     perRun: yearsPerRun,
     runsLeft: yearsPending > 0 ? Math.ceil(yearsPending / yearsPerRun) : 0,
     // Queue still open: «Год неизвестен» is a snapshot of the backfill, not a
@@ -2170,6 +2223,7 @@ function buildBooksStats(options = {}) {
       firstPublishedYear: work.firstPublishedYear,
       firstPublishedYearSource: work.firstPublishedYearSource || null,
       editionYear: work.editionYear,
+      editionYearSource: work.editionYearSource || null,
       coverUrl: work.coverUrl,
       isbn13: work.isbn13,
       isbn10: work.isbn10,
