@@ -2324,6 +2324,9 @@ img { display: block; }
   white-space: nowrap;
 }
 .film-title .film-year { color: var(--muted-2); font-weight: 400; margin-left: 5px; }
+/* Honest year markers: `*` = print-run (edition) year, `✎` = manual correction. */
+.film-title .film-year.is-edition-year { color: var(--accent-2, #c9a227); }
+.film-title .film-year.is-manual-year { color: var(--accent, #7bd88f); }
 .film-char {
   margin-top: 2px;
   font-size: 10.5px;

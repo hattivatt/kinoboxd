@@ -25,6 +25,7 @@
 import {
   getBooksStats, startBooksImportHardcover, getBooksImportStatus,
   getBooksProfiles, setBookMangaFlag, clearBookMangaFlag, importBooksLivelibFile,
+  setBookYearOverride,
 } from './api.js';
 import {
   $, el, clear, fmtInt, fmtPercent, fmtRating, fmtPeriod, plural, icon, serviceIcon,
@@ -310,6 +311,12 @@ function normalizeEntry(workId, raw) {
     authors,
     publisher: text(entry.publisher),
     year: numOrNull(entry.year),
+    // Where `year` came from: `first` (provider first publication), `edition`
+    // (honest fallback to the print run), `manual` (user correction) or null.
+    yearSource: ['first', 'edition', 'manual'].includes(entry.yearSource) ? entry.yearSource : null,
+    yearOverride: numOrNull(entry.yearOverride),
+    firstPublishedYear: numOrNull(entry.firstPublishedYear),
+    firstPublishedYearSource: text(entry.firstPublishedYearSource) || '',
     // The print run in hand (kept apart from the work's first publication).
     editionYear: numOrNull(entry.editionYear),
     pages: numOrNull(entry.pages != null ? entry.pages : entry.pagesOfEdition),
@@ -404,6 +411,9 @@ function normalizeBooks(raw) {
       unknown: Boolean(item && item.unknown),
       ancient: Boolean(item && item.ancient),
       count: Math.max(0, toNum(item && item.count)),
+      firstCount: Math.max(0, toNum(item && item.firstCount)),
+      editionCount: Math.max(0, toNum(item && item.editionCount)),
+      manualCount: Math.max(0, toNum(item && item.manualCount)),
     };
   }).filter((item) => item.label && item.count > 0)
     .sort((a, b) => {
@@ -415,6 +425,9 @@ function normalizeBooks(raw) {
   const years = arr(source.years).map((item) => ({
     year: Math.round(toNum(item && item.year, 0)),
     count: Math.max(0, toNum(item && item.count)),
+    firstCount: Math.max(0, toNum(item && item.firstCount)),
+    editionCount: Math.max(0, toNum(item && item.editionCount)),
+    manualCount: Math.max(0, toNum(item && item.manualCount)),
   })).filter((item) => item.year > 0 && item.count > 0);
 
   const timeline = arr(source.timeline).map((item) => ({
@@ -3076,10 +3089,14 @@ function renderDecades(data) {
 
   const decades = data.decades.slice();
   const total = decades.reduce((sum, item) => sum + item.count, 0);
+  const editionTotal = decades.reduce((sum, item) => sum + (item.editionCount || 0), 0);
   if (note) {
     const real = decades.filter((item) => !item.unknown).length;
     note.textContent = real
-      ? `${fmtInt(real)} ${plural(real, ['десятилетие', 'десятилетия', 'десятилетий'])}`
+      ? `${fmtInt(real)} ${plural(real, ['десятилетие', 'десятилетия', 'десятилетий'])}` +
+        (editionTotal > 0
+          ? ` · * — год издания у ${fmtInt(editionTotal)} ${plural(editionTotal, ['книга', 'книги', 'книг'])}`
+          : '')
       : '';
   }
 
@@ -3097,6 +3114,8 @@ function renderDecades(data) {
     // says so instead of presenting it as a settled «nobody knows» decade.
     label: item.unknown && backfill && backfill.open
       ? `${item.label} · бэкфилл идёт`
+      : item.editionCount > 0
+      ? `${item.label}*`
       : item.label,
     value: item.count,
     color: DECADE_COLORS[index % DECADE_COLORS.length],
@@ -3150,10 +3169,14 @@ function renderYears(data) {
     .filter((item) => item.year >= start && item.year <= start + 9)
     .sort((a, b) => b.year - a.year);
   const total = years.reduce((sum, item) => sum + item.count, 0);
+  const editionTotal = years.reduce((sum, item) => sum + (item.editionCount || 0), 0);
 
   if (note) {
     note.textContent = total
-      ? `${start}–${start + 9} · ${fmtInt(years.length)} ${plural(years.length, ['год', 'года', 'лет'])}`
+      ? `${start}–${start + 9} · ${fmtInt(years.length)} ${plural(years.length, ['год', 'года', 'лет'])}` +
+        (editionTotal > 0
+          ? ` · * — год издания у ${fmtInt(editionTotal)} ${plural(editionTotal, ['книга', 'книги', 'книг'])}`
+          : '')
       : 'нет книг';
   }
 
@@ -3164,8 +3187,10 @@ function renderYears(data) {
 
   const segments = years.map((item, index) => ({
     key: `year-${item.year}`,
-    label: String(item.year),
+    label: item.editionCount > 0 ? `${item.year}*` : String(item.year),
     value: item.count,
+    year: item.year,
+    editionCount: item.editionCount || 0,
     color: YEAR_COLORS[index % YEAR_COLORS.length],
   }));
 
@@ -3177,7 +3202,7 @@ function renderYears(data) {
     ariaLabel: `Распределение книг по годам первого издания: ${selected.label}`,
     secondary: (seg) => `${fmtPercent(seg.value, total)} книг десятилетия`,
     onSelect: (seg) => {
-      const year = Number(seg.label);
+      const year = Number(seg.year);
       if (!Number.isFinite(year) || year <= 0) return;
       hideTooltip();
       openYearModal(year);
@@ -3188,11 +3213,22 @@ function renderYears(data) {
 function openYearModal(year) {
   const target = Math.round(toNum(year));
   const books = Object.values(state.data.booksIndex).filter((entry) => entry.year === target);
+  const editionCount = books.filter((entry) => entry.yearSource === 'edition').length;
+  const manualCount = books.filter((entry) => entry.yearSource === 'manual').length;
+  const marks = [
+    editionCount > 0
+      ? `${fmtInt(editionCount)} ${plural(editionCount, ['книга', 'книги', 'книг'])}: год издания`
+      : '',
+    manualCount > 0
+      ? `${fmtInt(manualCount)} ${plural(manualCount, ['книга', 'книги', 'книг'])}: ручная правка`
+      : '',
+  ].filter(Boolean);
   openWorksModal({
     books,
-    kicker: 'Годы первого издания',
+    kicker: 'Год книги',
     title: `${fmtInt(target)} год`,
-    subtitle: `${fmtInt(books.length)} ${plural(books.length, ['книга', 'книги', 'книг'])} впервые издано в ${target} году`,
+    subtitle: `${fmtInt(books.length)} ${plural(books.length, ['книга', 'книги', 'книг'])} с годом ${target}` +
+      (marks.length ? ` · ${marks.join(' · ')}` : ''),
     groupLabel: String(target),
   });
 }
@@ -3226,6 +3262,12 @@ function renderYearBarsWidget(data) {
     ariaLabel: years.length
       ? `Книги по годам первого издания: ${years[0].year} — ${years[years.length - 1].year}`
       : 'Книги по годам первого издания',
+    // Honest tooltip: a year taken from the print run is marked, never called
+    // a first publication.
+    yearNote: (year, item) =>
+      item && item.editionCount > 0
+        ? `${fmtInt(item.editionCount)} ${plural(item.editionCount, ['книга', 'книги', 'книг'])}: год издания`
+        : '',
   };
   renderYearBars(host, years, options);
 
@@ -3233,7 +3275,16 @@ function renderYearBarsWidget(data) {
     const total = years.reduce((sum, item) => sum + item.count, 0);
     const ancient = toNum(data.summary && data.summary.ancientBookCount);
     const unknown = toNum(data.summary && data.summary.yearUnknownCount);
+    const editionCount = toNum(data.summary && data.summary.yearEditionCount);
+    const manualCount = toNum(data.summary && data.summary.yearManualCount);
     const ancientNote = ancient > 0 ? ` · ${fmtInt(ancient)} ${plural(ancient, ['книга', 'книги', 'книг'])} до 1000 г.` : '';
+    // Edition fallback: an honest substitute for a first-publication year.
+    const editionNote = editionCount > 0
+      ? ` · ${fmtInt(editionCount)} ${plural(editionCount, ['книга', 'книги', 'книг'])}: год издания вместо первоиздания`
+      : '';
+    const manualNote = manualCount > 0
+      ? ` · ${fmtInt(manualCount)} ${plural(manualCount, ['книга', 'книги', 'книг'])}: ручная правка`
+      : '';
     // «Год неизвестен» is three states in one bucket. While the year queue is
     // open it is a backfill snapshot; once it drains, the remainder is either
     // an honest «providers don't know» verdict or a work still waiting for the
@@ -3264,9 +3315,9 @@ function renderYearBarsWidget(data) {
           ` · ${fmtInt(unknown)} ${plural(unknown, ['книга', 'книги', 'книг'])} без года`;
       }
     }
-    if (!years.length) note.textContent = `${ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных'}${unknownNote}`;
-    else if (years.length === 1) note.textContent = `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${unknownNote}`;
-    else note.textContent = `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${unknownNote}`;
+    if (!years.length) note.textContent = `${ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных'}${editionNote}${manualNote}${unknownNote}`;
+    else if (years.length === 1) note.textContent = `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${editionNote}${manualNote}${unknownNote}`;
+    else note.textContent = `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${editionNote}${manualNote}${unknownNote}`;
   }
 
   if (typeof ResizeObserver === 'function') {
@@ -3464,6 +3515,27 @@ function bookRatingNode(entry) {
   return node;
 }
 
+function bookYearLabel(entry) {
+  if (!entry || !entry.year) return '';
+  if (entry.yearSource === 'edition') return `${entry.year}*`;
+  if (entry.yearSource === 'manual') return `${entry.year}✎`;
+  return String(entry.year);
+}
+
+function bookYearTitle(entry) {
+  if (!entry) return '';
+  if (entry.yearSource === 'manual') {
+    return `Ручная правка: ${entry.year}`;
+  }
+  if (entry.yearSource === 'edition') {
+    return `Год издания: ${entry.year} · первоиздание неизвестно`;
+  }
+  const edition = entry.editionYear && entry.editionYear !== entry.year
+    ? ` · это издание: ${entry.editionYear}`
+    : '';
+  return `Первое издание: ${entry.year}${edition}`;
+}
+
 function bookRow(entry) {
   const row = el('div', { class: 'film-row film-row-static book-row' });
   const title = entry.title || 'Без названия';
@@ -3471,12 +3543,16 @@ function bookRow(entry) {
 
   const info = el('div', { class: 'film-info' });
   const titleNode = el('div', { class: 'film-title', text: title });
-  if (entry.year) titleNode.append(el('span', { class: 'film-year', text: String(entry.year) }));
-  if (entry.year) {
-    const edition = entry.editionYear && entry.editionYear !== entry.year
-      ? ` · это издание: ${entry.editionYear}`
-      : '';
-    titleNode.title = `Первое издание: ${entry.year}${edition}`;
+  const yearLabel = bookYearLabel(entry);
+  if (yearLabel) {
+    const yearNode = el('span', {
+      class: `film-year${entry.yearSource === 'edition' ? ' is-edition-year' : ''}` +
+        `${entry.yearSource === 'manual' ? ' is-manual-year' : ''}`,
+      text: yearLabel,
+    });
+    yearNode.title = bookYearTitle(entry);
+    titleNode.append(yearNode);
+    titleNode.title = bookYearTitle(entry);
   }
   if (entry.titleOriginal && entry.titleOriginal !== title) titleNode.title = entry.titleOriginal;
   info.append(titleNode);
@@ -3635,6 +3711,127 @@ async function clearMangaOverride(book) {
   }
 }
 
+const YEAR_PROVIDER_LABEL = {
+  litres: 'Литрес',
+  hardcover: 'Hardcover',
+  openlibrary: 'Open Library',
+  googlebooks: 'Google Books',
+  'livelib-file': 'LiveLib-файл',
+  livelib: 'LiveLib',
+};
+
+function bookYearSourceText(book) {
+  if (!book) return '';
+  if (book.yearSource === 'manual') return `Ручная правка: ${book.yearOverride ?? book.year}`;
+  if (book.yearSource === 'edition') {
+    return `Год издания ${book.editionYear ?? book.year} · первоиздание неизвестно`;
+  }
+  if (book.yearSource === 'first') {
+    const source = book.firstPublishedYearSource
+      ? YEAR_PROVIDER_LABEL[book.firstPublishedYearSource] || book.firstPublishedYearSource
+      : '';
+    return `Первоиздание ${book.firstPublishedYear ?? book.year}${source ? ` (${source})` : ''}`;
+  }
+  return 'Год неизвестен';
+}
+
+/**
+ * Manual year correction from the book card / a year bucket list.
+ *
+ * The server stores the edit per profile and it outranks every provider
+ * (`manual > first > edition > unknown`); after saving the dashboard is
+ * refetched silently, so the decade/year charts move at once.
+ */
+function openYearEditModal(book) {
+  if (!book || !book.workId) return;
+  const profile = activeProfileKey();
+  if (!profile) {
+    toast('Сначала выберите профиль', 'error');
+    return;
+  }
+
+  const head = el('div', { class: 'modal-head' });
+  const copy = el('div', { class: 'modal-head-copy' });
+  copy.append(el('div', { class: 'modal-role', text: 'Год книги' }));
+  copy.append(el('h2', { class: 'modal-title', text: book.title || 'Без названия' }));
+  head.append(copy);
+
+  const body = el('div', { class: 'modal-body' });
+  body.append(el('p', {
+    class: 'modal-hint',
+    text: `Сейчас: ${bookYearSourceText(book)}. Год можно исправить вручную — правка важнее провайдеров и не сбрасывается обновлением метаданных.`,
+  }));
+
+  const field = el('label', { class: 'field' });
+  field.append(el('span', { class: 'field-label', text: 'Год' }));
+  const input = el('input', {
+    class: 'input',
+    type: 'number',
+    min: '-3000',
+    max: '2100',
+    step: '1',
+    inputmode: 'numeric',
+    'aria-label': 'Год книги',
+  });
+  const fallback = book.yearOverride ?? book.editionYear ?? book.firstPublishedYear ?? book.year ?? '';
+  input.value = fallback === '' || fallback == null ? '' : String(fallback);
+  field.append(input);
+  body.append(field);
+
+  const actions = el('div', { class: 'modal-actions' });
+  const cancel = el('button', { type: 'button', class: 'btn btn-ghost', text: 'Отмена' });
+  actions.append(cancel);
+  if (book.yearOverride != null) {
+    const reset = el('button', { type: 'button', class: 'btn btn-ghost', text: 'Сбросить правку' });
+    reset.addEventListener('click', async () => {
+      reset.disabled = true;
+      try {
+        await setBookYearOverride(profile, book.workId, null);
+        toast('Ручная правка года сброшена', 'info');
+        modal.close();
+        await loadStats({ force: true, silent: true });
+      } catch (error) {
+        reset.disabled = false;
+        toast(shortErrorMessage(error), 'error', { duration: 7000 });
+      }
+    });
+    actions.append(reset);
+  }
+  const save = el('button', { type: 'button', class: 'btn btn-primary', text: 'Сохранить' });
+  actions.append(save);
+  body.append(actions);
+
+  const modal = openModal({ head, body, className: 'modal-books' });
+  cancel.addEventListener('click', () => modal.close());
+  save.addEventListener('click', async () => {
+    const raw = String(input.value || '').trim();
+    const year = Number(raw);
+    if (!raw || !Number.isInteger(year) || year < -3000 || year > 2100) {
+      toast('Год должен быть целым числом от -3000 до 2100', 'error');
+      input.focus();
+      return;
+    }
+    save.disabled = true;
+    try {
+      await setBookYearOverride(profile, book.workId, year);
+      toast('Год сохранён', 'success');
+      modal.close();
+      await loadStats({ force: true, silent: true });
+    } catch (error) {
+      save.disabled = false;
+      toast(shortErrorMessage(error), 'error', { duration: 7000 });
+    }
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      save.click();
+    }
+  });
+  input.focus();
+  input.select();
+}
+
 /**
  * Kebab menu with the known source links and the manual manga/comics toggle.
  * Books MVP has no manual re-match, so unlike renderFilmMenu() there is no
@@ -3650,6 +3847,12 @@ export function renderBookMenu(book) {
     items.push({ kind: 'link', service: 'hc', label: 'Hardcover', href: book.links.hardcover });
   }
   if (book.workId) {
+    items.push({
+      kind: 'action',
+      icon: 'book',
+      label: 'Исправить год',
+      action: () => openYearEditModal(book),
+    });
     // `mangaComics` is the effective flag (detector ∪ series ∪ manual);
     // `mangaComicsOverride` is only the user's own decision.
     if (book.mangaComics !== true) {

@@ -457,12 +457,18 @@ export function renderYearBars(host, years, {
   shareLabel = 'всех фильмов',
   emptyText = 'Нет данных по годам выпуска',
   ariaLabel = '',
+  yearNote = null,
 } = {}) {
   const counts = new Map();
   for (const item of Array.isArray(years) ? years : []) {
     const year = Math.round(toNum(item && item.year));
     const count = Math.max(0, toNum(item && item.count));
-    if (year > 0 && count > 0) counts.set(year, (counts.get(year) || 0) + count);
+    if (!(year > 0) || !(count > 0)) continue;
+    const current = counts.get(year) || { count: 0, editionCount: 0, manualCount: 0 };
+    current.count += count;
+    current.editionCount += Math.max(0, toNum(item && item.editionCount));
+    current.manualCount += Math.max(0, toNum(item && item.manualCount));
+    counts.set(year, current);
   }
 
   clear(host);
@@ -475,7 +481,8 @@ export function renderYearBars(host, years, {
   const maxYear = Math.max(...counts.keys());
   const data = [];
   for (let year = minYear; year <= maxYear; year += 1) {
-    data.push({ year, count: counts.get(year) || 0 });
+    const entry = counts.get(year) || { count: 0, editionCount: 0, manualCount: 0 };
+    data.push({ year, ...entry });
   }
   const total = data.reduce((sum, item) => sum + item.count, 0);
 
@@ -551,9 +558,10 @@ export function renderYearBars(host, years, {
       const primary = unitForms
         ? `${item.year} — ${fmtInt(item.count)} ${plural(item.count, unitForms)}`
         : `${item.year} — ${fmtInt(item.count)}`;
+      const extraNote = typeof yearNote === 'function' ? yearNote(item.year, item) : '';
       showTooltip(
         primary,
-        `${fmtPercent(item.count, total)} ${shareLabel}`,
+        `${fmtPercent(item.count, total)} ${shareLabel}${extraNote ? ` · ${extraNote}` : ''}`,
       );
       moveTooltip(event);
     });

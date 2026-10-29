@@ -180,6 +180,23 @@ export function clearBookMangaFlag(workId, { signal } = {}) {
 }
 
 /**
+ * Manual publication-year correction of one work (scoped to the profile).
+ * `year: null` removes the correction and restores the provider/edition chain.
+ */
+export function setBookYearOverride(profile, workId, year, { signal } = {}) {
+  return request('/api/books/year-override', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      profile,
+      workId,
+      year: year == null ? null : Number(year),
+    }),
+    signal,
+  });
+}
+
+/**
  * Start a LiveLib import.
  *
  * `deep` selects the phase:
