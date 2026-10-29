@@ -121,12 +121,15 @@ export function withPreservedScroll(getY, setY, render) {
  * Hidden when there is nothing to load (legacy payload, empty profile) and at
  * `pending === 0` — a fully enriched profile needs no apology. `resolvable`
  * (server-side) is the pool minus works the providers were asked about and
- * answered nothing for; `hopeless` is that excluded tail, reported in the
- * hint instead of pinning the badge at 99% forever. `running` adds the
- * «догружается…» suffix and the spinner; `budgetRemaining` (Litres books for
- * the current run) is only present while the job is alive.
+ * answered nothing for (`hopeless`) and works with no resolve key at all
+ * (`keyless`); both are reported in the hint instead of pinning the badge at
+ * 99% forever. `linked`/`withDetails`/`unlinked` split the profile into
+ * "canonical provider work", "details document only" and "no metadata yet" —
+ * a file row with genres but no link is NOT counted as resolved any more.
+ * `running` adds the «догружается…» suffix and the spinner; `budgetRemaining`
+ * (Litres books for the current run) is only present while the job is alive.
  *
- * @param {{resolved:number,total:number,resolvable?:number,hopeless?:number,percent:number,running:boolean,done?:boolean,budgetRemaining:?number}|null} meta
+ * @param {{resolved:number,total:number,linked?:number,withDetails?:number,unlinked?:number,resolvable?:number,hopeless?:number,keyless?:number,percent:number,running:boolean,done?:boolean,budgetRemaining:?number}|null} meta
  */
 export function metadataBadge(meta) {
   if (!meta || typeof meta !== 'object') return null;
@@ -139,6 +142,9 @@ export function metadataBadge(meta) {
   const hopeless = meta.hopeless == null
     ? Math.max(0, total - resolvable)
     : Math.max(0, toCount(meta.hopeless));
+  const keyless = meta.keyless == null ? 0 : Math.max(0, toCount(meta.keyless));
+  const linked = meta.linked == null ? null : Math.max(0, toCount(meta.linked));
+  const unlinked = meta.unlinked == null ? 0 : Math.max(0, toCount(meta.unlinked));
   const pending = Math.max(0, resolvable - resolved);
   const running = meta.running === true;
   // Nothing left in the resolvable pool: no badge, whatever the raw total is
@@ -155,15 +161,25 @@ export function metadataBadge(meta) {
   const hopelessNote = hopeless > 0
     ? ` Ещё ${hopeless} ${hopeless === 1 ? 'книга' : 'книг'} без метаданных у провайдеров — в знаменатель не входят.`
     : '';
+  const keylessNote = keyless > 0
+    ? ` ${keyless} ${keyless === 1 ? 'книга' : 'книг'} без ключа привязки (в знаменатель не входят).`
+    : '';
+  const unlinkedNote = unlinked > 0
+    ? ` Всего без привязки к метаданным: ${unlinked} ${unlinked === 1 ? 'книга' : 'книг'}.`
+    : '';
+  const linkedNote = linked != null ? ` Из них ${linked} с привязкой к провайдеру.` : '';
   const next = running
     ? ' Метадата догружается прямо сейчас — цифра обновится сама.'
-    : ' Следующая порция — при следующей загрузке файла LiveLib.';
+    : ' Следующая порция — по расписанию (kinoboxd-resolve-books).';
   return {
     percent,
     resolved,
     total,
     resolvable,
     hopeless,
+    keyless,
+    linked,
+    unlinked,
     pending,
     running,
     done: running ? false : pending === 0,
@@ -172,7 +188,7 @@ export function metadataBadge(meta) {
     hint:
       `${pending} ${pluralBooks(pending)} метадату ` +
       `(${resolved} из ${resolvable} резолвимых уже с жанрами/сериями/годом).` +
-      `${hopelessNote}${budgetNote}${next}`,
+      `${linkedNote}${hopelessNote}${keylessNote}${unlinkedNote}${budgetNote}${next}`,
   };
 }
 

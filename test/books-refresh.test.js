@@ -342,8 +342,27 @@ test('metadata badge view model: hidden at 100%, running suffix, budget hint', a
   });
   assert.equal(idle.text, 'Метадата: 42%');
   assert.equal(idle.running, false);
-  assert.match(idle.hint, /Следующая порция — при следующей загрузке файла LiveLib/);
+  assert.match(idle.hint, /Следующая порция — по расписанию \(kinoboxd-resolve-books\)/);
   assert.doesNotMatch(idle.hint, /Литрес-бюджет/);
+
+  // The honest split: a file row with genres but no link is `unlinked`, not
+  // `resolved`; the hint names the provider-linked count and the raw tail.
+  const split = metadataBadge({
+    resolved: 422,
+    total: 877,
+    linked: 422,
+    withDetails: 422,
+    unlinked: 455,
+    resolvable: 877,
+    hopeless: 0,
+    keyless: 0,
+    percent: 48,
+    running: false,
+  });
+  assert.equal(split.pending, 455);
+  assert.match(split.hint, /422 из 877 резолвимых/);
+  assert.match(split.hint, /422 с привязкой к провайдеру/);
+  assert.match(split.hint, /Всего без привязки к метаданным: 455/);
 
   // 100% / empty / legacy payloads hide the badge entirely.
   assert.equal(metadataBadge({ resolved: 132, total: 132, percent: 100, running: false }), null);

@@ -502,6 +502,12 @@ function normalizeBooks(raw) {
     ? {
         resolved: Math.max(0, toNum(metadataRaw.resolved)),
         total: Math.max(0, toNum(metadataRaw.total)),
+        linked: Math.max(0, toNum(metadataRaw.linked)),
+        withDetails: Math.max(0, toNum(metadataRaw.withDetails)),
+        unlinked: Math.max(0, toNum(metadataRaw.unlinked)),
+        resolvable: Math.max(0, toNum(metadataRaw.resolvable)),
+        hopeless: Math.max(0, toNum(metadataRaw.hopeless)),
+        keyless: Math.max(0, toNum(metadataRaw.keyless)),
         percent: Math.max(0, Math.min(100, Math.round(toNum(metadataRaw.percent)))),
         running: metadataRaw.running === true,
         budgetRemaining: numOrNull(metadataRaw.budgetRemaining),
