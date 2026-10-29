@@ -464,6 +464,31 @@ function normalizeBooks(raw) {
     .filter((item) => item && item.workId)
     .sort((a, b) => b.date.localeCompare(a.date));
 
+  // «Читаю сейчас»: no finish date by design. The card carries only the start
+  // date when the source knows it; the strip renders a badge instead of a date.
+  const recentlyReading = arr(source.recentlyReading)
+    .map((item) => {
+      const workId = text(item && item.workId);
+      if (!workId) return null;
+      const entry = booksIndex[workId];
+      const rawDate = text(item && (item.date || item.startedAt));
+      const date = rawDate.slice(0, 10);
+      const knownDate = /^\d{4}-\d{2}(?:-\d{2})?$/.test(date) ? date : null;
+      return {
+        date: knownDate,
+        precision: knownDate
+          ? text(item && item.precision) || (knownDate.length === 10 ? 'day' : 'month')
+          : null,
+        workId,
+        source: text(item && item.source).toLowerCase(),
+        title: firstString(item && item.title, entry && entry.title),
+        authors: arr(item && item.authors).map((name) => text(name)).filter(Boolean),
+        coverUrl: firstString(item && item.coverUrl, entry && entry.coverUrl),
+        reading: true,
+      };
+    })
+    .filter(Boolean);
+
   const ratings = {
     merged: normalizeRatingList(ratingsRaw.merged),
   };
@@ -506,6 +531,7 @@ function normalizeBooks(raw) {
     bookCount: Math.max(0, toNum(summaryRaw.bookCount)),
     eventCount: Math.max(0, toNum(summaryRaw.eventCount ?? summaryRaw.readCount)),
     finishedCount: Math.max(0, toNum(summaryRaw.finishedCount)),
+    readingNowCount: Math.max(0, toNum(summaryRaw.readingNowCount)),
     reReadCount: Math.max(0, toNum(summaryRaw.reReadCount)),
     undatedEventCount: Math.max(0, toNum(summaryRaw.undatedEventCount)),
     monthOnlyEventCount: Math.max(0, toNum(summaryRaw.monthOnlyEventCount)),
@@ -580,6 +606,7 @@ function normalizeBooks(raw) {
     readDays,
     streaks: normalizeStreaks(source.streaks, readDays),
     recentlyFinished,
+    recentlyReading,
     booksIndex,
     hasMangaField,
   };
@@ -2273,6 +2300,11 @@ function renderHead(data) {
     const reReads = data.summary.reReadCount > 0
       ? `, в том числе ${fmtInt(data.summary.reReadCount)} ${plural(data.summary.reReadCount, ['перечитка', 'перечитки', 'перечитываний'])}`
       : '';
+    // «Читаю сейчас» is shelf state, not a finished read: a separate sentence,
+    // never added to bookCount/eventCount.
+    const readingNow = data.summary.readingNowCount > 0
+      ? ` Сейчас читает ${fmtInt(data.summary.readingNowCount)} ${plural(data.summary.readingNowCount, ['книгу', 'книги', 'книг'])} (в статистику прочитанного не входят).`
+      : '';
     const scopeNote = state.profile
       ? `Профиль «${state.profile.label}»: ${profileSummary(state.profile)}.`
       : '';
@@ -2299,7 +2331,7 @@ function renderHead(data) {
       ? `${scopeNote} Оценки и даты — только ${scoped.map(sourceLabel).join('')}${chain}.${undated}`
       : `${scopeNote} Подключите источник, чтобы увидеть оценки, жанры и календарь.`;
     sub.textContent = parts.length
-      ? `${parts.join(' · ')}${reReads}. ${sourceNote}`
+      ? `${parts.join(' · ')}${reReads}.${readingNow} ${sourceNote}`
       : 'Подключите источник, чтобы увидеть оценки, жанры и календарь чтения.';
   }
 }
@@ -2588,35 +2620,50 @@ function renderRecent(data) {
   if (!section || !host) return;
   clear(host);
 
-  const items = data.recentlyFinished.slice(0, 15);
+  // The strip is one row of 15: «Читаю сейчас» first, then the finished books.
+  // A reading card must never be crowded out by 15 finished ones, and the
+  // strip must not disappear when the profile only has a current read.
+  const reading = data.recentlyReading.slice(0, 15);
+  const items = [...reading, ...data.recentlyFinished].slice(0, 15);
   if (!items.length) {
     section.hidden = true;
     return;
   }
   section.hidden = false;
   if (note) {
-    note.textContent = `${fmtInt(items.length)} ${plural(items.length, ['книга', 'книги', 'книг'])}`;
+    const readingShown = items.filter((item) => item.reading).length;
+    const suffix = readingShown ? ` · сейчас: ${fmtInt(readingShown)}` : '';
+    note.textContent = `${fmtInt(items.length)} ${plural(items.length, ['книга', 'книги', 'книг'])}${suffix}`;
   }
 
   for (const item of items) {
+    const isReading = item.reading === true;
     const book = recentBookItem(item);
     const title = book.title || 'Без названия';
-    const monthOnly = item.precision === 'month';
-    const dateLabel = monthOnly ? monthName(item.date) : fmtDayRu(item.date);
-    const dateShort = monthOnly ? monthShort(item.date) : fmtDayShortRu(item.date);
+    const monthOnly = !isReading && item.precision === 'month';
+    const dateLabel = isReading
+      ? 'читает сейчас'
+      : monthOnly ? monthName(item.date) : fmtDayRu(item.date);
+    const dateShort = isReading
+      ? 'сейчас'
+      : monthOnly ? monthShort(item.date) : fmtDayShortRu(item.date);
     const card = el('div', { class: 'recent-card' });
     const poster = el('div', {
       class: 'recent-poster',
       role: 'button',
       tabIndex: 0,
       'aria-label': `${title}: ссылки и действия`,
-      title: `${title}${book.year ? ` (${book.year})` : ''} · ${dateLabel}${monthOnly ? ' · точность: месяц' : ''}`,
+      title: isReading
+        ? `${title}${book.year ? ` (${book.year})` : ''} · читает сейчас`
+        : `${title}${book.year ? ` (${book.year})` : ''} · ${dateLabel}${monthOnly ? ' · точность: месяц' : ''}`,
     });
     poster.append(bookCover(book.coverUrl, title));
 
     const tags = el('span', { class: 'recent-book-tags' });
     if (book.sources.length) tags.append(sourceTags(book.sources));
-    if (item.reRead || book.reReadCount > 0) {
+    if (isReading) {
+      tags.append(el('span', { class: 'tag recent-reading', text: 'читает сейчас' }));
+    } else if (item.reRead || book.reReadCount > 0) {
       tags.append(el('span', { class: 'tag recent-rewatch', text: 'перечитано' }));
     }
     if (tags.childNodes.length) poster.append(tags);

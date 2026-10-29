@@ -360,9 +360,61 @@ function eventLinkKeyOf(event) {
   return null;
 }
 
+/**
+ * Work identity of one raw profile event. Shared by the reading-history path
+ * and by the «Читаю сейчас» path, so a currently-read book gets exactly the
+ * same `workId` it would get as a finished event.
+ */
+function profileEventIdentity(raw, source) {
+  const sourceBookId = String(raw.sourceBookId || '');
+  const linkKey = eventLinkKeyOf(raw);
+  const cachedLink = !raw.workId && source === 'livelib' && linkKey
+    ? bookCache.getLink(linkKey)
+    : null;
+  // `metadataWorkId` is the canonical (Hardcover/Литрес/GB/OL) work used
+  // for metadata only. It must never decide *how many books* the profile
+  // has: LiveLib records volumes under one work page, and the user's verdict
+  // is one export row = one book. `workId` below stays the per-record book
+  // identity; a later pass suffixes the volumes that share a work.
+  const rawWorkId = raw.workId == null ? null : String(raw.workId);
+  let metadataWorkId = rawWorkId && !rawWorkId.startsWith('ll:') ? rawWorkId : null;
+  if (!metadataWorkId && cachedLink && cachedLink.workId) {
+    metadataWorkId = String(cachedLink.workId);
+  }
+  let workId = metadataWorkId;
+  if (!workId) {
+    // File rows without a link column have no numeric id: the synthetic
+    // `file:tk:…` key is their identity (see eventLinkKeyOf).
+    const fallback = sourceBookId || linkKey || String(raw.id || 'unknown');
+    workId = `${source === 'hardcover' ? 'hc' : 'll'}:${fallback}`;
+  }
+  return { sourceBookId, linkKey, metadataWorkId, workId, resolved: Boolean(metadataWorkId) };
+}
+
+/**
+ * Is this raw event the «Читаю сейчас» shelf state?
+ *
+ * Hardcover: `statusId` wins (2 = reading), legacy profiles fall back to the
+ * label. File imports: the shelf is authoritative; a hand-edited row may only
+ * carry the `reading` status label.
+ */
+function isReadingNowEvent(raw, source) {
+  const statusId = statusIdOf(raw);
+  const label = String((raw && raw.status) || '').trim().toLowerCase();
+  if (source === 'hardcover') {
+    return statusId != null ? statusId === 2 : label === 'reading';
+  }
+  if (shelfOfEvent(raw) === 'reading') return true;
+  return !shelfOfEvent(raw) && label === 'reading';
+}
+
 /** Attach workId / reread flags to raw profile events. */
 function prepareEvents(profiles) {
   const events = [];
+  // «Читаю сейчас»: stored in the profile but never in the finished-book
+  // aggregates. Kept as a separate list so the strip and `readingNowCount` can
+  // show it without touching bookCount/years/authors/timeline.
+  const readingEvents = [];
   const statusFilter = emptyStatusFilter();
   const profileStatus = new Map();
   for (const profile of profiles) {
@@ -372,6 +424,22 @@ function prepareEvents(profiles) {
     for (const raw of profile.events) {
       if (!raw) continue;
       const legacyStatus = statusIdOf(raw) == null;
+      const readingNow = isReadingNowEvent(raw, source);
+      if (readingNow) {
+        const identity = profileEventIdentity(raw, source);
+        readingEvents.push({
+          ...raw,
+          source,
+          userKey: profile.userKey,
+          ...identity,
+          rating10: ratingOf(raw),
+          startedAt: raw.startedAt || null,
+          startMonth: raw.startMonth || null,
+          // A stale persisted row may carry a fake finish date; a book being
+          // read now is never finished, so the strip never treats it as one.
+          finishedAt: null,
+        });
+      }
       if (source === 'hardcover' && !keepHardcoverProfileEvent(raw)) {
         recordStatusExclusion(statusFilter, raw);
         profileAudit.excluded++;
@@ -379,8 +447,8 @@ function prepareEvents(profiles) {
         continue;
       }
       // File import: «Читаю сейчас» / «Хочу прочитать» are plans, not history.
-      // The events stay in the profile file (a future watchlist UI reads them)
-      // but never reach bookCount/genres/timeline.
+      // The events stay in the profile file (the strip reads `reading`, the
+      // watchlist is still future work) but never reach bookCount/genres.
       if (!keepShelfProfileEvent(raw)) {
         const shelf = shelfOfEvent(raw);
         statusFilter.excluded++;
@@ -392,37 +460,16 @@ function prepareEvents(profiles) {
       }
       if (legacyStatus && source === 'hardcover') profileAudit.missingStatusId++;
       profileAudit.kept++;
-      const sourceBookId = String(raw.sourceBookId || '');
-      const linkKey = eventLinkKeyOf(raw);
-      const cachedLink = !raw.workId && source === 'livelib' && linkKey
-        ? bookCache.getLink(linkKey)
-        : null;
-      // `metadataWorkId` is the canonical (Hardcover/Литрес/GB/OL) work used
-      // for metadata only. It must never decide *how many books* the profile
-      // has: LiveLib records volumes under one work page, and the user's verdict
-      // is one export row = one book. `workId` below stays the per-record book
-      // identity; a later pass suffixes the volumes that share a work.
-      const rawWorkId = raw.workId == null ? null : String(raw.workId);
-      let metadataWorkId = rawWorkId && !rawWorkId.startsWith('ll:') ? rawWorkId : null;
-      if (!metadataWorkId && cachedLink && cachedLink.workId) {
-        metadataWorkId = String(cachedLink.workId);
-      }
-      let workId = metadataWorkId;
-      if (!workId) {
-        // File rows without a link column have no numeric id: the synthetic
-        // `file:tk:…` key is their identity (see eventLinkKeyOf).
-        const fallback = sourceBookId || linkKey || String(raw.id || 'unknown');
-        workId = `${source === 'hardcover' ? 'hc' : 'll'}:${fallback}`;
-      }
+      const identity = profileEventIdentity(raw, source);
       events.push({
         ...raw,
         source,
         userKey: profile.userKey,
-        workId,
-        metadataWorkId,
+        workId: identity.workId,
+        metadataWorkId: identity.metadataWorkId,
         // `resolved` here means "points at a canonical (non-LiveLib-stub) work";
         // metadata may also come from a LiveLib card, which is checked later.
-        resolved: Boolean(metadataWorkId),
+        resolved: identity.resolved,
         rating10: ratingOf(raw),
         finishedAt: raw.finishedAt || null,
         reread: Boolean(raw.reread),
@@ -481,7 +528,7 @@ function prepareEvents(profiles) {
     reReadCounts.set(key, Math.max(group.length - 1, explicit - 1, 0));
   }
 
-  return { events, reReadCounts, statusFilter, profileStatus };
+  return { events, readingEvents, reReadCounts, statusFilter, profileStatus };
 }
 
 function detailsAuthors(details) {
@@ -1480,8 +1527,14 @@ function buildBooksStats(options = {}) {
     // status is not part of the reading profile (wish/reading/paused).
     hardcoverStatusExcluded: prepared.statusFilter.excluded - prepared.statusFilter.shelfExcluded,
     // File import (`livelib-backup`): «Читаю сейчас»/«Хочу прочитать» are plans,
-    // not history. They stay in the profile file for a future watchlist UI.
+    // not history. They stay in the profile file (reading feeds the strip,
+    // wishlist is future work) and never inflate the finished-book counters.
     shelfExcluded: prepared.statusFilter.shelfExcluded,
+    // «Читаю сейчас» shelf state (both sources). Separate from the reading
+    // statistics: it is shown in the strip and the dashboard counter only.
+    // One event = one book being read (file re-imports are idempotent, and
+    // Hardcover collapses the open reads of one user_book into one event).
+    readingNowCount: prepared.readingEvents.length,
     // What the profile document holds per shelf (after the filter above).
     shelves: profileShelfCounts(profile.events),
     includeMangaComics,
@@ -1863,6 +1916,41 @@ function buildBooksStats(options = {}) {
       };
     });
 
+  // «Читаю сейчас» goes FIRST in the strip (see public/js/books.js): the
+  // current book is the most useful state, and it must not be crowded out by
+  // 15 finished books. No finish date is invented; the start date is shown
+  // when the source has one, otherwise the card is undated.
+  const recentlyReading = prepared.readingEvents
+    .map((event) => {
+      const date = event.startedAt
+        ? String(event.startedAt).slice(0, 10)
+        : event.startMonth
+          ? String(event.startMonth).slice(0, 7)
+          : null;
+      return {
+        date,
+        precision: date ? (event.startedAt ? 'day' : 'month') : null,
+        startedAt: event.startedAt || null,
+        workId: event.workId,
+        title: event.title || null,
+        authors: Array.isArray(event.authors) ? event.authors : [],
+        source: event.source,
+        status: 'reading',
+        coverUrl: event.coverUrl || null,
+      };
+    })
+    .sort((a, b) => {
+      if (a.date !== b.date) {
+        if (!a.date) return 1;
+        if (!b.date) return -1;
+        return a.date < b.date ? 1 : -1;
+      }
+      const left = String(a.title || '');
+      const right = String(b.title || '');
+      return left.localeCompare(right);
+    })
+    .slice(0, 15);
+
   /* ---------------- books index ---------------- */
   const booksIndex = {};
   for (const work of works.values()) {
@@ -1947,6 +2035,7 @@ function buildBooksStats(options = {}) {
     readDays,
     streaks,
     recentlyFinished,
+    recentlyReading,
     authors: authorsList,
     series,
     publishers,

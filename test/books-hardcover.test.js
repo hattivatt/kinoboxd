@@ -120,8 +120,8 @@ test('a read user_book without reads yields one undated event', () => {
   assert.equal(events[0].rating10, null);
 });
 
-test('shelf-only statuses (want/reading/paused) produce no events', () => {
-  for (const statusId of [1, 2, 4]) {
+test('shelf-only statuses (want/paused) produce no events; reading is a plan event', () => {
+  for (const statusId of [1, 4]) {
     const row = rowByWork();
     row.status_id = statusId;
     row.user_book_reads = [];
@@ -132,6 +132,19 @@ test('shelf-only statuses (want/reading/paused) produce no events', () => {
       `status_id ${statusId} must not become a reading event`
     );
   }
+
+  // «Читаю сейчас» is persisted for the strip, never as a finished read.
+  const reading = rowByWork();
+  reading.status_id = 2;
+  reading.read_count = 0;
+  reading.user_book_reads = [{ id: 21, started_at: '2026-10-20', finished_at: null }];
+  reading.last_read_date = null;
+  const [now] = hardcover.eventsFromRow(reading);
+  assert.equal(now.id, 'hc:ub:19718676');
+  assert.equal(now.status, 'reading');
+  assert.equal(now.statusId, 2);
+  assert.equal(now.finishedAt, null);
+  assert.equal(now.startedAt, '2026-10-20');
 });
 
 test('dnf (status 5) keeps the event but never dates it', () => {
@@ -155,7 +168,7 @@ test('dnf (status 5) keeps the event but never dates it', () => {
   assert.ok(readEvents.every((event) => event.finishedAt === null));
 });
 
-test('non-finished rows are counted by status, one skip per user_book', () => {
+test('non-finished rows are counted by status, reading is stored not skipped', () => {
   const counter = hardcover.createStatusFilterCounter();
   const wish = rowByWork();
   wish.status_id = 1;
@@ -168,11 +181,17 @@ test('non-finished rows are counted by status, one skip per user_book', () => {
   hardcover.eventsFromRow(reading, counter);
   hardcover.eventsFromRow(paused, counter);
   hardcover.eventsFromRow(read, counter);
-  assert.equal(counter.skippedNonFinished, 3);
-  assert.deepEqual(counter.byStatus, { '1:wish': 1, '2:reading': 1, '4:paused': 1 });
+  assert.equal(counter.skippedNonFinished, 2);
+  assert.deepEqual(counter.byStatus, { '1:wish': 1, '4:paused': 1 });
+  // `keepStatus` is the reading-history contract; `storeStatus` additionally
+  // persists the «Читаю сейчас» shelf state for the strip.
   assert.deepEqual(hardcover.HARDCOVER_KEEP_STATUS_IDS, [3, 5]);
+  assert.deepEqual(hardcover.HARDCOVER_READING_STATUS_IDS, [2]);
   assert.equal(hardcover.keepStatus(3), true);
   assert.equal(hardcover.keepStatus(5), true);
+  assert.equal(hardcover.keepStatus(2), false);
+  assert.equal(hardcover.storeStatus(2), true);
+  assert.equal(hardcover.storeStatus(1), false);
   assert.equal(hardcover.keepStatus(1), false);
   assert.equal(hardcover.HARDCOVER_STATUS_LABELS[5], 'dnf');
 });

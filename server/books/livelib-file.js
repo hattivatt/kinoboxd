@@ -521,6 +521,15 @@ function normalizeRecord(raw) {
 
   const readDateRaw = pick(book, ['readDate', 'дата прочтения', 'dateRead', 'finishedAt']);
   const date = parseFileReadDate(readDateRaw);
+  // «Читаю сейчас» has no finish date: an export may carry the start instead.
+  // The service's default columns do not include it, so this is an optional
+  // extension (RU/EN hand-edited column, Goodreads-style value).
+  const startedRaw = pick(book, [
+    'startedAt', 'startDate', 'dateStarted', 'dateAdded', 'addedAt',
+    'дата начала', 'дата начала чтения', 'начало чтения', 'дата добавления',
+    'date started', 'date added',
+  ]);
+  const started = parseFileReadDate(startedRaw);
 
   const isbnRaw = detailValue(book, ['isbn']);
   const isbn = isbnOf(isbnRaw);
@@ -536,6 +545,13 @@ function normalizeRecord(raw) {
     finishedAt: date.finishedAt,
     readMonth: date.readMonth,
     datePrecision: date.precision,
+    startedAt: started.finishedAt,
+    startMonth: started.readMonth,
+    startPrecision: started.precision,
+    // Per-row shelf: CSV has a «Полка»/`Shelves` column, and a hand-edited
+    // JSON may carry the same token. The file-level shelf still wins; this is
+    // only the fallback when the name/form cannot tell the page.
+    shelfHint: shelfOf(pick(book, ['shelf', 'shelves', 'полка', 'status', 'статус'])) || null,
     rating5: rating5Of(ratingUserRaw),
     communityRating: numOrNull(ratingOverallRaw),
     authors,
@@ -646,6 +662,9 @@ const CSV_COLUMNS = new Map(
     ['автор', 'author'], ['авторы', 'author'], ['author', 'author'], ['authors', 'author'],
     ['дата прочтения', 'readDate'], ['date read', 'readDate'], ['readdate', 'readDate'],
     ['date read', 'readDate'], ['read date', 'readDate'],
+    ['дата начала', 'startedAt'], ['дата начала чтения', 'startedAt'],
+    ['начало чтения', 'startedAt'], ['дата добавления', 'startedAt'],
+    ['date started', 'startedAt'], ['date added', 'startedAt'], ['startedat', 'startedAt'],
     ['моя оценка', 'ratingUser'], ['my rating', 'ratingUser'], ['ratinguser', 'ratingUser'],
     ['общая оценка', 'ratingOverall'], ['average rating', 'ratingOverall'],
     ['ratingoverall', 'ratingOverall'],
@@ -700,6 +719,7 @@ function parseCsvDocument(text) {
       bookHref: record.bookHref,
       coverHref: record.coverHref,
       readDate: record.readDate,
+      startedAt: record.startedAt,
       ratingUser: record.ratingUser,
       ratingOverall: record.ratingOverall,
       isbn: record.isbn,
@@ -901,7 +921,8 @@ function buildFileEvent(book, shelf, position) {
     rating10: book.rating5 == null ? null : Math.round(book.rating5 * 2),
     status: SHELF_STATUS[shelf] || 'read',
     shelf,
-    startedAt: null,
+    startedAt: book.startedAt || null,
+    startMonth: book.startMonth || null,
     finishedAt: book.finishedAt || null,
     readMonth: book.readMonth || null,
     readDateRaw: book.readDateRaw || null,
@@ -964,6 +985,15 @@ function fillMissing(target, incoming) {
     changed++;
   } else if (!target.finishedAt && incoming.readMonth && !target.readMonth) {
     target.readMonth = incoming.readMonth;
+    changed++;
+  }
+  // A start date (reading shelf) uses the same add-only rule.
+  if (incoming.startedAt && !target.startedAt) {
+    target.startedAt = incoming.startedAt;
+    target.startMonth = null;
+    changed++;
+  } else if (!target.startedAt && incoming.startMonth && !target.startMonth) {
+    target.startMonth = incoming.startMonth;
     changed++;
   }
   if (incoming.bookStats && !target.bookStats) {

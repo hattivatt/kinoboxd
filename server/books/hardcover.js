@@ -312,8 +312,22 @@ const HARDCOVER_STATUS_LABELS = {
  */
 const HARDCOVER_KEEP_STATUS_IDS = [3, 5];
 
+/**
+ * Status 2 ("currently reading") is persisted as a *plan-state* event so the
+ * «Недавно читал» strip can show what is being read right now. It is not
+ * reading history: `statusId` travels with the event, and the stats-level
+ * filter (`HARDCOVER_PROFILE_STATUS_IDS = [3, 5]`) keeps it out of bookCount,
+ * years, authors, timeline and streaks exactly like wish/paused.
+ */
+const HARDCOVER_READING_STATUS_IDS = [2];
+
 function keepStatus(statusId) {
   return HARDCOVER_KEEP_STATUS_IDS.includes(Number(statusId));
+}
+
+/** Persist history statuses plus the "reading now" shelf state. */
+function storeStatus(statusId) {
+  return HARDCOVER_READING_STATUS_IDS.includes(Number(statusId)) || keepStatus(statusId);
 }
 
 /** Fresh skip counter for one import pass: total + per-status breakdown. */
@@ -572,8 +586,11 @@ function detailsFromBook(book, edition, fetchedAt) {
  * Convert one user_books row into profile events (one per user_book_read, plus
  * a synthetic undated event when a user_book has no reads at all).
  *
- * Rows whose `status_id` is not in HARDCOVER_KEEP_STATUS_IDS yield no events;
- * when `counter` is passed, the skip is recorded there (total + per status).
+ * Rows whose `status_id` is neither reading history (3/5) nor "reading now"
+ * (2) yield no events; when `counter` is passed, the skip is recorded there
+ * (total + per status). A "reading now" row becomes one event with
+ * `statusId: 2`, no `finishedAt` and `startedAt` from the journal, so it can
+ * drive the strip without ever entering the finished-books aggregates.
  * "Did not finish" rows keep their event (it is part of the profile) but never
  * carry `finishedAt`: an abandoned book must not enter timeline/streaks.
  */
@@ -581,11 +598,12 @@ function eventsFromRow(row, counter) {
   if (!row || !row.book) return [];
   const statusId = Number(row.status_id);
   const status = HARDCOVER_STATUS_LABELS[statusId] || 'read';
-  if (!keepStatus(statusId)) {
+  if (!storeStatus(statusId)) {
     recordSkipped(counter, statusId, status);
     return [];
   }
-  const dated = status !== 'dnf';
+  const readingNow = HARDCOVER_READING_STATUS_IDS.includes(statusId);
+  const dated = status !== 'dnf' && !readingNow;
   const finishDate = (value) => (dated ? dateOnly(value) : null);
   const rating = row.rating == null ? null : Number(row.rating);
   const bookId = String(row.book_id != null ? row.book_id : row.book.id);
@@ -621,7 +639,29 @@ function eventsFromRow(row, counter) {
     coverUrl: imageUrl(row.book.cached_image),
     firstReadDate: dateOnly(row.first_read_date),
     lastReadDate: dateOnly(row.last_read_date),
+    dateAdded: dateOnly(row.date_added),
   };
+
+  if (readingNow) {
+    // One user_book is being read once: collapse its reads into a single
+    // plan-state event instead of inventing several "current" reads. The start
+    // date is the last opened read, else the journal's date_added; if the
+    // source has neither, the event stays undated rather than faking a day.
+    const readStarts = reads
+      .map((read) => dateOnly(read.started_at))
+      .filter(Boolean)
+      .sort();
+    return [
+      {
+        ...base,
+        id: `hc:ub:${row.id}`,
+        startedAt: readStarts.length ? readStarts[readStarts.length - 1] : base.dateAdded,
+        finishedAt: null,
+        reread: false,
+        readIndex: 1,
+      },
+    ];
+  }
 
   if (reads.length === 0) {
     return [
@@ -917,6 +957,7 @@ module.exports = {
   GENRE_TAG_CATEGORY_ID,
   HARDCOVER_STATUS_LABELS,
   HARDCOVER_KEEP_STATUS_IDS,
+  HARDCOVER_READING_STATUS_IDS,
   HardcoverError,
   RateGate,
   gate,
@@ -931,6 +972,7 @@ module.exports = {
   eventsFromRow,
   createStatusFilterCounter,
   keepStatus,
+  storeStatus,
   detailsFromBook,
   authorsOf,
   genresOf,

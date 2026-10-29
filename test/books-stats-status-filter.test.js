@@ -144,6 +144,14 @@ test('stale wish/reading events are dropped from every aggregate', () => {
   assert.equal(stats.meta.statusFilter.byStatus['2:reading'], 1);
   assert.equal(stats.meta.statusFilter.byStatus['legacy:wish'], 1);
 
+  // «Читаю сейчас» is excluded from the read statistics but feeds the strip.
+  assert.equal(summary.readingNowCount, 1);
+  assert.equal(stats.recentlyReading.length, 1);
+  assert.equal(stats.recentlyReading[0].workId, 'hc:2001');
+  assert.equal(stats.recentlyReading[0].title, 'Book 2001');
+  assert.equal(stats.recentlyReading[0].status, 'reading');
+  assert.equal(stats.recentlyReading[0].date, null);
+
   // Dresden replay: 17 journal rows on disk, 9 read in the payload.
   assert.equal(stats.meta.profiles.find((profile) => profile.source === 'hardcover').events, 16);
   const dresden = stats.series.find((entry) => entry.name === 'The Dresden Files');

@@ -1772,6 +1772,24 @@ img { display: block; }
   text-transform: uppercase;
   pointer-events: none;
 }
+.recent-reading {
+  color: #00e054;
+  border-color: rgba(0, 224, 84, 0.5);
+}
+.recent-book-tags .recent-reading {
+  position: static;
+  left: auto;
+  bottom: auto;
+  padding: 2px 5px;
+  border: 1px solid rgba(0, 224, 84, 0.5);
+  border-radius: 4px;
+  background: rgba(20, 24, 28, 0.82);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
 .recent-date {
   margin-top: 6px;
   font-size: 10px;
