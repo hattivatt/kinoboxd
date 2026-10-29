@@ -307,7 +307,7 @@ test('UI texts mark edition/manual years honestly and offer the correction', () 
   // The card marks an edition year with `*` and a manual correction with `✎`.
   assert.match(booksSource, /entry\.yearSource === 'edition'\) return `\$\{entry\.year\}\*`/);
   assert.match(booksSource, /entry\.yearSource === 'manual'\) return `\$\{entry\.year\}✎`/);
-  assert.match(booksSource, /Год издания: \$\{entry\.year\} · первоиздание неизвестно/);
+  assert.match(booksSource, /Год издания: \$\{entry\.year\} · \$\{channel\} · первоиздание неизвестно/);
   // Kebab action + modal + source line + reset.
   assert.match(booksSource, /label: 'Исправить год'/);
   assert.match(booksSource, /function openYearEditModal\(book\)/);

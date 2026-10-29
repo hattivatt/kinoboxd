@@ -345,6 +345,10 @@ test('summary.yearBackfill: edition fallback leaves only the unlinked work unkno
     honestUnknown: 0,
     unlinked: 1,
     sources: { first: 1, edition: 2, manual: 0 },
+    // Both edition fallbacks came from the details document's print run.
+    editionChannels: { file: 0, details: 2 },
+    // This profile is not a file import: no export rows to inspect.
+    fileColumn: { rows: 0, withYear: 0 },
     perRun: 200,
     runsLeft: 0,
     // Nothing left in the queue: the remaining unknown is an unlinked work.
