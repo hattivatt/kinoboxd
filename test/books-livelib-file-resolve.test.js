@@ -339,10 +339,12 @@ test('payload unions chain genres/series with the file columns and keeps both so
   assert.deepEqual(work.genres, ['Science Fiction', 'Фэнтези', 'ужасы']);
   assert.deepEqual(work.series.slice().sort(), ['Southern Reach', 'Южный предел']);
   // File-only fields are not wiped by a details doc that does not know them.
-  // The chart year is the *first publication* and no provider claims one here
-  // (HC publicationYear is null), so the work is honestly year-less; the file's
-  // print-run year survives as `editionYear`, not as a first edition.
-  assert.equal(work.year, null);
+  // The chart prefers a first publication, but no provider claims one here
+  // (HC publicationYear is null); the file's print-run year is the honest
+  // fallback and is marked as an edition year, not a first edition.
+  assert.equal(work.year, 2018);
+  assert.equal(work.yearSource, 'edition');
+  assert.equal(work.firstPublishedYear, null);
   assert.equal(work.editionYear, 2018);
   assert.equal(work.publisher, 'Эксмо');
   assert.equal(work.pages, 320);

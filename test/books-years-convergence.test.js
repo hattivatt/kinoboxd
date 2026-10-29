@@ -302,7 +302,7 @@ function event(id) {
   };
 }
 
-test('summary.yearBackfill splits the unknown bucket into queue / honest / unlinked', async () => {
+test('summary.yearBackfill: edition fallback leaves only the unlinked work unknown', async () => {
   process.env.BOOKS_BACKFILL_LIMIT = '200';
   await seed('hc:8801', { hcWorkId: 8801, title: 'Known', firstPublishedYear: 1900 });
   await seed('hc:8802', { hcWorkId: 8802, title: 'Pending', publicationYear: 2020 });
@@ -332,17 +332,23 @@ test('summary.yearBackfill splits the unknown bucket into queue / honest / unlin
   });
 
   const stats = buildBooksStats({ profile: 'livelib-YearsProgress' });
-  assert.equal(stats.summary.yearUnknownCount, 3);
+  // 8802/8803 have no first-publication claim but do have a print-run year, so
+  // they enter the chart marked as editions. Only the unlinked 8899 stays in
+  // «год неизвестен».
+  assert.equal(stats.summary.yearUnknownCount, 1);
+  assert.equal(stats.summary.yearEditionCount, 2);
+  assert.equal(stats.summary.yearFirstCount, 1);
   assert.deepEqual(stats.summary.yearBackfill, {
-    known: 1,
-    unknown: 3,
-    pending: 1,
-    honestUnknown: 1,
+    known: 3,
+    unknown: 1,
+    pending: 0,
+    honestUnknown: 0,
     unlinked: 1,
+    sources: { first: 1, edition: 2, manual: 0 },
     perRun: 200,
-    runsLeft: 1,
-    // The queue is not empty, so «год неизвестен» is not a final verdict.
-    open: true,
+    runsLeft: 0,
+    // Nothing left in the queue: the remaining unknown is an unlinked work.
+    open: false,
   });
 });
 
@@ -366,7 +372,8 @@ test('a fully filled cache reports no queue', async () => {
   // year so only the honest-unknown and the unlinked work remain.
   await seed('hc:8802', { hcWorkId: 8802, title: 'Pending', firstPublishedYear: 1910 });
   const after = buildBooksStats({ profile: 'livelib-YearsProgress' });
-  assert.equal(after.summary.yearBackfill.known, 2);
+  // 8801 first publication, 8802 first publication, 8803 edition fallback.
+  assert.equal(after.summary.yearBackfill.known, 3);
   assert.equal(after.summary.yearBackfill.pending, 0);
   assert.equal(after.summary.yearBackfill.runsLeft, 0);
   assert.equal(after.summary.yearBackfill.open, false);

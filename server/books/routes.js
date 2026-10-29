@@ -562,14 +562,14 @@ router.get('/import/status', (req, res, next) => {
  * removes. `?profiles=` is NOT an alias any more: it is an unexpected
  * parameter (400 `unexpected_parameter`).
  */
-function resolveProfileScopeOrThrow(req) {
-  const scope = resolveProfileScope(req.query.profile);
+function resolveProfileTokenOrThrow(token, label = 'Profile') {
+  const scope = resolveProfileScope(token);
   const available = scope.availableProfileKeys;
   const availableText = available.length ? available.join(', ') : '(none)';
   if (!scope.explicit || scope.empty) {
     throw new HttpError(
       400,
-      'Query parameter "profile" is required: exactly one source-userKey token ' +
+      `${label} is required: exactly one source-userKey token ` +
         `(${PROFILE_SOURCES.join('|')}). Available: ${availableText}.`,
       'profile_required'
     );
@@ -577,7 +577,7 @@ function resolveProfileScopeOrThrow(req) {
   if (scope.multi) {
     throw new HttpError(
       400,
-      'Query parameter "profile" accepts exactly ONE profile (source-userKey); ' +
+      `${label} accepts exactly ONE profile (source-userKey); ` +
         `a books profile is one source + one account. Available: ${availableText}.`,
       'invalid_profile'
     );
@@ -585,7 +585,7 @@ function resolveProfileScopeOrThrow(req) {
   if (scope.malformed.length > 0) {
     throw new HttpError(
       400,
-      `Query parameter "profile": expected "source-userKey" tokens ` +
+      `${label}: expected "source-userKey" tokens ` +
         `(${PROFILE_SOURCES.join('|')}), got: ${scope.malformed.join(', ')}.`,
       'invalid_profile'
     );
@@ -593,7 +593,7 @@ function resolveProfileScopeOrThrow(req) {
   if (scope.unknown.length > 0) {
     throw new HttpError(
       400,
-      `Query parameter "profile": not a cached profile: ${scope.unknown.join(', ')}. ` +
+      `${label}: not a cached profile: ${scope.unknown.join(', ')}. ` +
         `Available: ${availableText}.`,
       'unknown_profile'
     );
@@ -601,11 +601,15 @@ function resolveProfileScopeOrThrow(req) {
   if (scope.selected.length !== 1) {
     throw new HttpError(
       400,
-      `Query parameter "profile" must name one cached profile. Available: ${availableText}.`,
+      `${label} must name one cached profile. Available: ${availableText}.`,
       'invalid_profile'
     );
   }
   return scope;
+}
+
+function resolveProfileScopeOrThrow(req) {
+  return resolveProfileTokenOrThrow(req.query.profile, 'Query parameter "profile"');
 }
 
 /**
@@ -705,6 +709,95 @@ router.delete('/work/flag', async (req, res, next) => {
     }
     const removed = await bookCache.clearMangaFlag(workId);
     res.status(200).json({ workId, removed });
+  } catch (err) {
+    next(mapError(err));
+  }
+});
+
+/**
+ * POST /api/books/year-override
+ *   body: { profile: "livelib-Margaret", workId: "hc:8101", year: 1564 }
+ *
+ * Manual publication-year correction. `year: null` (or omitted) removes the
+ * override and lets the provider chain decide again. The edit is scoped to one
+ * profile (`cache-book/year-overrides/<profile>.json`) and outranks every
+ * provider source (`manual > first > edition > unknown`); it survives
+ * resolve/backfill and a re-import of the same export.
+ *
+ * Validation: `year` must be an integer in the first-publication bounds
+ * (-3000..2100, ancient works included); anything else is a 400 instead of a
+ * silently ignored value. A `workId` that is not part of the profile is also a
+ * 400 (`unknown_work`) — a typo must not create a ghost override.
+ */
+const YEAR_OVERRIDE_MIN = -3000;
+const YEAR_OVERRIDE_MAX = 2100;
+
+router.post('/year-override', async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const profileToken = typeof body.profile === 'string' ? body.profile.trim() : '';
+    if (!profileToken) {
+      throw new HttpError(400, 'Body must contain "profile".', 'profile_required');
+    }
+    const scope = resolveProfileTokenOrThrow(profileToken);
+    const selected = scope.selected[0];
+    const workId = typeof body.workId === 'string' ? body.workId.trim() : '';
+    if (!workId) {
+      throw new HttpError(400, 'Body must contain "workId".', 'work_id_required');
+    }
+
+    const remove = body.year === undefined || body.year === null;
+    if (!remove) {
+      const year = Number(body.year);
+      if (!Number.isInteger(year) || year === 0 || year < YEAR_OVERRIDE_MIN || year > YEAR_OVERRIDE_MAX) {
+        throw new HttpError(
+          400,
+          `Body field "year" must be an integer in ${YEAR_OVERRIDE_MIN}..${YEAR_OVERRIDE_MAX} ` +
+            'or null to remove the correction.',
+          'invalid_year'
+        );
+      }
+    }
+
+    if (remove) {
+      const removed = await bookCache.clearYearOverride(selected.source, selected.userKey, workId);
+      res.status(200).json({
+        profile: `${selected.source}-${selected.userKey}`,
+        workId,
+        year: null,
+        removed,
+      });
+      return;
+    }
+
+    // The work must exist in this profile's payload; otherwise the correction
+    // would be invisible forever.
+    const stats = buildBooksStats({ profileScope: scope });
+    const known = Boolean(stats.booksIndex[workId]) ||
+      Object.values(stats.booksIndex).some(
+        (entry) => Array.isArray(entry.mergedWorkIds) && entry.mergedWorkIds.includes(workId)
+      );
+    if (!known) {
+      throw new HttpError(
+        400,
+        `Work "${workId}" is not part of profile ${selected.source}-${selected.userKey}.`,
+        'unknown_work'
+      );
+    }
+
+    const entry = await bookCache.setYearOverride(
+      selected.source,
+      selected.userKey,
+      workId,
+      Number(body.year)
+    );
+    res.status(200).json({
+      profile: `${selected.source}-${selected.userKey}`,
+      workId,
+      year: entry.year,
+      updatedAt: entry.updatedAt,
+      removed: false,
+    });
   } catch (err) {
     next(mapError(err));
   }

@@ -331,7 +331,7 @@ test('classics leave the modern decades for their honest centuries', async () =>
   assert.deepEqual(stats.years.map((entry) => entry.year), [1564, 1608]);
 });
 
-test('no first-publication claim means «год неизвестен», not the print run year', async () => {
+test('no first-publication claim falls back to the print-run year with an honest mark', async () => {
   await bookCache.saveDetails(8201, {
     schemaVersion: 2,
     hcWorkId: 8201,
@@ -360,16 +360,18 @@ test('no first-publication claim means «год неизвестен», not the 
 
   const stats = buildBooksStats({ profile: 'livelib-FirstYearUnknown' });
   const work = stats.booksIndex['hc:8201'];
-  assert.equal(work.year, null);
+  // No provider knows the work's first publication, so the edition year is an
+  // honest fallback — never labelled as a first edition.
+  assert.equal(work.year, 2025);
+  assert.equal(work.yearSource, 'edition');
+  assert.equal(work.firstPublishedYear, null);
   assert.equal(work.editionYear, 2025);
-  assert.deepEqual(work.year, null);
-  assert.deepEqual(stats.years, []);
-  assert.deepEqual(stats.decades.map((entry) => [entry.decade, entry.label, entry.count]), [
-    [null, 'год неизвестен', 1],
-  ]);
-  assert.equal(stats.decades[0].unknown, true);
-  assert.equal(stats.summary.yearUnknownCount, 1);
-  assert.equal(stats.summary.yearsSpan, null);
+  assert.deepEqual(stats.years.map((entry) => entry.year), [2025]);
+  assert.deepEqual(stats.decades.map((entry) => [entry.decade, entry.count]), [[2020, 1]]);
+  assert.equal(stats.decades[0].editionCount, 1);
+  assert.equal(stats.summary.yearUnknownCount, 0);
+  assert.equal(stats.summary.yearEditionCount, 1);
+  assert.deepEqual(stats.summary.yearsSpan, { from: 2025, to: 2025 });
 });
 
 test('the unknown bucket sits after every real decade and sane bounds are enforced', async () => {
@@ -386,7 +388,9 @@ test('the unknown bucket sits after every real decade and sane bounds are enforc
     hcWorkId: 8302,
     title: 'Будущая книга',
     authors: [{ name: 'Автор' }],
-    publicationYear: 2020,
+    // No edition year either: an insane first-publication claim must not invent
+    // a year, so the work stays in «год неизвестен».
+    publicationYear: null,
     // Outside saneFirstYear's -3000..2100 window → treated as unknown.
     firstPublishedYear: 3200,
   });

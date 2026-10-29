@@ -795,17 +795,16 @@ function filterDetailsSeries(details, fileSeriesNames) {
 }
 
 /**
- * First publication year of the *work* — and only that (user verdict,
- * 28.10.2026: «в графах годов/десятилетий — год первого издания»).
+ * First publication year of the *work* — when a provider actually knows it.
  *
- * `details.firstPublishedYear` is the single source of truth: Hardcover
- * `book.release_year`, Open Library `first_publish_year` (only when the record
- * has more than one edition), Литрес «дата написания». The edition year of the
- * print run in hand is deliberately NOT a fallback: a 2026 Эксмо reissue of
- * Rabelais is not «2026», and pretending otherwise is the bug this replaces.
- * A work whose providers know nothing lands in the honest «год неизвестен»
- * bucket (`decades[]` with `unknown: true`), while the work itself still
- * carries `editionYear` for the card/tooltip.
+ * `details.firstPublishedYear` is the single source of truth for the work's
+ * first publication: Hardcover `book.release_year`, Open Library
+ * `first_publish_year` (only when the record has more than one edition),
+ * Литрес «дата написания». It is preferred over an edition year, but since the
+ * 29.10.2026 verdict it is no longer the only source: `resolveWorkYear` falls
+ * back to the print run (`editionYear`) with an honest `yearSource: 'edition'`
+ * mark, and a manual correction outranks both. A work with neither lands in
+ * the honest «год неизвестен» bucket (`decades[]` with `unknown: true`).
  *
  * Ancient years are valid here (Сунь Цзы, ~V century BC).
  */
@@ -822,7 +821,113 @@ function editionYearOf(details, displayEvent, fileMeta) {
   );
 }
 
-function workMetadata(workId, events) {
+/**
+ * Publication year of a work, with the user's priority (verdict 29.10.2026):
+ *
+ *   manual > firstPublishedYear > editionYear > unknown
+ *
+ * `firstPublishedYear` is still the preferred bibliographic claim (Hardcover
+ * work release, Open Library `first_publish_year`, Литрес «дата написания»).
+ * When no provider knows the work's first publication, the edition in hand is
+ * an honest fallback: the chart shows the book under its print year and marks
+ * it as such (`yearSource: 'edition'`) instead of hiding it in «год неизвестен».
+ * The edition year is NEVER labelled as a first publication in the payload/UI.
+ *
+ * A manual correction is the user's word and outranks every provider. It lives
+ * in `cache-book/year-overrides/<profile>.json` (book-cache.js) and survives
+ * resolve/backfill/file re-import; `yearOverride` is echoed so the UI can offer
+ * "reset".
+ */
+function saneManualYear(value) {
+  const year = saneFirstYear(value);
+  // There is no year zero; a 0 is a typo, not an ancient date.
+  return year === 0 ? null : year;
+}
+
+function resolveWorkYear(details, displayEvent, fileMeta, override) {
+  const firstPublishedYear = firstPublishedYearOf(details);
+  const editionYear = editionYearOf(details, displayEvent, fileMeta);
+  const manualYear = override ? saneManualYear(override.year) : null;
+  const firstPublishedYearSource =
+    details && details.firstPublishedYearSource ? String(details.firstPublishedYearSource) : null;
+  if (manualYear != null) {
+    return {
+      year: manualYear,
+      yearSource: 'manual',
+      yearOverride: manualYear,
+      firstPublishedYear,
+      firstPublishedYearSource,
+      editionYear,
+    };
+  }
+  if (firstPublishedYear != null) {
+    return {
+      year: firstPublishedYear,
+      yearSource: 'first',
+      yearOverride: null,
+      firstPublishedYear,
+      firstPublishedYearSource,
+      editionYear,
+    };
+  }
+  if (editionYear != null) {
+    return {
+      year: editionYear,
+      yearSource: 'edition',
+      yearOverride: null,
+      firstPublishedYear: null,
+      firstPublishedYearSource,
+      editionYear,
+    };
+  }
+  return {
+    year: null,
+    yearSource: null,
+    yearOverride: null,
+    firstPublishedYear: null,
+    firstPublishedYearSource,
+    editionYear: null,
+  };
+}
+
+/**
+ * Stable keys a manual year override may be stored under. The client stores the
+ * `workId` it saw; after a resolve that id can change
+ * (`ll:file:tk:<sha1>` / `ll:<bookId>` -> `hc:<id>`). The event's own identity
+ * is stable, so the override follows the work across the metadata chain.
+ */
+function yearOverrideKeysOf(workId, metadataWorkId, events) {
+  const keys = [];
+  const push = (value) => {
+    const key = value == null ? '' : String(value);
+    if (key && !keys.includes(key)) keys.push(key);
+  };
+  push(workId);
+  push(metadataWorkId);
+  for (const event of events || []) {
+    if (!event) continue;
+    if (event.sourceBookId) {
+      push(`${event.source === 'hardcover' ? 'hc' : 'll'}:${event.sourceBookId}`);
+    }
+    const linkKey = eventLinkKeyOf(event);
+    if (linkKey) {
+      push(linkKey);
+      push(`ll:${linkKey}`);
+    }
+  }
+  return keys;
+}
+
+function findYearOverride(overrides, keys) {
+  if (!overrides || typeof overrides !== 'object') return null;
+  for (const key of keys) {
+    const entry = overrides[key];
+    if (entry && saneManualYear(entry.year) != null) return entry;
+  }
+  return null;
+}
+
+function workMetadata(workId, events, options = {}) {
   const hcEvents = events.filter((event) => event.source === 'hardcover');
   const llEvents = events.filter((event) => event.source === 'livelib');
   // Volumes of one work share `metadataWorkId`; the book identity `workId` may
@@ -867,11 +972,13 @@ function workMetadata(workId, events) {
     (displayEvent && displayEvent.edition && displayEvent.edition.publisher) ||
     fileMeta.publisher ||
     null;
-  const rawYear = firstPublishedYearOf(details);
-  const year = saneFirstYear(rawYear);
-  // The print run in hand, kept apart from the chart year (see
-  // `firstPublishedYearOf`): the card shows it, the decade chart does not.
-  const editionYear = editionYearOf(details, displayEvent, fileMeta);
+  const overrideKeys = yearOverrideKeysOf(workId, metadataWorkId, events);
+  const yearOverride = findYearOverride(options.yearOverrides, overrideKeys);
+  const yearInfo = resolveWorkYear(details, displayEvent, fileMeta, yearOverride);
+  const year = yearInfo.year;
+  const editionYear = yearInfo.editionYear;
+  const firstPublishedYear = yearInfo.firstPublishedYear;
+  const firstPublishedYearSource = yearInfo.firstPublishedYearSource;
   const pages =
     details && details.pages != null && Number.isFinite(Number(details.pages)) && Number(details.pages) > 0
       ? Number(details.pages)
@@ -949,6 +1056,10 @@ function workMetadata(workId, events) {
     seriesTagsFiltered: seriesFilter.removed,
     publisher,
     year: year == null ? null : Number(year),
+    yearSource: yearInfo.yearSource,
+    yearOverride: yearInfo.yearOverride,
+    firstPublishedYear,
+    firstPublishedYearSource,
     editionYear,
     pages,
     coverUrl,
@@ -1062,6 +1173,13 @@ function mergeWorkGroup(list) {
     ? false
     : null;
   const finishedDates = ordered.map((work) => work.finishedDate).filter(Boolean).sort();
+  // Year priority across merged ids: the user's correction, then the work's
+  // first publication, then an edition fallback. A later provider claim must
+  // not override an older honest one.
+  const yearRank = { manual: 3, first: 2, edition: 1 };
+  const yearWork = ordered
+    .filter((work) => Number.isFinite(work.year))
+    .sort((a, b) => (yearRank[b.yearSource] || 0) - (yearRank[a.yearSource] || 0))[0] || null;
 
   return {
     ...primary,
@@ -1073,7 +1191,11 @@ function mergeWorkGroup(list) {
     genres,
     series,
     publisher: pick('publisher'),
-    year: pick('year'),
+    year: yearWork ? yearWork.year : null,
+    yearSource: yearWork ? yearWork.yearSource : null,
+    yearOverride: yearWork ? yearWork.yearOverride : null,
+    firstPublishedYear: yearWork ? yearWork.firstPublishedYear : null,
+    firstPublishedYearSource: yearWork ? yearWork.firstPublishedYearSource : null,
     editionYear: pick('editionYear'),
     pages: pick('pages'),
     coverUrl: pick('coverUrl'),
@@ -1330,6 +1452,7 @@ function buildBooksStats(options = {}) {
   }
   const { connected, selected, profiles } = selection;
   const profile = profiles[0];
+  const yearOverrides = bookCache.getYearOverrides(profile.source, profile.userKey);
   const prepared = prepareEvents(profiles);
   const reReadCounts = prepared.reReadCounts;
   let events = prepared.events;
@@ -1340,7 +1463,9 @@ function buildBooksStats(options = {}) {
     byWork.get(event.workId).push(event);
   }
   let works = new Map();
-  for (const [workId, list] of byWork) works.set(workId, workMetadata(workId, list));
+  for (const [workId, list] of byWork) {
+    works.set(workId, workMetadata(workId, list, { yearOverrides }));
+  }
 
   // Resolve-cache keys of every work, for the metadata-coverage denominator.
   // A work is "hopeless" only when the last resolve pass asked a provider
@@ -1461,6 +1586,13 @@ function buildBooksStats(options = {}) {
     .map((work) => work.year)
     .filter((year) => Number.isFinite(year) && year >= 1000)
     .sort((a, b) => a - b);
+  const yearSourceCounts = { first: 0, edition: 0, manual: 0 };
+  for (const work of works.values()) {
+    if (!Number.isFinite(work.year)) continue;
+    if (work.yearSource && yearSourceCounts[work.yearSource] != null) {
+      yearSourceCounts[work.yearSource]++;
+    }
+  }
   const authorSet = new Set();
   for (const work of works.values()) for (const name of work.authors) authorSet.add(name);
   const seriesSet = new Set();
@@ -1557,8 +1689,15 @@ function buildBooksStats(options = {}) {
     ancientBookCount: [...works.values()].filter(
       (work) => Number.isFinite(work.year) && work.year < 1000
     ).length,
-    // Works whose first publication no provider knows: they are in the
-    // «год неизвестен» bucket, not in a printed-in-2026 one.
+    // Works whose publication year comes from a print run because no provider
+    // knows the first publication (honest `yearSource: 'edition'`), plus the
+    // user's manual corrections. The UI marks them and never calls an edition
+    // year a first publication.
+    yearFirstCount: yearSourceCounts.first,
+    yearEditionCount: yearSourceCounts.edition,
+    yearManualCount: yearSourceCounts.manual,
+    // Works with no year at all: no first publication, no edition year, no
+    // manual correction. They are the only ones in «год неизвестен».
     yearUnknownCount: [...works.values()].filter((work) => !Number.isFinite(work.year)).length,
     yearsSpan: years.length ? { from: years[0], to: years[years.length - 1] } : null,
   };
@@ -1672,9 +1811,13 @@ function buildBooksStats(options = {}) {
   let yearsPending = 0;
   let yearsHonest = 0;
   let yearsUnlinked = 0;
+  const yearsBySource = { first: 0, edition: 0, manual: 0 };
   for (const work of works.values()) {
     if (Number.isFinite(work.year)) {
       yearsKnown++;
+      if (work.yearSource && yearsBySource[work.yearSource] != null) {
+        yearsBySource[work.yearSource]++;
+      }
       continue;
     }
     const details = work.details;
@@ -1699,6 +1842,9 @@ function buildBooksStats(options = {}) {
     pending: yearsPending,
     honestUnknown: yearsHonest,
     unlinked: yearsUnlinked,
+    // How the known years were obtained: an edition fallback is honest but not
+    // a first publication, so the UI can say how many books are marked.
+    sources: yearsBySource,
     perRun: yearsPerRun,
     runsLeft: yearsPending > 0 ? Math.ceil(yearsPending / yearsPerRun) : 0,
     // Queue still open: «Год неизвестен» is a snapshot of the backfill, not a
@@ -1729,9 +1875,21 @@ function buildBooksStats(options = {}) {
 
   /* ---------------- works-based widgets ---------------- */
   function pushWorks(map, key, payload, work) {
-    if (!map.has(key)) map.set(key, { ...payload, works: [], sum: 0, rated: 0, count: 0 });
+    if (!map.has(key)) {
+      map.set(key, {
+        ...payload,
+        works: [],
+        sum: 0,
+        rated: 0,
+        count: 0,
+        yearSources: { first: 0, edition: 0, manual: 0 },
+      });
+    }
     const entry = map.get(key);
     entry.count++;
+    if (work.yearSource && entry.yearSources[work.yearSource] != null) {
+      entry.yearSources[work.yearSource]++;
+    }
     if (work.rating10 != null) {
       entry.sum += work.rating10;
       entry.rated++;
@@ -1741,6 +1899,7 @@ function buildBooksStats(options = {}) {
       title: work.title,
       rating: work.rating10,
       year: work.year,
+      yearSource: work.yearSource || null,
     });
     return entry;
   }
@@ -1789,6 +1948,9 @@ function buildBooksStats(options = {}) {
       ...(entry.ancient ? { ancient: true } : {}),
       ...(entry.unknown ? { unknown: true } : {}),
       count: entry.count,
+      firstCount: entry.yearSources.first,
+      editionCount: entry.yearSources.edition,
+      manualCount: entry.yearSources.manual,
       avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
     }))
     // Ancient first, real decades in order, «год неизвестен» last.
@@ -1801,6 +1963,9 @@ function buildBooksStats(options = {}) {
     .map((entry) => ({
       year: entry.year,
       count: entry.count,
+      firstCount: entry.yearSources.first,
+      editionCount: entry.yearSources.edition,
+      manualCount: entry.yearSources.manual,
       avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
     }))
     .sort((a, b) => a.year - b.year);
@@ -2000,6 +2165,10 @@ function buildBooksStats(options = {}) {
       publisher: work.publisher,
       pages: work.pages,
       year: work.year,
+      yearSource: work.yearSource || null,
+      yearOverride: work.yearOverride,
+      firstPublishedYear: work.firstPublishedYear,
+      firstPublishedYearSource: work.firstPublishedYearSource || null,
       editionYear: work.editionYear,
       coverUrl: work.coverUrl,
       isbn13: work.isbn13,
@@ -2209,6 +2378,8 @@ module.exports = {
   READ_SHELF_LABELS,
   prepareEvents,
   workMetadata,
+  resolveWorkYear,
+  yearOverrideKeysOf,
   canonicalKeyOf,
   dedupeWorks,
   mergeWorkGroup,

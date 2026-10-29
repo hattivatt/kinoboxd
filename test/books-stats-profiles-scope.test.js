@@ -189,15 +189,17 @@ test('?profile= scopes every widget to exactly one profile document', async () =
   assert.deepEqual(alpha.series.map((entry) => entry.name), ['AlphaSaga']);
   assert.deepEqual(alpha.publishers.map((entry) => entry.name), ['AlphaPub']);
   // The chart year is the *work's first publication*: hc:900 knows 2001, while
-  // ll:102 has only a 2010 print run and no first-publication claim, so it is
-  // counted in the honest «год неизвестен» bucket (decade null) — never as a
-  // 2010 first edition.
-  assert.deepEqual(alpha.decades.map((entry) => entry.decade), [2000, null]);
+  // ll:102 has only a 2010 print run and no first-publication claim. Since the
+  // 29.10.2026 verdict the print-run year is an honest fallback marked
+  // `yearSource: 'edition'` (never a first edition), so it is a 2010 bucket.
+  assert.deepEqual(alpha.decades.map((entry) => entry.decade), [2000, 2010]);
   assert.deepEqual(alpha.decades.map((entry) => entry.count), [1, 1]);
-  assert.equal(alpha.decades[1].unknown, true);
-  assert.equal(alpha.summary.yearUnknownCount, 1);
-  assert.deepEqual(alpha.years.map((entry) => entry.year), [2001]);
+  assert.equal(alpha.decades[1].unknown, undefined);
+  assert.equal(alpha.decades[1].editionCount, 1);
+  assert.equal(alpha.summary.yearUnknownCount, 0);
+  assert.deepEqual(alpha.years.map((entry) => entry.year), [2001, 2010]);
   assert.equal(alpha.booksIndex['ll:102'].editionYear, 2010);
+  assert.equal(alpha.booksIndex['ll:102'].yearSource, 'edition');
   assert.equal(alpha.summary.pagesTotal, 100);
   assert.equal(alpha.summary.authorsCount, 1);
   assert.deepEqual(alpha.authors.map((entry) => entry.name), ['Ann Alpha']);

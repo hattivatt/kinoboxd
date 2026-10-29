@@ -20,6 +20,7 @@
  *     index.json                         matching keys -> workId | false
  *     links.json                         workId -> per-site links
  *     flags/book-flags.json              workId -> manual manga/comics override
+ *     year-overrides/{source}-{userKey}.json  workId -> manual publication year
  *     match-log.jsonl                    audit of broad matches (append-only)
  *     imports/{source}-{userKey}-{ts}.json  raw import payload (debug)
  *     resolve-state/{source}-{userKey}.json last completed metadata pass
@@ -43,13 +44,22 @@ const LINKS_DIR = path.join(BOOK_CACHE_DIR, 'links');
 const IMPORTS_DIR = path.join(BOOK_CACHE_DIR, 'imports');
 const RESOLVE_STATE_DIR = path.join(BOOK_CACHE_DIR, 'resolve-state');
 const FLAGS_DIR = path.join(BOOK_CACHE_DIR, 'flags');
+const YEAR_OVERRIDES_DIR = path.join(BOOK_CACHE_DIR, 'year-overrides');
 const INDEX_PATH = path.join(BOOK_CACHE_DIR, 'index.json');
 const LINKS_JSON_PATH = path.join(BOOK_CACHE_DIR, 'links.json');
 const FLAGS_PATH = path.join(FLAGS_DIR, 'book-flags.json');
 const MATCH_LOG_PATH = path.join(BOOK_CACHE_DIR, 'match-log.jsonl');
 const AUTHORS_PATH = path.join(BOOK_CACHE_DIR, 'authors.json');
 
-for (const dir of [PROFILES_DIR, DETAILS_DIR, LINKS_DIR, IMPORTS_DIR, RESOLVE_STATE_DIR, FLAGS_DIR]) {
+for (const dir of [
+  PROFILES_DIR,
+  DETAILS_DIR,
+  LINKS_DIR,
+  IMPORTS_DIR,
+  RESOLVE_STATE_DIR,
+  FLAGS_DIR,
+  YEAR_OVERRIDES_DIR,
+]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -584,6 +594,149 @@ function clearMangaFlag(workId) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Manual publication-year overrides                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Durable manual year of a work, scoped to ONE profile:
+ *
+ *   cache-book/year-overrides/{source}-{userKey}.json
+ *   {
+ *     schemaVersion: 1,
+ *     profile: { source, userKey },
+ *     overrides: { "<workId>": { year: 1564, updatedAt: "2026-10-29T…" } }
+ *   }
+ *
+ * Why a separate file per profile instead of `details/{workId}.json`: the
+ * details document belongs to the shared metadata chain and is rewritten by
+ * resolve/backfill; the user's correction must survive those passes and the
+ * file re-import of the same export. Same freshness contract as flags:
+ * fingerprint revalidation on every read (an external edit is visible without a
+ * restart), atomic writes, serialised per process.
+ *
+ * The key is the work identity the client saw (`booksIndex[workId]`). A work
+ * that resolves later changes its `workId` (`ll:file:tk:<sha1>` ->
+ * `hc:123`); stats.js matches the override against the work's current id AND
+ * its stable event keys (`ll:<sourceBookId>`, `ll:file:tk:<sha1>`), so the
+ * correction follows the work across a resolve. For `ll:file:tk:` rows the
+ * hash is sha1(normalized title|first-author surname) and is stable between
+ * re-imports of the same rows (livelib-file.js `titleHashOf`).
+ */
+const YEAR_MIN = -3000;
+const YEAR_MAX = 2100;
+const yearOverridesMemory = new Map(); // `${source}:${userKey}` -> {data, path, fingerprint}
+let yearOverridesSaving = Promise.resolve();
+
+function yearOverridesPath(source, userKey) {
+  return path.join(YEAR_OVERRIDES_DIR, `${safeKey(source)}-${safeKey(userKey)}.json`);
+}
+
+function sanitizeYearOverrides(raw, source, userKey) {
+  const data = {
+    schemaVersion: 1,
+    profile: { source: String(source), userKey: String(userKey) },
+    overrides: {},
+  };
+  if (!isPlainObject(raw) || !isPlainObject(raw.overrides)) return data;
+  for (const [workId, entry] of Object.entries(raw.overrides)) {
+    if (!workId || !isPlainObject(entry)) continue;
+    const year = Number(entry.year);
+    if (!Number.isInteger(year) || year === 0 || year < YEAR_MIN || year > YEAR_MAX) continue;
+    data.overrides[workId] = {
+      year,
+      updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : null,
+    };
+  }
+  return data;
+}
+
+function refreshYearOverridesIfChanged(source, userKey) {
+  const key = `${source}:${userKey}`;
+  const filePath = yearOverridesPath(source, userKey);
+  const current = fingerprintOf(filePath);
+  const cached = yearOverridesMemory.get(key);
+  if (cached && cached.fingerprint === current) return false;
+  if (current === null) {
+    yearOverridesMemory.delete(key);
+    return true;
+  }
+  const found = readJsonWithFingerprint(filePath);
+  const data = sanitizeYearOverrides(found && found.data, source, userKey);
+  yearOverridesMemory.set(key, { data, path: filePath, fingerprint: current });
+  return true;
+}
+
+/** Whole override map of one profile (live copy; callers must not mutate). */
+function getYearOverrides(source, userKey) {
+  refreshYearOverridesIfChanged(source, userKey);
+  const cached = yearOverridesMemory.get(`${source}:${userKey}`);
+  return cached ? cached.data.overrides : {};
+}
+
+/** One override entry or null. */
+function getYearOverride(source, userKey, workId) {
+  const overrides = getYearOverrides(source, userKey);
+  const key = String(workId == null ? '' : workId);
+  return Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : null;
+}
+
+function enqueueYearOverridesWrite(task) {
+  const run = yearOverridesSaving.then(task);
+  yearOverridesSaving = run.catch(() => {});
+  return run;
+}
+
+/** Upsert `{ year, updatedAt }` for one work; resolves to the stored entry. */
+function setYearOverride(source, userKey, workId, year) {
+  const key = String(workId == null ? '' : workId).trim();
+  const value = Number(year);
+  if (!key) return Promise.reject(new Error('workId is required'));
+  if (!Number.isInteger(value) || value === 0 || value < YEAR_MIN || value > YEAR_MAX) {
+    return Promise.reject(new Error(`year must be an integer in ${YEAR_MIN}..${YEAR_MAX}, not 0`));
+  }
+  return enqueueYearOverridesWrite(async () => {
+    refreshYearOverridesIfChanged(source, userKey);
+    const cached = yearOverridesMemory.get(`${source}:${userKey}`);
+    const base = cached
+      ? cached.data
+      : { schemaVersion: 1, profile: { source, userKey }, overrides: {} };
+    const entry = { year: value, updatedAt: new Date().toISOString() };
+    const next = {
+      ...base,
+      overrides: { ...base.overrides, [key]: entry },
+    };
+    const fingerprint = await writeJsonAtomic(yearOverridesPath(source, userKey), next);
+    yearOverridesMemory.set(`${source}:${userKey}`, {
+      data: next,
+      path: yearOverridesPath(source, userKey),
+      fingerprint,
+    });
+    return entry;
+  });
+}
+
+/** Remove an override (idempotent); resolves to true when something changed. */
+function clearYearOverride(source, userKey, workId) {
+  const key = String(workId == null ? '' : workId).trim();
+  if (!key) return Promise.reject(new Error('workId is required'));
+  return enqueueYearOverridesWrite(async () => {
+    refreshYearOverridesIfChanged(source, userKey);
+    const cached = yearOverridesMemory.get(`${source}:${userKey}`);
+    if (!cached || !Object.prototype.hasOwnProperty.call(cached.data.overrides, key)) return false;
+    const overrides = { ...cached.data.overrides };
+    delete overrides[key];
+    const next = { ...cached.data, overrides };
+    const fingerprint = await writeJsonAtomic(yearOverridesPath(source, userKey), next);
+    yearOverridesMemory.set(`${source}:${userKey}`, {
+      data: next,
+      path: yearOverridesPath(source, userKey),
+      fingerprint,
+    });
+    return true;
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Author alias table: cache-book/authors.json                         */
 /* ------------------------------------------------------------------ */
 
@@ -786,6 +939,7 @@ function clearMemory() {
   authorsMap = null;
   authorsMapFingerprint = null;
   resolveStateMemory.clear();
+  yearOverridesMemory.clear();
 }
 
 module.exports = {
@@ -800,6 +954,7 @@ module.exports = {
   MATCH_LOG_PATH,
   FLAGS_DIR,
   FLAGS_PATH,
+  YEAR_OVERRIDES_DIR,
   AUTHORS_PATH,
   fingerprintOf,
   readJsonWithFingerprint,
@@ -832,6 +987,11 @@ module.exports = {
   clearMangaFlag,
   getAuthorsMap,
   saveAuthorsMap,
+  yearOverridesPath,
+  getYearOverrides,
+  getYearOverride,
+  setYearOverride,
+  clearYearOverride,
   saveRawImport,
   getResolveState,
   saveResolveState,
