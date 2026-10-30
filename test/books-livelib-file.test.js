@@ -51,6 +51,9 @@ test('JSON export parses into the normalized record shape', () => {
     withRating: 2,
     withIsbn: 1,
     withGenres: 2,
+    collections: 0,
+    collectionWorks: 0,
+    catalogRows: 0,
     duplicateBookIds: 0,
     exactDuplicateRows: 0,
   });

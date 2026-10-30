@@ -61,6 +61,10 @@ const {
   normalizeTitle,
   surnameOf,
 } = require('./normalize');
+const {
+  collectionFieldsOf,
+  firstSegmentCounts,
+} = require('./segments');
 
 const ORIGIN = 'livelib-file';
 /**
@@ -498,7 +502,7 @@ function detailValue(source, aliases) {
 }
 
 /** One raw JSON/CSV record -> the normalized shape the importer consumes. */
-function normalizeRecord(raw) {
+function normalizeRecord(raw, options = {}) {
   const book = asObject(raw);
   if (!book) return null;
 
@@ -534,11 +538,18 @@ function normalizeRecord(raw) {
   const isbnRaw = detailValue(book, ['isbn']);
   const isbn = isbnOf(isbnRaw);
   const authors = authorsOf(pick(book, ['authors', 'автор', 'авторы']));
+  // Collection/omnibus rows carry several works in one publisher title
+  // («Том 2. В краю лесов. Тесс из рода д'Эрбервиллей (сборник)»). The split is
+  // additive: the record keeps its own title and keys, the works live in their
+  // own fields (СБОРНИКИ-ЭВРИСТИКА.md §5.1/§5.2). `firstCounts` is the
+  // whole-file frequency table used to recognise a catalogue line.
+  const collection = collectionFieldsOf(title, { firstCounts: options.firstCounts || null });
 
   return {
     bookId,
     title: title || null,
     titleKey: titleKeyOf(title, authors),
+    ...(collection || {}),
     bookHref: absoluteUrl(bookHref) || (bookId ? `https://www.livelib.ru/book/${bookId}` : null),
     coverHref: absoluteUrl(pick(book, ['coverHref', 'cover', 'ссылка на обложку', 'обложка'])),
     readDateRaw: cleanText(readDateRaw) || null,
@@ -705,7 +716,7 @@ function parseCsvDocument(text) {
       'livelib_file_unknown_columns'
     );
   }
-  const out = [];
+  const records = [];
   for (let i = 1; i < rows.length; i++) {
     const cells = rows[i];
     if (cells.length === 1 && cleanText(cells[0]) === '') continue;
@@ -714,6 +725,13 @@ function parseCsvDocument(text) {
       if (!field) return;
       record[field] = cells[index] == null ? '' : cells[index];
     });
+    records.push(record);
+  }
+  // The catalogue line is recognised by repetition across the whole file, so
+  // the collection parser needs the frequency table before normalization.
+  const firstCounts = firstSegmentCounts(records.map((record) => record.title).filter(Boolean));
+  const out = [];
+  for (const record of records) {
     const normalized = normalizeRecord({
       title: record.title,
       bookHref: record.bookHref,
@@ -735,7 +753,7 @@ function parseCsvDocument(text) {
         quotes: record.quotes,
         read: record.read,
       },
-    });
+    }, { firstCounts });
     if (!normalized) continue;
     if (record.shelf) normalized.shelfHint = shelfOf(record.shelf) || null;
     out.push(normalized);
@@ -774,9 +792,18 @@ function parseExportFile(input, options = {}) {
   if (looksJson) {
     format = 'json';
     const rows = parseJsonDocument(trimmed);
+    // Catalogue-line detection needs the whole file (a repeated first segment),
+    // so the frequency table is built before any row is normalized.
+    const titles = [];
+    for (const row of rows) {
+      const book = asObject(row);
+      const title = book ? cleanText(pick(book, ['title', 'название', 'name'])) : '';
+      if (title) titles.push(title);
+    }
+    const firstCounts = firstSegmentCounts(titles);
     books = [];
     for (const row of rows) {
-      const normalized = normalizeRecord(row);
+      const normalized = normalizeRecord(row, { firstCounts });
       if (normalized) books.push(normalized);
     }
   } else {
@@ -823,6 +850,11 @@ function parseExportFile(input, options = {}) {
   let withRating = 0;
   let withIsbn = 0;
   let withGenres = 0;
+  // Collection rows are additive: the row is still one record, its works live
+  // in `collectionSegments` and never change the row count/keys.
+  let collections = 0;
+  let collectionWorks = 0;
+  let catalogRows = 0;
   const seen = new Set();
   let duplicates = 0;
   for (const book of books) {
@@ -834,6 +866,11 @@ function parseExportFile(input, options = {}) {
     if (book.rating5 != null) withRating++;
     if (book.isbn && book.isbn.isbn13) withIsbn++;
     if (book.genres.length) withGenres++;
+    if (Array.isArray(book.collectionSegments) && book.collectionSegments.length >= 2) {
+      collections++;
+      collectionWorks += book.collectionSegments.length;
+      if (book.catalogSeries) catalogRows++;
+    }
     const key = book.bookId ? `id:${book.bookId}` : book.titleKey ? `tk:${book.titleKey}` : null;
     if (key) {
       if (seen.has(key)) duplicates++;
@@ -881,6 +918,9 @@ function parseExportFile(input, options = {}) {
       withRating,
       withIsbn,
       withGenres,
+      collections,
+      collectionWorks,
+      catalogRows,
       duplicateBookIds: duplicates,
       exactDuplicateRows,
     },
@@ -941,6 +981,15 @@ function buildFileEvent(book, shelf, position) {
     coverUrl: book.coverHref || null,
     communityRating: book.communityRating == null ? null : book.communityRating,
     bookStats: book.bookStats || null,
+    // Additive collection fields (СБОРНИКИ-ЭВРИСТИКА §5.1): the record keeps
+    // its own title; the works are resolved/counted separately.
+    ...(Array.isArray(book.collectionSegments) && book.collectionSegments.length >= 2
+      ? {
+          segmentTitles: [...book.segmentTitles],
+          collectionSegments: book.collectionSegments.map((segment) => ({ ...segment })),
+          ...(book.catalogSeries ? { catalogSeries: book.catalogSeries } : {}),
+        }
+      : {}),
   };
 }
 
@@ -969,6 +1018,19 @@ function fillMissing(target, incoming) {
     const have = Array.isArray(target.genres) ? target.genres : [];
     if (!have.length) {
       target.genres = [...incoming.genres];
+      changed++;
+    }
+  }
+  // Collection fields are derived from the title and stored additively. A
+  // re-import of the same (or an enriched) export must not duplicate them:
+  // the segment keys are stable, so the field is only filled when absent.
+  if (Array.isArray(incoming.collectionSegments) && incoming.collectionSegments.length >= 2) {
+    const have = Array.isArray(target.collectionSegments) ? target.collectionSegments : [];
+    if (have.length < 2) {
+      target.segmentTitles = [...incoming.segmentTitles];
+      target.collectionSegments = incoming.collectionSegments.map((segment) => ({ ...segment }));
+      if (incoming.catalogSeries) target.catalogSeries = incoming.catalogSeries;
+      else delete target.catalogSeries;
       changed++;
     }
   }
