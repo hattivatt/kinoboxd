@@ -31,6 +31,12 @@ const authors = require('./authors');
 const { filterBlacklistedSeries } = require('./series-blacklist');
 const { surnameOf } = require('./normalize');
 const { detectManga } = require('./providers/manga');
+const {
+  expansionBlocked,
+  hasCollectionSegments,
+  segmentEventsOf,
+  segmentConfidenceOf,
+} = require('./segments');
 
 /** `origin`/`metadataSources` value of the `livelib-backup` file import. */
 const FILE_METADATA_SOURCE = 'livelib-file';
@@ -408,19 +414,43 @@ function isReadingNowEvent(raw, source) {
   return !shelfOfEvent(raw) && label === 'reading';
 }
 
+/**
+ * Does the payload accept `medium`-confidence segment links?
+ *
+ * The migration default is `high` only (`--include-medium` opts in); here the
+ * same rule is an env/option switch so the default payload never promotes a
+ * fuzzy title+author guess into a work.
+ */
+function segmentMediumEnabled(options) {
+  if (options && options.includeMediumSegments === true) return true;
+  const raw = String(process.env.KINOBOXD_SEGMENTS_INCLUDE_MEDIUM || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
 /** Attach workId / reread flags to raw profile events. */
-function prepareEvents(profiles) {
+function prepareEvents(profiles, options = {}) {
   const events = [];
   // «Читаю сейчас»: stored in the profile but never in the finished-book
   // aggregates. Kept as a separate list so the strip and `readingNowCount` can
   // show it without touching bookCount/years/authors/timeline.
   const readingEvents = [];
+  // Works of collection rows (СБОРНИКИ-ЭВРИСТИКА §5): one synthetic event per
+  // work, the parent record stays the host row. `collectionHostIds` names the
+  // parents that must NOT be counted as a book of their own.
+  const segmentEvents = [];
+  const collectionHostIds = new Set();
+  const collections = new Map();
+  const collectionsBlocked = [];
+  const includeMediumSegments = segmentMediumEnabled(options);
   const statusFilter = emptyStatusFilter();
   const profileStatus = new Map();
   for (const profile of profiles) {
     const source = profile.source;
+    const userKey = profile.userKey;
+    const yearOverrides = options.yearOverrides
+      || (source === 'livelib' ? bookCache.getYearOverrides(source, userKey) : {});
     const profileAudit = { kept: 0, excluded: 0, missingStatusId: 0 };
-    profileStatus.set(`${source}:${profile.userKey}`, profileAudit);
+    profileStatus.set(`${source}:${userKey}`, profileAudit);
     for (const raw of profile.events) {
       if (!raw) continue;
       const legacyStatus = statusIdOf(raw) == null;
@@ -461,7 +491,7 @@ function prepareEvents(profiles) {
       if (legacyStatus && source === 'hardcover') profileAudit.missingStatusId++;
       profileAudit.kept++;
       const identity = profileEventIdentity(raw, source);
-      events.push({
+      const event = {
         ...raw,
         source,
         userKey: profile.userKey,
@@ -474,6 +504,67 @@ function prepareEvents(profiles) {
         finishedAt: raw.finishedAt || null,
         reread: Boolean(raw.reread),
         readIndex: Number(raw.readIndex) || 1,
+      };
+      events.push(event);
+
+      // Collection expansion: the record is a host row for N works, not a book
+      // of its own. A row that was already decided as one book (a resolve link,
+      // an enrichment document, a manual year edit) is never re-opened (§6).
+      if (!hasCollectionSegments(raw)) continue;
+      const parentLink = identity.linkKey ? bookCache.getLink(identity.linkKey) : null;
+      const parentDetails = identity.linkKey
+        ? bookCache.getWorkDetails(`ll:${identity.linkKey}`)
+        : null;
+      if (expansionBlocked(raw, { link: parentLink, details: parentDetails, yearOverrides })) {
+        collectionsBlocked.push({
+          id: event.id,
+          title: raw.title || null,
+          reason: parentLink && parentLink.workId
+            ? 'linked'
+            : parentDetails
+              ? 'details'
+              : 'manual_year',
+        });
+        continue;
+      }
+      const segments = [];
+      for (const segRaw of segmentEventsOf({ ...raw, workId: identity.workId })) {
+        const segLinkKey = segRaw.fileKey ? `file:${segRaw.fileKey}` : null;
+        const link = segLinkKey ? bookCache.getLink(segLinkKey) : null;
+        const confidence = link && link.workId ? segmentConfidenceOf(link.score) : null;
+        const accepted = Boolean(link && link.workId)
+          && (confidence === 'high' || (confidence === 'medium' && includeMediumSegments));
+        const segIdentity = profileEventIdentity(segRaw, source);
+        const segmentEvent = {
+          ...segRaw,
+          source,
+          userKey: profile.userKey,
+          workId: segIdentity.workId,
+          metadataWorkId: accepted ? segIdentity.metadataWorkId : null,
+          resolved: accepted,
+          rating10: null,
+          reread: false,
+          readIndex: 1,
+          segmentConfidence: confidence,
+          segmentAccepted: accepted,
+        };
+        segmentEvents.push(segmentEvent);
+        segments.push({
+          workId: segmentEvent.workId,
+          title: segRaw.title,
+          key: segRaw.segmentKey,
+          accepted,
+          confidence,
+          linkWorkId: accepted ? segIdentity.metadataWorkId : null,
+        });
+      }
+      collectionHostIds.add(event.id);
+      collections.set(event.id, {
+        parentId: event.id,
+        parentWorkId: identity.workId,
+        parentTitle: raw.title || null,
+        catalogSeries: raw.catalogSeries || null,
+        segments,
       });
     }
   }
@@ -528,7 +619,18 @@ function prepareEvents(profiles) {
     reReadCounts.set(key, Math.max(group.length - 1, explicit - 1, 0));
   }
 
-  return { events, readingEvents, reReadCounts, statusFilter, profileStatus };
+  return {
+    events,
+    readingEvents,
+    segmentEvents,
+    collectionHostIds,
+    collections,
+    collectionsBlocked,
+    includeMediumSegments,
+    reReadCounts,
+    statusFilter,
+    profileStatus,
+  };
 }
 
 function detailsAuthors(details) {
@@ -979,6 +1081,10 @@ function workMetadata(workId, events, options = {}) {
   const detailTitle = details && details.title ? details.title : null;
   const hcTitle = detailTitle || (hcEvents[0] && hcEvents[0].title) || null;
   const llTitle = (llEvents.find((event) => event.title) || {}).title || null;
+  // A collection work remembers the record it came from, so the UI can say
+  // «из сборника «X»» and link the parent page (СБОРНИКИ-ЭВРИСТИКА §5.1).
+  const collection = (events.find((event) => event && event.collectionParent) || {}).collectionParent
+    || null;
 
   const authors = [];
   const detailAuthors = detailsAuthors(details);
@@ -1098,6 +1204,7 @@ function workMetadata(workId, events, options = {}) {
     details,
     links,
     finishedDate,
+    collection,
     // Option A: Hardcover priority, LiveLib fallback. With one profile this is
     // simply the rating of the profile's own event(s).
     rating10: hcWithRating ? hcWithRating.rating10 : llEvents.find((e) => e.rating10 != null)?.rating10 ?? null,
@@ -1481,12 +1588,32 @@ function buildBooksStats(options = {}) {
   const { connected, selected, profiles } = selection;
   const profile = profiles[0];
   const yearOverrides = bookCache.getYearOverrides(profile.source, profile.userKey);
-  const prepared = prepareEvents(profiles);
+  const prepared = prepareEvents(profiles, {
+    yearOverrides,
+    includeMediumSegments: options.includeMediumSegments === true,
+  });
   const reReadCounts = prepared.reReadCounts;
   let events = prepared.events;
 
+  /* ---------------- collection rows (СБОРНИКИ-ЭВРИСТИКА §5) ---------------- */
+  // A record with >= 2 parsed works is a host row, not a book. Its accepted
+  // works (a high-confidence resolve link; `medium` only with the explicit
+  // switch) become works of their own; the host is counted only when none of
+  // them survived (nothing proven, or every work was hidden as manga), so the
+  // row is never lost and the count never invents a split.
+  const collectionHostEvents = events.filter((event) => prepared.collectionHostIds.has(event.id));
+  const acceptedSegmentEvents = prepared.segmentEvents.filter((event) => event.segmentAccepted);
+  const hostWorks = new Map();
+  const hostEvents = new Map();
+  for (const event of collectionHostEvents) {
+    hostWorks.set(event.id, workMetadata(event.workId, [event], { yearOverrides }));
+    hostEvents.set(event.id, event);
+  }
+  const workEvents = events.filter((event) => !prepared.collectionHostIds.has(event.id));
+  let worksEvents = workEvents.concat(acceptedSegmentEvents);
+
   const byWork = new Map();
-  for (const event of events) {
+  for (const event of worksEvents) {
     if (!byWork.has(event.workId)) byWork.set(event.workId, []);
     byWork.get(event.workId).push(event);
   }
@@ -1495,18 +1622,24 @@ function buildBooksStats(options = {}) {
     works.set(workId, workMetadata(workId, list, { yearOverrides }));
   }
 
+  // Segments dedupe by canonical provider work (the migration's `hcBookId`
+  // rule) automatically: a resolved work takes the canonical `workId`, so two
+  // segments of one anthology that resolve to the same edition — or a segment
+  // that resolves to a book the profile already has as a normal record — land
+  // in the same `byWork` group and count once. The count below is the audit
+  // number of segment events absorbed by an already existing work.
+  let segmentDuplicates = 0;
+  const seenSegmentWorkIds = new Set(workEvents.map((event) => event.workId));
+  for (const event of acceptedSegmentEvents) {
+    if (seenSegmentWorkIds.has(event.workId)) segmentDuplicates++;
+    else seenSegmentWorkIds.add(event.workId);
+  }
+
   // Resolve-cache keys of every work, for the metadata-coverage denominator.
   // A work is "hopeless" only when the last resolve pass asked a provider
   // about *all* of its events and got nothing back (resolve-state).
-  const workLinkKeys = new Map();
-  for (const [workId, list] of byWork) {
-    const keys = [];
-    for (const event of list) {
-      const key = eventLinkKeyOf(event);
-      if (key && !keys.includes(key)) keys.push(key);
-    }
-    workLinkKeys.set(workId, keys);
-  }
+  // (Built after the manga filter + host fallback: the denominator must cover
+  // exactly the works the payload shows.)
 
   // Manga/comics filter (default OFF = manga excluded). A work is comics when
   // its own flag is true *or* any volume of the same series is comics
@@ -1532,7 +1665,45 @@ function buildBooksStats(options = {}) {
         if (manualManga.has(workId)) mangaManualExcluded++;
       }
     }
-    if (excluded.size > 0) events = events.filter((event) => !excluded.has(event.workId));
+    if (excluded.size > 0) {
+      events = events.filter((event) => !excluded.has(event.workId));
+      worksEvents = worksEvents.filter((event) => !excluded.has(event.workId));
+    }
+  }
+
+  // Host fallback: a collection row whose works all vanished (none proven, or
+  // every proven work was hidden as manga) is still a read book. Counting the
+  // host keeps «каждая запись = отдельная книга» honest instead of deleting
+  // the row from bookCount.
+  let collectionFallbackHosts = 0;
+  for (const [parentId, info] of prepared.collections) {
+    const visible = info.segments.some((segment) => segment.accepted && works.has(segment.workId));
+    if (visible) continue;
+    const hostWork = hostWorks.get(parentId);
+    if (!hostWork) continue;
+    if (!includeMangaComics) {
+      const flags = bookCache.getMangaFlags();
+      const flag = flags && flags[hostWork.workId];
+      if (flag && flag.mangaComics === true) continue;
+      if (!flag && hostWork.mangaComics === true) continue;
+    }
+    works.set(hostWork.workId, hostWork);
+    const hostEvent = hostEvents.get(parentId);
+    if (hostEvent) {
+      worksEvents.push(hostEvent);
+      byWork.set(hostWork.workId, [hostEvent]);
+    }
+    collectionFallbackHosts++;
+  }
+
+  const workLinkKeys = new Map();
+  for (const [workId, list] of byWork) {
+    const keys = [];
+    for (const event of list) {
+      const key = eventLinkKeyOf(event);
+      if (key && !keys.includes(key)) keys.push(key);
+    }
+    workLinkKeys.set(workId, keys);
   }
 
   // Event-level re-read flag from the per-book group counts.
@@ -1643,7 +1814,9 @@ function buildBooksStats(options = {}) {
     (event) => !event.finishedAt && /^\d{4}-\d{2}$/.test(String(event.readMonth || ''))
   );
   const monthOnlyCount = monthOnlyEvents.length;
-  const llEvents = events.filter((event) => event.source === 'livelib');
+  // Works-level counters: a collection row is represented by its works, not by
+  // the host record (the host is not in `works`).
+  const llEvents = worksEvents.filter((event) => event.source === 'livelib');
   const llResolved = llEvents.filter((event) => {
     const work = works.get(event.workId);
     return Boolean(work && !work.unresolved);
@@ -1728,6 +1901,31 @@ function buildBooksStats(options = {}) {
     // manual correction. They are the only ones in «год неизвестен».
     yearUnknownCount: [...works.values()].filter((work) => !Number.isFinite(work.year)).length,
     yearsSpan: years.length ? { from: years[0], to: years[years.length - 1] } : null,
+  };
+
+  // Collection rows at a glance (СБОРНИКИ-ЭВРИСТИКА §5): how many rows the
+  // parser split, how many of their works were proven by a provider link, how
+  // many fell back to the host row and why a row was left alone.
+  const blockedByReason = { linked: 0, details: 0, manual_year: 0 };
+  for (const entry of prepared.collectionsBlocked) {
+    if (blockedByReason[entry.reason] != null) blockedByReason[entry.reason]++;
+  }
+  summary.collections = {
+    rows: prepared.collections.size,
+    parsedWorks: prepared.segmentEvents.length,
+    linkedWorks: acceptedSegmentEvents.length,
+    visibleWorks: new Set(
+      acceptedSegmentEvents
+        .filter((event) => works.has(event.workId))
+        .map((event) => event.workId)
+    ).size,
+    dedupedWorks: segmentDuplicates,
+    fallbackRows: collectionFallbackHosts,
+    catalogRows: [...prepared.collections.values()].filter((entry) => entry.catalogSeries).length,
+    noAuthorWorks: prepared.segmentEvents.filter((event) => !event.authors.length).length,
+    blockedRows: prepared.collectionsBlocked.length,
+    blockedByReason,
+    includeMedium: prepared.includeMediumSegments,
   };
 
   // Metadata coverage of the profile: a work is "covered" when it has a
@@ -2239,6 +2437,7 @@ function buildBooksStats(options = {}) {
         : {}),
       links: work.links,
       unresolved: work.unresolved,
+      ...(work.collection ? { collection: work.collection } : {}),
     };
   }
 
@@ -2371,7 +2570,22 @@ function profileSummary(profile) {
   }
   const prepared = prepareEvents([profile]);
   const events = prepared.events;
-  const workIds = new Set(events.map((event) => event.workId));
+  // A collection row is a host for its works: the badge count follows the same
+  // semantics as /stats (a host with no proven work still counts as one book).
+  const workIds = new Set(
+    events
+      .filter((event) => !prepared.collectionHostIds.has(event.id))
+      .map((event) => event.workId)
+  );
+  const acceptedSegments = prepared.segmentEvents.filter((event) => event.segmentAccepted);
+  for (const event of acceptedSegments) workIds.add(event.workId);
+  for (const [parentId] of prepared.collections) {
+    const info = prepared.collections.get(parentId);
+    const visible = info.segments.some((segment) => segment.accepted);
+    if (!visible) {
+      workIds.add(info.parentWorkId);
+    }
+  }
   const finished = events.filter((event) => event.finishedAt);
   const monthOnly = events.filter(
     (event) => !event.finishedAt && /^\d{4}-\d{2}$/.test(String(event.readMonth || ''))

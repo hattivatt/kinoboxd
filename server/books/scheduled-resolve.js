@@ -45,6 +45,7 @@ const path = require('path');
 
 const bookCache = require('./book-cache');
 const resolve = require('./resolve');
+const segments = require('./segments');
 const litres = require('./providers/litres');
 const googlebooks = require('./providers/googlebooks');
 const resolveLock = require('./resolve-lock');
@@ -143,20 +144,61 @@ function isUnlinked(event) {
  * hourly pass would spend the Литрес budget on the ~370 manga works stats
  * already hides.
  */
-function candidatePool(profile, options = {}) {
+/**
+ * Profile records with collection rows replaced by their works.
+ *
+ * Shared by the candidate pool and the resolve-state bookkeeping, so a work of
+ * a collection is a first-class candidate/key everywhere. The guard is the same
+ * as in `stats`/`resolve`: a row already decided as one book (link, enrichment
+ * document, manual year edit) is not expanded.
+ */
+function expandedProfileEvents(profile) {
   const events = Array.isArray(profile && profile.events) ? profile.events : [];
+  const source = (profile && profile.source) || 'livelib';
+  const userKey = profile && profile.userKey;
+  const yearOverrides = source === 'livelib' && userKey
+    ? bookCache.getYearOverrides(source, userKey)
+    : null;
+  return segments.expandProfileEvents(events, {
+    canExpand(event) {
+      const key = eventKeyOf(event);
+      if (!key) return true;
+      return !segments.expansionBlocked(event, {
+        link: bookCache.getLink(key),
+        details: bookCache.getWorkDetails(`ll:${key}`),
+        yearOverrides,
+      });
+    },
+  });
+}
+
+function candidatePool(profile, options = {}) {
   const allowedWorkIds = options.allowedWorkIds || null;
+  // Collection rows are candidates through their works, not as a whole (the
+  // anthology itself is not a book the chain can find).
+  const expanded = expandedProfileEvents(profile);
   const pool = [];
-  for (const event of events) {
+  for (const event of expanded) {
     if (!event || PLAN_SHELVES.has(event.shelf)) continue;
     const key = eventKeyOf(event);
     if (!key) continue;
     if (!isUnlinked(event)) continue;
     // `prepareEvents` gives an unlinked file row the work id `ll:<key>`
-    // (sourceBookId or `file:tk:…`). A volume suffix (`#n`) only appears when
-    // works were merged by a canonical metadata id, which an unlinked row by
-    // definition has not.
-    if (allowedWorkIds && !allowedWorkIds.has(`ll:${key}`)) continue;
+    // (sourceBookId or `file:tk:…`, and `file:<fileKey>::seg:<key>` for a work
+    // of a collection row). A volume suffix (`#n`) only appears when works were
+    // merged by a canonical metadata id, which an unlinked row by definition
+    // has not.
+    if (allowedWorkIds) {
+      const workId = `ll:${key}`;
+      // A work of a collection row is not a visible work until it is proven, so
+      // it is absent from `booksIndex`. It stays a candidate while its HOST row
+      // is visible; a host hidden as manga/comics keeps its works out of the
+      // Литрес budget.
+      const hostVisible = Boolean(
+        event.collectionParentKey && allowedWorkIds.has(`ll:${event.collectionParentKey}`)
+      );
+      if (!allowedWorkIds.has(workId) && !hostVisible) continue;
+    }
     pool.push({ event, key });
   }
   return pool;
@@ -199,7 +241,7 @@ async function mergeResolveState(profile, report, options = {}) {
 
   // A key that is no longer unlinked (linked now, or got `ll:` details) is not
   // hopeless any more; keeping it would poison the metadata denominator.
-  const events = Array.isArray(profile.events) ? profile.events : [];
+  const events = expandedProfileEvents(profile);
   let resolved = 0;
   for (const event of events) {
     if (!event || PLAN_SHELVES.has(event.shelf)) continue;

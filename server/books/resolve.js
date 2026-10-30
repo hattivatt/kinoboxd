@@ -53,6 +53,7 @@ const providers = require('./providers');
 const livelibCard = require('./providers/livelib-card');
 const litres = require('./providers/litres');
 const googlebooks = require('./providers/googlebooks');
+const segments = require('./segments');
 
 const FUZZY_ACCEPT = 0.9;
 const FUZZY_GUARDED = 0.8;
@@ -519,7 +520,27 @@ async function saveCardMetadata(event, card, now) {
 async function resolveProfile(llProfile, options = {}) {
   const force = Boolean(options.force);
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-  const allEvents = Array.isArray(llProfile && llProfile.events) ? llProfile.events : [];
+  const rawEvents = Array.isArray(llProfile && llProfile.events) ? llProfile.events : [];
+  // Collection rows are expanded into their works before anything else: the
+  // anthology is not matchable as a whole, each work is (СБОРНИКИ-ЭВРИСТИКА
+  // §3). A row already decided as one book (link / enrichment / manual year) is
+  // left alone — the user's decision outranks the heuristic.
+  const profileSource = (llProfile && llProfile.source) || 'livelib';
+  const profileUserKey = llProfile && llProfile.userKey;
+  const collectionYearOverrides = profileUserKey && profileSource === 'livelib'
+    ? bookCache.getYearOverrides(profileSource, profileUserKey)
+    : null;
+  const allEvents = segments.expandProfileEvents(rawEvents, {
+    canExpand(event) {
+      const key = eventKeyOf(event);
+      if (!key) return true;
+      return !segments.expansionBlocked(event, {
+        link: bookCache.getLink(key),
+        details: bookCache.getWorkDetails(`ll:${key}`),
+        yearOverrides: collectionYearOverrides,
+      });
+    },
+  });
   // Plan shelves of a file export («Читаю сейчас», «Хочу прочитать») are not
   // reading history: stats never renders them, so spending the network budget
   // (Litres: 2 s + 2 requests per book) on them would starve the books the user
