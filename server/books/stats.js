@@ -41,6 +41,21 @@ const {
 /** `origin`/`metadataSources` value of the `livelib-backup` file import. */
 const FILE_METADATA_SOURCE = 'livelib-file';
 
+/**
+ * Ancient works (Сунь Цзы, античные авторы, Kama Sutra) live in one bucket.
+ *
+ * The bound is shared by every place that answers «когда написана книга»:
+ * `summary.ancientBookCount`, the decade bucket, the year bucket and the UI
+ * click key. One 300-year-old work must never stretch a year axis from -3000,
+ * so the bucket is a slot of its own on both charts, not a year. Keeping the
+ * number in one constant is what stops the counter and the charts from
+ * disagreeing (the 30.10.2026 «бакет некликабелен» report).
+ */
+const ANCIENT_BEFORE_YEAR = 1000;
+
+/** Stable filter key of that bucket on `decades[]` and `years[]`. */
+const ANCIENT_BUCKET_KEY = 'before-1000';
+
 const PAGE_BUCKETS = [
   { key: '<100', min: 0, max: 99 },
   { key: '100-199', min: 100, max: 199 },
@@ -1888,7 +1903,7 @@ function buildBooksStats(options = {}) {
       0
     ),
     ancientBookCount: [...works.values()].filter(
-      (work) => Number.isFinite(work.year) && work.year < 1000
+      (work) => Number.isFinite(work.year) && work.year < ANCIENT_BEFORE_YEAR
     ).length,
     // Works whose publication year comes from a print run because no provider
     // knows the first publication (honest `yearSource: 'edition'`), plus the
@@ -2172,7 +2187,7 @@ function buildBooksStats(options = {}) {
 
   const decadeMap = new Map();
   const yearMap = new Map();
-  const ANCIENT_LABEL = 'до 1000 г.';
+  const ANCIENT_LABEL = `до ${ANCIENT_BEFORE_YEAR} г.`;
   const UNKNOWN_YEAR_LABEL = 'год неизвестен';
   for (const work of works.values()) {
     if (!Number.isFinite(work.year)) {
@@ -2182,10 +2197,18 @@ function buildBooksStats(options = {}) {
       pushWorks(decadeMap, 'unknown', { decade: null, label: UNKNOWN_YEAR_LABEL, unknown: true }, work);
       continue;
     }
-    if (work.year < 1000) {
+    if (work.year < ANCIENT_BEFORE_YEAR) {
       // Ancient works (Сунь Цзы, античные авторы) get one honest bucket instead
-      // of being silently dropped by the old `year > 0` filter.
-      pushWorks(decadeMap, 'ancient', { decade: 0, label: ANCIENT_LABEL, ancient: true }, work);
+      // of being silently dropped by the old `year > 0` filter. The bucket is
+      // addressable: `key`/`beforeYear` are the drilldown contract shared with
+      // the same bucket on `years[]`.
+      pushWorks(decadeMap, 'ancient', {
+        decade: 0,
+        key: ANCIENT_BUCKET_KEY,
+        beforeYear: ANCIENT_BEFORE_YEAR,
+        label: ANCIENT_LABEL,
+        ancient: true,
+      }, work);
       continue;
     }
     const decade = Math.floor(work.year / 10) * 10;
@@ -2195,6 +2218,8 @@ function buildBooksStats(options = {}) {
   const decades = [...decadeMap.values()]
     .map((entry) => ({
       decade: entry.decade,
+      ...(entry.key ? { key: entry.key } : {}),
+      ...(entry.beforeYear ? { beforeYear: entry.beforeYear } : {}),
       ...(entry.label ? { label: entry.label } : {}),
       ...(entry.ancient ? { ancient: true } : {}),
       ...(entry.unknown ? { unknown: true } : {}),
@@ -2210,16 +2235,39 @@ function buildBooksStats(options = {}) {
       if (b.unknown) return -1;
       return a.decade - b.decade;
     });
-  const yearsList = [...yearMap.values()]
-    .map((entry) => ({
-      year: entry.year,
-      count: entry.count,
-      firstCount: entry.yearSources.first,
-      editionCount: entry.yearSources.edition,
-      manualCount: entry.yearSources.manual,
-      avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
-    }))
-    .sort((a, b) => a.year - b.year);
+  // The ancient bucket is a first-class column of the year chart, not a line in
+  // the note: it is painted in its own slot (never on the year axis) and opens
+  // the same list as the decade bucket. Its counters are taken from the decade
+  // bucket above, so the two charts and `summary.ancientBookCount` cannot drift
+  // apart. Ancient works are never pushed into `yearMap`, so the bucket is not
+  // a second copy of any year: `years` sum + `yearUnknownCount` = `bookCount`.
+  const ancientDecade = decadeMap.get('ancient');
+  const ancientYearBucket = ancientDecade
+    ? {
+        label: ANCIENT_LABEL,
+        key: ANCIENT_BUCKET_KEY,
+        beforeYear: ANCIENT_BEFORE_YEAR,
+        ancient: true,
+        count: ancientDecade.count,
+        firstCount: ancientDecade.yearSources.first,
+        editionCount: ancientDecade.yearSources.edition,
+        manualCount: ancientDecade.yearSources.manual,
+        avgRating: ancientDecade.rated ? round2(ancientDecade.sum / ancientDecade.rated) : null,
+      }
+    : null;
+  const yearsList = [
+    ...(ancientYearBucket ? [ancientYearBucket] : []),
+    ...[...yearMap.values()]
+      .map((entry) => ({
+        year: entry.year,
+        count: entry.count,
+        firstCount: entry.yearSources.first,
+        editionCount: entry.yearSources.edition,
+        manualCount: entry.yearSources.manual,
+        avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
+      }))
+      .sort((a, b) => a.year - b.year),
+  ];
 
   const authorMap = new Map();
   for (const work of works.values()) {

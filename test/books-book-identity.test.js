@@ -209,8 +209,14 @@ test('the year chart uses first publication and buckets ancient works', async ()
   const book = Object.values(stats.booksIndex)[0];
   assert.equal(book.year, -500);
   assert.equal(stats.summary.ancientBookCount, 1);
-  assert.deepEqual(stats.years, []);
+  // The ancient work is not a year on the axis; it is the «до 1000 г.» column
+  // of the year chart, with the same stable key as the decade bucket.
+  assert.deepEqual(stats.years.map((entry) => [entry.key, entry.ancient, entry.count]), [
+    ['before-1000', true, 1],
+  ]);
   assert.ok(stats.decades.some((entry) => entry.label === 'до 1000 г.' && entry.count === 1));
+  assert.equal(stats.decades.find((entry) => entry.ancient).key, 'before-1000');
+  assert.equal(stats.decades.find((entry) => entry.ancient).beforeYear, 1000);
 });
 
 test('recently read includes month-precision file events', async () => {

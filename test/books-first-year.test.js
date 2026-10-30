@@ -328,7 +328,13 @@ test('classics leave the modern decades for their honest centuries', async () =>
   assert.equal(stats.decades[0].label, 'до 1000 г.');
   assert.equal(stats.summary.ancientBookCount, 1);
   assert.equal(stats.summary.yearUnknownCount, 0);
-  assert.deepEqual(stats.years.map((entry) => entry.year), [1564, 1608]);
+  // The ancient bucket is a first-class column of the year chart too: same
+  // count, same stable key, and no fake `year` that would stretch the axis.
+  assert.equal(stats.years[0].ancient, true);
+  assert.equal(stats.years[0].key, 'before-1000');
+  assert.equal(stats.years[0].count, 1);
+  assert.equal(stats.years[0].year, undefined);
+  assert.deepEqual(stats.years.filter((entry) => !entry.ancient).map((entry) => entry.year), [1564, 1608]);
 });
 
 test('no first-publication claim falls back to the print-run year with an honest mark', async () => {
