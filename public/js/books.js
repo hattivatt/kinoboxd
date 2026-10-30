@@ -295,6 +295,17 @@ function normalizeEntry(workId, raw) {
     .map((item) => text(typeof item === 'object' && item ? (item.name || item.author) : item))
     .filter(Boolean);
   const links = normalizeLinks(entry.links, workId);
+  // A work extracted from an anthology/omnibus row remembers its parent record
+  // (the card shows «из сборника „X“», СБОРНИКИ-ЭВРИСТИКА §5.1). The parent is
+  // a record, not a work, so only the title/link are carried.
+  const collection = entry.collection && typeof entry.collection === 'object'
+    ? {
+        parentTitle: text(entry.collection.title),
+        parentWorkId: text(entry.collection.workId),
+        parentUrl: text(entry.collection.parentUrl),
+        catalogSeries: text(entry.collection.catalogSeries),
+      }
+    : null;
   // `mangaComics` is tri-state: true / false / null (unknown). A missing field
   // (older payload) normalises to null too, so every consumer must treat
   // "no field" and "unknown" the same way instead of crashing.
@@ -337,6 +348,7 @@ function normalizeEntry(workId, raw) {
     finishedDate: /^\d{4}-\d{2}-\d{2}/.test(text(entry.finishedDate)) ? text(entry.finishedDate).slice(0, 10) : null,
     reReadCount: Math.max(0, toNum(entry.reReadCount)),
     links,
+    collection,
   };
 }
 
@@ -3635,6 +3647,29 @@ function bookRow(entry) {
 
   if (entry.authors.length) {
     info.append(el('div', { class: 'book-authors', text: entry.authors.join(', ') }));
+  }
+
+  // Collection provenance: the work came out of an anthology/omnibus record.
+  // The parent record is not a work, so it is rendered as a line with a link
+  // to its own LiveLib page instead of a drilldown.
+  if (entry.collection && entry.collection.parentTitle) {
+    const line = el('div', { class: 'book-authors book-collection' });
+    line.append(document.createTextNode('из сборника «'));
+    if (entry.collection.parentUrl) {
+      line.append(el('a', {
+        href: entry.collection.parentUrl,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        text: entry.collection.parentTitle,
+      }));
+    } else {
+      line.append(document.createTextNode(entry.collection.parentTitle));
+    }
+    line.append(document.createTextNode('»'));
+    if (entry.collection.catalogSeries) {
+      line.append(document.createTextNode(` · ${entry.collection.catalogSeries}`));
+    }
+    info.append(line);
   }
 
   const meta = el('div', { class: 'film-char book-meta' });
