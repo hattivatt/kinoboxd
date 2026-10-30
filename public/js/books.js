@@ -422,12 +422,19 @@ function normalizeBooks(raw) {
 
   const decades = arr(source.decades).map((item) => {
     const start = Math.round(toNum(item && (item.start ?? item.decade), 0));
+    const ancient = Boolean(item && item.ancient);
+    const beforeYear = Math.round(toNum(item && item.beforeYear, 0));
     const label = firstString(item && item.label) || (start > 0 ? `${start}-е` : '');
     return {
       start,
       label,
       unknown: Boolean(item && item.unknown),
-      ancient: Boolean(item && item.ancient),
+      ancient,
+      // Drilldown contract of the ancient bucket («до 1000 г.»): a stable key
+      // and its bound, so a click never has to guess from the label or from
+      // `decade === 0` (a real decade can never be 0).
+      key: text(item && item.key) || (ancient ? 'before-1000' : ''),
+      beforeYear: beforeYear > 0 ? beforeYear : ancient ? 1000 : null,
       count: Math.max(0, toNum(item && item.count)),
       firstCount: Math.max(0, toNum(item && item.firstCount)),
       editionCount: Math.max(0, toNum(item && item.editionCount)),
@@ -440,13 +447,29 @@ function normalizeBooks(raw) {
       return b.start - a.start || b.label.localeCompare(a.label, 'ru');
     });
 
-  const years = arr(source.years).map((item) => ({
-    year: Math.round(toNum(item && item.year, 0)),
-    count: Math.max(0, toNum(item && item.count)),
-    firstCount: Math.max(0, toNum(item && item.firstCount)),
-    editionCount: Math.max(0, toNum(item && item.editionCount)),
-    manualCount: Math.max(0, toNum(item && item.manualCount)),
-  })).filter((item) => item.year > 0 && item.count > 0);
+  // `years` carries one non-year slot: the ancient bucket («до 1000 г.»).
+  // It has no `year` on purpose — the year axis must stay linear over real
+  // years — but it keeps `key`/`beforeYear` and is painted in its own slot.
+  const years = arr(source.years).map((item) => {
+    const ancient = Boolean(item && item.ancient);
+    const beforeYear = Math.round(toNum(item && item.beforeYear, 0));
+    return {
+      year: ancient ? null : Math.round(toNum(item && item.year, 0)),
+      ancient,
+      beforeYear: beforeYear > 0 ? beforeYear : ancient ? 1000 : null,
+      key: text(item && item.key) || (ancient ? 'before-1000' : ''),
+      label: ancient ? firstString(item && item.label) || 'до 1000 г.' : '',
+      count: Math.max(0, toNum(item && item.count)),
+      firstCount: Math.max(0, toNum(item && item.firstCount)),
+      editionCount: Math.max(0, toNum(item && item.editionCount)),
+      manualCount: Math.max(0, toNum(item && item.manualCount)),
+      avgRating: numOrNull(item && item.avgRating),
+    };
+  }).filter((item) => item.count > 0 && (item.ancient || item.year > 0))
+    .sort((a, b) => {
+      if (a.ancient || b.ancient) return a.ancient ? -1 : 1;
+      return a.year - b.year;
+    });
 
   const timeline = arr(source.timeline).map((item) => ({
     month: text(item && item.month),
@@ -2932,7 +2955,7 @@ function booksFromWorks(works) {
   return list;
 }
 
-function openWorksModal({ workIds = null, books = null, kicker, title, subtitle, hint = '', groupLabel }) {
+function openWorksModal({ workIds = null, books = null, kicker, title, subtitle, hint = '', groupLabel, emptyText = 'Нет книг с метадатой' }) {
   const list = books || booksFromWorks(workIds);
   const count = list.length;
   openBookListModal({
@@ -2941,7 +2964,7 @@ function openWorksModal({ workIds = null, books = null, kicker, title, subtitle,
     subtitle: subtitle || `${fmtInt(count)} ${plural(count, ['книга', 'книги', 'книг'])}`,
     hint,
     groupLabel: groupLabel || title || 'Книги',
-    emptyText: 'Нет книг с метадатой',
+    emptyText,
     books: list,
     sortScope: kicker ? `books-${kicker}` : 'books',
   });
@@ -3151,6 +3174,47 @@ function unknownYearsReason(backfill) {
   return 'провайдеры не знают';
 }
 
+/**
+ * Drilldown of the ancient bucket («до 1000 г.»).
+ *
+ * Shared by the decade donut slice and the year-chart column: both open this
+ * list. The bucket has no year of its own, so the list is «every work older
+ * than the bound», not an equality filter on `year`. Every row keeps the
+ * «…» → «Исправить год» action; a manual correction moves the work out of the
+ * bucket into its real decade/year on the next stats load (the server derives
+ * both charts from `work.year`).
+ */
+function openAncientYearModal(bucket) {
+  const data = state.data || {};
+  const beforeYear = Math.round(toNum(bucket && bucket.beforeYear)) || 1000;
+  const books = Object.values(data.booksIndex || {})
+    .filter((entry) => Number.isFinite(entry.year) && entry.year < beforeYear)
+    .sort((a, b) => a.year - b.year || String(a.title || '').localeCompare(String(b.title || ''), 'ru'));
+  const firstCount = books.filter((entry) => entry.yearSource === 'first').length;
+  const editionCount = books.filter((entry) => entry.yearSource === 'edition').length;
+  const manualCount = books.filter((entry) => entry.yearSource === 'manual').length;
+  const marks = [
+    firstCount > 0 ? `${fmtInt(firstCount)}: первоиздание` : '',
+    editionCount > 0 ? `${fmtInt(editionCount)}: год издания` : '',
+    manualCount > 0 ? `${fmtInt(manualCount)}: ручная правка` : '',
+  ].filter(Boolean);
+  openWorksModal({
+    books,
+    kicker: 'Древние книги',
+    title: `Книги до ${beforeYear} г.`,
+    subtitle:
+      `${fmtInt(books.length)} ${plural(books.length, ['книга', 'книги', 'книг'])}: ` +
+      `написаны раньше ${beforeYear} года` +
+      (marks.length ? ` · ${marks.join(' · ')}` : ''),
+    hint:
+      'Этот бакет — «вся древность» на графике лет: такие годы не растягивают ось. ' +
+      'Год можно исправить вручную: меню «…» у книги → «Исправить год»; после правки ' +
+      'книга переедет из бакета в свой настоящий год.',
+    groupLabel: `до ${beforeYear} г.`,
+    emptyText: 'Нет книг старше 1000 года',
+  });
+}
+
 /** Drilldown of the year-less works; the row menu fixes a year manually. */
 function openUnknownYearModal() {
   const data = state.data || {};
@@ -3192,15 +3256,27 @@ function renderDecades(data) {
   const unknown = all
     .filter((item) => item.unknown)
     .reduce((sum, item) => sum + item.count, 0);
+  // «до 1000 г.» is a bucket, not a decade: it is counted in the slices and
+  // in the centre, but the note must not call it a decade.
+  const ancientItems = decades.filter((item) => item.ancient);
+  const ancientTotal = ancientItems.reduce((sum, item) => sum + item.count, 0);
+  const realDecades = decades.filter((item) => !item.ancient);
   const total = decades.reduce((sum, item) => sum + item.count, 0);
   const editionTotal = decades.reduce((sum, item) => sum + (item.editionCount || 0), 0);
   if (note) {
-    note.textContent = decades.length
-      ? `${fmtInt(decades.length)} ${plural(decades.length, ['десятилетие', 'десятилетия', 'десятилетий'])}` +
-        (editionTotal > 0
-          ? ` · * — год издания у ${fmtInt(editionTotal)} ${plural(editionTotal, ['книга', 'книги', 'книг'])}`
-          : '')
-      : '';
+    const parts = [];
+    if (realDecades.length) {
+      parts.push(
+        `${fmtInt(realDecades.length)} ${plural(realDecades.length, ['десятилетие', 'десятилетия', 'десятилетий'])}`
+      );
+    }
+    if (ancientTotal > 0) {
+      parts.push(`${fmtInt(ancientTotal)} ${plural(ancientTotal, ['книга', 'книги', 'книг'])} до 1000 г.`);
+    }
+    if (editionTotal > 0) {
+      parts.push(`* — год издания у ${fmtInt(editionTotal)} ${plural(editionTotal, ['книга', 'книги', 'книг'])}`);
+    }
+    note.textContent = parts.join(' · ');
     if (unknown > 0) {
       if (note.textContent) note.append(document.createTextNode(' · '));
       note.append(unknownYearsButton(unknown));
@@ -3215,11 +3291,14 @@ function renderDecades(data) {
   }
 
   const segments = decades.map((item, index) => ({
-    key: `decade-${item.start}`,
+    // The ancient bucket keeps the server's stable key (`before-1000`), so a
+    // click routes by data, never by the label or by `start === 0`.
+    key: item.key || `decade-${item.start}`,
     label: item.editionCount > 0 ? `${item.label}*` : item.label,
     value: item.count,
     color: DECADE_COLORS[index % DECADE_COLORS.length],
     decadeStart: item.start,
+    ...(item.ancient ? { ancient: true, beforeYear: item.beforeYear, bucketKey: item.key } : {}),
   }));
 
   renderDonut(donutHost, {
@@ -3231,6 +3310,12 @@ function renderDecades(data) {
     ariaLabel: 'Распределение книг по десятилетиям издания. Выберите десятилетие, чтобы увидеть годы',
     secondary: (seg) => `${fmtPercent(seg.value, total)} всех книг с годом`,
     onSelect: (seg) => {
+      if (seg.ancient) {
+        // No year to show inside this bucket: open the list itself, the same
+        // drilldown the year column uses.
+        openAncientYearModal(seg);
+        return;
+      }
       const start = toNum(seg.decadeStart);
       if (!Number.isFinite(start) || start <= 0) return;
       state.selectedDecade = { start, label: seg.label };
@@ -3352,14 +3437,25 @@ function renderYearBarsWidget(data) {
     host._booksYearResize = null;
   }
 
-  const years = data.years.slice().sort((a, b) => a.year - b.year);
+  // The ancient bucket («до 1000 г.») arrives as one `years[]` entry with
+  // `ancient: true` and no `year`: it is painted in its own slot on the left,
+  // so it never enters the year axis (one book from 300 AD must not stretch
+  // the axis back). Everything below separates it from the real years.
+  const years = data.years.slice().sort((a, b) => {
+    if (a.ancient || b.ancient) return a.ancient ? -1 : 1;
+    return a.year - b.year;
+  });
+  const realYears = years.filter((item) => !item.ancient);
+  const ancientItem = years.find((item) => item.ancient) || null;
   const options = {
     onYearClick: openYearModal,
+    // Same list as the decade slice: the bucket is one drilldown, not two.
+    onAncientClick: (bucket) => openAncientYearModal(bucket),
     unitForms: ['книга', 'книги', 'книг'],
     shareLabel: 'всех книг',
     emptyText: 'Нет данных по годам издания',
-    ariaLabel: years.length
-      ? `Книги по годам издания: ${years[0].year} — ${years[years.length - 1].year}`
+    ariaLabel: realYears.length
+      ? `Книги по годам издания: ${realYears[0].year} — ${realYears[realYears.length - 1].year}`
       : 'Книги по годам издания',
     // Honest tooltip: a year taken from the print run is marked, never called
     // a first publication.
@@ -3371,8 +3467,10 @@ function renderYearBarsWidget(data) {
   renderYearBars(host, years, options);
 
   if (note) {
-    const total = years.reduce((sum, item) => sum + item.count, 0);
-    const ancient = toNum(data.summary && data.summary.ancientBookCount);
+    const total = realYears.reduce((sum, item) => sum + item.count, 0);
+    const ancient = toNum(
+      ancientItem ? ancientItem.count : data.summary && data.summary.ancientBookCount
+    );
     const unknown = toNum(data.summary && data.summary.yearUnknownCount);
     const editionCount = toNum(data.summary && data.summary.yearEditionCount);
     const manualCount = toNum(data.summary && data.summary.yearManualCount);
@@ -3391,11 +3489,11 @@ function renderYearBarsWidget(data) {
     // export file that simply had no «Год издания» column. Never call the whole
     // bucket «провайдеры не знают» while unlinked works are still in it.
     const backfill = data.summary && data.summary.yearBackfill;
-    const base = !years.length
+    const base = !realYears.length
       ? `${ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных'}${editionNote}${manualNote}`
-      : years.length === 1
-        ? `${years[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${editionNote}${manualNote}`
-        : `${years[0].year} — ${years[years.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${editionNote}${manualNote}`;
+      : realYears.length === 1
+        ? `${realYears[0].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${editionNote}${manualNote}`
+        : `${realYears[0].year} — ${realYears[realYears.length - 1].year} · ${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}${ancientNote}${editionNote}${manualNote}`;
     note.textContent = base;
     if (unknown > 0) {
       note.append(document.createTextNode(' · '));

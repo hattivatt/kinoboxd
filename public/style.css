@@ -1697,6 +1697,18 @@ img { display: block; }
 }
 @keyframes barIn { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 .tl-bar.is-hot { opacity: 1; filter: brightness(1.3) drop-shadow(0 0 5px rgba(255, 128, 0, 0.35)); }
+/* «до 1000 г.»: its own slot, not a year on the axis — a different colour and
+   a tinted background with a dashed separator keep that honest at a glance. */
+.tl-bar.is-ancient { fill: var(--blue); opacity: 0.9; }
+.tl-bar.is-ancient.is-hot { filter: brightness(1.25) drop-shadow(0 0 5px rgba(64, 188, 244, 0.4)); }
+.tl-slot-ancient { fill: rgba(64, 188, 244, 0.06); }
+.tl-separator {
+  stroke: rgba(255, 255, 255, 0.16);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  shape-rendering: crispEdges;
+}
+.tl-xlabel-ancient { fill: var(--muted); }
 .tl-hit { fill: transparent; cursor: default; }
 .tl-hit.is-clickable { cursor: pointer; }
 .tl-hit.is-clickable:hover { fill: rgba(255, 128, 0, 0.06); }

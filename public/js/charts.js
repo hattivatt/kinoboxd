@@ -435,16 +435,27 @@ export function renderTimeline(host, timeline, { onMonthClick } = {}) {
    release years
    ========================================================= */
 
+/** Width of the separate ancient slot and the gap before the year axis. */
+const ANCIENT_SLOT_W = 54;
+const ANCIENT_SLOT_GAP = 14;
+
 /**
  * Full-width bar chart of watched films by their release year.
  * Every year between the first and the last gets a column, so gaps are
  * drawn as zero-height bars and the x axis stays linear. Same visual
  * language as the monthly timeline; widgets.js re-renders on resize.
  *
+ * A payload may also carry one non-year bucket (`ancient: true`, «до 1000 г.»).
+ * It is painted in its own slot to the left of the year axis, behind a
+ * separator, and shares the y scale only — never the x axis: one book written
+ * in 300 AD must not stretch the axis back to year 300. Clicking the slot
+ * calls `onAncientClick(bucket)` (the same list as the decade bucket).
+ *
  * @param {HTMLElement} host
- * @param {Array<{year:number,count:number}>} years
+ * @param {Array<{year?:number,count:number,ancient?:boolean,beforeYear?:number,label?:string}>} years
  * @param {object} [opts]
  * @param {(year:number)=>void} [opts.onYearClick]
+ * @param {(bucket:object)=>void} [opts.onAncientClick]
  * @param {string[]|null} [opts.unitForms] plural forms of the unit ("книга"/"фильм");
  *        when set the tooltip names it, otherwise the film wording stays compact
  * @param {string} [opts.shareLabel] suffix of the percentage line ("всех фильмов")
@@ -453,6 +464,7 @@ export function renderTimeline(host, timeline, { onMonthClick } = {}) {
  */
 export function renderYearBars(host, years, {
   onYearClick,
+  onAncientClick,
   unitForms = null,
   shareLabel = 'всех фильмов',
   emptyText = 'Нет данных по годам выпуска',
@@ -460,10 +472,31 @@ export function renderYearBars(host, years, {
   yearNote = null,
 } = {}) {
   const counts = new Map();
+  // The ancient bucket is not a year: it is collected apart so it can be
+  // drawn in its own slot. More than one such entry is summed, never doubled.
+  let ancient = null;
   for (const item of Array.isArray(years) ? years : []) {
-    const year = Math.round(toNum(item && item.year));
     const count = Math.max(0, toNum(item && item.count));
-    if (!(year > 0) || !(count > 0)) continue;
+    if (!(count > 0)) continue;
+    if (item && item.ancient) {
+      if (!ancient) {
+        ancient = {
+          count: 0,
+          editionCount: 0,
+          manualCount: 0,
+          label: item.label || 'до 1000 г.',
+          beforeYear: Math.round(toNum(item.beforeYear)) || null,
+          key: item.key || 'before-1000',
+          ancient: true,
+        };
+      }
+      ancient.count += count;
+      ancient.editionCount += Math.max(0, toNum(item.editionCount));
+      ancient.manualCount += Math.max(0, toNum(item.manualCount));
+      continue;
+    }
+    const year = Math.round(toNum(item && item.year));
+    if (!(year > 0)) continue;
     const current = counts.get(year) || { count: 0, editionCount: 0, manualCount: 0 };
     current.count += count;
     current.editionCount += Math.max(0, toNum(item && item.editionCount));
@@ -472,29 +505,38 @@ export function renderYearBars(host, years, {
   }
 
   clear(host);
-  if (!counts.size) {
+  if (!counts.size && !ancient) {
     host.append(el('div', { class: 'empty-state', text: emptyText }));
     return;
   }
 
-  const minYear = Math.min(...counts.keys());
-  const maxYear = Math.max(...counts.keys());
   const data = [];
-  for (let year = minYear; year <= maxYear; year += 1) {
-    const entry = counts.get(year) || { count: 0, editionCount: 0, manualCount: 0 };
-    data.push({ year, ...entry });
+  if (counts.size) {
+    const minYear = Math.min(...counts.keys());
+    const maxYear = Math.max(...counts.keys());
+    for (let year = minYear; year <= maxYear; year += 1) {
+      const entry = counts.get(year) || { count: 0, editionCount: 0, manualCount: 0 };
+      data.push({ year, ...entry });
+    }
   }
+  const minYear = counts.size ? Math.min(...counts.keys()) : null;
+  const maxYear = counts.size ? Math.max(...counts.keys()) : null;
   const total = data.reduce((sum, item) => sum + item.count, 0);
 
+  const slotW = ancient ? ANCIENT_SLOT_W : 0;
+  const slotGap = ancient ? ANCIENT_SLOT_GAP : 0;
   const baseWidth = Math.max(host.clientWidth || 0, 320);
   const minStep = data.length > 40 ? 5 : 22;
-  const width = Math.ceil(Math.max(baseWidth, data.length * minStep + 56));
+  const width = Math.ceil(Math.max(baseWidth, data.length * minStep + 56 + slotW + slotGap));
   const height = 288;
   const pad = { left: 38, right: 12, top: 14, bottom: 34 };
-  const plotW = width - pad.left - pad.right;
+  // The year axis starts after the ancient slot; the slot itself is not a
+  // year column, so gaps/scale/step count only real years.
+  const axisLeft = pad.left + slotW + slotGap;
+  const plotW = width - axisLeft - pad.right;
   const plotH = height - pad.top - pad.bottom;
-  const stepX = plotW / data.length;
-  const barW = Math.max(3.5, Math.min(28, stepX * 0.66));
+  const stepX = data.length ? plotW / data.length : 0;
+  const barW = data.length ? Math.max(3.5, Math.min(28, stepX * 0.66)) : 0;
 
   const maxValue = Math.max(1, ...data.map((item) => item.count));
   const step = niceStep(maxValue / 4);
@@ -507,7 +549,9 @@ export function renderYearBars(host, years, {
     viewBox: `0 0 ${width} ${height}`,
     class: 'timeline-svg yearbars-svg',
     role: 'img',
-    'aria-label': ariaLabel || `Просмотры по годам выпуска: ${minYear} — ${maxYear}`,
+    'aria-label': ariaLabel || (minYear != null
+      ? `Просмотры по годам выпуска: ${minYear} — ${maxYear}`
+      : 'Просмотры по годам выпуска'),
   });
 
   // horizontal grid + y labels
@@ -528,9 +572,26 @@ export function renderYearBars(host, years, {
     svg.append(label);
   }
 
+  // The ancient slot: a tinted background + a dashed separator say «this is
+  // not a year on the axis, it is everything before it».
+  if (ancient) {
+    svg.append(svgEl('rect', {
+      x: pad.left - 2,
+      y: pad.top,
+      width: slotW + 4,
+      height: plotH,
+      class: 'tl-slot-ancient',
+    }));
+    const sepX = pad.left + slotW + slotGap / 2;
+    svg.append(svgEl('line', {
+      x1: sepX, x2: sepX, y1: pad.top, y2: pad.top + plotH,
+      class: 'tl-separator',
+    }));
+  }
+
   // bars + hit areas
   data.forEach((item, index) => {
-    const x = pad.left + index * stepX + (stepX - barW) / 2;
+    const x = axisLeft + index * stepX + (stepX - barW) / 2;
     const h = (item.count / scaleMax) * plotH;
     const y = pad.top + plotH - h;
 
@@ -545,7 +606,7 @@ export function renderYearBars(host, years, {
     svg.append(bar);
 
     const hit = svgEl('rect', {
-      x: pad.left + index * stepX,
+      x: axisLeft + index * stepX,
       y: pad.top,
       width: stepX,
       height: plotH,
@@ -592,19 +653,93 @@ export function renderYearBars(host, years, {
     svg.append(hit);
   });
 
+  // The ancient bucket: its own slot, its own label, its own click target.
+  if (ancient) {
+    const forms = unitForms || ['фильм', 'фильма', 'фильмов'];
+    const barX = pad.left + (slotW - Math.min(28, slotW * 0.62)) / 2;
+    const ancientBarW = Math.min(28, slotW * 0.62);
+    const h = (ancient.count / scaleMax) * plotH;
+    const y = pad.top + plotH - h;
+
+    const bar = svgEl('rect', {
+      x: barX, y,
+      width: ancientBarW,
+      height: Math.max(h, 0),
+      rx: Math.min(2.5, ancientBarW / 2),
+      class: 'tl-bar is-ancient',
+    });
+    svg.append(bar);
+
+    const hit = svgEl('rect', {
+      x: pad.left - 2,
+      y: pad.top,
+      width: slotW + 4,
+      height: plotH,
+      class: 'tl-hit',
+    });
+    hit.setAttribute('data-bucket', String(ancient.key || 'before-1000'));
+    hit.addEventListener('pointerenter', (event) => {
+      bar.classList.add('is-hot');
+      showTooltip(
+        `${ancient.label} — ${fmtInt(ancient.count)} ${plural(ancient.count, forms)}`,
+        `${fmtPercent(ancient.count, total + ancient.count)} ${shareLabel}` +
+          (ancient.editionCount > 0
+            ? ` · ${fmtInt(ancient.editionCount)} ${plural(ancient.editionCount, forms)}: год издания`
+            : ''),
+      );
+      moveTooltip(event);
+    });
+    hit.addEventListener('pointermove', moveTooltip);
+    hit.addEventListener('pointerleave', () => {
+      bar.classList.remove('is-hot');
+      hideTooltip();
+    });
+    if (typeof onAncientClick === 'function') {
+      hit.classList.add('is-clickable');
+      hit.setAttribute('role', 'button');
+      hit.setAttribute('tabindex', '0');
+      hit.setAttribute('aria-label',
+        `${ancient.label}: ${fmtInt(ancient.count)} ${plural(ancient.count, forms)} — открыть список`);
+      const activate = () => {
+        hideTooltip();
+        onAncientClick(ancient);
+      };
+      hit.addEventListener('click', activate);
+      hit.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        activate();
+      });
+    }
+    svg.append(hit);
+
+    // Two-line label: the slot is narrow on purpose, it is not a year tick.
+    const lines = ancient.beforeYear ? ['до', `${ancient.beforeYear} г.`] : [ancient.label];
+    lines.forEach((line, index) => {
+      const text = svgEl('text', {
+        x: pad.left + slotW / 2,
+        y: height - 12 - (lines.length - 1 - index) * 11,
+        'text-anchor': 'middle',
+        class: 'tl-xlabel tl-xlabel-ancient',
+      });
+      text.textContent = line;
+      svg.append(text);
+    });
+  }
+
   // x labels: evenly spaced years, always keeping the first and the last
   const maxLabels = Math.max(2, Math.floor(plotW / 64));
   const rawStep = Math.ceil(data.length / maxLabels);
   const nice = [1, 2, 5, 10, 20, 25, 50, 100];
   const yearStep = nice.find((value) => value >= rawStep) || Math.ceil(rawStep / 100) * 100;
 
-  const picked = new Set([minYear, maxYear]);
-  for (let year = Math.ceil(minYear / yearStep) * yearStep; year <= maxYear; year += yearStep) {
+  const picked = new Set(minYear != null ? [minYear, maxYear] : []);
+  for (let year = minYear != null ? Math.ceil(minYear / yearStep) * yearStep : 0; minYear != null && year <= maxYear; year += yearStep) {
     picked.add(year);
   }
   const labels = [...picked]
     .sort((a, b) => a - b)
-    .map((year) => ({ year, cx: pad.left + (year - minYear + 0.5) * stepX }));
+    .map((year) => ({ year, cx: axisLeft + (year - minYear + 0.5) * stepX }));
 
   const drawn = [];
   for (const label of labels) {
