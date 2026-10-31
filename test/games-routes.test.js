@@ -253,3 +253,45 @@ test('strict query contract and error mapping', async (t) => {
   assert.equal((await unknownCard.json()).code, 'game_not_in_library');
 });
 
+
+test('POST /refresh re-imports the cached profile with force', async (t) => {
+  const client = createFakeClient();
+  // 7037 is the round smoke port and may be taken by a dev server.
+  const port = PORT + 22;
+  const server = buildApp(client).listen(port);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${port}`;
+
+  const noProfile = await fetch(`${base}/api/games/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(noProfile.status, 400);
+  assert.equal((await noProfile.json()).code, 'profile_required');
+
+  const unknown = await fetch(`${base}/api/games/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile: 'steam-76561198000000009' }),
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal((await unknown.json()).code, 'unknown_profile');
+
+  // A manual refresh must bypass the 24 h library TTL: `force: true` in the job.
+  const started = await fetch(`${base}/api/games/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile: PROFILE_KEY }),
+  });
+  assert.equal(started.status, 201);
+  const job = await started.json();
+  assert.ok(job.jobId);
+  assert.equal(job.force, true);
+  assert.equal(job.profile, PROFILE_KEY);
+
+  const done = await waitForJob(base, job.jobId);
+  assert.equal(done.status, 'done');
+  assert.equal(done.gameCount, 10);
+  assert.equal(done.totalHours, 616.2);
+});

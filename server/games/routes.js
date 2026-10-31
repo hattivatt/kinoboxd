@@ -202,6 +202,25 @@ function createRouter(deps = {}) {
     }
   });
 
+  /**
+   * `POST /api/games/refresh` — re-read the library/achievements of an already
+   * imported profile (ИГРЫ-АРХИТЕКТУРА §5). Always `force`: a manual refresh
+   * exists to bypass the TTLs, so it never returns the cached snapshot.
+   * Body: `{ profile: "steam-<steamid64>" }` (query fallback for curl).
+   */
+  router.post('/refresh', (req, res, next) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const requested = body.profile != null ? body.profile : req.query.profile;
+      const scope = resolveProfileOrThrow(requested);
+      const job = importer.startImport(scope.parsed.userKey, { client, force: true });
+      const created = job.status === 'running' && !job.reused && job.stage === 'queued';
+      res.status(created ? 201 : 200).json(job);
+    } catch (err) {
+      next(mapError(err));
+    }
+  });
+
   router.get('/import/status', (req, res, next) => {
     try {
       const id = req.query.id;
