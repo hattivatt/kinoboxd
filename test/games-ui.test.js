@@ -293,6 +293,43 @@ test('normalizeGamesPayload keeps the contract numbers', async () => {
   }
 });
 
+test('normalizeGamesPayload reads the real backend shape (meta.keyConfigured, top-level libraryPartial)', async () => {
+  const { normalizeGamesPayload } = await import('../public/js/games-view.js');
+  // Exactly what `GET /api/games/stats` returned for the live 340-game profile
+  // (trimmed): `libraryPartial` sits at the top level, the key flag lives in
+  // `meta.keyConfigured` — not in `summary`.
+  const data = normalizeGamesPayload({
+    sources: { profile: { key: 'steam-1', userKey: '1', personaName: 'player' } },
+    libraryPartial: true,
+    summary: {
+      gameCount: 3,
+      ownedCount: 3,
+      playedCount: 1,
+      unplayedCount: 2,
+      totalHours: 2,
+    },
+    meta: { keyConfigured: false, keySource: null },
+    gamesIndex: { 70: { appid: 70, name: 'Half-Life', hours: 1.5 } },
+  });
+  assert.equal(data.summary.libraryPartial, true, 'top-level libraryPartial доезжает до summary');
+  assert.equal(data.summary.steamKeyConfigured, false, 'meta.keyConfigured доезжает до summary');
+  assert.equal(data.gamesIndex[70].hours, 1.5);
+  // A partial library hides the library metrics instead of printing zeroes.
+  const { summaryMetrics } = await import('../public/js/games-view.js');
+  const keys = summaryMetrics(data.summary).map((m) => m.key);
+  assert.deepEqual(keys, []);
+});
+
+test('normalizeGamesPayload accepts the steamKey.configured alias', async () => {
+  const { normalizeGamesPayload } = await import('../public/js/games-view.js');
+  const data = normalizeGamesPayload({
+    sources: { profile: { key: 'steam-1', personaName: 'player' } },
+    summary: { gameCount: 1, ownedCount: 1, totalHours: 1 },
+    steamKey: { configured: true, source: 'file' },
+  });
+  assert.equal(data.summary.steamKeyConfigured, true);
+});
+
 test('summary metrics: games / hours / backlog / median / Pareto / 2 weeks', async () => {
   const { normalizeGamesPayload, summaryMetrics } = await import('../public/js/games-view.js');
   const data = normalizeGamesPayload(statsPayload());
@@ -316,7 +353,7 @@ test('summary metrics: games / hours / backlog / median / Pareto / 2 weeks', asy
   assert.match(plain(byKey.get('recent').sub), /последний запуск 29 окт\. 2026/);
 
   assert.equal(byKey.get('completion').value, '34%');
-  assert.match(plain(byKey.get('completion').sub), /180 игр с достижениями/);
+  assert.match(plain(byKey.get('completion').sub), /180 играм с достижениями/);
 
   // Every metric carries the honest tooltip, not just a number.
   assert.match(plain(byKey.get('hours').title), /playtime_forever/);

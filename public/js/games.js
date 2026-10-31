@@ -279,8 +279,12 @@ async function ensureProfiles({ reload = false } = {}) {
     const raw = await getGamesProfiles();
     state.profiles = normalizeProfilesList(raw);
     state.profilesLoaded = true;
+    // `/profiles` reports `steamKey: { configured, source }` (a boolean and a
+    // source label, never the value); an older draft used a bare boolean.
     const flag = raw && typeof raw === 'object'
-      ? (raw.steamKeyConfigured ?? raw.steamKey ?? null)
+      ? (raw.steamKeyConfigured
+        ?? (raw.steamKey && typeof raw.steamKey === 'object' ? raw.steamKey.configured : raw.steamKey)
+        ?? null)
       : null;
     if (typeof flag === 'boolean') setKeyIndicator(flag);
   } catch {

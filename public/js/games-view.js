@@ -322,6 +322,14 @@ function normalizeProfile(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const persona = firstString(raw.personaName, raw.persona, raw.name, raw.userKey, raw.key);
   if (!persona) return null;
+  // `sources.profile.timeCreated` is unix seconds in the real payload (§5.1);
+  // a bare number must not reach `formatDateRu`, which only understands dates.
+  const memberSinceRaw = raw.memberSince ?? raw.timeCreated ?? null;
+  const memberSinceSeconds = numOrNull(memberSinceRaw);
+  const memberSince =
+    memberSinceSeconds != null && memberSinceSeconds >= 100000000
+      ? new Date(memberSinceSeconds * 1000).toISOString()
+      : memberSinceRaw;
   return {
     key: text(raw.key),
     source: text(raw.source) || 'steam',
@@ -330,7 +338,7 @@ function normalizeProfile(raw) {
     avatarUrl: /^https?:\/\//i.test(text(raw.avatarUrl)) ? text(raw.avatarUrl) : '',
     privacy: text(raw.privacy).toLowerCase(),
     importedAt: text(raw.importedAt) || null,
-    memberSince: raw.memberSince ?? raw.timeCreated ?? null,
+    memberSince,
     gameCount: numOrNull(raw.gameCount),
     libraryPartial: boolOrNull(raw.libraryPartial),
   };
@@ -357,15 +365,23 @@ export function normalizeGamesPayload(raw) {
   const playedCount = toCount(summaryRaw.playedCount);
   const unplayedCount = toCount(summaryRaw.unplayedCount);
 
+  // The backend puts `libraryPartial` at the top level (§5.1); older drafts
+  // nested it under `summary`/`sources`. Accept all three spellings.
   const libraryPartial = boolOrNull(summaryRaw.libraryPartial)
+    ?? boolOrNull(source.libraryPartial)
     ?? boolOrNull(sourcesBlock.libraryPartial)
     ?? boolOrNull(profileRaw && profileRaw.libraryPartial)
     ?? null;
   // «ключ настроен?» is a boolean indicator only — the value never leaves the
   // server, and the UI prints «настроен / не настроен», never the token.
+  // `/api/games/stats` reports it as `meta.keyConfigured`, `/profiles` as
+  // `steamKey: { configured }`.
   const steamKeyConfigured = boolOrNull(summaryRaw.steamKeyConfigured)
     ?? boolOrNull(summaryRaw.steamKey)
-    ?? boolOrNull(sourcesBlock.steamKeyConfigured);
+    ?? boolOrNull(sourcesBlock.steamKeyConfigured)
+    ?? boolOrNull(source.meta && source.meta.keyConfigured)
+    ?? boolOrNull(source.steamKey && source.steamKey.configured)
+    ?? boolOrNull(source.steamKeyConfigured);
 
   const summary = {
     gameCount,
@@ -589,7 +605,7 @@ export function summaryMetrics(summary, { profile = null } = {}) {
       label: 'completion',
       value: percentText(s.completion.avgPercent, 0),
       sub: s.completion.gamesWithStats > 0
-        ? `средний по ${fmtInt(s.completion.gamesWithStats)} ${plural(s.completion.gamesWithStats, GAME_PLURAL)} с достижениями`
+        ? `средний по ${fmtInt(s.completion.gamesWithStats)} ${plural(s.completion.gamesWithStats, ['игре', 'играм', 'играм'])} с достижениями`
         : 'средний процент достижений',
       title: 'Средний процент полученных достижений. Считается только по играм, у которых есть статистика достижений — недоступные не считаются нулём.',
     });
@@ -795,9 +811,33 @@ const IMPORT_ERRORS = {
     title: 'Нет ключа Steam Web API',
     message: 'Без ключа Steam отдаёт только профиль, достижения и три последних игры — библиотеки с часами нет. Ключ бесплатный: steamcommunity.com/dev/apikey, затем добавьте его на сервере (STEAM_API_KEY).',
   },
+  steam_key_invalid: {
+    title: 'Ключ Steam Web API отклонён',
+    message: 'Steam ответил 401 на ключ: он отозван, истёк или скопирован с ошибкой. Выпустите новый на steamcommunity.com/dev/apikey и замените STEAM_API_KEY на сервере. Значение ключа нигде не печатается.',
+  },
   steam_unreachable: {
     title: 'Steam недоступен с сервера',
     message: 'Сеть сервера не достучалась до steamcommunity.com (DNS/TLS/таймаут). Это не «источник мёртв»: проверьте резолвер или прокси на хосте и повторите импорт.',
+  },
+  steam_rate_limited: {
+    title: 'Steam просит подождать',
+    message: 'Steam ограничил частоту запросов (429) или включил паузу после ошибок. Подождите несколько минут и повторите импорт — данные в кэше не потеряны.',
+  },
+  steam_http_error: {
+    title: 'Steam ответил ошибкой',
+    message: 'Steam Web API вернул ошибку на запрос библиотеки. Повторите импорт через пару минут; если повторяется — проверьте состояние api.steampowered.com.',
+  },
+  games_import_failed: {
+    title: 'Импорт не удался',
+    message: 'Задача импорта завершилась ошибкой на стороне сервера. Повторите импорт; подробности — в логе сервера.',
+  },
+  target_required: {
+    title: 'Не указан профиль',
+    message: 'Введите vanity URL (steamcommunity.com/id/<имя>) или steamid64 (17 цифр).',
+  },
+  profile_required: {
+    title: 'Не выбран профиль',
+    message: 'Сначала импортируйте профиль Steam — статистика строится ровно по одному профилю.',
   },
   unexpected_parameter: {
     title: 'Сервер не принял запрос',
@@ -833,13 +873,16 @@ const STAGE_LABEL = {
   start: 'Запуск импорта',
   init: 'Подготовка',
   queued: 'В очереди',
+  bootstrap: 'Открываем Steam',
   profile: 'Читаем профиль Steam',
   'steam-profile': 'Читаем профиль Steam',
   community: 'Читаем профиль Steam',
   library: 'Загружаем библиотеку',
   'owned-games': 'Загружаем библиотеку',
   games: 'Загружаем библиотеку',
+  summaries: 'Уточняем профиль',
   achievements: 'Собираем достижения',
+  global: 'Считаем редкость достижений',
   stats: 'Считаем статистику',
   done: 'Готово',
   failed: 'Ошибка',
@@ -863,8 +906,8 @@ export function jobProgress(status) {
   if (stage === 'done' || status.done === true) return 100;
   if (stage === 'failed' || status.failed === true) return 100;
   const weights = {
-    start: 4, init: 8, queued: 6, profile: 18, 'steam-profile': 18, community: 18,
-    library: 52, 'owned-games': 52, games: 52, achievements: 74, stats: 92, done: 100,
+    start: 4, init: 8, queued: 6, bootstrap: 10, profile: 18, 'steam-profile': 18, community: 18,
+    library: 52, 'owned-games': 52, games: 52, summaries: 62, achievements: 74, global: 84, stats: 92, done: 100,
   };
   return weights[stage] != null ? weights[stage] : 10;
 }
