@@ -295,3 +295,42 @@ test('POST /refresh re-imports the cached profile with force', async (t) => {
   assert.equal(done.gameCount, 10);
   assert.equal(done.totalHours, 616.2);
 });
+
+test('a second import for a running target coalesces (200, same jobId)', async (t) => {
+  const client = createFakeClient();
+  const original = client.getProfile.bind(client);
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  client.getProfile = async (target) => {
+    await gate;
+    return original(target);
+  };
+
+  const port = PORT + 23;
+  const server = buildApp(client).listen(port);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${port}`;
+  const start = () =>
+    fetch(`${base}/api/games/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ steamid64: ID, force: true }),
+    });
+
+  const first = await start();
+  assert.equal(first.status, 201, 'a new job answers 201');
+  const firstJob = await first.json();
+
+  const second = await start();
+  assert.equal(second.status, 200, 'a coalesced request answers 200');
+  const secondJob = await second.json();
+  assert.equal(secondJob.jobId, firstJob.jobId);
+  assert.equal(secondJob.status, 'running');
+
+  release();
+  const done = await waitForJob(base, firstJob.jobId);
+  assert.equal(done.status, 'done');
+  assert.equal(done.gameCount, 10);
+});
