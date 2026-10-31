@@ -20,6 +20,14 @@
  * Unlike the other two, a missing Google Books key is NOT an error: the
  * provider still works anonymously, so `loadGbooksKey()` returns null.
  *
+ * Steam credentials are resolved once, in this order:
+ *   1. STEAM_API_KEY           (Steam Web API key, required for the library)
+ *   2. config/steam-token      (local dev fallback, gitignored)
+ * A missing Steam key is NOT an error either: the profile, achievements and
+ * global percentages work without it, and the import degrades to
+ * `libraryPartial` (see ИГРЫ-АРХИТЕКТУРА.md §10.4). `loadSteamKey()` returns
+ * null and `steamKeySource()` returns null.
+ *
  * Tokens are loaded lazily: requiring this module never touches the
  * environment or the filesystem, and a missing Hardcover token does not
  * affect server startup (the book feature is not wired in yet). The caller
@@ -47,6 +55,9 @@ const HARDCOVER_ENV_KEYS = ['HARDCOVER_API_TOKEN', 'HARDCOVER_READ_TOKEN'];
 const GBOOKS_KEY_PATH = path.join(__dirname, '..', 'config', 'gbooks-token');
 const GBOOKS_ENV_KEYS = ['GB_API_KEY', 'BOOKS_GOOGLE_API_KEY'];
 
+const STEAM_KEY_PATH = path.join(__dirname, '..', 'config', 'steam-token');
+const STEAM_ENV_KEYS = ['STEAM_API_KEY'];
+
 const TOKEN_MISSING_MESSAGE =
   'TMDB-токен не найден: задай TMDB_API_TOKEN (read access token v4) в окружении';
 
@@ -62,6 +73,10 @@ let cachedHardcoverSource = null;
 let gbooksLoaded = false;
 let cachedGbooksKey = null;
 let cachedGbooksSource = null;
+
+let steamLoaded = false;
+let cachedSteamKey = null;
+let cachedSteamSource = null;
 
 function fromEnv(keys = ENV_KEYS) {
   for (const key of keys) {
@@ -151,6 +166,34 @@ function gbooksKeySource() {
   return cachedGbooksSource;
 }
 
+/**
+ * Return the Steam Web API key, or null when none is configured.
+ *
+ * The key is only needed for the owned-games library (`GetOwnedGames`); the
+ * community XML endpoints (profile, achievements, global percentages) work
+ * without it. Never log the returned value: report `steamKeySource()` instead.
+ */
+function loadSteamKey() {
+  if (steamLoaded) return cachedSteamKey;
+  const found = fromEnv(STEAM_ENV_KEYS) || fromFile(STEAM_KEY_PATH);
+  cachedSteamKey = found ? found.token : null;
+  cachedSteamSource = found ? found.source : null;
+  steamLoaded = true;
+  return cachedSteamKey;
+}
+
+function steamKeySource() {
+  if (!steamLoaded) loadSteamKey();
+  return cachedSteamSource;
+}
+
+/** Test helper: forget the cached key so the next call re-reads env/file. */
+function resetSteamKeyCache() {
+  steamLoaded = false;
+  cachedSteamKey = null;
+  cachedSteamSource = null;
+}
+
 module.exports = {
   TOKEN_PATH,
   TOKEN_MISSING_MESSAGE,
@@ -166,4 +209,9 @@ module.exports = {
   loadGbooksKey,
   getGbooksKey: loadGbooksKey,
   gbooksKeySource,
+  STEAM_KEY_PATH,
+  loadSteamKey,
+  getSteamKey: loadSteamKey,
+  steamKeySource,
+  resetSteamKeyCache,
 };

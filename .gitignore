@@ -3,6 +3,7 @@ cache/
 config/tmdb-token
 config/hardcover-token
 config/gbooks-token
+config/steam-token
 
 *.token
 .env
@@ -20,6 +21,9 @@ result-*
 
 # book cache (cache-book/ namespace, never committed)
 cache-book/
+
+# games cache (cache-games/ namespace, never committed)
+cache-games/
 
 # worktree-only symlinks to the main tree (never content)
 /cache
