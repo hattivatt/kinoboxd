@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?><profile>
+	<steamID64>76561198000000001</steamID64>
+	<steamID><![CDATA[test-player]]></steamID>
+	<onlineState>offline</onlineState>
+	<stateMessage><![CDATA[Offline]]></stateMessage>
+	<privacyState>public</privacyState>
+	<visibilityState>3</visibilityState>
+	<avatarIcon><![CDATA[https://avatars.akamai.steamstatic.com/3631aebc26f753ed39123ba1d335299a0763c48e.jpg]]></avatarIcon>
+	<avatarMedium><![CDATA[https://avatars.akamai.steamstatic.com/3631aebc26f753ed39123ba1d335299a0763c48e_medium.jpg]]></avatarMedium>
+	<avatarFull><![CDATA[https://avatars.akamai.steamstatic.com/3631aebc26f753ed39123ba1d335299a0763c48e_full.jpg]]></avatarFull>
+	<vacBanned>0</vacBanned>
+	<tradeBanState>None</tradeBanState>
+	<isLimitedAccount>0</isLimitedAccount>
+	<customURL><![CDATA[test-player]]></customURL>
+	<memberSince>February 19, 2011</memberSince>
+	<steamRating></steamRating>
+	<hoursPlayed2Wk>0.0</hoursPlayed2Wk>
+	<headline><![CDATA[]]></headline>
+	<location><![CDATA[]]></location>
+	<realname><![CDATA[]]></realname>
+	<summary><![CDATA[]]></summary>
+ 	<mostPlayedGames>
+<mostPlayedGame>
+			<gameName><![CDATA[Cult of the Lamb]]></gameName>
+			<gameLink><![CDATA[https://steamcommunity.com/app/1313140]]></gameLink>
+			<gameIcon><![CDATA[https://shared.akamai.steamstatic.com/community_assets/images/apps/1313140/337223c1a97705aee1714ad9534c7d6cfabd92b0.jpg]]></gameIcon>
+			<gameLogo><![CDATA[https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1313140/1ac7c83bd1ce239a12d8e67b8ebc45765bb60319/capsule_184x69.jpg?t=1786554901]]></gameLogo>
+			<gameLogoSmall><![CDATA[https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1313140/1ac7c83bd1ce239a12d8e67b8ebc45765bb60319/capsule_184x69.jpg?t=1786554901]]></gameLogoSmall>
+			<hoursPlayed>5.0</hoursPlayed>
+			<hoursOnRecord>13.8</hoursOnRecord>
+			<statsName><![CDATA[1313140]]></statsName>
+		</mostPlayedGame>
+<mostPlayedGame>
+			<gameName><![CDATA[Cyberpunk 2077]]></gameName>
+			<gameLink><![CDATA[https://steamcommunity.com/app/1091500]]></gameLink>
+			<gameIcon><![CDATA[https://shared.akamai.steamstatic.com/community_assets/images/apps/1091500/6897c3848f3e0350d512f59d5bae174a1e3739f9.jpg]]></gameIcon>
+			<gameLogo><![CDATA[https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1091500/590e0988a2fb79f44d3e31e41fd4949eb76abc41/capsule_184x69.jpg?t=1792682505]]></gameLogo>
+			<gameLogoSmall><![CDATA[https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1091500/590e0988a2fb79f44d3e31e41fd4949eb76abc41/capsule_184x69.jpg?t=1792682505]]></gameLogoSmall>
+			<hoursPlayed>1.8</hoursPlayed>
+			<hoursOnRecord>1.8</hoursOnRecord>
+			<statsName><![CDATA[1091500]]></statsName>
+		</mostPlayedGame>
+</mostPlayedGames>
+
+
+	<groups>
+<group isPrimary="1">
+			<groupID64>103582791432470511</groupID64>
+			<groupName><![CDATA[Всадники Кальрадии]]></groupName>
+			<groupURL><![CDATA[ru_calradia]]></groupURL>
+			<headline><![CDATA[Всадники Кальрадии]]></headline>
+			<summary><![CDATA[Официальная группа Rusmnb.ru. Этот сайт, изначально посвященный игре Mount &amp; Blade (&quot;История героя&quot;), аддонам к ней - Warband (&quot;Эпоха турниров&quot;), Огнем и Мечом, На Карибы и ее продолжению - Bannerlord, в настоящий момент стал центром всех игр, которые можно определить как &quot;здесь можно махать мечом&quot;<br><br><a class="bb_link" href="https://steamcommunity.com/linkfilter/?u=http%3A%2F%2Frusmnb.ru" target="_blank" rel=" noopener" >Всадники Кальрадии</a><span class="bb_link_host">[rusmnb.ru]</span><br><a class="bb_link" href="http://www.youtube.com/c/calradia" target="_blank" rel="" >Канал на YouTube</a><br><a class="bb_link" href="https://steamcommunity.com/linkfilter/?u=https%3A%2F%2Fdiscordapp.com%2Finvite%2F4r6knZk" target="_blank" rel=" noopener" >Канал в Discord</a><span class="bb_link_host">[discordapp.com]</span>]]></summary>
+			<avatarIcon><![CDATA[https://avatars.akamai.steamstatic.com/042e8e4e97929cc5725a25904d3f5e8e4a651f0c.jpg]]></avatarIcon>
+			<avatarMedium><![CDATA[https://avatars.akamai.steamstatic.com/042e8e4e97929cc5725a25904d3f5e8e4a651f0c_medium.jpg]]></avatarMedium>
+			<avatarFull><![CDATA[https://avatars.akamai.steamstatic.com/042e8e4e97929cc5725a25904d3f5e8e4a651f0c_full.jpg]]></avatarFull>
+			<memberCount>790</memberCount>
+			<membersInChat>69</membersInChat>
+			<membersInGame>47</membersInGame>
+			<membersOnline>269</membersOnline>
+		</group>
+</groups>
+</profile>

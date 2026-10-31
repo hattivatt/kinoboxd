@@ -1,0 +1,26 @@
+{
+  "achievementpercentages": {
+    "achievements": [
+      {
+        "name": "ACH.SURVIVE_CONTAINER_RIDE",
+        "percent": "74.0"
+      },
+      {
+        "name": "ACH.WAKE_UP",
+        "percent": "64.7"
+      },
+      {
+        "name": "ACH.LASER",
+        "percent": "62.6"
+      },
+      {
+        "name": "ACH.BOX_HOLE_IN_ONE",
+        "percent": "28.9"
+      },
+      {
+        "name": "ACH.SPEED_RUN_LEVEL",
+        "percent": "4.0"
+      }
+    ]
+  }
+}
