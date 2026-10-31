@@ -22,6 +22,7 @@ import {
   initCompare, openCompare, renderCompareAvailability,
 } from './compare.js';
 import { initBooks, showBooks, hideBooks, resetBooks } from './books.js';
+import { initGames, showGames, hideGames, resetGames } from './games.js';
 import { $, clear, toast, dismissToasts, errorBox, shortErrorMessage, toNum, fmtInt } from './ui.js';
 
 const SESSION_KEY = 'kinoboxd.session.v1';
@@ -78,13 +79,26 @@ function showView(name) {
 }
 
 /* =========================================================
-   main tabs: films ↔ books
+   main tabs: films ↔ books ↔ games
    ========================================================= */
+
+const TABS = ['films', 'books', 'games'];
+const TAB_TITLE = {
+  films: 'kinoboxd — твоя киностатистика',
+  books: 'kinoboxd — твоя книжная статистика',
+  games: 'kinoboxd — статистика по играм',
+};
+
+/** Any unknown/legacy `?tab=` value falls back to films (backward compatible). */
+function normalizeTab(value) {
+  const tab = String(value == null ? '' : value).trim().toLowerCase();
+  return TABS.includes(tab) ? tab : 'films';
+}
 
 function readTabFromUrl() {
   try {
     const params = new URLSearchParams(window.location.search);
-    if (params.has('tab')) return params.get('tab') === 'books' ? 'books' : 'films';
+    if (params.has('tab')) return normalizeTab(params.get('tab'));
   } catch {
     /* ignore malformed URLs */
   }
@@ -93,7 +107,7 @@ function readTabFromUrl() {
 
 function storedTab() {
   try {
-    return window.localStorage.getItem(TAB_KEY) === 'books' ? 'books' : 'films';
+    return normalizeTab(window.localStorage.getItem(TAB_KEY));
   } catch {
     return 'films';
   }
@@ -105,7 +119,7 @@ function initialTab() {
 
 function persistTab(tab) {
   try {
-    window.localStorage.setItem(TAB_KEY, tab === 'books' ? 'books' : 'films');
+    window.localStorage.setItem(TAB_KEY, normalizeTab(tab));
   } catch {
     /* private mode — the URL still carries the tab */
   }
@@ -113,21 +127,20 @@ function persistTab(tab) {
 
 function writeTabUrl(tab, { push = true } = {}) {
   try {
+    const next = normalizeTab(tab);
     const url = new URL(window.location.href);
-    if (tab === 'books') url.searchParams.set('tab', 'books');
-    else url.searchParams.delete('tab');
-    const next = `${url.pathname}${url.search}${url.hash}`;
-    if (push) window.history.pushState({ tab }, '', next);
-    else window.history.replaceState({ tab }, '', next);
+    if (next === 'films') url.searchParams.delete('tab');
+    else url.searchParams.set('tab', next);
+    const href = `${url.pathname}${url.search}${url.hash}`;
+    if (push) window.history.pushState({ tab: next }, '', href);
+    else window.history.replaceState({ tab: next }, '', href);
   } catch {
     /* history can be unavailable in exotic embeds */
   }
 }
 
 function paintTabs() {
-  document.title = activeTab === 'books'
-    ? 'kinoboxd — твоя книжная статистика'
-    : 'kinoboxd — твоя киностатистика';
+  document.title = TAB_TITLE[activeTab] || TAB_TITLE.films;
   for (const button of document.querySelectorAll('.tab-btn[data-tab]')) {
     const isActive = button.dataset.tab === activeTab;
     button.classList.toggle('is-active', isActive);
@@ -140,16 +153,24 @@ function applyTabFromLocation() {
   paintTabs();
 }
 
+/** Deactivate the tab we are leaving (stops its pollers, hides its tooltip). */
+function leaveTab(tab) {
+  if (tab === 'books') hideBooks();
+  if (tab === 'games') hideGames();
+}
+
 async function switchTab(tab, { push = true } = {}) {
-  const next = tab === 'books' ? 'books' : 'films';
+  const next = normalizeTab(tab);
   if (next === activeTab) {
     paintTabs();
     return;
   }
+  const previous = activeTab;
   activeTab = next;
   persistTab(next);
   if (push) writeTabUrl(next);
   paintTabs();
+  leaveTab(previous);
 
   if (next === 'books') {
     closeAllModals();
@@ -158,7 +179,13 @@ async function switchTab(tab, { push = true } = {}) {
     return;
   }
 
-  hideBooks();
+  if (next === 'games') {
+    closeAllModals();
+    showView('games');
+    await showGames();
+    return;
+  }
+
   closeAllModals();
   if (lastFilmView === 'enrich' && state.uploadId) {
     showView('enrich');
@@ -531,14 +558,19 @@ async function boot() {
     return;
   }
 
-  // Tab routing: books owns its own payload/flow, so the film boot is skipped
-  // entirely when the books tab is the active one.
+  // Tab routing: books and games own their own payloads/flows, so the film
+  // boot is skipped entirely when one of them is the active tab.
   applyTabFromLocation();
   // Make the tab explicit in the URL so back/forward can always restore it.
   if (readTabFromUrl() === null) writeTabUrl(activeTab, { push: false });
   if (activeTab === 'books') {
     showView('books');
     await showBooks();
+    return;
+  }
+  if (activeTab === 'games') {
+    showView('games');
+    await showGames();
     return;
   }
 
@@ -664,6 +696,8 @@ function handleLoggedOut() {
   closeAllModals();
   hideBooks();
   resetBooks();
+  hideGames();
+  resetGames();
   showLoginScreen({ resetInput: true });
 }
 
@@ -1599,6 +1633,7 @@ function bindUi() {
   window.addEventListener('kinoboxd:auth-required', handleAuthRequired);
 
   initBooks({ onActivate: () => showView('books') });
+  initGames({ onActivate: () => showView('games') });
 
   document.addEventListener('click', (event) => {
     const button = event.target.closest('.tab-btn[data-tab]');

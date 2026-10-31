@@ -36,15 +36,15 @@ export function initAuth({ onSuccess, onLoggedOut } = {}) {
     });
   }
 
-  for (const id of ['logout-btn', 'books-logout-btn']) {
+  for (const id of ['logout-btn', 'books-logout-btn', 'games-logout-btn']) {
     const button = $(id);
     if (button) button.addEventListener('click', handleLogout);
   }
 }
 
 export function setAuthUi({ authRequired = false } = {}) {
-  // Both topbars (films and books) carry a logout button.
-  for (const id of ['logout-btn', 'books-logout-btn']) {
+  // Every topbar (films, books, games) carries a logout button.
+  for (const id of ['logout-btn', 'books-logout-btn', 'games-logout-btn']) {
     const button = $(id);
     if (button) button.hidden = !authRequired;
   }
@@ -125,7 +125,7 @@ async function submit() {
 }
 
 async function handleLogout() {
-  const buttons = ['logout-btn', 'books-logout-btn']
+  const buttons = ['logout-btn', 'books-logout-btn', 'games-logout-btn']
     .map((id) => $(id))
     .filter(Boolean);
   for (const button of buttons) button.disabled = true;

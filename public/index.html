@@ -214,6 +214,12 @@
                 </span>
                 <span class="tab-label">Книги</span>
               </button>
+              <button type="button" class="tab-btn" data-tab="games" role="tab" aria-selected="false" title="Статистика по играм Steam">
+                <span class="tab-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="7" width="19" height="10" rx="5"/><path d="M7.5 12h3M9 10.5v3"/><circle cx="15.6" cy="11" r="1"/><circle cx="17.6" cy="13.2" r="1"/></svg>
+                </span>
+                <span class="tab-label">Игры</span>
+              </button>
             </nav>
           </div>
           <div class="topbar-actions">
@@ -523,6 +529,12 @@
                   <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.2A2.2 2.2 0 0 1 6.2 3H20v15.4H6.5A2.5 2.5 0 0 0 4 20.9z"/><path d="M4 5.2v15.7"/><path d="M8.5 7.5h7"/></svg>
                 </span>
                 <span class="tab-label">Книги</span>
+              </button>
+              <button type="button" class="tab-btn" data-tab="games" role="tab" aria-selected="false" title="Статистика по играм Steam">
+                <span class="tab-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="7" width="19" height="10" rx="5"/><path d="M7.5 12h3M9 10.5v3"/><circle cx="15.6" cy="11" r="1"/><circle cx="17.6" cy="13.2" r="1"/></svg>
+                </span>
+                <span class="tab-label">Игры</span>
               </button>
             </nav>
           </div>
@@ -901,6 +913,255 @@
             <p class="dash-footer-line">
               Оценки и даты — LiveLib и Hardcover. Метадата книг (жанры, серии, издательства) —
               <a href="https://hardcover.app/" target="_blank" rel="noopener">Hardcover</a>.
+            </p>
+          </footer>
+        </section>
+      </div>
+    </section>
+    <!-- ───────────────────────── games ───────────────────────── -->
+    <section class="view" data-view="games" hidden>
+      <header class="topbar">
+        <div class="topbar-inner has-tabs">
+          <div class="topbar-left">
+            <div class="brand" aria-label="kinoboxd">
+              <span class="brand-name">kino<span class="accent">boxd</span></span>
+            </div>
+            <nav class="tab-switch" role="tablist" aria-label="Разделы">
+              <button type="button" class="tab-btn" data-tab="films" role="tab" aria-selected="false" title="Киностатистика">
+                <span class="tab-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>
+                </span>
+                <span class="tab-label">Фильмы</span>
+              </button>
+              <button type="button" class="tab-btn" data-tab="books" role="tab" aria-selected="false" title="Книжная статистика">
+                <span class="tab-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.2A2.2 2.2 0 0 1 6.2 3H20v15.4H6.5A2.5 2.5 0 0 0 4 20.9z"/><path d="M4 5.2v15.7"/><path d="M8.5 7.5h7"/></svg>
+                </span>
+                <span class="tab-label">Книги</span>
+              </button>
+              <button type="button" class="tab-btn is-active" data-tab="games" role="tab" aria-selected="true" title="Статистика по играм Steam">
+                <span class="tab-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="7" width="19" height="10" rx="5"/><path d="M7.5 12h3M9 10.5v3"/><circle cx="15.6" cy="11" r="1"/><circle cx="17.6" cy="13.2" r="1"/></svg>
+                </span>
+                <span class="tab-label">Игры</span>
+              </button>
+            </nav>
+          </div>
+          <div class="topbar-actions">
+            <button type="button" class="btn btn-ghost games-refresh" id="games-refresh" hidden title="Перечитать библиотеку и достижения этого профиля Steam">
+              <span class="spinner spinner-sm" id="games-refresh-spinner" hidden aria-hidden="true"></span>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/>
+              </svg>
+              <span>Обновить профиль</span>
+            </button>
+            <button type="button" class="btn btn-ghost" id="games-reimport" hidden title="Импортировать другой профиль Steam" aria-label="Импортировать другой профиль Steam">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+              </svg>
+              <span>Импорт</span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-logout" id="games-logout-btn" hidden title="Выйти из аккаунта" aria-label="Выйти">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h9"/>
+              </svg>
+              <span>Выйти</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="dash games-dash" id="games-app">
+        <div class="books-loading" id="games-loading" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Собираем статистику по играм…</span>
+        </div>
+        <div id="games-error" hidden></div>
+
+        <!-- server-side Steam profiles of this installation (one owner per key) -->
+        <section class="games-profile-bar" id="games-profile-bar" aria-label="Профили Steam">
+          <span class="games-profile-bar-label">Профиль Steam</span>
+          <div class="games-profile-list" id="games-profile-list" role="listbox" aria-label="Список профилей Steam"></div>
+          <span class="games-profile-empty" id="games-profile-empty" hidden>профиль ещё не импортирован</span>
+        </section>
+
+        <!-- empty state: Steam import card -->
+        <section class="games-import" id="games-import" hidden>
+          <div class="dash-hero books-import-hero">
+            <div class="kicker dash-kicker">библиотека Steam</div>
+            <h1>Твоя статистика по играм</h1>
+            <p class="dash-sub">Часы, backlog, топ игр и распределение времени — по библиотеке Steam. У Steam нет личных оценок 1–10, поэтому главный счётчик здесь — часы.</p>
+          </div>
+
+          <div class="games-import-grid">
+            <article class="book-source-card" data-source="steam">
+              <div class="book-source-head">
+                <span class="book-source-logo is-steam" aria-hidden="true">ST</span>
+                <span class="book-source-copy">
+                  <span class="book-source-title">Steam</span>
+                  <span class="book-source-hint">Библиотека, часы, достижения, недавние игры</span>
+                </span>
+              </div>
+
+              <form class="books-source-form" id="games-import-form" novalidate>
+                <label class="books-field" for="games-import-account">
+                  <span class="books-field-label">steamid64 или vanity URL <span>steamcommunity.com/id/&lt;имя&gt;</span></span>
+                  <input class="books-input" id="games-import-account" name="account" type="text" autocomplete="off" spellcheck="false" placeholder="76561198038369983 или hattivatt">
+                </label>
+                <label class="books-field" for="games-import-label">
+                  <span class="books-field-label">Название профиля <span>необязательно, для свитчера</span></span>
+                  <input class="books-input" id="games-import-label" name="label" type="text" autocomplete="off" spellcheck="false" placeholder="Я">
+                </label>
+                <div class="books-source-error" id="games-import-error" role="alert" hidden></div>
+                <button type="submit" class="btn btn-primary books-source-submit" id="games-import-submit">
+                  <span class="spinner spinner-sm" id="games-import-spinner" hidden aria-hidden="true"></span>
+                  <span id="games-import-submit-label">Импортировать</span>
+                </button>
+              </form>
+
+              <p class="book-source-note" id="games-import-hint">
+                Профиль должен быть публичным: «Сведения об играх» тоже открытыми. Кнопка активна всегда —
+                без ключа Steam Web API соберутся профиль, достижения и три последних игры, а библиотека с
+                часами будет недоступна (Steam отдаёт её только с ключом).
+              </p>
+              <p class="games-key-state" id="games-key-state">ключ Steam Web API: неизвестно</p>
+            </article>
+
+            <article class="book-source-card" data-source="steam-note">
+              <div class="book-source-head">
+                <span class="book-source-logo is-steam-note" aria-hidden="true">?</span>
+                <span class="book-source-copy">
+                  <span class="book-source-title">Что попадёт в статистику</span>
+                  <span class="book-source-hint">и что честно не считается</span>
+                </span>
+              </div>
+              <ul class="games-facts-list">
+                <li><b>Часы</b> — сумма <code>playtime_forever</code> из Steam Web API. Это время с запущенным клиентом, включая простой, — «по данным Steam», а не хронометраж.</li>
+                <li><b>Backlog</b> — игры с нулём часов. Бесплатные раздачи и тулзы могут его завышать: сервер отличает DLC/демо, когда метадата уже собрана.</li>
+                <li><b>«Последний раз»</b> — дата запуска (<code>rtime_last_played</code>), а не игровая сессия: Steam не отдаёт сессии и часы по дням.</li>
+                <li><b>Достижения</b> — по публичной статистике Steam; недоступные не считаются нулём.</li>
+              </ul>
+              <p class="book-source-note">
+                Второй профиль Steam — отдельный владелец: его часы и библиотека не суммируются с этим,
+                переключение — через список профилей сверху.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <!-- import progress -->
+        <section class="books-progress" id="games-progress" hidden>
+          <div class="progress-shell">
+            <div class="progress-card">
+              <div class="progress-top">
+                <div class="kicker">профиль Steam · импорт</div>
+                <h2>Собираем библиотеку</h2>
+                <p class="progress-status" id="games-progress-status" aria-live="polite">Готовим запрос…</p>
+              </div>
+              <div class="games-progress-track">
+                <div class="progress-bar" id="games-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                  <div class="progress-fill" id="games-progress-fill"></div>
+                </div>
+                <span class="games-progress-percent" id="games-progress-percent">0%</span>
+              </div>
+              <div id="games-progress-error" hidden></div>
+              <div class="progress-foot">
+                <span class="pulse-dot" aria-hidden="true"></span>
+                <span>Импорт идёт на сервере — вкладку можно свернуть. Прошло: <span id="games-progress-elapsed">0 с</span>.</span>
+              </div>
+            </div>
+            <button type="button" class="btn btn-link" id="games-progress-back">Импортировать другой профиль</button>
+          </div>
+        </section>
+
+        <!-- dashboard -->
+        <section id="games-dash" hidden>
+          <div class="dash-hero">
+            <div class="kicker dash-kicker" id="games-kicker">библиотека Steam · сводка</div>
+            <h1>Твоя статистика по играм</h1>
+            <p class="dash-sub" id="games-sub">Статистика одного профиля Steam.</p>
+          </div>
+
+          <div class="summary-strip" id="games-summary"></div>
+          <div id="games-partial-note" hidden></div>
+
+          <div class="widgets" id="games-widgets">
+            <section class="widget w-games-profile" id="games-profile-widget" aria-labelledby="games-profile-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-profile-title"><span class="w-dot green"></span>Профиль Steam</h2>
+                <span class="widget-note" id="games-profile-note"></span>
+              </div>
+              <div class="games-profile-body" id="games-profile-body"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>один владелец — один профиль</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-top" id="games-top-widget" aria-labelledby="games-top-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-top-title"><span class="w-dot green"></span>Топ по часам</h2>
+                <span class="widget-note" id="games-top-note"></span>
+              </div>
+              <div class="genre-list games-top-list" id="games-top-list"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>часы по данным Steam</span>
+                <span class="chart-foot-hint">наведи на строку — доля от всех часов</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-pareto" id="games-pareto-widget" aria-labelledby="games-pareto-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-pareto-title"><span class="w-dot orange"></span>Топ-10% и остальные</h2>
+                <span class="widget-note" id="games-pareto-note"></span>
+              </div>
+              <div class="games-pareto-body" id="games-pareto-body"></div>
+              <div class="chart-foot">
+                <span><i class="swatch orange"></i>принцип Парето по часам</span>
+                <span class="chart-foot-hint">самые игранные игры забирают большую часть часов</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-histogram" id="games-histogram-widget" aria-labelledby="games-histogram-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-histogram-title"><span class="w-dot blue"></span>Часы: длинный хвост</h2>
+                <span class="widget-note" id="games-histogram-note"></span>
+              </div>
+              <div class="genre-list games-hist-list" id="games-histogram"></div>
+              <div class="chart-foot">
+                <span><i class="swatch blue"></i>игры по бакетам часов</span>
+                <span class="chart-foot-hint">сколько игр в каждом диапазоне часов</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-backlog" id="games-backlog-widget" aria-labelledby="games-backlog-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-backlog-title"><span class="w-dot orange"></span>Backlog</h2>
+                <span class="widget-note" id="games-backlog-note"></span>
+              </div>
+              <div class="genre-list games-backlog-list" id="games-backlog-list"></div>
+              <div class="chart-foot">
+                <span><i class="swatch orange"></i>0 часов по данным Steam</span>
+                <span class="chart-foot-hint">куплено/получено, но ни разу не запущено</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-recent" id="games-recent-widget" aria-labelledby="games-recent-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-recent-title"><span class="w-dot green"></span>За 2 недели</h2>
+                <span class="widget-note" id="games-recent-note"></span>
+              </div>
+              <div class="games-recent-list" id="games-recent-list"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>playtime_2weeks по данным Steam</span>
+                <span class="chart-foot-hint">«последний раз» — дата запуска, а не игровая сессия</span>
+              </div>
+            </section>
+          </div>
+
+          <footer class="dash-footer">
+            <p class="dash-footer-line">
+              Данные — Steam Web API (библиотека, часы) и Steam Community (профиль, достижения).
+              Часы считает Steam: это время с запущенным клиентом, а не хронометраж.
             </p>
           </footer>
         </section>
