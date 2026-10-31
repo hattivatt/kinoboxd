@@ -4098,3 +4098,354 @@ img { display: block; }
   .books-profile-btn { max-width: min(240px, 64vw); }
   .books-profile-btn .profile-label { max-width: 168px; }
 }
+
+/* =========================================================
+   games tab (Steam library, M1)
+   ========================================================= */
+
+/* ---------------- profile bar + import screen ---------------- */
+
+.games-profile-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+.games-profile-bar-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+.games-profile-list { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.games-profile-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: var(--text-soft);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+.games-profile-chip:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.18); }
+.games-profile-chip.is-active {
+  color: #c8ffd9;
+  background: rgba(0, 224, 84, 0.1);
+  border-color: rgba(0, 224, 84, 0.42);
+}
+.games-profile-dot {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+.games-profile-chip.is-active .games-profile-dot { background: var(--green); }
+.games-profile-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.games-profile-count {
+  flex: none;
+  font-size: 10px;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+.games-profile-empty { font-size: 10.5px; color: var(--muted-2); }
+
+.games-import-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+  gap: 18px;
+}
+.book-source-card[data-source="steam"] { border-top: 2px solid rgba(64, 188, 244, 0.55); }
+.book-source-card[data-source="steam-note"] { border-top: 2px solid rgba(255, 255, 255, 0.1); }
+.book-source-logo.is-steam {
+  background: rgba(64, 188, 244, 0.13);
+  border: 1px solid rgba(64, 188, 244, 0.3);
+  color: #a9e2ff;
+}
+.book-source-logo.is-steam-note {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+}
+.games-key-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 3px 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted-2);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: help;
+}
+.games-key-state.is-on {
+  color: #9fe8bd;
+  background: rgba(0, 224, 84, 0.08);
+  border-color: rgba(0, 224, 84, 0.28);
+}
+.games-key-state.is-off {
+  color: #ffc182;
+  background: rgba(255, 128, 0, 0.09);
+  border-color: rgba(255, 128, 0, 0.3);
+}
+.games-facts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 0;
+  padding: 0 0 0 16px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-soft);
+}
+.games-facts-list li::marker { color: var(--muted-2); }
+.games-facts-list b { color: var(--text); font-weight: 650; }
+.games-facts-list code {
+  padding: 1px 4px;
+  font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #a9e2ff;
+  background: rgba(64, 188, 244, 0.1);
+  border-radius: 4px;
+}
+
+/* ---------------- import progress ---------------- */
+
+.games-progress-track {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.games-progress-track .progress-bar { flex: 1; margin: 0; }
+.games-progress-percent {
+  flex: none;
+  min-width: 42px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- dashboard widgets ---------------- */
+
+.w-games-profile { grid-column: span 4; }
+.w-games-top { grid-column: span 8; }
+.w-games-pareto { grid-column: span 6; }
+.w-games-histogram { grid-column: span 6; }
+.w-games-backlog { grid-column: span 7; }
+.w-games-recent { grid-column: span 5; }
+
+.games-profile-body { display: flex; flex-direction: column; gap: 13px; }
+.games-profile-head { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.games-avatar {
+  width: 46px;
+  height: 46px;
+  flex: none;
+  border-radius: 10px;
+  object-fit: cover;
+  background: var(--card-2);
+  border: 1px solid var(--border-strong);
+}
+.games-avatar.is-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 750;
+  color: var(--muted);
+  background: linear-gradient(145deg, #26333f, #1a222b);
+}
+.games-profile-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.games-persona {
+  font-size: 14.5px;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.games-persona-sub { font-size: 10.5px; color: var(--muted-2); }
+.games-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  font-size: 11px;
+}
+.games-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+}
+.games-fact:last-child { border-bottom: 0; padding-bottom: 0; }
+.games-fact dt { color: var(--muted-2); white-space: nowrap; }
+.games-fact dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.games-last-played { font-size: 10.5px; color: var(--muted-2); cursor: help; }
+.games-last-label { color: var(--muted); }
+
+.games-top-list { max-height: 364px; }
+.genre-row.games-hours-row { grid-template-columns: 17px minmax(96px, 30%) minmax(0, 1fr) 62px; }
+.games-hours-value {
+  min-width: 62px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-soft);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.games-pareto-body { display: flex; flex-direction: column; gap: 10px; }
+.games-pareto-track {
+  position: relative;
+  height: 26px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid var(--border);
+}
+.games-pareto-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 5px 0 0 5px;
+  background: linear-gradient(90deg, #b85c00, var(--orange));
+  transition: width 0.75s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+.games-pareto-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--muted-2);
+}
+.games-pareto-legend .swatch { margin-right: 5px; }
+.swatch.muted { background: rgba(255, 255, 255, 0.22); }
+.games-pareto-text { font-size: 12.5px; color: var(--text-soft); }
+.games-pareto-hint { font-size: 10.5px; line-height: 1.5; color: var(--muted-2); }
+
+.genre-row.games-hist-row { grid-template-columns: 56px minmax(0, 1fr) 38px; }
+.games-hist-bucket {
+  font-size: 11px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.games-hist-list .genre-fill { background: linear-gradient(90deg, #4b5bd6, var(--blue)); }
+
+.games-backlog-list { max-height: 300px; }
+.games-list-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 5px;
+  border-radius: 5px;
+  font-size: 12px;
+  transition: background 0.14s ease;
+}
+.games-list-row:hover { background: rgba(255, 255, 255, 0.045); }
+.games-list-name {
+  min-width: 0;
+  color: var(--text-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.games-list-meta {
+  flex: none;
+  max-width: 46%;
+  font-size: 10.5px;
+  color: var(--muted-2);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.games-backlog-empty { font-size: 11.5px; line-height: 1.55; color: var(--muted-2); }
+
+.games-recent-list { display: flex; flex-direction: column; gap: 2px; }
+.games-recent-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 5px;
+  border-radius: 5px;
+  transition: background 0.14s ease;
+}
+.games-recent-row:hover { background: rgba(255, 255, 255, 0.045); }
+.games-recent-hours {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.games-recent-last {
+  font-size: 10.5px;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.games-partial {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #ffd7b0;
+  background: rgba(255, 128, 0, 0.07);
+  border: 1px solid rgba(255, 128, 0, 0.28);
+  border-radius: var(--radius-sm);
+}
+.games-partial strong { font-size: 12.5px; color: #ffc182; }
+.games-partial .btn { align-self: flex-start; margin-top: 2px; }
+
+@media (max-width: 1120px) {
+  .w-games-profile,
+  .w-games-top,
+  .w-games-pareto,
+  .w-games-histogram,
+  .w-games-backlog,
+  .w-games-recent { grid-column: span 6; }
+}
+
+@media (max-width: 760px) {
+  .games-import-grid { grid-template-columns: minmax(0, 1fr); }
+  .genre-row.games-hours-row { grid-template-columns: 17px minmax(78px, 34%) minmax(0, 1fr) 56px; }
+}
+
+@media (max-width: 560px) {
+  .games-profile-bar-label { display: none; }
+  .games-profile-chip { max-width: min(220px, 62vw); }
+  .genre-row.games-hist-row { grid-template-columns: 46px minmax(0, 1fr) 32px; }
+  .games-list-meta { max-width: 40%; }
+}

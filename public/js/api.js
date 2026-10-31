@@ -292,3 +292,89 @@ export async function getBooksImportStatus(jobId, { source = '', signal } = {}) 
     throw error;
   }
 }
+
+/* ---------------- games ---------------- */
+
+/**
+ * Aggregated game payload for ONE Steam profile (ИГРЫ-АРХИТЕКТУРА §5.1).
+ *
+ * `profile` is the mandatory single token (`steam-<steamid64>`): a games
+ * profile is one owner, and the backend answers 400 without it. There is no
+ * multi-profile union — two steamid64 are two different people.
+ *
+ * `includeFree` / `includeDlc` are sent only when the caller actually toggles
+ * them: the backend defaults are `1` and `0`, and an explicit flag in the URL
+ * would make every request look like a deliberate choice. Unknown query
+ * parameters are rejected with `400 unexpected_parameter`, so nothing else is
+ * appended here.
+ */
+export function getGamesStats({ profile = '', includeFree = null, includeDlc = null, signal } = {}) {
+  const params = new URLSearchParams();
+  if (profile) params.set('profile', profile);
+  if (includeFree != null) params.set('includeFree', includeFree ? '1' : '0');
+  if (includeDlc != null) params.set('includeDlc', includeDlc ? '1' : '0');
+  const query = params.toString();
+  return request(`/api/games/stats${query ? `?${query}` : ''}`, { signal });
+}
+
+/** Cached Steam profiles known to the server (switcher catalogue). */
+export function getGamesProfiles({ signal } = {}) {
+  return request('/api/games/profiles', { signal });
+}
+
+/**
+ * Start a Steam import. Exactly one of `steamid64` / `vanityUrl` is sent —
+ * the server resolves the vanity itself and answers `202 { job, profile,
+ * status }`. `label` is the optional human name of the profile.
+ */
+export function startGamesImportSteam({ steamid64 = '', vanityUrl = '', label = '', signal } = {}) {
+  const body = {};
+  if (steamid64) body.steamid64 = String(steamid64);
+  if (vanityUrl) body.vanityUrl = String(vanityUrl);
+  if (label) body.label = String(label);
+  return request('/api/games/import/steam', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+/**
+ * Import job progress.
+ *
+ * The contract (§5.4) answers `{ job, profile, status }` and the doc's `job`
+ * field is the job *type* (`games-import`), not an id — so polling must not
+ * depend on an id alone. `id`/`jobId` are sent when the server returned one;
+ * `profile` is always sent when known, because an import is per profile and a
+ * job id may disappear on a server restart.
+ */
+export function getGamesImportStatus(jobId, { profile = '', signal } = {}) {
+  const params = new URLSearchParams();
+  const id = jobId ? String(jobId) : '';
+  if (id) {
+    params.set('id', id);
+    params.set('jobId', id);
+  }
+  if (profile) params.set('profile', profile);
+  const query = params.toString();
+  return request(`/api/games/import/status${query ? `?${query}` : ''}`, { signal });
+}
+
+/** Re-read the library/achievements of an already imported profile. */
+export function startGamesRefresh({ profile = '', signal } = {}) {
+  return request('/api/games/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile ? { profile } : {}),
+    signal,
+  });
+}
+
+/** One game card (details + achievements + links) — M1 keeps it lazy. */
+export function getGameDetails(appid, { profile = '', signal } = {}) {
+  const params = new URLSearchParams();
+  if (profile) params.set('profile', profile);
+  const query = params.toString();
+  return request(`/api/games/game/${encodeURIComponent(appid)}${query ? `?${query}` : ''}`, { signal });
+}
