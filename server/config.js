@@ -57,6 +57,15 @@ const GBOOKS_ENV_KEYS = ['GB_API_KEY', 'BOOKS_GOOGLE_API_KEY'];
 
 const STEAM_KEY_PATH = path.join(__dirname, '..', 'config', 'steam-token');
 const STEAM_ENV_KEYS = ['STEAM_API_KEY'];
+// Tests point this at a non-existent file so the local dev fallback
+// (`config/steam-token`, present in the main tree) cannot change their result.
+const STEAM_KEY_FILE_ENV = 'KINOBOXD_STEAM_KEY_FILE';
+
+function steamKeyPath() {
+  const override = process.env[STEAM_KEY_FILE_ENV];
+  if (typeof override === 'string' && override.trim()) return path.resolve(override.trim());
+  return STEAM_KEY_PATH;
+}
 
 const TOKEN_MISSING_MESSAGE =
   'TMDB-токен не найден: задай TMDB_API_TOKEN (read access token v4) в окружении';
@@ -175,7 +184,7 @@ function gbooksKeySource() {
  */
 function loadSteamKey() {
   if (steamLoaded) return cachedSteamKey;
-  const found = fromEnv(STEAM_ENV_KEYS) || fromFile(STEAM_KEY_PATH);
+  const found = fromEnv(STEAM_ENV_KEYS) || fromFile(steamKeyPath());
   cachedSteamKey = found ? found.token : null;
   cachedSteamSource = found ? found.source : null;
   steamLoaded = true;
@@ -210,6 +219,7 @@ module.exports = {
   getGbooksKey: loadGbooksKey,
   gbooksKeySource,
   STEAM_KEY_PATH,
+  steamKeyPath,
   loadSteamKey,
   getSteamKey: loadSteamKey,
   steamKeySource,

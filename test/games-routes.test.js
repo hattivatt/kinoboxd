@@ -15,8 +15,15 @@ const express = require('express');
 
 process.env.KINOBOXD_CACHE_GAMES_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-games-routes-'));
 process.env.KINOBOXD_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-games-routes-state-'));
+// The main tree ships a dev fallback at config/steam-token; keep the assertions
+// below independent of it (the "key configured" branch is covered separately).
+process.env.KINOBOXD_STEAM_KEY_FILE = path.join(
+  process.env.KINOBOXD_STATE_DIR,
+  'no-steam-token'
+);
 
 const { createRouter } = require('../server/games/routes');
+const config = require('../server/config');
 const importJobs = require('../server/games/import');
 const gameCache = require('../server/games/game-cache');
 const { createFakeClient } = require('./fixtures/games/fake-client');
@@ -115,6 +122,20 @@ test('import → stats → achievements over HTTP', async (t) => {
   assert.equal(profiles.availableProfileKeys[0], PROFILE_KEY);
   assert.equal(profiles.steamKey.configured, false);
   assert.equal(JSON.stringify(profiles).includes('SECRET'), false);
+
+  /* a configured key is reported as a boolean and never echoed */
+  const envSecret = 'SECRET-ENV-KEY-0123456789';
+  process.env.STEAM_API_KEY = envSecret;
+  config.resetSteamKeyCache();
+  try {
+    const withKey = await (await fetch(`${base}/api/games/profiles`)).json();
+    assert.equal(withKey.steamKey.configured, true);
+    assert.equal(withKey.steamKey.source, 'STEAM_API_KEY');
+    assert.equal(JSON.stringify(withKey).includes(envSecret), false);
+  } finally {
+    delete process.env.STEAM_API_KEY;
+    config.resetSteamKeyCache();
+  }
 
   /* achievements: lazily fetched and then served from cache */
   const first = await (
@@ -231,3 +252,4 @@ test('strict query contract and error mapping', async (t) => {
   assert.equal(unknownCard.status, 404);
   assert.equal((await unknownCard.json()).code, 'game_not_in_library');
 });
+
