@@ -384,13 +384,16 @@ export function getGameDetails(appid, { profile = '', signal } = {}) {
  * `studio|publisher|composer|designer|writer|artist|programmer|producer|voice`.
  *
  * `role` is optional: without it the server returns its default (studios
- * first). Unknown query parameters are rejected with 400, so nothing else is
+ * first). `limit` is the number of GAMES kept per person (the server caps it
+ * at 50) — the persons list itself is complete, so the UI can batch it
+ * locally. Unknown query parameters are rejected with 400, so nothing else is
  * appended here.
  */
-export function getGamesPersonnel({ profile = '', role = '', signal } = {}) {
+export function getGamesPersonnel({ profile = '', role = '', limit = 50, signal } = {}) {
   const params = new URLSearchParams();
   if (profile) params.set('profile', profile);
   if (role) params.set('role', role);
+  if (limit != null) params.set('limit', String(limit));
   const query = params.toString();
   return request(`/api/games/personnel${query ? `?${query}` : ''}`, { signal });
 }

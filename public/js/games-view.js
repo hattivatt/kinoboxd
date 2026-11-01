@@ -432,6 +432,17 @@ function normalizeMetadata(raw, summary) {
   };
 }
 
+/** `meta.excluded`: why records were dropped (DLC, other type, unknown type). */
+function normalizeExcluded(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    dlc: toCount(raw.dlc),
+    otherType: toCount(raw.otherType ?? raw.other_type),
+    free: toCount(raw.free),
+    unknownType: toCount(raw.unknownType ?? raw.unknown_type),
+  };
+}
+
 /**
  * `meta.filters` (§5.4): what was REQUESTED vs what the server could APPLY.
  * The UI must show the difference — a silent filter is a lie.
@@ -519,15 +530,64 @@ function normalizePersonGames(raw) {
       if (item == null) return null;
       if (typeof item === 'number' || /^\d+$/.test(text(item))) {
         const appid = Number(item);
-        return Number.isFinite(appid) ? { appid, name: '', hours: null } : null;
+        return Number.isFinite(appid) ? { appid, name: '', hours: null, completion: null, roles: [] } : null;
       }
       if (typeof item !== 'object') return null;
       const name = firstString(item.name, item.title);
       const appid = numOrNull(item.appid);
       if (!name && appid == null) return null;
-      return { appid, name, hours: numOrNull(item.hours ?? item.playtimeHours) };
+      return {
+        appid,
+        name,
+        hours: numOrNull(item.hours ?? item.playtimeHours),
+        completion: numOrNull(item.completion),
+        roles: arr(item.roles).map((role) => text(role)).filter(Boolean),
+      };
     })
     .filter(Boolean);
+}
+
+/** `gamesIndex[appid].achievements`: `{ unlocked, total, percent }`. */
+function normalizeIndexAchievements(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const unlocked = numOrNull(raw.unlocked);
+  const total = numOrNull(raw.total);
+  const percent = numOrNull(raw.percent);
+  if (unlocked == null && total == null && percent == null) return null;
+  return { unlocked, total, percent };
+}
+
+/**
+ * One `gamesIndex` entry. The backend already ships the fields needed by the
+ * client-side drilldowns (type, year, genres, developers/publishers,
+ * categories, is_free, early_access, icon); the old normaliser kept only six
+ * of them, which made «клик по жанру/году» impossible without a new request.
+ */
+function normalizeGameIndexEntry(entry, appid) {
+  const item = entry && typeof entry === 'object' ? entry : {};
+  const releaseYear = numOrNull(item.releaseYear ?? item.year);
+  return {
+    appid: numOrNull(item.appid) ?? numOrNull(appid),
+    name: firstString(item.name, item.title),
+    hours: normalizeHours(item),
+    hours2w: normalizeHours2w(item),
+    lastPlayed: item.lastPlayed ?? item.rtime_last_played ?? null,
+    iconUrl: /^https?:\/\//i.test(text(item.iconUrl)) ? text(item.iconUrl) : '',
+    type: text(item.type).toLowerCase(),
+    releaseYear,
+    year: releaseYear,
+    genres: normalizeGenres(item.genres),
+    developers: normalizeGenres(item.developers),
+    publishers: normalizeGenres(item.publishers),
+    categories: normalizeGenres(item.categories),
+    isFree: boolOrNull(item.isFree),
+    earlyAccess: boolOrNull(item.earlyAccess),
+    metacritic: numOrNull(item.metacritic),
+    dlcCount: numOrNull(item.dlcCount),
+    completion: numOrNull(item.completion),
+    achievements: normalizeIndexAchievements(item.achievements),
+    metadataSources: arr(item.metadataSources).map((source) => text(source)).filter(Boolean),
+  };
 }
 
 function normalizeStudios(raw) {
@@ -732,6 +792,11 @@ export function normalizeGamesPayload(raw) {
     lastPlayedAt: summaryRaw.lastPlayedAt ?? null,
     libraryPartial,
     steamKeyConfigured,
+    // «Не типизированы» (unmatched): Steam отдал запись библиотеки, но
+    // appdetails ещё нет, поэтому тип/год/жанры неизвестны. `meta.excluded`
+    // говорит, сколько записей отброшено как не-игры — это не то же число.
+    unmatchedCount: toCount(source.unmatchedCount),
+    excluded: normalizeExcluded(source.meta && source.meta.excluded),
     completion: normalizeCompletion(summaryRaw.completion),
     achievements: normalizeAchievements(summaryRaw.achievements),
     // M2 blocks (§5.1). Each stays `null` when the server did not send it:
@@ -756,6 +821,7 @@ export function normalizeGamesPayload(raw) {
       modes: Boolean(normalizeModes(summaryRaw.modes)),
       access: Boolean(summaryRaw.earlyAccess || summaryRaw.freeToPlay),
       metadata: Boolean(normalizeMetadata(summaryRaw.metadata, summaryRaw)),
+      unmatched: numOrNull(source.unmatchedCount) != null,
     },
   };
 
@@ -780,15 +846,7 @@ export function normalizeGamesPayload(raw) {
   if (source.gamesIndex && typeof source.gamesIndex === 'object' && !Array.isArray(source.gamesIndex)) {
     for (const [appid, entry] of Object.entries(source.gamesIndex)) {
       if (!entry || typeof entry !== 'object') continue;
-      gamesIndex[appid] = {
-        appid: numOrNull(entry.appid) ?? numOrNull(appid),
-        name: firstString(entry.name, entry.title),
-        hours: normalizeHours(entry),
-        lastPlayed: entry.lastPlayed ?? null,
-        releaseYear: numOrNull(entry.releaseYear),
-        genres: normalizeGenres(entry.genres),
-        completion: numOrNull(entry.completion),
-      };
+      gamesIndex[appid] = normalizeGameIndexEntry(entry, appid);
     }
   }
 
@@ -847,7 +905,361 @@ export function normalizeGamesPayload(raw) {
       personnelTop: Boolean(personnelTop),
       calendar: achievementDays.length > 0,
       streaks: Boolean(streaks && (streaks.best > 0 || streaks.lastUnlockDate)),
+      unmatched: summary.unmatchedCount > 0,
+      gamesIndex: Object.keys(gamesIndex).length > 0,
     },
+  };
+}
+
+/* =========================================================
+   client-side drilldowns (films parity: every row is a list)
+   ========================================================= */
+
+/**
+ * Steam `type` → Russian label. A missing type is the honest «тип неизвестен»,
+ * not «игра»: the library record exists but appdetails has not arrived yet.
+ */
+export function gameTypeLabel(type) {
+  const key = text(type).toLowerCase();
+  if (key === 'game') return 'игра';
+  if (key === 'dlc') return 'DLC';
+  if (key === 'demo') return 'демо';
+  if (key === 'music') return 'саундтрек';
+  if (key === 'tool') return 'софт';
+  if (key === 'video') return 'видео';
+  if (key === 'advertising') return 'реклама';
+  return '';
+}
+
+/** Sort keys shared by every games list modal (persisted by games-modal.js). */
+export const GAME_SORT_OPTIONS = [
+  { key: 'hours', label: 'По часам', hint: 'часы ↓' },
+  { key: 'completion', label: 'По completion', hint: 'completion ↓' },
+  { key: 'year', label: 'По году релиза', hint: 'год ↓' },
+  { key: 'name', label: 'По названию', hint: 'А → Я' },
+];
+
+function cmpGameName(a, b) {
+  return String(a && a.name ? a.name : '').localeCompare(String(b && b.name ? b.name : ''), 'ru');
+}
+
+/** Return a new array ordered by the selected games-list sort. */
+export function sortGameRows(rows, sortKey = 'hours') {
+  const list = arr(rows).slice();
+  const num = (value) => (value == null || !Number.isFinite(Number(value)) ? -1 : Number(value));
+  const comparator = sortKey === 'completion'
+    ? (a, b) => (num(b.completion) - num(a.completion)) || (num(b.hours) - num(a.hours)) || cmpGameName(a, b)
+    : sortKey === 'year'
+    ? (a, b) => (num(b.releaseYear) - num(a.releaseYear)) || (num(b.hours) - num(a.hours)) || cmpGameName(a, b)
+    : sortKey === 'name'
+    ? cmpGameName
+    : (a, b) => (num(b.hours) - num(a.hours)) || cmpGameName(a, b);
+  return list.sort(comparator);
+}
+
+/** Every `gamesIndex` entry that matches `predicate`, as normalised rows. */
+export function gameRowsFromIndex(gamesIndex, predicate = null) {
+  const out = [];
+  if (!gamesIndex || typeof gamesIndex !== 'object') return out;
+  for (const [appid, entry] of Object.entries(gamesIndex)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const row = normalizeGameIndexEntry(entry, appid);
+    if (row.appid == null) continue;
+    if (predicate && !predicate(row)) continue;
+    out.push(row);
+  }
+  return out;
+}
+
+export function allGames(gamesIndex) {
+  return gameRowsFromIndex(gamesIndex);
+}
+
+export function gamesInYear(gamesIndex, year) {
+  const target = numOrNull(year);
+  if (target == null) return [];
+  return gameRowsFromIndex(gamesIndex, (row) => row.releaseYear === target);
+}
+
+export function gamesInDecade(gamesIndex, start) {
+  const decade = numOrNull(start);
+  if (decade == null) return [];
+  return gameRowsFromIndex(gamesIndex, (row) => row.releaseYear != null
+    && row.releaseYear >= decade && row.releaseYear <= decade + 9);
+}
+
+/** Records without a release year: the honest «год неизвестен» bucket. */
+export function gamesWithoutYear(gamesIndex) {
+  return gameRowsFromIndex(gamesIndex, (row) => row.releaseYear == null);
+}
+
+/** Records Steam never typed (no appdetails): type/year/genres are unknown. */
+export function gamesWithoutType(gamesIndex) {
+  return gameRowsFromIndex(gamesIndex, (row) => !row.type);
+}
+
+export function gamesByGenre(gamesIndex, name) {
+  const target = text(name).toLowerCase();
+  if (!target) return [];
+  return gameRowsFromIndex(gamesIndex, (row) =>
+    arr(row.genres).some((genre) => text(genre).toLowerCase() === target));
+}
+
+/** Mirrors `MODE_TESTS` in server/games/stats.js — counts must match. */
+export const GAME_MODE_TESTS = {
+  single: /^single-player$/i,
+  multi: /multi-player/i,
+  coop: /co-op/i,
+  onlineCoop: /online co-op/i,
+  localCoop: /local co-op|shared\/split screen/i,
+  onlinePvp: /online pvp|^pvp$/i,
+  mmo: /^mmo$/i,
+  cloud: /steam cloud/i,
+  controller: /full controller support/i,
+};
+
+export function gameMatchesMode(game, key) {
+  const test = GAME_MODE_TESTS[key];
+  if (!test) return false;
+  return arr(game && game.categories).some((category) => test.test(text(category)));
+}
+
+export function gamesByMode(gamesIndex, key) {
+  if (!GAME_MODE_TESTS[key]) return [];
+  return gameRowsFromIndex(gamesIndex, (row) => gameMatchesMode(row, key));
+}
+
+export function gamesByAccess(gamesIndex, key) {
+  if (key === 'earlyAccess') return gameRowsFromIndex(gamesIndex, (row) => row.earlyAccess === true);
+  if (key === 'freeToPlay') return gameRowsFromIndex(gamesIndex, (row) => row.isFree === true);
+  return [];
+}
+
+/** Same buckets as `HISTOGRAM_BUCKETS` in server/games/stats.js. */
+export const HOURS_BUCKETS = [
+  { bucket: '0', test: (hours) => hours === 0 },
+  { bucket: '<1', test: (hours) => hours > 0 && hours < 1 },
+  { bucket: '1-5', test: (hours) => hours >= 1 && hours < 5 },
+  { bucket: '5-20', test: (hours) => hours >= 5 && hours < 20 },
+  { bucket: '20-50', test: (hours) => hours >= 20 && hours < 50 },
+  { bucket: '50-100', test: (hours) => hours >= 50 && hours < 100 },
+  { bucket: '100-500', test: (hours) => hours >= 100 && hours < 500 },
+  { bucket: '500+', test: (hours) => hours >= 500 },
+];
+
+export function hoursBucketOf(hours) {
+  const value = numOrNull(hours);
+  if (value == null || value < 0) return null;
+  const found = HOURS_BUCKETS.find((entry) => entry.test(value));
+  return found ? found.bucket : null;
+}
+
+export function gamesInHoursBucket(gamesIndex, bucket) {
+  const target = text(bucket);
+  const def = HOURS_BUCKETS.find((entry) => entry.bucket === target);
+  if (!def) return [];
+  return gameRowsFromIndex(gamesIndex, (row) => row.hours != null && def.test(row.hours));
+}
+
+/** Games with `playtime_2weeks > 0` — the «за 2 недели» tile drilldown. */
+export function gamesWithRecentHours(gamesIndex) {
+  return gameRowsFromIndex(gamesIndex, (row) => row.hours2w != null && row.hours2w > 0);
+}
+
+/** Backlog = playtime_forever = 0 (the server's definition). */
+export function backlogGames(gamesIndex) {
+  return gameRowsFromIndex(gamesIndex, (row) => row.hours === 0);
+}
+
+/** `years[]` limited to one decade, ascending (the years card is gated). */
+export function yearsInDecade(years, start) {
+  const decade = numOrNull(start);
+  if (decade == null) return [];
+  return normalizeYears(years)
+    .filter((item) => item.year >= decade && item.year <= decade + 9)
+    .sort((a, b) => a.year - b.year);
+}
+
+/** «N игр · X ч» — the person row / modal subtitle. */
+export function personSummaryText(person) {
+  const count = toCount(person && person.count);
+  const hours = numOrNull(person && person.hours);
+  return `${fmtInt(count)} ${plural(count, GAME_PLURAL)}${hours != null ? ` · ${hoursText(hours)}` : ''}`;
+}
+
+/**
+ * One person's games joined with `gamesIndex` (completion/year/icon live only
+ * in the index; the personnel payload carries appid/name/hours).
+ */
+export function personGames(person, gamesIndex) {
+  const index = gamesIndex && typeof gamesIndex === 'object' ? gamesIndex : {};
+  return arr(person && person.games)
+    .map((game) => {
+      if (!game || typeof game !== 'object') return null;
+      const appid = numOrNull(game.appid);
+      if (appid == null) return null;
+      const entry = index[appid] || index[String(appid)] || null;
+      const row = entry
+        ? normalizeGameIndexEntry(entry, appid)
+        : normalizeGameIndexEntry({ appid }, appid);
+      return {
+        ...row,
+        appid,
+        name: firstString(game.name, row.name, `appid ${appid}`),
+        hours: numOrNull(game.hours) ?? row.hours,
+        completion: row.completion ?? numOrNull(game.completion),
+        roles: arr(game.roles).map((role) => text(role)).filter(Boolean),
+      };
+    })
+    .filter(Boolean);
+}
+
+/* =========================================================
+   game card (`GET /api/games/game/:appid`)
+   ========================================================= */
+
+function normalizeCardDetails(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    type: text(raw.type).toLowerCase(),
+    name: firstString(raw.name),
+    isFree: boolOrNull(raw.isFree),
+    earlyAccess: boolOrNull(raw.earlyAccess),
+    developers: normalizeGenres(raw.developers),
+    publishers: normalizeGenres(raw.publishers),
+    genres: normalizeGenres(raw.genres),
+    categories: normalizeGenres(raw.categories),
+    releaseDate: text(raw.releaseDate),
+    releaseYear: numOrNull(raw.releaseYear),
+    metacritic: numOrNull(raw.metacritic),
+    dlcCount: numOrNull(raw.dlcCount),
+    platforms: raw.platforms && typeof raw.platforms === 'object'
+      ? {
+        windows: raw.platforms.windows === true,
+        mac: raw.platforms.mac === true,
+        linux: raw.platforms.linux === true,
+      }
+      : null,
+    metadataSource: text(raw.metadataSource),
+  };
+}
+
+function normalizeCardAchievements(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const items = arr(raw.items)
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const name = firstString(item.name, item.apiname);
+      if (!name) return null;
+      return {
+        apiname: text(item.apiname),
+        name,
+        description: text(item.description),
+        achieved: item.achieved === true || item.achieved === 1 || item.achieved === '1',
+        unlockTimestamp: numOrNull(item.unlockTimestamp),
+        unlockAt: text(item.unlockAt) || null,
+      };
+    })
+    .filter(Boolean);
+  const unlocked = numOrNull(raw.unlocked);
+  const total = numOrNull(raw.total);
+  const percent = numOrNull(raw.percent);
+  if (unlocked == null && total == null && !items.length) return null;
+  return {
+    unlocked,
+    total,
+    percent,
+    fetchedAt: text(raw.fetchedAt) || null,
+    items,
+  };
+}
+
+function normalizeCardPersonnel(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const people = arr(raw.people)
+    .map((person) => {
+      if (!person || typeof person !== 'object') return null;
+      const name = firstString(person.name, person.label);
+      if (!name) return null;
+      return {
+        name,
+        roles: arr(person.roles).map((role) => text(role)).filter(Boolean),
+        qid: text(person.qid) || null,
+        sources: arr(person.sources).map((source) => text(source)).filter(Boolean),
+      };
+    })
+    .filter(Boolean);
+  const studios = arr(raw.studios)
+    .map((studio) => {
+      if (!studio || typeof studio !== 'object') return null;
+      const name = firstString(studio.name, studio.label);
+      if (!name) return null;
+      return {
+        name,
+        roles: arr(studio.roles).map((role) => text(role)).filter(Boolean),
+        qid: text(studio.qid) || null,
+        sources: arr(studio.sources).map((source) => text(source)).filter(Boolean),
+      };
+    })
+    .filter(Boolean);
+  const coverage = raw.coverage && typeof raw.coverage === 'object'
+    ? {
+      people: toCount(raw.coverage.people),
+      studios: toCount(raw.coverage.studios),
+      roles: arr(raw.coverage.roles).map((role) => text(role)).filter(Boolean),
+    }
+    : null;
+  if (!people.length && !studios.length && !coverage) return null;
+  return {
+    people,
+    studios,
+    coverage,
+    pending: arr(raw.pending).map((entry) => text(entry)).filter(Boolean),
+    sources: arr(raw.sources).map((source) => text(source)).filter(Boolean),
+  };
+}
+
+/**
+ * `GET /api/games/game/:appid` → the card view model. Links are completed on
+ * the client when the server has not cached them yet (the URL shape is fixed
+ * by Steam, no request is made).
+ */
+export function normalizeGameCard(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const appid = numOrNull(source.appid);
+  const details = normalizeCardDetails(source.details);
+  const achievements = normalizeCardAchievements(source.achievements);
+  const personnel = normalizeCardPersonnel(source.personnel);
+  const last = lastPlayedInfo(source.lastPlayed);
+  const linksRaw = source.links && typeof source.links === 'object' ? source.links : {};
+  const links = {
+    steam: firstString(linksRaw.steam)
+      || (appid != null ? `https://store.steampowered.com/app/${appid}` : ''),
+    community: appid != null ? `https://steamcommunity.com/app/${appid}` : '',
+    steamdb: firstString(linksRaw.steamdb)
+      || (appid != null ? `https://steamdb.info/app/${appid}/` : ''),
+  };
+  return {
+    appid,
+    name: firstString(source.name, details && details.name, appid != null ? `appid ${appid}` : ''),
+    iconUrl: /^https?:\/\//i.test(text(source.iconUrl)) ? text(source.iconUrl) : '',
+    hours: normalizeHours(source),
+    hours2w: normalizeHours2w(source),
+    lastPlayed: source.lastPlayed ?? null,
+    lastPlayedText: last.text,
+    lastPlayedTitle: last.title,
+    type: text(details && details.type || source.type).toLowerCase(),
+    typeLabel: gameTypeLabel(details && details.type || source.type),
+    releaseYear: numOrNull(details && details.releaseYear),
+    releaseDate: text(details && details.releaseDate),
+    completion: numOrNull(source.completion) ?? (achievements && achievements.percent != null
+      ? achievements.percent
+      : null),
+    achievements,
+    details,
+    personnel,
+    links,
+    meta: source.meta && typeof source.meta === 'object' ? source.meta : null,
   };
 }
 
@@ -989,6 +1401,21 @@ export function summaryMetrics(summary, { profile = null } = {}) {
         ? `средний по ${fmtInt(s.completion.gamesWithStats)} ${plural(s.completion.gamesWithStats, ['игре', 'играм', 'играм'])} с достижениями`
         : 'средний процент достижений',
       title: 'Средний процент полученных достижений. Считается только по играм, у которых есть статистика достижений — недоступные не считаются нулём.',
+    });
+  }
+  if (s.unmatchedCount > 0) {
+    const excluded = s.excluded && typeof s.excluded === 'object' ? s.excluded : null;
+    const otherType = excluded ? toCount(excluded.otherType) : 0;
+    out.push({
+      key: 'unmatched',
+      icon: 'alert',
+      label: 'не типизированы',
+      extraClass: 'metric-unmatched',
+      value: fmtInt(s.unmatchedCount),
+      sub: otherType > 0 ? `${fmtInt(otherType)} записей — не игры` : 'нет appdetails',
+      title: 'Записи библиотеки Steam без карточки Steam Store: тип, год и жанры неизвестны. '
+        + 'Это не «ноль часов» и не удалённые игры — сервер просто ещё не получил appdetails. '
+        + (otherType > 0 ? `${fmtInt(otherType)} записей отброшено как DLC/софт/демо.` : ''),
     });
   }
   return out;

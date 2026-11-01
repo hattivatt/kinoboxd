@@ -955,11 +955,11 @@
               </svg>
               <span>Обновить профиль</span>
             </button>
-            <button type="button" class="btn btn-ghost" id="games-reimport" hidden title="Импортировать другой профиль Steam" aria-label="Импортировать другой профиль Steam">
+            <button type="button" class="btn btn-ghost" id="games-reimport" hidden title="Загрузить новый профиль Steam" aria-label="Загрузить новый профиль Steam">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
               </svg>
-              <span>Импорт</span>
+              <span>Загрузить новый</span>
             </button>
             <button type="button" class="btn btn-ghost btn-logout" id="games-logout-btn" hidden title="Выйти из аккаунта" aria-label="Выйти">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1189,6 +1189,20 @@
               </div>
             </section>
 
+            <section class="widget w-games-years" id="games-years-widget" aria-labelledby="games-years-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-years-title"><span class="w-dot orange"></span>Годы релиза</h2>
+                <span class="widget-note" id="games-years-note"></span>
+              </div>
+              <div class="chart-scroll">
+                <div id="games-years-chart"></div>
+              </div>
+              <div class="chart-foot">
+                <span><i class="swatch orange"></i>игры по году релиза</span>
+                <span class="chart-foot-hint">releaseYear из Steam Store / Wikidata</span>
+              </div>
+            </section>
+
             <section class="widget w-games-genres" id="games-genres-widget" aria-labelledby="games-genres-title" hidden>
               <div class="widget-head">
                 <h2 class="widget-title" id="games-genres-title"><span class="w-dot green"></span>Жанры</h2>
@@ -1244,20 +1258,6 @@
               </div>
             </section>
 
-            <section class="widget w-games-years" id="games-years-widget" aria-labelledby="games-years-title" hidden>
-              <div class="widget-head">
-                <h2 class="widget-title" id="games-years-title"><span class="w-dot orange"></span>Годы релиза</h2>
-                <span class="widget-note" id="games-years-note"></span>
-              </div>
-              <div class="chart-scroll">
-                <div id="games-years-chart"></div>
-              </div>
-              <div class="chart-foot">
-                <span><i class="swatch orange"></i>игры по году релиза</span>
-                <span class="chart-foot-hint">releaseYear из Steam Store / Wikidata</span>
-              </div>
-            </section>
-
             <section class="widget w-games-achievements" id="games-achievements-widget" aria-labelledby="games-achievements-title" hidden>
               <div class="widget-head">
                 <h2 class="widget-title" id="games-achievements-title"><span class="w-dot green"></span>Достижения</h2>
@@ -1280,6 +1280,51 @@
               <div class="chart-foot">
                 <span><i class="swatch green"></i>дни с разблокировкой достижений</span>
                 <span class="chart-foot-hint">по датам разблокировок, а не игровое время</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-persons" id="games-persons-widget" aria-labelledby="games-persons-title" hidden>
+              <div class="widget-head persons-head">
+                <h2 class="widget-title" id="games-persons-title"><span class="w-dot green"></span>Персоналии</h2>
+                <div class="persons-toolbar">
+                  <span class="games-coverage-badge" id="games-persons-coverage" hidden></span>
+                  <span class="widget-note" id="games-persons-note"></span>
+                  <div class="select-wrap">
+                    <select id="games-persons-role" class="select" aria-label="Категория персоналий">
+                      <option value="studio" selected>Студии</option>
+                      <option value="publisher">Издатели</option>
+                      <option value="composer">Композиторы</option>
+                      <option value="designer">Геймдизайнеры</option>
+                      <option value="writer">Сценаристы</option>
+                      <option value="artist">Художники</option>
+                      <option value="programmer">Программисты</option>
+                      <option value="producer">Продюсеры</option>
+                    </select>
+                    <svg class="select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+                  <div class="games-weight-toggle" role="group" aria-label="Вес персоналий">
+                    <button type="button" class="games-weight-btn is-active" data-games-weight="hours">по часам</button>
+                    <button type="button" class="games-weight-btn" data-games-weight="count">по числу игр</button>
+                  </div>
+                  <button type="button" class="btn btn-ghost" id="games-persons-all" title="Открыть полный экран персоналий">Все персоналии</button>
+                </div>
+              </div>
+
+              <div class="persons-search" id="games-persons-search-wrap" hidden>
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                <input type="search" id="games-persons-search" class="search-input" placeholder="Поиск по имени" autocomplete="off">
+              </div>
+
+              <div class="games-personnel-loading" id="games-persons-loading" hidden>
+                <span class="spinner" aria-hidden="true"></span>
+                <span>Собираем кредиты…</span>
+              </div>
+              <div id="games-persons-error" hidden></div>
+              <div class="person-list" id="games-person-list"></div>
+              <div class="persons-more" id="games-persons-more"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>студии, люди и роли</span>
+                <span class="chart-foot-hint">нажмите на строку — игры персоны; часы по данным Steam</span>
               </div>
             </section>
           </div>
