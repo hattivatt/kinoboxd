@@ -1,0 +1,9 @@
+{
+  "country": "US",
+  "isLoggedIn": true,
+  "userId": "1234567890",
+  "username": "gog_tester",
+  "galaxyUserId": "5555555555",
+  "avatar": "https://images.gog-statics.com/avatar.png",
+  "walletBalance": { "amount": "0.00", "currency": "USD" }
+}

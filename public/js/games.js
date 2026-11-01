@@ -22,6 +22,8 @@
 import {
   getGamesStats, getGamesProfiles, startGamesImportSteam, getGamesImportStatus, startGamesRefresh,
   getGamesPersonnel, getGamesFranchises,
+  getGamesGogAuthUrl, connectGamesGog, getGamesGogStatus, startGamesGogImport,
+  getGamesGogImportStatus, logoutGamesGog,
 } from './api.js';
 import {
   $, el, clear, fmtInt, fmtPercent, plural, icon, toast, errorBox, showTooltip, moveTooltip, hideTooltip,
@@ -42,6 +44,7 @@ import {
   yearsInDecade, gamesInYearGenre, yearCountView, yearCountGenreOptions,
   tagsChartView, TAG_CHART_LIMIT, gamesByTag, scoresView, gamesByReviewBucket,
   franchisesView, gamesInFranchise, dlcView, normalizeFranchisesResponse,
+  gogSourcesView, gogStatusText,
 } from './games-view.js';
 import {
   configureGamesModals, openGameCardModal, openGameListModal, openPersonModal, personAvatarEl,
@@ -129,6 +132,9 @@ const state = {
   enrichTimer: 0,
   enrichSeq: 0,
   enrichTicks: 0,
+  // M6a: GOG connection state. `status` is the sanitized `/gog/status`
+  // payload; `job` is the running GOG import. Tokens never reach the browser.
+  gog: { status: null, loading: false, error: null, job: null, timer: 0, connected: false },
 };
 
 let inflightLoad = null;
@@ -231,6 +237,8 @@ function updateActions() {
   }
   const reimport = $('games-reimport');
   if (reimport) reimport.hidden = state.view === 'progress';
+  const connections = $('games-connections');
+  if (connections) connections.hidden = state.view === 'progress';
 }
 
 function showLoading(visible) {
@@ -804,6 +812,273 @@ function renderProgress() {
    dashboard
    ========================================================= */
 
+/* =========================================================
+   M6a: GOG — same-owner secondary library
+   ========================================================= */
+
+function setGogError(message) {
+  const host = $('games-gog-error');
+  if (!host) return;
+  host.textContent = message ? String(message) : '';
+  host.hidden = !message;
+}
+
+function setGogBusy(busy) {
+  const login = $('games-gog-login');
+  const connect = $('games-gog-connect');
+  const spinner = $('games-gog-login-spinner');
+  const label = $('games-gog-login-label');
+  if (login) {
+    login.disabled = busy;
+    login.classList.toggle('is-busy', busy);
+  }
+  if (connect) connect.disabled = busy;
+  if (spinner) spinner.hidden = !busy;
+  if (label) label.textContent = busy ? 'Подключаем…' : 'Войти через GOG';
+}
+
+function gogAccount() {
+  const accounts = state.gog.status && Array.isArray(state.gog.status.accounts)
+    ? state.gog.status.accounts
+    : [];
+  return accounts[0] || null;
+}
+
+/** Paint the connect card from the sanitized `/gog/status` payload. */
+function renderGogCard() {
+  const node = $('games-gog-status');
+  const account = gogAccount();
+  const login = $('games-gog-login');
+  const connect = $('games-gog-connect');
+  const importBtn = $('games-gog-import');
+  const logout = $('games-gog-logout');
+  state.gog.connected = Boolean(account);
+  if (node) {
+    if (account) {
+      const status = account.expired === true ? 'auth_expired' : account.stale ? 'stale' : 'ok';
+      const who = account.username ? ` как ${account.username}` : '';
+      node.textContent = `GOG: подключён${who} · ${gogStatusText(status, account.libraryFetchedAt)}`;
+    } else {
+      node.textContent = 'GOG: не подключён';
+    }
+  }
+  if (login) login.hidden = Boolean(account);
+  if (connect) connect.hidden = Boolean(account);
+  if (importBtn) importBtn.hidden = !account;
+  if (logout) logout.hidden = !account;
+}
+
+async function ensureGogStatus() {
+  if (state.gog.loading) return;
+  state.gog.loading = true;
+  try {
+    const status = await getGamesGogStatus();
+    state.gog.status = status;
+    state.gog.error = null;
+    renderGogCard();
+  } catch (error) {
+    if (error && error.status === 401) return;
+    state.gog.error = error;
+    setGogError(importErrorText(error).message);
+  } finally {
+    state.gog.loading = false;
+  }
+}
+
+/** «Источники»: Steam journal + GOG secondary + Epic «скоро», never summed. */
+function renderSources(data) {
+  const widget = $('games-sources-widget');
+  const host = $('games-sources-body');
+  if (!widget || !host) return;
+  const view = gogSourcesView(data);
+  clear(host);
+  const note = $('games-sources-note');
+  if (note) {
+    note.textContent = view.worksTotal != null
+      ? `${fmtInt(view.worksTotal)} ${plural(view.worksTotal, GAME_PLURAL)} в объединённой библиотеке`
+      : '';
+  }
+  for (const row of view.rows) {
+    const node = el('div', {
+      class: `games-source-row is-${row.key}${row.journal ? ' is-journal' : ''}${row.soon ? ' is-soon' : ''}`,
+    });
+    node.append(el('span', { class: 'games-source-name', text: row.label }));
+    const parts = [];
+    if (row.games != null) parts.push(`${fmtInt(row.games)} ${plural(row.games, GAME_PLURAL)}`);
+    if (row.hours != null) parts.push(hoursText(row.hours, 1));
+    node.append(el('span', {
+      class: 'games-source-numbers',
+      text: parts.length ? parts.join(' · ') : '—',
+    }));
+    const stateNode = el('span', { class: 'games-source-state' });
+    stateNode.append(document.createTextNode(row.statusText));
+    if (row.key === 'gog' && row.canConnect) {
+      const link = el('button', { type: 'button', class: 'btn btn-link', text: 'Подключить' });
+      link.addEventListener('click', () => {
+        showScreen('import');
+        const card = $('games-gog-card');
+        if (card && typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'center' });
+      });
+      stateNode.append(document.createTextNode(' · '));
+      stateNode.append(link);
+    }
+    node.append(stateNode);
+    host.append(node);
+  }
+  const secondary = $('games-sources-secondary');
+  if (secondary) {
+    clear(secondary);
+    if (view.secondaryOnly > 0) {
+      secondary.append(el('div', {
+        text: `Вне Steam: ${fmtInt(view.secondaryOnly)} ${plural(view.secondaryOnly, GAME_PLURAL)} `
+          + 'есть только во второй библиотеке — в часы и достижения Steam они не входят.',
+      }));
+      if (view.secondaryWorks.length) {
+        const chips = el('div', { class: 'games-sources-secondary-list' });
+        for (const work of view.secondaryWorks.slice(0, 8)) {
+          const hours = work.hours != null ? ` · ${hoursText(work.hours, 1)}` : '';
+          chips.append(el('span', {
+            class: 'games-sources-chip',
+            text: `${work.name}${hours}`,
+            title: work.gogGameId ? `GOG id ${work.gogGameId}` : '',
+          }));
+        }
+        secondary.append(chips);
+      }
+      secondary.hidden = false;
+    } else {
+      secondary.hidden = true;
+    }
+  }
+  widget.hidden = false;
+}
+
+async function openGogLogin() {
+  setGogError('');
+  setGogBusy(true);
+  // Open the tab synchronously (inside the click) so the popup blocker does
+  // not swallow it while the auth URL is being fetched.
+  const popup = typeof window !== 'undefined' ? window.open('about:blank', '_blank') : null;
+  try {
+    const info = await getGamesGogAuthUrl();
+    const url = info && (info.url || info.authUrl);
+    if (!url) throw new Error('сервер не вернул ссылку GOG');
+    if (popup) {
+      try {
+        popup.opener = null;
+      } catch (err) {
+        /* cross-origin guard; the tab is still usable */
+      }
+      popup.location.href = url;
+    } else {
+      window.location.href = url;
+    }
+    setGogError('Войдите в GOG в новой вкладке. После входа скопируйте параметр code из адресной строки и вставьте его ниже.');
+  } catch (error) {
+    if (popup) popup.close();
+    if (error && error.status === 401) return;
+    setGogError(importErrorText(error).message);
+  } finally {
+    setGogBusy(false);
+  }
+}
+
+async function connectGogAccount() {
+  const input = $('games-gog-code');
+  const code = input ? text(input.value) : '';
+  if (!code) {
+    setGogError('Вставьте code из адресной строки GOG.');
+    return;
+  }
+  setGogError('');
+  setGogBusy(true);
+  try {
+    await connectGamesGog({ code, profile: state.profileKey });
+    if (input) input.value = '';
+    toast('GOG подключён', 'success');
+    await ensureGogStatus();
+    await startGogImport({ force: true });
+  } catch (error) {
+    if (error && error.status === 401) return;
+    setGogError(importErrorText(error).message);
+  } finally {
+    setGogBusy(false);
+  }
+}
+
+async function startGogImport({ force = false } = {}) {
+  const account = gogAccount();
+  if (!account) return;
+  try {
+    const response = await startGamesGogImport({
+      account: account.key,
+      profile: state.profileKey,
+      force,
+    });
+    const jobId = gamesJobId(response);
+    if (!jobId) {
+      await ensureGogStatus();
+      state.loaded = false;
+      await loadStats({ force: true });
+      return;
+    }
+    state.gog.job = { id: jobId, status: response };
+    toast('Импорт библиотеки GOG запущен', 'info');
+    pollGogJob();
+  } catch (error) {
+    if (error && error.status === 401) return;
+    setGogError(importErrorText(error).message);
+  }
+}
+
+async function pollGogJob() {
+  if (state.gog.timer) clearTimeout(state.gog.timer);
+  state.gog.timer = 0;
+  const job = state.gog.job;
+  if (!job || !job.id) return;
+  try {
+    const status = await getGamesGogImportStatus(job.id);
+    state.gog.job = { ...job, status };
+    if (status && status.done) {
+      state.gog.job = null;
+      if (status.status === 'failed') {
+        setGogError(status.error || 'Импорт GOG не завершился');
+      } else {
+        toast(
+          `GOG: ${fmtInt(status.libraryCount || 0)} ${plural(status.libraryCount || 0, GAME_PLURAL)} импортировано`,
+          'success'
+        );
+      }
+      await ensureGogStatus();
+      state.loaded = false;
+      await loadStats({ force: true });
+      showScreen('dashboard');
+      return;
+    }
+    state.gog.timer = setTimeout(pollGogJob, 1500);
+  } catch (error) {
+    if (error && error.status === 401) return;
+    state.gog.timer = setTimeout(pollGogJob, 3000);
+  }
+}
+
+async function logoutGogAccount() {
+  const account = gogAccount();
+  if (!account) return;
+  try {
+    await logoutGamesGog({ account: account.key, profile: state.profileKey });
+    toast('GOG отключён: токен удалён, снимок библиотеки сохранён с датой', 'info');
+    await ensureGogStatus();
+    if (state.profileKey) {
+      state.loaded = false;
+      await loadStats({ force: true });
+    }
+  } catch (error) {
+    if (error && error.status === 401) return;
+    setGogError(importErrorText(error).message);
+  }
+}
+
 function renderDashboard(data) {
   configureGamesModals({
     profile: (data.profile && data.profile.key) || state.profileKey,
@@ -811,6 +1086,10 @@ function renderDashboard(data) {
   });
   renderHead(data);
   renderProfileCard(data);
+  // M6a: sources (Steam journal + GOG secondary + Epic «скоро»). Hides itself
+  // only when there is no payload at all; a Steam-only profile still shows the
+  // GOG row with a «Подключить» link.
+  renderSources(data);
   renderSummary(data);
   renderPartialNote(data);
   renderFilters(data);
@@ -2807,6 +3086,37 @@ export function initGames({ onActivate } = {}) {
     refresh.addEventListener('click', () => refreshProfile());
   }
 
+  /* M6a: GOG connect card. The token never reaches the browser — the code is
+     exchanged server-side and only a sanitized status comes back. */
+  const connections = $('games-connections');
+  if (connections) {
+    connections.addEventListener('click', () => {
+      showScreen('import');
+      renderProfiles();
+      ensureGogStatus();
+      const card = $('games-gog-card');
+      if (card && typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'center' });
+    });
+  }
+  const gogLogin = $('games-gog-login');
+  if (gogLogin) gogLogin.addEventListener('click', () => openGogLogin());
+  const gogConnect = $('games-gog-connect');
+  if (gogConnect) gogConnect.addEventListener('click', () => connectGogAccount());
+  const gogCode = $('games-gog-code');
+  if (gogCode) {
+    gogCode.addEventListener('input', () => setGogError(''));
+    gogCode.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        connectGogAccount();
+      }
+    });
+  }
+  const gogImport = $('games-gog-import');
+  if (gogImport) gogImport.addEventListener('click', () => startGogImport({ force: true }));
+  const gogLogout = $('games-gog-logout');
+  if (gogLogout) gogLogout.addEventListener('click', () => logoutGogAccount());
+
   /* M2: filters — requested-vs-applied is printed, never silently dropped. */
   const free = $('games-filter-free');
   if (free) {
@@ -3006,6 +3316,8 @@ export async function showGames() {
   // The catalogue is server state (another browser can import a profile):
   // re-read it on activation, throttled so a tab flip-flop is cheap (P1a).
   await ensureProfiles({ reload: true, maxAgeMs: PROFILES_RELOAD_MS });
+  // M6a: sanitized GOG status for the connect card (never a token).
+  await ensureGogStatus();
   if (!state.profileKey) {
     showScreen('import');
     renderProfiles();
@@ -3060,6 +3372,10 @@ export function hideGames() {
   state.active = false;
   stopPolling();
   stopEnrichPoll();
+  if (state.gog.timer) {
+    clearTimeout(state.gog.timer);
+    state.gog.timer = 0;
+  }
   hideTooltip();
 }
 
@@ -3084,6 +3400,8 @@ export function resetGames() {
     query: '', expanded: false, visible: PERSONS_INITIAL, rows: [],
   };
   state.enrichTicks = 0;
+  if (state.gog.timer) clearTimeout(state.gog.timer);
+  state.gog = { status: null, loading: false, error: null, job: null, timer: 0, connected: false };
   saveJob();
   showScreen('import');
   renderProfiles();

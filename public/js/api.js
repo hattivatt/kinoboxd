@@ -426,3 +426,69 @@ export function getGamesEnrichStatus({ profile = '', signal } = {}) {
   const query = params.toString();
   return request(`/api/games/enrich/status${query ? `?${query}` : ''}`, { signal });
 }
+
+/* ---------------- games: GOG (M6a) ---------------- */
+
+/**
+ * URL of the GOG login page. The client id inside it is the public Galaxy
+ * client (not a user secret); the server never returns tokens.
+ */
+export function getGamesGogAuthUrl({ signal } = {}) {
+  return request('/api/games/gog/auth-url', { signal });
+}
+
+/**
+ * Exchange the one-time `code` (copied from the embed.gog.com redirect) for
+ * tokens. `profile` is the Steam owner the GOG library belongs to; without it
+ * the server attaches to the only Steam profile, or answers 400 when ambiguous.
+ */
+export function connectGamesGog({ code = '', profile = '', signal } = {}) {
+  const body = { code: String(code || '') };
+  if (profile) body.profile = String(profile);
+  return request('/api/games/gog/auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+/** Connected GOG accounts (sanitized: no access/refresh tokens). */
+export function getGamesGogStatus({ signal } = {}) {
+  return request('/api/games/gog/status', { signal });
+}
+
+/** Import the GOG library + playtime of one account (secondary library). */
+export function startGamesGogImport({ account = '', profile = '', force = false, signal } = {}) {
+  const body = {};
+  if (account) body.account = String(account);
+  if (profile) body.profile = String(profile);
+  if (force) body.force = true;
+  return request('/api/games/gog/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+/** Progress of a GOG import job (`id`/`jobId` are both accepted). */
+export function getGamesGogImportStatus(jobId, { signal } = {}) {
+  const params = new URLSearchParams();
+  if (jobId) params.set('id', String(jobId));
+  const query = params.toString();
+  return request(`/api/games/gog/import/status${query ? `?${query}` : ''}`, { signal });
+}
+
+/** Disconnect GOG: deletes the local token, keeps the dated snapshot. */
+export function logoutGamesGog({ account = '', profile = '', signal } = {}) {
+  const body = {};
+  if (account) body.account = String(account);
+  if (profile) body.profile = String(profile);
+  return request('/api/games/gog/logout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+}

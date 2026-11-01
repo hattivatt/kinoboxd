@@ -4,6 +4,7 @@ config/tmdb-token
 config/hardcover-token
 config/gbooks-token
 config/steam-token
+config/gog-client.json
 
 *.token
 .env

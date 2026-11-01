@@ -1,0 +1,22 @@
+{
+  "productsPerPage": 100,
+  "totalPages": 2,
+  "totalProducts": 4,
+  "products": [
+    {
+      "id": "1888888888",
+      "title": "A GOG Movie",
+      "slug": "a_gog_movie",
+      "image": "https://images.gog-statics.com/movie.jpg",
+      "worksOn": { "Windows": true },
+      "category": "movie",
+      "rating": null,
+      "releaseDate": "2019-02-02T00:00:00+0000",
+      "isGame": false,
+      "isMovie": true,
+      "dlcCount": 0,
+      "isHidden": false,
+      "tags": []
+    }
+  ]
+}

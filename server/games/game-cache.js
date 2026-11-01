@@ -302,6 +302,10 @@ function listProfiles() {
   for (const name of names) {
     const hit = readJsonWithFingerprint(path.join(PROFILES_DIR, name));
     if (!hit || !hit.data || !hit.data.userKey) continue;
+    // `profiles/` is shared with the same-owner secondary libraries (M6a:
+    // `gog-<userId>.json`). Only Steam documents are owner profiles — a GOG
+    // account must never appear as a second Steam owner.
+    if (hit.data.source && hit.data.source !== 'steam') continue;
     const library = getLibrary(hit.data.userKey);
     result.push({
       source: 'steam',

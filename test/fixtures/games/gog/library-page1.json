@@ -1,0 +1,52 @@
+{
+  "productsPerPage": 100,
+  "totalPages": 2,
+  "totalProducts": 4,
+  "products": [
+    {
+      "id": "1207658924",
+      "title": "The Witcher 3: Wild Hunt - Game of the Year Edition",
+      "slug": "the_witcher_3_wild_hunt",
+      "image": "https://images.gog-statics.com/witcher3.jpg",
+      "worksOn": { "Windows": true, "Mac": false, "Linux": false },
+      "category": "game",
+      "rating": 45,
+      "releaseDate": "2015-05-18T00:00:00+0000",
+      "isGame": true,
+      "isMovie": false,
+      "dlcCount": 2,
+      "isHidden": false,
+      "tags": ["role-playing", "open-world"]
+    },
+    {
+      "id": "1423049311",
+      "title": "Cyberpunk 2077: Ultimate Edition",
+      "slug": "cyberpunk_2077_ultimate_edition",
+      "image": "https://images.gog-statics.com/cp2077.jpg",
+      "worksOn": { "Windows": true, "Mac": false, "Linux": false },
+      "category": "game",
+      "rating": 40,
+      "releaseDate": "2023-09-26T00:00:00+0000",
+      "isGame": true,
+      "isMovie": false,
+      "dlcCount": 1,
+      "isHidden": false,
+      "tags": ["rpg"]
+    },
+    {
+      "id": "1999999999",
+      "title": "GOG Exclusive Indie",
+      "slug": "gog_exclusive_indie",
+      "image": "https://images.gog-statics.com/indie.jpg",
+      "worksOn": { "Windows": true, "Mac": true, "Linux": true },
+      "category": "game",
+      "rating": 30,
+      "releaseDate": "2020-01-01T00:00:00+0000",
+      "isGame": true,
+      "isMovie": false,
+      "dlcCount": 0,
+      "isHidden": false,
+      "tags": []
+    }
+  ]
+}

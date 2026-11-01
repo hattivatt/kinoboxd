@@ -24,6 +24,7 @@ const kpCompare = require('./compare');
 const { buildStats, listUnmatched } = require('./stats');
 const booksRouter = require('./books/routes');
 const gamesRouter = require('./games/routes');
+const gamesGogRouter = require('./games/routes-gog');
 const gamesPersonnelRouter = require('./games/personnel/routes-personnel');
 const gamesFranchiseRouter = require('./games/routes-franchise');
 
@@ -83,6 +84,10 @@ app.use('/api/books', booksRouter);
 // before the routers so it wraps their `res.json` bodies.
 app.use('/api/games', gzipGames());
 app.use('/api/games', gamesRouter);
+
+// GOG (M6a): /api/games/gog/* — connect, status, import, logout. Disjoint
+// paths, mounted right after the Steam router.
+app.use('/api/games/gog', gamesGogRouter);
 
 // Personnel (M3): GET /api/games/personnel + POST /api/games/override.
 // Mounted after the M1 router — the paths are disjoint (/personnel,

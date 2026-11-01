@@ -1015,6 +1015,18 @@ export function normalizeGamesPayload(raw) {
     earlyAccess: normalizeAccessBlock(summaryRaw.earlyAccess, summaryRaw),
     freeToPlay: normalizeAccessBlock(summaryRaw.freeToPlay, summaryRaw),
     metadata: normalizeMetadata(summaryRaw.metadata, summaryRaw),
+    // M6a: per-source numbers (never summed). Kept raw-tolerant: a Steam-only
+    // payload has no GOG keys and the widget simply does not print GOG rows.
+    hoursBySource:
+      summaryRaw.hoursBySource && typeof summaryRaw.hoursBySource === 'object'
+        ? summaryRaw.hoursBySource
+        : null,
+    ownedBySource:
+      summaryRaw.ownedBySource && typeof summaryRaw.ownedBySource === 'object'
+        ? summaryRaw.ownedBySource
+        : null,
+    worksTotal: numOrNull(summaryRaw.worksTotal),
+    secondaryOnlyWorks: toCount(summaryRaw.secondaryOnlyWorks),
     // Which counters the server actually sent. A missing field and a real
     // zero look identical after `toCount`, so the UI must not print «0 игр»
     // for a payload that simply has no `gameCount`.
@@ -1109,6 +1121,27 @@ export function normalizeGamesPayload(raw) {
     achievementDays,
     streaks,
     filters,
+    // M6a: raw source state + GOG-only works (the «Вне Steam» widget). Both
+    // stay empty for a Steam-only payload, so existing widgets are unchanged.
+    sources: sourcesBlock,
+    secondaryWorks: arr(source.secondaryWorks)
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return null;
+        const gog = entry.gog && typeof entry.gog === 'object' ? entry.gog : {};
+        const hours = entry.hoursBySource && entry.hoursBySource.gog != null
+          ? numOrNull(entry.hoursBySource.gog) / 60
+          : null;
+        return {
+          workKey: text(entry.workKey),
+          name: text(entry.name) || text(gog.title) || '—',
+          gogGameId: text(entry.storeIds && entry.storeIds.gog) || text(gog.gogGameId),
+          slug: text(gog.slug) || null,
+          image: text(gog.image) || null,
+          releaseDate: text(gog.releaseDate) || null,
+          hours,
+        };
+      })
+      .filter((entry) => entry && entry.name),
     has: {
       profile: Boolean(profile),
       games: gameCount > 0 || ownedCount > 0,
@@ -3319,4 +3352,100 @@ export function normalizeProfilesList(raw) {
     });
   }
   return out;
+}
+
+/* =========================================================
+   M6a: sources («Подключения» / «Вне Steam»)
+   ========================================================= */
+
+const GOG_STATUS_LABEL = {
+  ok: 'подключён',
+  stale: 'данные устарели',
+  auth_expired: 'требуется переподключение',
+  connected_no_import: 'подключён, библиотека не импортирована',
+  not_connected: 'не подключён',
+  snapshot_only: 'GOG отключён — показан сохранённый снимок',
+  soon: 'скоро',
+};
+
+/** Human status of the GOG source: never a bare `status` code in the UI. */
+export function gogStatusText(status, fetchedAt = null) {
+  const key = text(status) || 'not_connected';
+  const base = GOG_STATUS_LABEL[key] || key;
+  const date = formatDateRu(fetchedAt);
+  if (key === 'ok' && date) return `данные от ${date}`;
+  if (key === 'snapshot_only' && date) return `снимок от ${date} — подключите GOG заново`;
+  if (key === 'stale' && date) return `данные от ${date} — обновим`;
+  return base;
+}
+
+/**
+ * View model for the «Источники» widget. Steam is the journal (its hours are
+ * the headline); GOG is a same-owner secondary library and its hours are a
+ * **separate** number — the view model never adds them together (§14.4 п. 2).
+ * Epic is a placeholder until M6b and says «скоро» instead of a fake zero.
+ */
+export function gogSourcesView(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const summary = p.summary && typeof p.summary === 'object' ? p.summary : {};
+  const sources = p.sources && typeof p.sources === 'object' ? p.sources : {};
+  const gog = sources.gog && typeof sources.gog === 'object' ? sources.gog : {};
+  const hoursBySource = summary.hoursBySource && typeof summary.hoursBySource === 'object'
+    ? summary.hoursBySource
+    : {};
+  const ownedBySource = summary.ownedBySource && typeof summary.ownedBySource === 'object'
+    ? summary.ownedBySource
+    : {};
+  const gogConnected = gog.connected === true || gog.configured === true;
+  const gogHasData = gogConnected || numOrNull(gog.productCount) != null;
+  const gogStatus = gogConnected ? text(gog.status) || 'ok' : text(gog.status) || 'not_connected';
+  const gogFetchedAt = gog.libraryFetchedAt || gog.lastImportAt || null;
+  const secondaryWorks = arr(p.secondaryWorks);
+  const secondaryOnly = toCount(summary.secondaryOnlyWorks) || secondaryWorks.length;
+
+  const rows = [
+    {
+      key: 'steam',
+      label: 'Steam',
+      games: numOrNull(ownedBySource.steam) ?? numOrNull(summary.ownedCount),
+      hours: numOrNull(hoursBySource.steam) ?? numOrNull(summary.totalHours),
+      status: 'ok',
+      statusText: 'журнал',
+      journal: true,
+      canConnect: false,
+    },
+    {
+      key: 'gog',
+      label: 'GOG',
+      games: gogHasData ? numOrNull(ownedBySource.gog) ?? numOrNull(gog.productCount) : null,
+      hours: gogHasData ? numOrNull(hoursBySource.gog) ?? numOrNull(gog.hours) : null,
+      status: gogStatus,
+      statusText: gogStatusText(gogStatus, gogFetchedAt),
+      fetchedAt: gogFetchedAt,
+      username: text(gog.username) || null,
+      journal: false,
+      canConnect: !gogConnected,
+    },
+    {
+      key: 'epic',
+      label: 'Epic Games Store',
+      games: null,
+      hours: null,
+      status: 'soon',
+      statusText: 'скоро',
+      journal: false,
+      canConnect: false,
+      soon: true,
+    },
+  ];
+
+  return {
+    rows,
+    gogConnected,
+    gogStatus,
+    gogStatusText: gogStatusText(gogStatus, gogFetchedAt),
+    secondaryOnly,
+    secondaryWorks,
+    worksTotal: numOrNull(summary.worksTotal),
+  };
 }
