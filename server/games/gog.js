@@ -26,9 +26,13 @@
  *   4. `getUserData(token)` — `embed.gog.com/userData.json` (identity);
  *   5. `getFilteredProducts(token, page)` — `embed.gog.com/account/
  *      getFilteredProducts?mediaType=1&page=N`, **100 products/page**;
- *   6. `getSessions(token, productId)` — `gameplay.gog.com/games/{id}/users/
- *      {uid}/sessions` → `time_sum` in **minutes** (confirmed by Heroic's
- *      `getGOGPlaytime`, not by documentation).
+ *   6. `getSessions(token, gogGameId)` — `gameplay.gog.com/games/{id}/users/
+ *      {uid}/sessions` → `time_sum` in **minutes**. Shape confirmed by three
+ *      independent open-source clients: Heroic `getGOGPlaytime`, unifideck
+ *      `fetch_gog_playtime_minutes` («verified live», 06.2026) and comet
+ *      `api/gog/sessions.rs`. The `{uid}` is the **Galaxy** user id — the OAuth
+ *      `user_id` (Heroic) or `userData.json.galaxyUserId` (comet/unifideck),
+ *      never `userData.json.userId` (the 01.11.2026 zero-hours bug).
  *
  * Secrets:
  *   - user tokens never appear in an error message, log line or job status;
@@ -440,9 +444,102 @@ function safeJson(body) {
   }
 }
 
+/**
+ * First `max` bytes of a response body for the diagnostic dump
+ * (`cache-games/debug/gog/<id>.json`). Truncation is marked explicitly so a cut
+ * JSON body can never be mistaken for a malformed answer.
+ */
+function truncateBody(body, max = 5 * 1024) {
+  const text = String(body == null ? '' : body);
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…[truncated ${text.length - max} B]`;
+}
+
 /* ------------------------------------------------------------------ */
 /* client                                                              */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Which numeric id `gameplay.gog.com` expects as `{uid}`.
+ *
+ * The reference implementations all use the **Galaxy** id, never the
+ * `userData.json` `userId` field:
+ *   - Heroic `getGOGPlaytime` — `credentials.user_id` (the OAuth token
+ *     response field);
+ *   - unifideck `fetch_gog_playtime_minutes` (verified live 06.2026) —
+ *     `user_info.galaxy_user_id` from `embed.gog.com/userData.json`;
+ *   - comet `sessions.rs` — `user_info.galaxy_user_id` (it even compares the
+ *     Galaxy proto `user_id` with it).
+ *
+ * The 01.11.2026 production bug («в профиле GOG часы есть, у нас 0.00»): the
+ * client sent `userData.json.userId`, which is a **different** field from
+ * `galaxyUserId` (the fixture models both: `userId` 1234567890 vs
+ * `galaxyUserId` 5555555555). A foreign uid answers `{"time_sum":0}`/404 for
+ * every game — a systematic zero that looked like "GOG has no playtime".
+ *
+ * Order: OAuth `user_id` (token) → `galaxyUserId` (userData) → legacy `userKey`
+ * (the `userId` field older snapshots stored).
+ */
+function gameplayUserId(tokenDoc) {
+  const candidates = [
+    { value: tokenDoc && tokenDoc.userId, source: 'token:user_id' },
+    { value: tokenDoc && tokenDoc.galaxyUserId, source: 'userData:galaxyUserId' },
+    { value: tokenDoc && tokenDoc.userKey, source: 'userData:userId' },
+  ];
+  for (const candidate of candidates) {
+    if (gogCache.isValidUserKey(candidate.value)) {
+      return { uid: String(candidate.value).trim(), source: candidate.source };
+    }
+  }
+  return { uid: null, source: null };
+}
+
+/**
+ * Minutes out of one `sessions` response, with the field that carried them.
+ *
+ * `time_sum` (minutes) is the field every open-source client reads
+ * (Heroic/comet/unifideck). The extra shapes are read-only fallbacks for a
+ * service that answers a session list instead of a pre-summed number: a **sum
+ * of the session lengths** is still the same quantity, never an invented one.
+ */
+function minutesOfSessionsPayload(json) {
+  if (!json || typeof json !== 'object') return { minutes: null, field: null };
+  const direct = ['time_sum', 'timeSum', 'total_time', 'totalTime', 'total_minutes'];
+  for (const field of direct) {
+    if (json[field] == null) continue;
+    const value = Number(json[field]);
+    if (Number.isFinite(value) && value >= 0) {
+      return { minutes: Math.round(value * 100) / 100, field };
+    }
+  }
+  const sessions = Array.isArray(json.sessions) ? json.sessions : null;
+  if (sessions) {
+    let sum = 0;
+    let counted = 0;
+    for (const session of sessions) {
+      if (!session || typeof session !== 'object') continue;
+      const value = Number(
+        session.time != null
+          ? session.time
+          : session.time_sum != null
+            ? session.time_sum
+            : session.minutes != null
+              ? session.minutes
+              : session.duration_minutes
+      );
+      if (Number.isFinite(value) && value >= 0) {
+        sum += value;
+        counted++;
+      }
+    }
+    if (counted) {
+      return { minutes: Math.round(sum * 100) / 100, field: 'sessions[]', sessions: counted };
+    }
+    // An empty session list is a real zero: the game was never launched.
+    return { minutes: 0, field: 'sessions[]', sessions: 0 };
+  }
+  return { minutes: null, field: null };
+}
 
 function createClient(options = {}) {
   const request = options.request || httpGet;
@@ -798,18 +895,25 @@ function createClient(options = {}) {
   /* ------------------------- playtime -------------------------- */
 
   /**
-   * `time_sum` in **minutes** for one product. A 404 means "no sessions
-   * recorded" (a game that was never launched) — that is a real zero, not an
-   * error. Every other non-2xx goes through `authenticatedGet`'s contract.
+   * `time_sum` in **minutes** for one product.
+   *
+   * A 404 means "no sessions recorded" (a game that was never launched) — a
+   * real zero, reported as `status:'not_found'` so the importer can re-check it
+   * instead of freezing the zero forever. A 200 without a recognizable field
+   * is **not** a zero: `status:'unparsed'`, `minutes:null` — the caller keeps
+   * it pending and dumps the raw body (`cache-games/debug/gog/`).
    */
-  async function getSessions(tokenDoc, gogGameId) {
-    const userId = tokenDoc && tokenDoc.userKey;
-    if (!gogCache.isValidUserKey(userId)) {
-      throw new GogError('GOG: неизвестен userId для запроса playtime.', 'gog_invalid_user');
+  async function getSessions(tokenDoc, gogGameId, options = {}) {
+    const { uid, source: uidSource } = gameplayUserId(tokenDoc);
+    if (!uid) {
+      throw new GogError(
+        'GOG: неизвестен числовой userId (ни token user_id, ни galaxyUserId).',
+        'gog_invalid_user'
+      );
     }
     const url =
       `${endpoints.gameplay}/games/${encodeURIComponent(gogGameId)}` +
-      `/users/${encodeURIComponent(userId)}/sessions`;
+      `/users/${encodeURIComponent(uid)}/sessions`;
     assertNotBlocked(GAMEPLAY_HOST);
     await pause('playtime');
     const response = await request(url, {
@@ -817,7 +921,16 @@ function createClient(options = {}) {
       followRedirect: false,
     });
     if (response.status === 404) {
-      return { gogGameId: String(gogGameId), minutes: 0, found: false };
+      return {
+        gogGameId: String(gogGameId),
+        minutes: 0,
+        found: false,
+        status: 'not_found',
+        httpStatus: 404,
+        field: null,
+        uidSource,
+        raw: options.raw ? truncateBody(response.body) : null,
+      };
     }
     if (response.status >= 300 && response.status < 400) {
       throw new GogError(
@@ -852,13 +965,18 @@ function createClient(options = {}) {
         { host: GAMEPLAY_HOST, status: response.status }
       );
     }
-    const json = parseJsonBody(response, url);
-    const raw = json && (json.time_sum != null ? json.time_sum : json.timeSum);
-    const minutes = Number(raw);
+    const raw = options.raw ? truncateBody(response.body) : null;
+    const parsed = minutesOfSessionsPayload(safeJson(response.body));
     return {
       gogGameId: String(gogGameId),
-      minutes: Number.isFinite(minutes) && minutes >= 0 ? minutes : 0,
-      found: raw != null,
+      minutes: parsed.minutes,
+      found: parsed.minutes != null,
+      status: parsed.minutes == null ? 'unparsed' : 'ok',
+      httpStatus: response.status,
+      field: parsed.field,
+      sessions: parsed.sessions == null ? undefined : parsed.sessions,
+      uidSource,
+      raw,
     };
   }
 
@@ -939,4 +1057,7 @@ module.exports = {
   resetCredentialsCache,
   normalizeProduct,
   libraryFingerprint,
+  gameplayUserId,
+  minutesOfSessionsPayload,
+  truncateBody,
 };

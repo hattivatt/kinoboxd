@@ -14,6 +14,8 @@
  *     playtime/gog-<userId>.json      { [gogGameId]: minutes } (time_sum)
  *     tokens/gog-<userId>.json        OAuth tokens — **0600 file, 0700 dir**
  *     state/gog-breaker.json          host breaker (30 min), never a token
+ *     debug/gog/<gogGameId>.json      first raw `sessions` responses of a run
+ *     debug/gog/_summary.json         per-run playtime diagnostics (no tokens)
  *
  * Rules:
  *   - tokens are never returned by the public view (`publicTokenView`), never
@@ -36,6 +38,7 @@ const PLAYTIME_DIR = path.join(CACHE_DIR, 'playtime');
 const TOKENS_DIR = path.join(CACHE_DIR, 'tokens');
 const STATE_DIR = gameCache.STATE_DIR;
 const BREAKER_PATH = path.join(STATE_DIR, 'gog-breaker.json');
+const DEBUG_DIR = path.join(CACHE_DIR, 'debug', 'gog');
 
 const LIBRARY_TTL_MS = 24 * 60 * 60 * 1000;
 const PLAYTIME_TTL_MS = 24 * 60 * 60 * 1000;
@@ -93,6 +96,10 @@ function libraryPath(userKey) {
 
 function playtimePath(userKey) {
   return path.join(PLAYTIME_DIR, `gog-${safeKey(userKey)}.json`);
+}
+
+function debugPath(name) {
+  return path.join(DEBUG_DIR, `${safeKey(name)}.json`);
 }
 
 function envMs(name, fallback) {
@@ -351,6 +358,44 @@ function getPlaytime(userKey) {
 }
 
 /* ------------------------------------------------------------------ */
+/* playtime diagnostics (raw `sessions` responses)                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Write one raw diagnostic document (`debug/gog/<gogGameId>.json`). The
+ * playtime phase answers `{"time_sum": <minutes>}` and the production bug of
+ * 01.11.2026 («GOG-часы 0.00, а в профиле они есть») can only be closed with
+ * the **actual** body: the importer keeps the first three responses of a run
+ * here, truncated, with the token never included.
+ *
+ * Best-effort: a read-only cache (worktree) must not fail the import.
+ */
+function writeDebugDump(name, doc) {
+  try {
+    fs.mkdirSync(DEBUG_DIR, { recursive: true });
+    const fingerprint = gameCache.writeJsonAtomicSync(debugPath(name), doc);
+    return { data: doc, fingerprint };
+  } catch (err) {
+    return null;
+  }
+}
+
+function getDebugDump(name) {
+  const hit = gameCache.readJsonWithFingerprint(debugPath(name));
+  return hit ? hit.data : null;
+}
+
+function listDebugDumps() {
+  let names = [];
+  try {
+    names = fs.readdirSync(DEBUG_DIR).filter((name) => /\.json$/.test(name));
+  } catch (err) {
+    return [];
+  }
+  return names.sort();
+}
+
+/* ------------------------------------------------------------------ */
 /* breaker state (no tokens, no user data)                             */
 /* ------------------------------------------------------------------ */
 
@@ -371,6 +416,7 @@ module.exports = {
   TOKENS_DIR,
   STATE_DIR,
   BREAKER_PATH,
+  DEBUG_DIR,
   LIBRARY_TTL_MS,
   PLAYTIME_TTL_MS,
   PROFILE_TTL_MS,
@@ -386,6 +432,7 @@ module.exports = {
   profilePath,
   libraryPath,
   playtimePath,
+  debugPath,
   saveToken,
   getToken,
   deleteToken,
@@ -402,6 +449,9 @@ module.exports = {
   listLibraries,
   savePlaytime,
   getPlaytime,
+  writeDebugDump,
+  getDebugDump,
+  listDebugDumps,
   readBreaker,
   writeBreaker,
 };
