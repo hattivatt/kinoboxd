@@ -9,7 +9,8 @@
  *   POST /api/games/import/steam      { steamid64 | vanityUrl, label?, force? }
  *   GET  /api/games/import/:jobId
  *   GET  /api/games/import/status?id=…
- *   POST /api/games/enrich            { profile, force?, recheckDays? }
+ *   POST /api/games/enrich            { profile, force?, phases?, recheckDays? }
+ *                                     phases: details|spy|reviews|all (default all)
  *   GET  /api/games/enrich/:jobId
  *   GET  /api/games/enrich/status?id=…
  *   GET  /api/games/stats?profile=steam-<steamid64>&includeFree=0|1&includeDlc=0|1
@@ -26,6 +27,7 @@ const { HttpError } = require('../upload');
 const config = require('../config');
 const steam = require('./steam');
 const store = require('./store');
+const spy = require('./spy');
 const gameCache = require('./game-cache');
 const importJobs = require('./import');
 const enrichJobs = require('./enrich');
@@ -57,11 +59,25 @@ const STEAM_ERROR_STATUS = {
   store_unreachable: 502,
   store_http_error: 502,
   store_invalid_appid: 400,
+  spy_rate_limited: 429,
+  spy_unreachable: 502,
+  spy_http_error: 502,
+  spy_invalid_appid: 400,
+  reviews_rate_limited: 429,
+  reviews_unreachable: 502,
+  reviews_http_error: 502,
+  reviews_invalid_appid: 400,
 };
 
 function mapError(err) {
   if (err instanceof HttpError) return err;
   if (err instanceof steam.SteamError || err instanceof store.StoreError) {
+    const status = STEAM_ERROR_STATUS[err.code] || 502;
+    const mapped = new HttpError(status, err.message, err.code);
+    if (err.retryAt) mapped.retryAt = err.retryAt;
+    return mapped;
+  }
+  if (err instanceof spy.SpyError) {
     const status = STEAM_ERROR_STATUS[err.code] || 502;
     const mapped = new HttpError(status, err.message, err.code);
     if (err.retryAt) mapped.retryAt = err.retryAt;
@@ -287,9 +303,11 @@ function createRouter(deps = {}) {
   /* --------------------------- enrich ------------------------- */
 
   /**
-   * `POST /api/games/enrich` — fetch Steam Store details for the library of
-   * one profile. Body: `{ profile, force?, recheckDays? }` (query fallback for
-   * curl). Resumable: the cache is the progress; `force` re-fetches all.
+   * `POST /api/games/enrich` — fetch metadata for the library of one profile.
+   * Body: `{ profile, force?, phases?, recheckDays? }` (query fallback for
+   * curl). `phases` is `details` | `spy` | `reviews` | `all` (comma-separated
+   * or an array); the default is `all`, i.e. run whatever is missing/stale.
+   * Resumable: the cache is the progress; `force` re-fetches all.
    */
   router.post('/enrich', (req, res, next) => {
     try {
@@ -297,6 +315,16 @@ function createRouter(deps = {}) {
       const requested = body.profile != null ? body.profile : req.query.profile;
       const scope = resolveProfileOrThrow(requested);
       const force = parseForce(body.force != null ? body.force : req.query.force);
+      const rawPhases =
+        body.phases != null
+          ? body.phases
+          : body.phase != null
+            ? body.phase
+            : req.query.phases != null
+              ? req.query.phases
+              : req.query.phase;
+      // Unknown phase names are a 400 (`invalid_phases`), never a silent no-op.
+      const phases = enrichJobs.parsePhases(rawPhases, 'all');
       let recheckDays;
       const rawRecheck = body.recheckDays != null ? body.recheckDays : req.query.recheckDays;
       if (rawRecheck != null && String(rawRecheck).trim() !== '') {
@@ -313,7 +341,10 @@ function createRouter(deps = {}) {
       const job = enrichJobs.startEnrich(scope.parsed.key, {
         force,
         recheckDays,
+        phases,
         client: storeClient || undefined,
+        spyClient: deps.spyClient || undefined,
+        reviewsClient: deps.reviewsClient || undefined,
       });
       // Credits follow the details: the personnel pass waits for this enrich
       // job (`waitForEnrich`), so the widget gets people without a second
@@ -526,6 +557,22 @@ function createRouter(deps = {}) {
             }
           : null;
       const cached = gameCache.getAchievements(scope.parsed.userKey, appid);
+      // M4: cached tags and review summary (no network, no fabrication).
+      const spyDoc = gameCache.getSpy(appid);
+      const tags = spyDoc && spyDoc.success && Array.isArray(spyDoc.tags) ? spyDoc.tags : [];
+      const reviewDoc = gameCache.getReviews(appid);
+      const review =
+        reviewDoc && reviewDoc.success
+          ? {
+              score: reviewDoc.score == null ? null : reviewDoc.score,
+              desc: reviewDoc.desc || null,
+              positive: reviewDoc.positive,
+              negative: reviewDoc.negative,
+              total: reviewDoc.total,
+              fetchedAt: reviewDoc.fetchedAt || null,
+              source: 'steam-reviews',
+            }
+          : null;
       // M3: cached credits for this appid (no network, no fabrication).
       const personnel = personnelForGame(appid);
       const achievements = cached
@@ -561,6 +608,10 @@ function createRouter(deps = {}) {
         achievements,
         // M2: store appdetails (null until the enrich job has fetched it).
         details,
+        // M4: SteamSpy tags (top-20, weighted) and the community review grade
+        // (reference only — Steam has no personal 1..10 ratings, ИГРЫ §1.2).
+        tags,
+        review,
         // M3: credits for this game from cache-games/personnel/<appid>.json
         // (studios from details + Wikidata/Moby, people, honest `pending`).
         // Never a network call — the personnel job fills the cache.
@@ -572,10 +623,14 @@ function createRouter(deps = {}) {
         meta: {
           achievementsCached: Boolean(cached),
           detailsCached: Boolean(details),
+          tagsCached: tags.length > 0,
+          reviewCached: Boolean(review),
           personnelCached: Boolean(personnel && personnel.coverage),
           pending: [
             ...new Set([
               ...(details ? [] : ['details']),
+              ...(tags.length ? [] : ['tags']),
+              ...(review ? [] : ['reviews']),
               // `personnelForGame` already says whether details/credits are
               // missing for this appid, so the card never claims a full
               // payload it does not have (and never lists what is present).

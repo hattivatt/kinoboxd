@@ -44,8 +44,28 @@ const config = require('../config');
 const RECENT_LIMIT = 10;
 const TOP_LIMIT = 20;
 const BACKLOG_LIMIT = 200;
+const TAG_LIMIT = 50;
+const TAG_INDEX_LIMIT = 5;
+const DLC_TOP_LIMIT = 10;
 const RARE_PERCENT = 5;
 const UNKNOWN_YEAR_LABEL = 'год неизвестен';
+
+/**
+ * Steam's nine review-score levels (`review_score` 1..9 → the `desc` Steam
+ * prints on the store page). The bucket label is the canonical English text so
+ * the frontend can localize it instead of re-deriving it from a number.
+ */
+const REVIEW_SCORE_LABELS = {
+  1: 'Overwhelmingly Negative',
+  2: 'Very Negative',
+  3: 'Negative',
+  4: 'Mostly Negative',
+  5: 'Mixed',
+  6: 'Mostly Positive',
+  7: 'Positive',
+  8: 'Very Positive',
+  9: 'Overwhelmingly Positive',
+};
 
 // Steam category descriptions (`l=english`) → the mode counters of the
 // payload. Kept as regexes because Steam occasionally rewords a label.
@@ -64,6 +84,20 @@ const MODE_TESTS = {
 function detailOf(details, appid) {
   if (!details || typeof details !== 'object') return null;
   const doc = details[String(appid)];
+  return doc && doc.success ? doc : null;
+}
+
+/** A successful SteamSpy document (tags/owners/ccu) for one appid. */
+function spyOf(spyDocs, appid) {
+  if (!spyDocs || typeof spyDocs !== 'object') return null;
+  const doc = spyDocs[String(appid)];
+  return doc && doc.success ? doc : null;
+}
+
+/** A successful review summary for one appid (score may still be null). */
+function reviewsOf(reviewDocs, appid) {
+  if (!reviewDocs || typeof reviewDocs !== 'object') return null;
+  const doc = reviewDocs[String(appid)];
   return doc && doc.success ? doc : null;
 }
 
@@ -256,6 +290,8 @@ function buildGamesStats(input = {}) {
   // at all the payload must stay exactly M1: every game is kept, every M2
   // bucket stays empty and `meta.pending` says why.
   const details = input.details && typeof input.details === 'object' ? input.details : {};
+  const spyDocs = input.spy && typeof input.spy === 'object' ? input.spy : {};
+  const reviewDocs = input.reviews && typeof input.reviews === 'object' ? input.reviews : {};
   const includeFree = input.includeFree !== false;
   const includeDlc = Boolean(input.includeDlc);
   const detailsCount = games.filter((game) => detailOf(details, game.appid)).length;
@@ -363,6 +399,8 @@ function buildGamesStats(input = {}) {
     const completion = completionByAppid.get(appid) || null;
     const doc = detailOf(details, game.appid);
     const year = releaseYearOf(doc);
+    const spyDoc = spyOf(spyDocs, appid);
+    const reviewDoc = reviewsOf(reviewDocs, appid);
     gamesIndex[appid] = {
       appid,
       name: game.name || null,
@@ -387,7 +425,23 @@ function buildGamesStats(input = {}) {
           : null,
       isFree: doc && typeof doc.is_free === 'boolean' ? doc.is_free : null,
       earlyAccess: doc ? Boolean(doc.earlyAccess) : null,
-      metadataSources: doc ? ['steam-store'] : [],
+      metadataSources: [
+        ...(doc ? ['steam-store'] : []),
+        ...(spyDoc ? ['steamspy'] : []),
+        ...(reviewDoc ? ['steam-reviews'] : []),
+      ],
+      // M4: the five heaviest SteamSpy tags of this game (the full list stays
+      // in `cache-games/spy/<appid>.json`; the index is already the biggest
+      // part of the payload) + the community review grade.
+      tags: spyDoc && Array.isArray(spyDoc.tags)
+        ? spyDoc.tags
+            .slice()
+            .sort((left, right) => (Number(right.weight) || 0) - (Number(left.weight) || 0))
+            .slice(0, TAG_INDEX_LIMIT)
+            .map((tag) => ({ name: tag.name, weight: Number(tag.weight) || 0 }))
+        : [],
+      reviewScore: reviewDoc && reviewDoc.score != null ? Number(reviewDoc.score) : null,
+      reviewDesc: reviewDoc && reviewDoc.desc != null ? String(reviewDoc.desc) : null,
       completion: completion ? completion.percent : null,
       achievements: completion,
     };
@@ -546,6 +600,119 @@ function buildGamesStats(input = {}) {
             left.name.localeCompare(right.name)
         )
     : [];
+
+  /* ---------------- M4: SteamSpy tags ---------------- */
+  // `count` = how many games of this library carry the tag, `hours` = their
+  // playtime, `weight` = the summed SteamSpy popularity weight (the same
+  // number the store tag cloud uses). Tags are metadata, not owner events:
+  // one game can carry 20 of them and none of them is invented.
+  const tagMap = new Map();
+  let gamesWithTags = 0;
+  for (const game of keptGames) {
+    const doc = spyOf(spyDocs, game.appid);
+    if (!doc || !Array.isArray(doc.tags) || !doc.tags.length) continue;
+    gamesWithTags++;
+    const hours = hoursOf(game);
+    for (const tag of doc.tags) {
+      const name = tag && tag.name ? String(tag.name) : null;
+      if (!name) continue;
+      const entry = tagMap.get(name) || { name, count: 0, hours: 0, weight: 0 };
+      entry.count++;
+      entry.hours += hours;
+      entry.weight += Number(tag.weight) || 0;
+      tagMap.set(name, entry);
+    }
+  }
+  const tags = gamesWithTags
+    ? [...tagMap.values()]
+        .map((entry) => ({
+          name: entry.name,
+          count: entry.count,
+          hours: round1(entry.hours),
+          weight: Math.round(entry.weight),
+        }))
+        .sort(
+          (left, right) =>
+            right.hours - left.hours ||
+            right.count - left.count ||
+            right.weight - left.weight ||
+            left.name.localeCompare(right.name)
+        )
+        .slice(0, TAG_LIMIT)
+    : [];
+
+  /* ---------------- M4: community review scores ---------------- */
+  // Steam's `review_score` is a 1..9 community grade, never a personal rating
+  // (ИГРЫ §1.2). Buckets are the nine store levels; only `count`/`hours` are
+  // serialized — the per-game score lives in `gamesIndex`.
+  const scoreCounts = new Map();
+  const scoreValues = [];
+  let gamesWithReviews = 0;
+  for (const game of keptGames) {
+    const doc = reviewsOf(reviewDocs, game.appid);
+    if (!doc || doc.score == null) continue;
+    const score = Number(doc.score);
+    if (!Number.isInteger(score) || score < 1 || score > 9) continue;
+    const hours = hoursOf(game);
+    gamesWithReviews++;
+    scoreValues.push(score);
+    const entry = scoreCounts.get(score) || { score, count: 0, hours: 0 };
+    entry.count++;
+    entry.hours += hours;
+    scoreCounts.set(score, entry);
+  }
+  const scores = gamesWithReviews
+    ? Object.keys(REVIEW_SCORE_LABELS)
+        .map(Number)
+        .sort((left, right) => left - right)
+        .map((score) => {
+          const entry = scoreCounts.get(score) || { score, count: 0, hours: 0 };
+          return {
+            score,
+            bucket: REVIEW_SCORE_LABELS[score],
+            count: entry.count,
+            hours: round1(entry.hours),
+          };
+        })
+    : [];
+  const reviewScore = gamesWithReviews
+    ? {
+        avg: round2(scoreValues.reduce((sum, value) => sum + value, 0) / scoreValues.length),
+        median: round1(median(scoreValues)),
+      }
+    : null;
+
+  /* ---------------- M4: DLC facts ---------------- */
+  // `dlcCount` already lives in the details document (`dlc[]` length); the
+  // widget only needs the facts, not the DLC appids.
+  let dlcSummary = null;
+  if (hasDetails) {
+    const dlcGames = [];
+    let dlcTotal = 0;
+    for (const game of keptGames) {
+      const doc = detailOf(details, game.appid);
+      if (!doc) continue;
+      const count = Number.isFinite(Number(doc.dlcCount)) ? Number(doc.dlcCount) : 0;
+      dlcTotal += count;
+      dlcGames.push({
+        appid: game.appid,
+        name: game.name || doc.name || null,
+        dlcCount: count,
+      });
+    }
+    const withDlc = dlcGames.filter((entry) => entry.dlcCount > 0);
+    dlcSummary = {
+      gamesWithDlc: withDlc.length,
+      dlcTotal,
+      avgCount: dlcGames.length ? round2(dlcTotal / dlcGames.length) : 0,
+      max: [...withDlc]
+        .sort(
+          (left, right) =>
+            right.dlcCount - left.dlcCount || String(left.name || '').localeCompare(String(right.name || ''))
+        )
+        .slice(0, DLC_TOP_LIMIT),
+    };
+  }
 
   const modes = hasDetails
     ? {
@@ -717,6 +884,10 @@ function buildGamesStats(input = {}) {
       earlyAccess,
       freeToPlay,
       platforms,
+      // M4: community review grade (null until a review summary is cached) and
+      // DLC facts from the details documents.
+      reviewScore,
+      dlc: dlcSummary,
       metadata,
     },
     hoursHistogram: hoursHistogram(hoursList),
@@ -732,7 +903,9 @@ function buildGamesStats(input = {}) {
     // M2/M3 buckets — present as empty arrays so the frontend never has to
     // guess, but never filled with invented data.
     genres,
-    tags: [],
+    tags,
+    // M4: nine Steam review-score levels, `[]` until a summary is cached.
+    scores,
     decades,
     years,
     franchises: [],
@@ -755,6 +928,20 @@ function buildGamesStats(input = {}) {
       keyConfigured,
       keySource: keyConfigured ? config.steamKeySource() : null,
       details: metadata,
+      // M4 coverage: how much of the visible library has tags / a review grade.
+      // `percent` is honest: 0 with no documents, never a fake 100.
+      tags: {
+        source: 'steamspy',
+        gamesWithTags,
+        gamesTotal: gameCount,
+        percent: gameCount ? round1((gamesWithTags / gameCount) * 100) : 0,
+      },
+      reviews: {
+        source: 'steam-reviews',
+        gamesWithReviews,
+        gamesTotal: gameCount,
+        percent: gameCount ? round1((gamesWithReviews / gameCount) * 100) : 0,
+      },
       excluded,
       filters: {
         includeFree: {
@@ -778,7 +965,9 @@ function buildGamesStats(input = {}) {
         ...(hasDetails
           ? []
           : ['genres', 'years', 'decades', 'modes', 'earlyAccess', 'freeToPlay', 'platforms']),
-        'tags',
+        ...(gamesWithTags ? [] : ['tags']),
+        ...(gamesWithReviews ? [] : ['reviews']),
+        ...(dlcSummary ? [] : ['dlc']),
         'franchises',
         'studios',
         'personnelTop',
@@ -812,6 +1001,9 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     achievements,
     globals,
     details,
+    // M4 metadata: global per appid, no owner dimension.
+    spy: gameCache.listSpy(appids),
+    reviews: gameCache.listReviews(appids),
     includeFree: options.includeFree !== false,
     includeDlc: Boolean(options.includeDlc),
     // Set by the route from the enrich job registry (no live request).
@@ -847,7 +1039,13 @@ module.exports = {
   HISTOGRAM_BUCKETS,
   UNKNOWN_YEAR_LABEL,
   MODE_TESTS,
+  REVIEW_SCORE_LABELS,
+  TAG_LIMIT,
+  TAG_INDEX_LIMIT,
+  DLC_TOP_LIMIT,
   detailOf,
+  spyOf,
+  reviewsOf,
   genreNamesOf,
   categoryNamesOf,
   modeFlagsOf,

@@ -16,10 +16,14 @@
  *     profiles/steam-<steamid64>.json     persona/avatar/privacy/importedAt
  *     library/steam-<steamid64>.json      raw GetOwnedGames snapshot + fingerprint
  *     details/<appid>.json                store appdetails (global, not per owner)
+ *     spy/<appid>.json                    SteamSpy tags/owners/ccu (M4, global)
+ *     reviews/<appid>.json                appreviews summary (M4, global)
  *     achievements/<steamid64>/<appid>.json  player achievements (unlockTimestamp)
  *     global/<appid>.json                 global achievement percentages
  *     state/games-breaker.json            host breakers (30 min) — see §10.1
- *     state/enrich-state.json             M2 enrich progress/journal (resume)
+ *     state/enrich-state.json             details enrich progress/journal (resume)
+ *     state/spy-state.json                SteamSpy phase progress/journal
+ *     state/reviews-state.json            appreviews phase progress/journal
  *
  * Roots:
  *   - `KINOBOXD_CACHE_GAMES_DIR` moves the whole cache (tests point it at /tmp);
@@ -29,7 +33,8 @@
  * TTLs (library is 24 h here, §3.3 mentions 6 h for a manual refresh — the
  * import job accepts `force` to bypass either):
  *   profile 6 h · library 24 h · achievements 24 h · global 7 days ·
- *   details 180 days (`GAMES_STORE_TTL_MS`, re-check window `GAMES_STORE_RECHECK_DAYS`).
+ *   details 180 days (`GAMES_STORE_TTL_MS`, re-check window `GAMES_STORE_RECHECK_DAYS`) ·
+ *   spy/reviews 30 days (`GAMES_SPY_TTL_MS` / `GAMES_REVIEWS_TTL_MS`).
  */
 
 const fs = require('fs');
@@ -47,10 +52,14 @@ const STATE_DIR = process.env.KINOBOXD_STATE_DIR
 const PROFILES_DIR = path.join(GAMES_CACHE_DIR, 'profiles');
 const LIBRARY_DIR = path.join(GAMES_CACHE_DIR, 'library');
 const DETAILS_DIR = path.join(GAMES_CACHE_DIR, 'details');
+const SPY_DIR = path.join(GAMES_CACHE_DIR, 'spy');
+const REVIEWS_DIR = path.join(GAMES_CACHE_DIR, 'reviews');
 const ACHIEVEMENTS_DIR = path.join(GAMES_CACHE_DIR, 'achievements');
 const GLOBAL_DIR = path.join(GAMES_CACHE_DIR, 'global');
 const BREAKER_PATH = path.join(STATE_DIR, 'games-breaker.json');
 const ENRICH_STATE_PATH = path.join(STATE_DIR, 'enrich-state.json');
+const SPY_STATE_PATH = path.join(STATE_DIR, 'spy-state.json');
+const REVIEWS_STATE_PATH = path.join(STATE_DIR, 'reviews-state.json');
 
 const PROFILE_TTL_MS = 6 * 60 * 60 * 1000;
 const LIBRARY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -59,8 +68,21 @@ const GLOBAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // Store metadata is mostly static (genres/developers/categories), but release
 // dates and DLC lists change; the brief fixes the re-check window at 180 days.
 const DETAILS_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+// SteamSpy owners/CCU float, tags do not; appreviews counters grow daily. Both
+// phases are re-checked monthly (brief M4; ИГРЫ §10.1 said 7 days for reviews).
+const SPY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const REVIEWS_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-for (const dir of [PROFILES_DIR, LIBRARY_DIR, DETAILS_DIR, ACHIEVEMENTS_DIR, GLOBAL_DIR, STATE_DIR]) {
+for (const dir of [
+  PROFILES_DIR,
+  LIBRARY_DIR,
+  DETAILS_DIR,
+  SPY_DIR,
+  REVIEWS_DIR,
+  ACHIEVEMENTS_DIR,
+  GLOBAL_DIR,
+  STATE_DIR,
+]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -145,6 +167,14 @@ function detailsPath(appid) {
   return path.join(DETAILS_DIR, `${safeKey(appid)}.json`);
 }
 
+function spyPath(appid) {
+  return path.join(SPY_DIR, `${safeKey(appid)}.json`);
+}
+
+function reviewsPath(appid) {
+  return path.join(REVIEWS_DIR, `${safeKey(appid)}.json`);
+}
+
 function achievementPath(steamId64, appid) {
   return path.join(ACHIEVEMENTS_DIR, safeKey(steamId64), `${safeKey(appid)}.json`);
 }
@@ -200,6 +230,16 @@ function globalTtlMs() {
 function detailsTtlMs() {
   const raw = Number(process.env.GAMES_STORE_TTL_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : DETAILS_TTL_MS;
+}
+
+function spyTtlMs() {
+  const raw = Number(process.env.GAMES_SPY_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : SPY_TTL_MS;
+}
+
+function reviewsTtlMs() {
+  const raw = Number(process.env.GAMES_REVIEWS_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : REVIEWS_TTL_MS;
 }
 
 /* ------------------------------------------------------------------ */
@@ -332,11 +372,75 @@ function listDetails(appids) {
 }
 
 /* ------------------------------------------------------------------ */
+/* SteamSpy tags (global per appid — metadata, not owner events)        */
+/* ------------------------------------------------------------------ */
+
+async function saveSpy(appid, doc) {
+  const payload = {
+    schemaVersion: 1,
+    source: 'steamspy',
+    ...doc,
+    appid: Number(appid),
+  };
+  const fingerprint = await writeJsonAtomic(spyPath(appid), payload);
+  return { data: payload, fingerprint };
+}
+
+function getSpy(appid) {
+  const hit = readJsonWithFingerprint(spyPath(appid));
+  return hit ? hit.data : null;
+}
+
+/** `{ [appid]: spyDoc }`; missing/corrupt files are simply absent. */
+function listSpy(appids) {
+  const result = {};
+  if (!Array.isArray(appids)) return result;
+  for (const appid of appids) {
+    if (appid == null) continue;
+    const doc = getSpy(appid);
+    if (doc) result[String(appid)] = doc;
+  }
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* Review summaries (global per appid)                                 */
+/* ------------------------------------------------------------------ */
+
+async function saveReviews(appid, doc) {
+  const payload = {
+    schemaVersion: 1,
+    source: 'steam-reviews',
+    ...doc,
+    appid: Number(appid),
+  };
+  const fingerprint = await writeJsonAtomic(reviewsPath(appid), payload);
+  return { data: payload, fingerprint };
+}
+
+function getReviews(appid) {
+  const hit = readJsonWithFingerprint(reviewsPath(appid));
+  return hit ? hit.data : null;
+}
+
+function listReviews(appids) {
+  const result = {};
+  if (!Array.isArray(appids)) return result;
+  for (const appid of appids) {
+    if (appid == null) continue;
+    const doc = getReviews(appid);
+    if (doc) result[String(appid)] = doc;
+  }
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
 /* Enrich progress (state dir)                                         */
 /* ------------------------------------------------------------------ */
 
-function readEnrichState() {
-  const hit = readJsonWithFingerprint(ENRICH_STATE_PATH);
+/** Generic resumable phase journal: `{schemaVersion, updatedAt, profiles, runs}`. */
+function readPhaseState(filePath) {
+  const hit = readJsonWithFingerprint(filePath);
   if (!hit || !hit.data || typeof hit.data !== 'object') {
     return { schemaVersion: 1, updatedAt: null, profiles: {}, runs: [] };
   }
@@ -349,15 +453,39 @@ function readEnrichState() {
   };
 }
 
-async function saveEnrichState(state) {
+async function savePhaseState(filePath, state) {
   const payload = {
     schemaVersion: 1,
     updatedAt: new Date().toISOString(),
     profiles: state && state.profiles && typeof state.profiles === 'object' ? state.profiles : {},
     runs: state && Array.isArray(state.runs) ? state.runs : [],
   };
-  const fingerprint = await writeJsonAtomic(ENRICH_STATE_PATH, payload);
+  const fingerprint = await writeJsonAtomic(filePath, payload);
   return { data: payload, fingerprint };
+}
+
+function readEnrichState() {
+  return readPhaseState(ENRICH_STATE_PATH);
+}
+
+async function saveEnrichState(state) {
+  return savePhaseState(ENRICH_STATE_PATH, state);
+}
+
+function readSpyState() {
+  return readPhaseState(SPY_STATE_PATH);
+}
+
+async function saveSpyState(state) {
+  return savePhaseState(SPY_STATE_PATH, state);
+}
+
+function readReviewsState() {
+  return readPhaseState(REVIEWS_STATE_PATH);
+}
+
+async function saveReviewsState(state) {
+  return savePhaseState(REVIEWS_STATE_PATH, state);
 }
 
 /* ------------------------------------------------------------------ */
@@ -435,20 +563,28 @@ module.exports = {
   PROFILES_DIR,
   LIBRARY_DIR,
   DETAILS_DIR,
+  SPY_DIR,
+  REVIEWS_DIR,
   ACHIEVEMENTS_DIR,
   GLOBAL_DIR,
   BREAKER_PATH,
   ENRICH_STATE_PATH,
+  SPY_STATE_PATH,
+  REVIEWS_STATE_PATH,
   PROFILE_TTL_MS,
   LIBRARY_TTL_MS,
   ACHIEVEMENTS_TTL_MS,
   GLOBAL_TTL_MS,
   DETAILS_TTL_MS,
+  SPY_TTL_MS,
+  REVIEWS_TTL_MS,
   profileTtlMs,
   libraryTtlMs,
   achievementsTtlMs,
   globalTtlMs,
   detailsTtlMs,
+  spyTtlMs,
+  reviewsTtlMs,
   isFresh,
   safeKey,
   fingerprintOf,
@@ -458,6 +594,8 @@ module.exports = {
   profilePath,
   libraryPath,
   detailsPath,
+  spyPath,
+  reviewsPath,
   achievementPath,
   globalPath,
   profileKeyOf,
@@ -471,8 +609,20 @@ module.exports = {
   saveDetails,
   getDetails,
   listDetails,
+  saveSpy,
+  getSpy,
+  listSpy,
+  saveReviews,
+  getReviews,
+  listReviews,
+  readPhaseState,
+  savePhaseState,
   readEnrichState,
   saveEnrichState,
+  readSpyState,
+  saveSpyState,
+  readReviewsState,
+  saveReviewsState,
   saveAchievements,
   getAchievements,
   listAchievements,
