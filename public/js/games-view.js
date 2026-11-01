@@ -464,6 +464,24 @@ function normalizeFilters(raw) {
   return out.includeFree || out.includeDlc ? out : null;
 }
 
+/**
+ * Tag list on a `gamesIndex` entry (and on a game card). SteamSpy tags arrive
+ * as an array of names, an array of `{name, weight}` or a `{ tag: weight }`
+ * map depending on the cache generation; all three are accepted and reduced to
+ * plain names, because the drilldown only needs «does this game have the tag».
+ */
+function normalizeTagsList(raw) {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item) => text(typeof item === 'object' && item ? (item.name || item.label || item.tag) : item))
+      .filter(Boolean);
+  }
+  if (raw && typeof raw === 'object') {
+    return Object.keys(raw).map((key) => text(key)).filter(Boolean);
+  }
+  return [];
+}
+
 /** Weighted buckets (genres, tags): `{ name, count, hours, share, weight }`. */
 function normalizeWeightItems(raw) {
   return arr(raw)
@@ -570,10 +588,145 @@ function normalizeIndexAchievements(raw) {
 }
 
 /**
+ * Steam community review score (M4). It is NOT a personal rating: Steam does
+ * not have those, and the UI must say so wherever the number appears. The
+ * canonical scale is 1–9 with an English description (`review_score_desc`);
+ * `bucket` in `scores[]` may carry either the number or the description.
+ */
+export const STEAM_REVIEW_SCALE = [
+  { score: 1, desc: 'Overwhelmingly Negative', label: 'Крайне отрицательные', color: '#a33a4a' },
+  { score: 2, desc: 'Very Negative', label: 'Очень отрицательные', color: '#b44a3a' },
+  { score: 3, desc: 'Negative', label: 'Отрицательные', color: '#b96b3d' },
+  { score: 4, desc: 'Mostly Negative', label: 'В основном отрицательные', color: '#b8933f' },
+  { score: 5, desc: 'Mixed', label: 'Смешанные', color: '#9aa04e' },
+  { score: 6, desc: 'Mostly Positive', label: 'В основном положительные', color: '#7fa85a' },
+  { score: 7, desc: 'Positive', label: 'Положительные', color: '#4fae5f' },
+  { score: 8, desc: 'Very Positive', label: 'Очень положительные', color: '#2fb56a' },
+  { score: 9, desc: 'Overwhelmingly Positive', label: 'Крайне положительные', color: '#00c46a' },
+];
+
+const REVIEW_BY_SCORE = new Map(STEAM_REVIEW_SCALE.map((entry) => [entry.score, entry]));
+const REVIEW_BY_KEY = new Map();
+for (const entry of STEAM_REVIEW_SCALE) {
+  for (const key of [entry.desc, entry.label]) {
+    REVIEW_BY_KEY.set(key.toLowerCase().replace(/[^a-zа-я0-9]+/gi, ''), entry.score);
+  }
+}
+
+/** `1`, `"7"`, `"Very Positive"`, `"very_positive"` → a 1–9 score or null. */
+export function resolveReviewBucket(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' || /^\d+$/.test(text(value))) {
+    const score = Number(value);
+    return REVIEW_BY_SCORE.has(score) ? score : null;
+  }
+  const key = text(value).toLowerCase().replace(/[^a-zа-я0-9]+/gi, '');
+  return REVIEW_BY_KEY.get(key) ?? null;
+}
+
+function reviewScaleEntry(score) {
+  return REVIEW_BY_SCORE.get(Number(score)) || null;
+}
+
+/** `summary.reviewScore` → `{ avg, median }` (null when the block is absent). */
+function normalizeReviewScoreBlock(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const avg = numOrNull(raw.avg ?? raw.mean ?? raw.average);
+  const median = numOrNull(raw.median);
+  if (avg == null && median == null) return null;
+  return { avg, median };
+}
+
+/** `scores[]` → `[{ bucket, count, hours }]`, duplicate buckets summed. */
+function normalizeScores(raw) {
+  const merged = new Map();
+  for (const item of arr(raw)) {
+    if (!item || typeof item !== 'object') continue;
+    const bucket = resolveReviewBucket(
+      item.bucket ?? item.score ?? item.key ?? item.reviewScore ?? item.desc ?? item.label,
+    );
+    if (bucket == null) continue;
+    const prev = merged.get(bucket) || { bucket, count: 0, hours: null };
+    prev.count += toCount(item.count);
+    const hours = numOrNull(item.hours);
+    if (hours != null) prev.hours = (prev.hours || 0) + hours;
+    merged.set(bucket, prev);
+  }
+  return [...merged.values()].sort((a, b) => b.bucket - a.bucket);
+}
+
+/** `summary.dlc` → `{ gamesWithDlc, avgCount, max: [{ name, dlcCount, appid }] }`. */
+function normalizeDlcSummary(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const gamesWithDlc = numOrNull(raw.gamesWithDlc ?? raw.games ?? raw.count);
+  const avgCount = numOrNull(raw.avgCount ?? raw.avg ?? raw.average);
+  const top = arr(raw.max ?? raw.top ?? raw.items ?? raw.topGames)
+    .map((item) => {
+      if (item == null) return null;
+      if (typeof item === 'string') return { name: text(item), dlcCount: null, appid: null };
+      if (typeof item !== 'object') return null;
+      const name = firstString(item.name, item.title, item.label);
+      const appid = numOrNull(item.appid);
+      if (!name && appid == null) return null;
+      return {
+        name: name || (appid != null ? `appid ${appid}` : ''),
+        dlcCount: numOrNull(item.dlcCount ?? item.count ?? item.dlc),
+        appid,
+      };
+    })
+    .filter(Boolean);
+  if (gamesWithDlc == null && avgCount == null && !top.length) return null;
+  return { gamesWithDlc, avgCount, max: top };
+}
+
+/** Franchise reference: `"The Witcher"` or `{ key, label, appids }`. */
+function normalizeFranchiseRef(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'string') {
+    const label = text(raw);
+    return label ? { key: label, label, appids: [] } : null;
+  }
+  if (typeof raw !== 'object') return null;
+  const label = firstString(raw.label, raw.name, raw.title, raw.key);
+  if (!label) return null;
+  return {
+    key: text(raw.key) || label,
+    label,
+    appids: arr(raw.appids).map((value) => numOrNull(value)).filter((value) => value != null),
+  };
+}
+
+/** `franchises[]` from the dedicated endpoint (array or `{ franchises: [] }`). */
+function normalizeFranchises(raw) {
+  const list = Array.isArray(raw)
+    ? raw
+    : (raw && typeof raw === 'object' && Array.isArray(raw.franchises) ? raw.franchises : []);
+  return list
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const label = firstString(item.label, item.name, item.title, item.key);
+      if (!label) return null;
+      const appids = arr(item.appids)
+        .map((value) => numOrNull(value))
+        .filter((value) => value != null);
+      return {
+        key: text(item.key) || label,
+        label,
+        gamesCount: toCount(item.gamesCount ?? item.count ?? item.games),
+        hoursSum: numOrNull(item.hoursSum ?? item.hours ?? item.totalHours),
+        yearsSpread: numOrNull(item.yearsSpread ?? item.years),
+        appids,
+      };
+    })
+    .filter(Boolean);
+}
+
+/**
  * One `gamesIndex` entry. The backend already ships the fields needed by the
  * client-side drilldowns (type, year, genres, developers/publishers,
  * categories, is_free, early_access, icon); the old normaliser kept only six
  * of them, which made «клик по жанру/году» impossible without a new request.
+ * M4 adds tags / review score / franchise for the new widgets and the card.
  */
 function normalizeGameIndexEntry(entry, appid) {
   const item = entry && typeof entry === 'object' ? entry : {};
@@ -597,6 +750,15 @@ function normalizeGameIndexEntry(entry, appid) {
     metacritic: numOrNull(item.metacritic),
     dlcCount: numOrNull(item.dlcCount),
     completion: numOrNull(item.completion),
+    // M4: tags strip / review badge / franchise label on the card and the
+    // three new drilldowns. Missing fields stay null — the widgets hide.
+    tags: normalizeTagsList(item.tags),
+    reviewScore: resolveReviewBucket(
+      item.reviewScore ?? item.review_score ?? item.review?.score
+      ?? item.reviewDesc ?? item.review_score_desc ?? item.review?.desc,
+    ),
+    reviewDesc: firstString(item.reviewDesc, item.review_score_desc, item.review?.desc),
+    franchise: normalizeFranchiseRef(item.franchise ?? item.collection),
     achievements: normalizeIndexAchievements(item.achievements),
     metadataSources: arr(item.metadataSources).map((source) => text(source)).filter(Boolean),
   };
@@ -868,6 +1030,13 @@ export function normalizeGamesPayload(raw) {
   // disappear, the dashboard keeps working.
   const genres = normalizeWeightItems(source.genres);
   const tags = normalizeWeightItems(source.tags);
+  // M4: Steam community scores (NOT personal), DLC summary and franchises.
+  // `franchises` normally comes from `/api/games/franchises`, but a payload
+  // that already carries the block is accepted instead of ignored.
+  const scores = normalizeScores(source.scores);
+  const reviewScore = normalizeReviewScoreBlock(summaryRaw.reviewScore ?? source.reviewScore);
+  const dlc = normalizeDlcSummary(summaryRaw.dlc ?? source.dlc);
+  const franchises = normalizeFranchises(source.franchises);
   const decades = normalizeDecades(source.decades);
   const years = normalizeYears(source.years);
   // «Год неизвестен» is a payload bucket, not a year: kept aside so the years
@@ -891,6 +1060,10 @@ export function normalizeGamesPayload(raw) {
     gamesIndex,
     genres,
     tags,
+    scores,
+    reviewScore,
+    dlc,
+    franchises,
     decades,
     years,
     unknownYear,
@@ -911,6 +1084,10 @@ export function normalizeGamesPayload(raw) {
       completion: Boolean(summary.completion),
       genres: genres.length > 0,
       tags: tags.length > 0,
+      scores: scores.length > 0,
+      reviewScore: Boolean(reviewScore),
+      dlc: Boolean(dlc),
+      franchises: franchises.length > 0,
       decades: decades.length > 0,
       years: years.length > 0,
       modes: Boolean(summary.modes),
@@ -1184,6 +1361,28 @@ export function personGames(person, gamesIndex) {
    game card (`GET /api/games/game/:appid`)
    ========================================================= */
 
+/** Card review badge: `{score, desc, label, color}` from a number or object. */
+function normalizeCardReview(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'number' || typeof raw === 'string') {
+    const score = resolveReviewBucket(raw);
+    if (score == null) return null;
+    const entry = reviewScaleEntry(score);
+    return { score, desc: entry.desc, label: entry.label, color: entry.color };
+  }
+  if (typeof raw !== 'object') return null;
+  const score = resolveReviewBucket(raw.score ?? raw.bucket ?? raw.review_score ?? raw.desc ?? raw.review_score_desc);
+  const desc = firstString(raw.desc, raw.review_score_desc, raw.description);
+  if (score == null && !desc) return null;
+  const entry = score != null ? reviewScaleEntry(score) : null;
+  return {
+    score: score ?? null,
+    desc: desc || (entry ? entry.desc : ''),
+    label: entry ? entry.label : '',
+    color: entry ? entry.color : '#8f9464',
+  };
+}
+
 function normalizeCardDetails(raw) {
   if (!raw || typeof raw !== 'object') return null;
   return {
@@ -1199,6 +1398,10 @@ function normalizeCardDetails(raw) {
     releaseYear: numOrNull(raw.releaseYear),
     metacritic: numOrNull(raw.metacritic),
     dlcCount: numOrNull(raw.dlcCount),
+    // M4 card extras: tag strip, review badge, franchise label.
+    tags: normalizeTagsList(raw.tags),
+    reviewScore: normalizeCardReview(raw.reviewScore ?? raw.review),
+    franchise: normalizeFranchiseRef(raw.franchise ?? raw.collection),
     platforms: raw.platforms && typeof raw.platforms === 'object'
       ? {
         windows: raw.platforms.windows === true,
@@ -1298,6 +1501,15 @@ export function normalizeGameCard(raw) {
   const personnel = normalizeCardPersonnel(source.personnel);
   const last = lastPlayedInfo(source.lastPlayed);
   const linksRaw = source.links && typeof source.links === 'object' ? source.links : {};
+  // A card may carry these at the top level or inside `details` (the server
+  // is free to keep them next to the store document).
+  const tags = (details && details.tags && details.tags.length)
+    ? details.tags
+    : normalizeTagsList(source.tags);
+  const reviewScore = (details && details.reviewScore)
+    || normalizeCardReview(source.reviewScore ?? source.review);
+  const franchise = (details && details.franchise)
+    || normalizeFranchiseRef(source.franchise ?? source.collection ?? arr(source.franchises)[0]);
   const links = {
     steam: firstString(linksRaw.steam)
       || (appid != null ? `https://store.steampowered.com/app/${appid}` : ''),
@@ -1321,6 +1533,9 @@ export function normalizeGameCard(raw) {
     completion: numOrNull(source.completion) ?? (achievements && achievements.percent != null
       ? achievements.percent
       : null),
+    tags,
+    reviewScore,
+    franchise,
     achievements,
     details,
     personnel,
@@ -1482,6 +1697,22 @@ export function summaryMetrics(summary, { profile = null } = {}) {
       title: 'Записи библиотеки Steam без карточки Steam Store: тип, год и жанры неизвестны. '
         + 'Это не «ноль часов» и не удалённые игры — сервер просто ещё не получил appdetails. '
         + (otherType > 0 ? `${fmtInt(otherType)} записей отброшено как DLC/софт/демо.` : ''),
+    });
+  }
+  // M4: community review score. It is deliberately labelled «Steam», because
+  // Steam has no personal ratings and this must not look like one.
+  if (s.reviewScore && (s.reviewScore.avg != null || s.reviewScore.median != null)) {
+    const fmtScore = (value) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value);
+    const avg = s.reviewScore.avg;
+    const median = s.reviewScore.median;
+    out.push({
+      key: 'review',
+      icon: 'star',
+      label: 'оценка Steam',
+      value: avg != null ? `${fmtScore(avg)}/9` : '—',
+      sub: median != null ? `медиана ${fmtScore(median)}` : 'community score',
+      title: 'Средняя community-оценка игр библиотеки по шкале Steam 1–9 (appreviews). '
+        + 'Это оценки сообщества Steam, а не ваши личные: личных оценок у Steam нет.',
     });
   }
   return out;
@@ -1887,6 +2118,252 @@ export function genreChartView(genres, {
     note: `${fmtInt(list.length)} ${plural(list.length, ['жанр', 'жанра', 'жанров'])} · по ${mode === 'hours' ? 'часам' : 'числу игр'}`,
     hint: 'Жанры Steam Store; одна игра может попадать в несколько жанров, поэтому доли не складываются в 100%.',
   };
+}
+
+/* =========================================================
+   M4 widgets: tags, Steam review scores, franchises, DLC
+   ========================================================= */
+
+const TAG_PLURAL = ['тег', 'тега', 'тегов'];
+const FRANCHISE_PLURAL = ['франшиза', 'франшизы', 'франшиз'];
+
+/** Tags past this many are folded behind «Показать все (N)». */
+export const TAG_CHART_LIMIT = 12;
+
+/**
+ * Tag bars, the same visual language as the genre chart (U3): bar length is
+ * the share of library hours (`hours`), of tag marks (`count`) or of the
+ * SteamSpy tag weight (`weight`).
+ *
+ * `hours`/`count` reuse `genreChartView` — the item shape is identical, so the
+ * chart, the fallback denominator and the fold behaviour stay one
+ * implementation. Only the wording («тег», not «жанр») and the extra `weight`
+ * mode are tags-specific.
+ */
+export function tagsChartView(tags, {
+  weight = 'hours',
+  limit = TAG_CHART_LIMIT,
+  totalHours = null,
+} = {}) {
+  const list = normalizeWeightItems(tags)
+    .filter((item) => item.count > 0 || (item.hours || 0) > 0 || (item.weight || 0) > 0);
+  if (!list.length) return null;
+  const mode = weight === 'count' ? 'count' : weight === 'weight' ? 'weight' : 'hours';
+
+  if (mode !== 'weight') {
+    const base = genreChartView(list, { weight: mode, limit, totalHours });
+    if (!base) return null;
+    return {
+      weight: mode,
+      rows: base.rows.map((row) => ({
+        ...row,
+        hint: mode === 'count'
+          ? row.hint.replace('жанровых отметок', 'теговых отметок')
+          : row.hint.replace('этого жанра', 'этим тегом'),
+      })),
+      total: base.total,
+      shown: base.shown,
+      hidden: base.hidden,
+      note: `${fmtInt(base.total)} ${plural(base.total, TAG_PLURAL)} · по ${mode === 'hours' ? 'часам' : 'числу игр'}`,
+      hint: 'Теги SteamSpy; одна игра может иметь несколько тегов, поэтому доли не складываются в 100%.',
+    };
+  }
+
+  const sorted = list.slice().sort((a, b) => (b.weight || 0) - (a.weight || 0) || a.name.localeCompare(b.name, 'ru'));
+  const shown = limit > 0 ? sorted.slice(0, limit) : sorted;
+  const totalWeight = list.reduce((sum, item) => sum + (item.weight || 0), 0);
+  const fmtWeight = (value) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);
+  const rows = shown.map((item) => {
+    const value = item.weight || 0;
+    const share = totalWeight > 0 ? value / totalWeight : 0;
+    const countText = fmtInt(item.count);
+    const gamesText = `${countText} ${plural(item.count, GAME_PLURAL)}`;
+    const itemHours = item.hours != null ? hoursText(item.hours) : '';
+    const shareLabel = share > 0 ? `${sharePercentText(share)} веса` : 'вес неизвестен';
+    return {
+      name: item.name,
+      count: item.count,
+      hours: item.hours,
+      countText,
+      hoursText: itemHours,
+      shareText: shareLabel,
+      widthPercent: Math.max(2, Math.min(100, Math.round(share * 1000) / 10)),
+      primaryText: value > 0 ? fmtWeight(value) : '—',
+      secondaryText: [gamesText, itemHours].filter(Boolean).join(' · '),
+      title: itemHours ? `${item.name} — ${gamesText} · ${itemHours}` : `${item.name} — ${gamesText}`,
+      hint: share > 0
+        ? `${sharePercentText(share)} суммарного веса тегов · нажмите, чтобы открыть список`
+        : 'вес тега сервер не передал · нажмите, чтобы открыть список',
+      ariaLabel: `${item.name}: ${gamesText}${itemHours ? `, ${itemHours}` : ''}, ${shareLabel} — открыть список`,
+    };
+  });
+  return {
+    weight: 'weight',
+    rows,
+    total: list.length,
+    shown: shown.length,
+    hidden: Math.max(0, list.length - shown.length),
+    note: `${fmtInt(list.length)} ${plural(list.length, TAG_PLURAL)} · по весу`,
+    hint: 'Теги SteamSpy и их вес; одна игра может иметь несколько тегов.',
+  };
+}
+
+/** Games of one tag from the light `gamesIndex` (case-insensitive). */
+export function gamesByTag(gamesIndex, name) {
+  const target = text(name).toLowerCase();
+  if (!target) return [];
+  return gameRowsFromIndex(gamesIndex, (row) => arr(row.tags).some((tag) => text(tag).toLowerCase() === target));
+}
+
+/**
+ * Steam community score distribution (1–9) as donut segments, highest first.
+ * The block is explicitly community data: `honestNote` is what the UI prints
+ * so the widget is never mistaken for a personal rating.
+ */
+export function scoresView(scores, reviewScore = null) {
+  const rows = normalizeScores(scores);
+  const total = rows.reduce((sum, row) => sum + row.count, 0);
+  if (!rows.length || total <= 0) return null;
+  const byBucket = new Map(rows.map((row) => [row.bucket, row]));
+  const segments = STEAM_REVIEW_SCALE
+    .slice()
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => {
+      const row = byBucket.get(entry.score) || { count: 0, hours: null };
+      return {
+        key: `score-${entry.score}`,
+        bucket: entry.score,
+        label: entry.label,
+        desc: entry.desc,
+        color: entry.color,
+        value: row.count,
+        count: row.count,
+        hours: row.hours,
+      };
+    });
+  const block = normalizeReviewScoreBlock(reviewScore) || {};
+  const fmtScore = (value) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value);
+  const totalHours = rows
+    .map((row) => row.hours)
+    .filter((value) => value != null)
+    .reduce((sum, value) => sum + value, 0);
+  return {
+    segments,
+    total,
+    totalHours: totalHours > 0 ? totalHours : null,
+    avg: block.avg ?? null,
+    median: block.median ?? null,
+    avgText: block.avg != null ? `${fmtScore(block.avg)}/9` : '—',
+    medianText: block.median != null ? fmtScore(block.median) : '—',
+    note: `${fmtInt(total)} ${plural(total, GAME_PLURAL)} с оценкой Steam`,
+    honestNote: 'оценки Steam, не личные',
+    ariaLabel: `Распределение community-оценок Steam, ${fmtInt(total)} игр`,
+  };
+}
+
+/** Games of one review bucket, from the index (`reviewScore` / `reviewDesc`). */
+export function gamesByReviewBucket(gamesIndex, bucket) {
+  const target = resolveReviewBucket(bucket);
+  if (target == null) return [];
+  return gameRowsFromIndex(gamesIndex, (row) => {
+    if (row.reviewScore != null) return row.reviewScore === target;
+    return resolveReviewBucket(row.reviewDesc) === target;
+  });
+}
+
+/** Franchise ranked list (dedicated endpoint): label + games + hours. */
+export function franchisesView(franchises) {
+  const list = normalizeFranchises(franchises)
+    .filter((item) => item.gamesCount > 0 || item.hoursSum != null || item.appids.length > 0);
+  if (!list.length) return null;
+  const sorted = list.slice().sort((a, b) => {
+    const hours = (b.hoursSum ?? -1) - (a.hoursSum ?? -1);
+    if (hours) return hours;
+    if (b.gamesCount !== a.gamesCount) return b.gamesCount - a.gamesCount;
+    return a.label.localeCompare(b.label, 'ru');
+  });
+  const maxHours = Math.max(0, ...sorted.map((item) => item.hoursSum || 0));
+  const rows = sorted.map((item) => {
+    const share = maxHours > 0 && item.hoursSum != null ? item.hoursSum / maxHours : null;
+    const countText = `${fmtInt(item.gamesCount)} ${plural(item.gamesCount, GAME_PLURAL)}`;
+    const itemHours = item.hoursSum != null ? hoursText(item.hoursSum) : 'часы неизвестны';
+    const yearsText = item.yearsSpread != null ? String(item.yearsSpread) : '';
+    return {
+      key: item.key,
+      label: item.label,
+      gamesCount: item.gamesCount,
+      hoursSum: item.hoursSum,
+      appids: item.appids,
+      countText,
+      hoursText: itemHours,
+      yearsText,
+      widthPercent: share != null ? Math.max(2, Math.min(100, Math.round(share * 1000) / 10)) : 2,
+      primaryText: itemHours,
+      secondaryText: [countText, yearsText ? `${yearsText} лет` : ''].filter(Boolean).join(' · '),
+      title: `${item.label} — ${countText} · ${itemHours}${yearsText ? ` · ${yearsText} лет` : ''}`,
+      hint: 'Игры одной франшизы (IGDB/Wikidata или эвристика). Нажмите, чтобы открыть список по годам.',
+      ariaLabel: `${item.label}: ${countText}, ${itemHours} — открыть список игр`,
+    };
+  });
+  return {
+    rows,
+    total: list.length,
+    note: `${fmtInt(list.length)} ${plural(list.length, FRANCHISE_PLURAL)} · по часам`,
+    hint: 'Франшизы — справочная метадата; игры без франшизы в список не попадают.',
+  };
+}
+
+/**
+ * Games of one franchise. Explicit `appids` are authoritative (the endpoint
+ * knows the membership); only when the payload has none does the index's
+ * `franchise` label decide — that is the tolerant fallback for an older
+ * payload and for the game card.
+ */
+export function gamesInFranchise(gamesIndex, franchise) {
+  const ref = normalizeFranchiseRef(franchise);
+  if (!ref) return [];
+  const ids = new Set(ref.appids.map((value) => Number(value)));
+  const targetLabel = ref.label.toLowerCase();
+  return gameRowsFromIndex(gamesIndex, (row) => {
+    if (ids.size > 0) return row.appid != null && ids.has(Number(row.appid));
+    if (!row.franchise) return false;
+    return row.franchise.key === ref.key
+      || row.franchise.label === ref.label
+      || row.franchise.label.toLowerCase() === targetLabel;
+  });
+}
+
+/** `summary.dlc` → summary line + top-10 rows (click → game card). */
+export function dlcView(dlc) {
+  const block = normalizeDlcSummary(dlc);
+  if (!block) return null;
+  const fmtNumber = (value) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);
+  const rows = block.max.slice(0, 10).map((item) => ({
+    name: item.name,
+    appid: item.appid,
+    dlcCount: item.dlcCount,
+    countText: item.dlcCount != null ? `${fmtInt(item.dlcCount)} DLC` : 'DLC: ?',
+  }));
+  const countText = block.gamesWithDlc != null
+    ? `${fmtInt(block.gamesWithDlc)} ${plural(block.gamesWithDlc, GAME_PLURAL)}`
+    : '—';
+  const avgPart = block.avgCount != null ? `в среднем ${fmtNumber(block.avgCount)}` : 'среднее неизвестно';
+  return {
+    gamesWithDlc: block.gamesWithDlc,
+    avgCount: block.avgCount,
+    avgText: block.avgCount != null ? fmtNumber(block.avgCount) : '—',
+    rows,
+    note: block.gamesWithDlc != null ? `${countText} с DLC` : 'DLC не посчитаны',
+    summaryText: block.gamesWithDlc != null
+      ? `Игры с DLC: ${countText} (${avgPart})`
+      : 'Сводка DLC не собрана',
+    summaryParts: { gamesText: countText, avgPart },
+  };
+}
+
+/** Response of `/api/games/franchises` (array or `{ franchises: [] }`). */
+export function normalizeFranchisesResponse(raw) {
+  return normalizeFranchises(raw);
 }
 
 /** `summary.modes` → rows with honest Steam-category labels. */

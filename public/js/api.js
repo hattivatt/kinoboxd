@@ -399,6 +399,19 @@ export function getGamesPersonnel({ profile = '', role = '', limit = 50, signal 
 }
 
 /**
+ * Franchises of one profile (ИГРЫ-АРХИТЕКТУРА §6, M4): a separate route
+ * because the list is computed from IGDB/Wikidata links and is not part of
+ * the dashboard payload. A 404 means the backend round has not landed yet —
+ * the widget hides itself instead of retrying.
+ */
+export function getGamesFranchises({ profile = '', signal } = {}) {
+  const params = new URLSearchParams();
+  if (profile) params.set('profile', profile);
+  const query = params.toString();
+  return request(`/api/games/franchises${query ? `?${query}` : ''}`, { signal });
+}
+
+/**
  * Enrichment progress (`details`/`credits` backfill), when the server exposes
  * it as its own route. The dashboard prefers `summary.metadata` from
  * `/api/games/stats`; this call is the fallback for servers that report only
