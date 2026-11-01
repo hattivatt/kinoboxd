@@ -46,6 +46,7 @@ const gogCache = require('./gog-cache');
 const gog = require('./gog');
 const gogAuth = require('./gog-auth');
 const secondaryIdentity = require('./secondary-identity');
+const secondaryDetails = require('./secondary-details');
 
 const jobs = new Map();
 const jobOrder = [];
@@ -691,7 +692,14 @@ async function runImport(job, api, options) {
  * maximum number of `gameplay` requests in this run (`GAMES_GOG_BUDGET`,
  * default 200); already-cached minutes are reused and do not count.
  */
-function startImport({ account, profile, force = false, client, budget } = {}) {
+function startImport({
+  account,
+  profile,
+  force = false,
+  client,
+  budget,
+  autoSecondaryDetails = true,
+} = {}) {
   const userKey = resolveAccount({ account, profile });
   const running = findRunningJob(userKey);
   if (running && !force) {
@@ -742,14 +750,26 @@ function startImport({ account, profile, force = false, client, budget } = {}) {
   const previous = chainFor(userKey);
   const next = previous
     .catch(() => {})
-    .then(() =>
-      runImport(job, api, {
+    .then(async () => {
+      await runImport(job, api, {
         budget: resolvedBudget,
         // The identity bridge runs only for a real import: an injected client
         // (tests, diagnostics) keeps the job hermetic and never touches WDQS.
         client: client || undefined,
-      })
-    );
+      });
+      // M6d: the freshly written library snapshot is the target list for the
+      // public store metadata (genres/year/poster). Same fire-and-forget rule
+      // as the Steam enrich chain: a failure is a job warning, the import
+      // stays `done`. An injected client (tests/diagnostics) never kicks.
+      if (autoSecondaryDetails !== false && !client && job.ownerProfile) {
+        const status = secondaryDetails.kickSecondaryDetailsQuietly(job.ownerProfile, {
+          forceKick: true,
+          ...secondaryDetails.targetsForOwner(job.ownerProfile),
+        });
+        job.secondaryDetailsJobId = (status && status.id) || null;
+        job.secondaryDetailsSkipped = (status && status.skipped) || null;
+      }
+    });
   chains.set(userKey, next);
   return publicStatus(job);
 }

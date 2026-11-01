@@ -30,6 +30,7 @@ const epicCache = require('./epic-cache');
 const gameCache = require('./game-cache');
 const tokenStore = require('./epic-token-store');
 const secondaryIdentity = require('./secondary-identity');
+const secondaryDetails = require('./secondary-details');
 
 const jobs = new Map();
 const jobOrder = [];
@@ -552,6 +553,16 @@ async function startImport(options = {}) {
       `[games-epic-import ${reused.id}] library reused from cache ` +
         `(${reused.ownedCount} games, fetchedAt=${library.fetchedAt})`
     );
+    // M6d: a cached library still needs store metadata for its secondary-only
+    // works; the details job is idempotent (per-product cache).
+    if (options.autoSecondaryDetails !== false && !options.client && reused.owner) {
+      const status = secondaryDetails.kickSecondaryDetailsQuietly(reused.owner, {
+        forceKick: true,
+        ...secondaryDetails.targetsForOwner(reused.owner),
+      });
+      reused.secondaryDetailsJobId = (status && status.id) || null;
+      reused.secondaryDetailsSkipped = (status && status.skipped) || null;
+    }
     return publicStatus(reused);
   }
 
@@ -584,7 +595,19 @@ async function startImport(options = {}) {
   };
   rememberJob(job);
   const client = options.client || epic.createClient({ tokenStore: store });
-  enqueue(job, () => runImport(job, accountId, client, { ...options, ownerKey }));
+  enqueue(job, async () => {
+    await runImport(job, accountId, client, { ...options, ownerKey });
+    // M6d: public store metadata (genres/year/vertical poster) for the works
+    // that have no Steam twin. Never kicked with an injected client (tests).
+    if (options.autoSecondaryDetails !== false && !options.client && job.owner) {
+      const status = secondaryDetails.kickSecondaryDetailsQuietly(job.owner, {
+        forceKick: true,
+        ...secondaryDetails.targetsForOwner(job.owner),
+      });
+      job.secondaryDetailsJobId = (status && status.id) || null;
+      job.secondaryDetailsSkipped = (status && status.skipped) || null;
+    }
+  });
   return publicStatus(job);
 }
 
