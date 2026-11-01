@@ -15,18 +15,21 @@
  *   cache-games/
  *     profiles/steam-<steamid64>.json     persona/avatar/privacy/importedAt
  *     library/steam-<steamid64>.json      raw GetOwnedGames snapshot + fingerprint
+ *     details/<appid>.json                store appdetails (global, not per owner)
  *     achievements/<steamid64>/<appid>.json  player achievements (unlockTimestamp)
  *     global/<appid>.json                 global achievement percentages
  *     state/games-breaker.json            host breakers (30 min) — see §10.1
+ *     state/enrich-state.json             M2 enrich progress/journal (resume)
  *
  * Roots:
  *   - `KINOBOXD_CACHE_GAMES_DIR` moves the whole cache (tests point it at /tmp);
  *   - `KINOBOXD_STATE_DIR` moves mutable state (breaker) the same way; when it
  *     is set the state lives in `<STATE_DIR>/games`, otherwise under the cache.
  *
- * TTLs (brief for M1; library is 24 h here, §3.3 mentions 6 h for a manual
- * refresh — the import job accepts `force` to bypass either):
- *   profile 6 h · library 24 h · achievements 24 h · global 7 days.
+ * TTLs (library is 24 h here, §3.3 mentions 6 h for a manual refresh — the
+ * import job accepts `force` to bypass either):
+ *   profile 6 h · library 24 h · achievements 24 h · global 7 days ·
+ *   details 180 days (`GAMES_STORE_TTL_MS`, re-check window `GAMES_STORE_RECHECK_DAYS`).
  */
 
 const fs = require('fs');
@@ -43,16 +46,21 @@ const STATE_DIR = process.env.KINOBOXD_STATE_DIR
 
 const PROFILES_DIR = path.join(GAMES_CACHE_DIR, 'profiles');
 const LIBRARY_DIR = path.join(GAMES_CACHE_DIR, 'library');
+const DETAILS_DIR = path.join(GAMES_CACHE_DIR, 'details');
 const ACHIEVEMENTS_DIR = path.join(GAMES_CACHE_DIR, 'achievements');
 const GLOBAL_DIR = path.join(GAMES_CACHE_DIR, 'global');
 const BREAKER_PATH = path.join(STATE_DIR, 'games-breaker.json');
+const ENRICH_STATE_PATH = path.join(STATE_DIR, 'enrich-state.json');
 
 const PROFILE_TTL_MS = 6 * 60 * 60 * 1000;
 const LIBRARY_TTL_MS = 24 * 60 * 60 * 1000;
 const ACHIEVEMENTS_TTL_MS = 24 * 60 * 60 * 1000;
 const GLOBAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// Store metadata is mostly static (genres/developers/categories), but release
+// dates and DLC lists change; the brief fixes the re-check window at 180 days.
+const DETAILS_TTL_MS = 180 * 24 * 60 * 60 * 1000;
 
-for (const dir of [PROFILES_DIR, LIBRARY_DIR, ACHIEVEMENTS_DIR, GLOBAL_DIR, STATE_DIR]) {
+for (const dir of [PROFILES_DIR, LIBRARY_DIR, DETAILS_DIR, ACHIEVEMENTS_DIR, GLOBAL_DIR, STATE_DIR]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -133,6 +141,10 @@ function libraryPath(steamId64) {
   return path.join(LIBRARY_DIR, `steam-${safeKey(steamId64)}.json`);
 }
 
+function detailsPath(appid) {
+  return path.join(DETAILS_DIR, `${safeKey(appid)}.json`);
+}
+
 function achievementPath(steamId64, appid) {
   return path.join(ACHIEVEMENTS_DIR, safeKey(steamId64), `${safeKey(appid)}.json`);
 }
@@ -183,6 +195,11 @@ function achievementsTtlMs() {
 function globalTtlMs() {
   const raw = Number(process.env.GAMES_GLOBAL_TTL_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : GLOBAL_TTL_MS;
+}
+
+function detailsTtlMs() {
+  const raw = Number(process.env.GAMES_STORE_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DETAILS_TTL_MS;
 }
 
 /* ------------------------------------------------------------------ */
@@ -274,6 +291,71 @@ function getLibrary(steamId64) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Details (store appdetails, global per appid — not per owner)         */
+/* ------------------------------------------------------------------ */
+
+async function saveDetails(appid, doc) {
+  const payload = {
+    schemaVersion: 1,
+    source: 'steam-store',
+    ...doc,
+    appid: Number(appid),
+  };
+  const fingerprint = await writeJsonAtomic(detailsPath(appid), payload);
+  return { data: payload, fingerprint };
+}
+
+function getDetails(appid) {
+  const hit = readJsonWithFingerprint(detailsPath(appid));
+  return hit ? hit.data : null;
+}
+
+/**
+ * Read the details documents for the given appids. Returns a plain object
+ * `{ [appid]: doc }`; missing/corrupt files are simply absent (the stats
+ * payload then reports the game as «no details», never as a false negative).
+ */
+function listDetails(appids) {
+  const result = {};
+  if (!Array.isArray(appids)) return result;
+  for (const appid of appids) {
+    if (appid == null) continue;
+    const doc = getDetails(appid);
+    if (doc) result[String(appid)] = doc;
+  }
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* Enrich progress (state dir)                                         */
+/* ------------------------------------------------------------------ */
+
+function readEnrichState() {
+  const hit = readJsonWithFingerprint(ENRICH_STATE_PATH);
+  if (!hit || !hit.data || typeof hit.data !== 'object') {
+    return { schemaVersion: 1, updatedAt: null, profiles: {}, runs: [] };
+  }
+  return {
+    schemaVersion: Number(hit.data.schemaVersion) || 1,
+    updatedAt: hit.data.updatedAt || null,
+    profiles:
+      hit.data.profiles && typeof hit.data.profiles === 'object' ? hit.data.profiles : {},
+    runs: Array.isArray(hit.data.runs) ? hit.data.runs : [],
+  };
+}
+
+async function saveEnrichState(state) {
+  const payload = {
+    schemaVersion: 1,
+    updatedAt: new Date().toISOString(),
+    profiles: state && state.profiles && typeof state.profiles === 'object' ? state.profiles : {},
+    runs: state && Array.isArray(state.runs) ? state.runs : [],
+  };
+  const fingerprint = await writeJsonAtomic(ENRICH_STATE_PATH, payload);
+  return { data: payload, fingerprint };
+}
+
+/* ------------------------------------------------------------------ */
 /* Achievements (per game) + global percentages                        */
 /* ------------------------------------------------------------------ */
 
@@ -347,17 +429,21 @@ module.exports = {
   STATE_DIR,
   PROFILES_DIR,
   LIBRARY_DIR,
+  DETAILS_DIR,
   ACHIEVEMENTS_DIR,
   GLOBAL_DIR,
   BREAKER_PATH,
+  ENRICH_STATE_PATH,
   PROFILE_TTL_MS,
   LIBRARY_TTL_MS,
   ACHIEVEMENTS_TTL_MS,
   GLOBAL_TTL_MS,
+  DETAILS_TTL_MS,
   profileTtlMs,
   libraryTtlMs,
   achievementsTtlMs,
   globalTtlMs,
+  detailsTtlMs,
   isFresh,
   safeKey,
   fingerprintOf,
@@ -366,6 +452,7 @@ module.exports = {
   writeJsonAtomicSync,
   profilePath,
   libraryPath,
+  detailsPath,
   achievementPath,
   globalPath,
   profileKeyOf,
@@ -376,6 +463,11 @@ module.exports = {
   listProfiles,
   saveLibrary,
   getLibrary,
+  saveDetails,
+  getDetails,
+  listDetails,
+  readEnrichState,
+  saveEnrichState,
   saveAchievements,
   getAchievements,
   listAchievements,

@@ -1,0 +1,491 @@
+'use strict';
+
+/**
+ * Steam Store `appdetails` client (M2).
+ *
+ * `store.steampowered.com/api/appdetails` is the only cheap source of
+ * `developers`/`publishers`/`genres`/`categories`/`release_date`/`dlc`/
+ * `metacritic`/`type`/`is_free`/`platforms` (ИГРЫ-АРХИТЕКТУРА.md §2.2, §3.6).
+ * It is an UNOFFICIAL endpoint, so this module is deliberately defensive:
+ *
+ *   - **one appid per request.** Verified live 01.11.2026: `appids=620,570`
+ *     answers `400` (24 bytes, gzip) for every batch size ≥2, while a single
+ *     appid answers `200`; batching is therefore not used;
+ *   - `GAMES_STORE_PAUSE_MS` (default **1700 ms**) before every request — the
+ *     observed limit is ~200 requests / 5 min / IP and 340 games must fit;
+ *   - `403`/`429` trip a persisted 30-minute breaker (`GAMES_STORE_BREAKER_MS`)
+ *     for `store.steampowered.com`;
+ *   - a network/DNS/TLS/5xx failure is thrown as `store_unreachable` /
+ *     `store_http_error` and is NEVER written to the cache (deferred, no
+ *     negative cache — AGENTS.md §1);
+ *   - `success:false` (region-locked / delisted app) IS an answer: it is
+ *     returned as `{ success: false, unavailable: true }` so the enricher can
+ *     record "no details" honestly and stop asking for the TTL window.
+ *
+ * DNS: the same `GAMES_STEAM_DNS_SERVERS` switch as `steam.js` is reused (the
+ * sandbox resolver returns TLS-dead edge IPs for Steam hosts; 8.8.8.8 works).
+ *
+ * The response is cleaned to the fields the tab actually uses — no
+ * `detailed_description`, no price, no `pc_requirements`.
+ */
+
+const steam = require('./steam');
+const gameCache = require('./game-cache');
+
+const STORE_HOST = 'store.steampowered.com';
+const DETAILS_URL = `https://${STORE_HOST}/api/appdetails`;
+const DEFAULT_PAUSE_MS = 1700;
+const DEFAULT_BREAKER_MS = 30 * 60 * 1000;
+const DEFAULT_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+const MAX_SCREENSHOTS = 10;
+const YEAR_MIN = 1970;
+const YEAR_MAX = 2100;
+
+/** Every store error carries a stable `code` the routes map to HTTP status. */
+class StoreError extends Error {
+  constructor(message, code, details = {}) {
+    super(message);
+    this.name = 'StoreError';
+    this.code = code || 'store_error';
+    if (details.status != null) this.status = details.status;
+    if (details.retryAt != null) this.retryAt = details.retryAt;
+    if (details.host != null) this.host = details.host;
+  }
+}
+
+function envInt(name, fallback) {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw >= 0 ? raw : fallback;
+}
+
+function sleepDefault(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function detailsTtlMs() {
+  // Single source of truth lives in game-cache (it also owns the file TTLs).
+  return gameCache.detailsTtlMs();
+}
+
+/* ------------------------------------------------------------------ */
+/* Release date parsing                                                */
+/* ------------------------------------------------------------------ */
+
+const MONTHS = {
+  jan: 1, january: 1,
+  feb: 2, february: 2,
+  mar: 3, march: 3,
+  apr: 4, april: 4,
+  may: 5,
+  jun: 6, june: 6,
+  jul: 7, july: 7,
+  aug: 8, august: 8,
+  sep: 9, sept: 9, september: 9,
+  oct: 10, october: 10,
+  nov: 11, november: 11,
+  dec: 12, december: 12,
+};
+
+function saneYear(raw) {
+  const year = Number(raw);
+  if (!Number.isInteger(year)) return null;
+  return year >= YEAR_MIN && year <= YEAR_MAX ? year : null;
+}
+
+/**
+ * Parse the display date Steam sends in `release_date.date`.
+ *
+ * Formats seen live: `"Apr 18, 2011"`, `"18 May, 2015"`, `"3 Mar, 2015"`,
+ * `"Q4 2026"`, `"September 2026"`, `"2026"`, `"Coming soon"`. The returned
+ * `year` is the chart bucket; `precision` says how exact the date was, so the
+ * payload never pretends a quarter is a day.
+ *
+ * Years outside 1970..2100 are treated as unknown (games only; a stray
+ * "1 Jan, 1900" placeholder must not create a fake decade).
+ */
+function parseReleaseDate(value) {
+  const text = String(value == null ? '' : value).trim();
+  const result = { text: text || null, year: null, month: null, day: null, precision: 'unknown' };
+  if (!text) return result;
+
+  let match = /^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})$/.exec(text);
+  if (match && MONTHS[match[1].toLowerCase()]) {
+    const year = saneYear(match[3]);
+    if (year != null) {
+      return {
+        text,
+        year,
+        month: MONTHS[match[1].toLowerCase()],
+        day: Number(match[2]),
+        precision: 'day',
+      };
+    }
+  }
+
+  match = /^(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})$/.exec(text);
+  if (match && MONTHS[match[2].toLowerCase()]) {
+    const year = saneYear(match[3]);
+    if (year != null) {
+      return {
+        text,
+        year,
+        month: MONTHS[match[2].toLowerCase()],
+        day: Number(match[1]),
+        precision: 'day',
+      };
+    }
+  }
+
+  match = /^([A-Za-z]{3,9})\.?\s+(\d{4})$/.exec(text);
+  if (match && MONTHS[match[1].toLowerCase()]) {
+    const year = saneYear(match[2]);
+    if (year != null) {
+      return { text, year, month: MONTHS[match[1].toLowerCase()], day: null, precision: 'month' };
+    }
+  }
+
+  match = /^Q([1-4])\s+(\d{4})$/i.exec(text);
+  if (match) {
+    const year = saneYear(match[2]);
+    if (year != null) {
+      return { text, year, month: null, day: null, precision: 'quarter', quarter: Number(match[1]) };
+    }
+  }
+
+  match = /^(\d{4})$/.exec(text);
+  if (match) {
+    const year = saneYear(match[1]);
+    if (year != null) return { text, year, month: null, day: null, precision: 'year' };
+  }
+
+  // Last resort: any sane 4-digit year inside a phrase ("Late 2026", "2026-2027").
+  match = /(?<!\d)(\d{4})(?!\d)/.exec(text);
+  if (match) {
+    const year = saneYear(match[1]);
+    if (year != null) return { text, year, month: null, day: null, precision: 'year' };
+  }
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* Parsers (pure)                                                      */
+/* ------------------------------------------------------------------ */
+
+function stringList(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const entry of value) {
+    if (entry == null) continue;
+    const text = String(entry).trim();
+    if (text && !out.includes(text)) out.push(text);
+  }
+  return out;
+}
+
+function idDescriptionList(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const entry of value) {
+    if (!entry || entry.description == null) continue;
+    const description = String(entry.description).trim();
+    if (!description || seen.has(description)) continue;
+    seen.add(description);
+    out.push({ id: entry.id == null ? null : String(entry.id), description });
+  }
+  return out;
+}
+
+function screenshotList(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const entry of value) {
+    const url = entry && (entry.path_full || entry.path_thumbnail);
+    if (!url) continue;
+    out.push(String(url));
+    if (out.length >= MAX_SCREENSHOTS) break;
+  }
+  return out;
+}
+
+/**
+ * Early Access is a *genre* on the store (`{id:"70", description:"Early
+ * Access"}`); category ids are not stable enough to trust (live 01.11: id 70
+ * came back as "Surround Sound"), so only descriptions are matched.
+ */
+function isEarlyAccessOf(categories, genres) {
+  for (const entry of categories || []) {
+    if (/early access/i.test(String(entry.description || ''))) return true;
+  }
+  for (const entry of genres || []) {
+    if (/early access/i.test(String(entry.description || ''))) return true;
+  }
+  return false;
+}
+
+/**
+ * Clean one `appdetails` `data` object into the §3.6 cache document.
+ * `fetchedAt` is added by the caller (it owns the clock).
+ */
+function parseAppDetails(data, appid) {
+  const source = data && typeof data === 'object' ? data : {};
+  const genres = idDescriptionList(source.genres);
+  const categories = idDescriptionList(source.categories);
+  const releaseDate = source.release_date && typeof source.release_date === 'object'
+    ? source.release_date
+    : {};
+  const parsedDate = parseReleaseDate(releaseDate.date);
+  const dlc = Array.isArray(source.dlc)
+    ? source.dlc.map(Number).filter((value) => Number.isFinite(value))
+    : [];
+  const platforms = source.platforms && typeof source.platforms === 'object'
+    ? {
+        windows: Boolean(source.platforms.windows),
+        mac: Boolean(source.platforms.mac),
+        linux: Boolean(source.platforms.linux),
+      }
+    : null;
+  return {
+    appid: Number(appid),
+    success: true,
+    type: source.type == null ? null : String(source.type),
+    name: source.name == null ? null : String(source.name),
+    is_free: typeof source.is_free === 'boolean' ? source.is_free : null,
+    developers: stringList(source.developers),
+    publishers: stringList(source.publishers),
+    genres,
+    categories,
+    release_date: {
+      date: parsedDate.text,
+      coming_soon: Boolean(releaseDate.coming_soon),
+      year: parsedDate.year,
+      month: parsedDate.month,
+      day: parsedDate.day,
+      precision: parsedDate.precision,
+    },
+    releaseYear: parsedDate.year,
+    releasePrecision: parsedDate.precision,
+    dlc,
+    dlcCount: dlc.length,
+    metacritic:
+      source.metacritic && Number.isFinite(Number(source.metacritic.score))
+        ? {
+            score: Number(source.metacritic.score),
+            url: source.metacritic.url == null ? null : String(source.metacritic.url),
+          }
+        : null,
+    recommendations:
+      source.recommendations && Number.isFinite(Number(source.recommendations.total))
+        ? { total: Number(source.recommendations.total) }
+        : null,
+    achievements:
+      source.achievements && Number.isFinite(Number(source.achievements.total))
+        ? { total: Number(source.achievements.total) }
+        : null,
+    platforms,
+    screenshots: screenshotList(source.screenshots),
+    earlyAccess: isEarlyAccessOf(categories, genres),
+    metadataSource: 'steam-store',
+  };
+}
+
+/**
+ * Parse the `{ "<appid>": { success, data } }` envelope. Returns
+ * `{ found, doc }`; `found:false` means the server answered nothing for the
+ * requested appid (treated as a deferred HTTP error, not a negative answer).
+ */
+function parseAppDetailsResponse(json, appid) {
+  const key = String(appid);
+  const entry = json && typeof json === 'object' ? json[key] : null;
+  if (!entry || typeof entry !== 'object') return { found: false, doc: null };
+  if (!entry.success) {
+    return {
+      found: true,
+      doc: {
+        appid: Number(appid),
+        success: false,
+        unavailable: true,
+        type: null,
+        name: null,
+        metadataSource: 'steam-store',
+        error: 'not_available',
+      },
+    };
+  }
+  return { found: true, doc: parseAppDetails(entry.data, appid) };
+}
+
+/** Is a cached details document younger than the TTL? */
+function detailsFresh(doc, ttlMs) {
+  if (!doc || typeof doc !== 'object') return false;
+  const ts = Date.parse(String(doc.fetchedAt || ''));
+  if (!Number.isFinite(ts)) return false;
+  const age = Date.now() - ts;
+  return age >= 0 && age < (ttlMs == null ? detailsTtlMs() : ttlMs);
+}
+
+/* ------------------------------------------------------------------ */
+/* Client                                                              */
+/* ------------------------------------------------------------------ */
+
+function storeUrl(appid) {
+  const params = new URLSearchParams({
+    appids: String(appid),
+    l: 'english',
+  });
+  const cc = String(process.env.GAMES_STORE_CC || '').trim();
+  if (cc) params.set('cc', cc);
+  return `${DETAILS_URL}?${params.toString()}`;
+}
+
+/**
+ * Create an appdetails client.
+ *
+ * Options (tests use them to stay offline):
+ *   request — `(url, opts) => { status, headers, body }` (default: steam.httpGet)
+ *   sleep   — `(ms) => Promise`
+ *   now     — `() => epoch ms`
+ *   pauseMs — spacing between requests (default env / 1700)
+ *   breakerMs — breaker window (default env / 30 min)
+ */
+function createClient(options = {}) {
+  const request = options.request || steam.httpGet;
+  const sleep = options.sleep || sleepDefault;
+  const now = options.now || (() => Date.now());
+  const pauseMs =
+    options.pauseMs != null ? options.pauseMs : envInt('GAMES_STORE_PAUSE_MS', DEFAULT_PAUSE_MS);
+  const breakerMs =
+    options.breakerMs != null ? options.breakerMs : envInt('GAMES_STORE_BREAKER_MS', DEFAULT_BREAKER_MS);
+
+  let lastRequestAt = null;
+
+  function breakerEntry() {
+    const state = gameCache.readBreaker();
+    const entry = state && state[STORE_HOST];
+    if (!entry || !entry.until) return null;
+    if (entry.until <= now()) return null;
+    return entry;
+  }
+
+  function tripBreaker(reason) {
+    const state = gameCache.readBreaker();
+    state[STORE_HOST] = { until: now() + breakerMs, reason: String(reason || 'blocked'), at: now() };
+    try {
+      gameCache.writeBreaker(state);
+    } catch (err) {
+      /* best-effort: an unwritable state dir must not hide the real error */
+    }
+  }
+
+  function assertNotBlocked() {
+    const entry = breakerEntry();
+    if (!entry) return;
+    throw new StoreError(
+      `Steam Store (${STORE_HOST}) временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
+        `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
+      'store_rate_limited',
+      { host: STORE_HOST, retryAt: new Date(entry.until).toISOString() }
+    );
+  }
+
+  async function pause() {
+    if (pauseMs <= 0 || lastRequestAt == null) return;
+    const wait = pauseMs - (now() - lastRequestAt);
+    if (wait > 0) await sleep(wait);
+  }
+
+  /**
+   * Fetch one app's details. Throws `StoreError` for network/5xx/429; returns
+   * `{ success:false, unavailable:true }` for a real "no store page" answer.
+   */
+  async function getAppDetails(rawAppid) {
+    const appid = Number(rawAppid);
+    if (!Number.isInteger(appid) || appid <= 0) {
+      throw new StoreError(`Некорректный appid: ${rawAppid}`, 'store_invalid_appid');
+    }
+    assertNotBlocked();
+    await pause();
+    lastRequestAt = now();
+    let response;
+    try {
+      response = await request(storeUrl(appid), {
+        timeoutMs: envInt('GAMES_STEAM_TIMEOUT_MS', 20000),
+      });
+    } catch (err) {
+      if (err instanceof StoreError) throw err;
+      if (err && err.code === 'steam_unreachable') {
+        throw new StoreError(err.message, 'store_unreachable', { host: STORE_HOST });
+      }
+      throw new StoreError(
+        `Steam Store недоступен (${STORE_HOST}, ${(err && err.code) || 'ENETWORK'}). ` +
+          'Это сеть/DNS/TLS, не повод считать игру «без деталей» — повторите позже.',
+        'store_unreachable',
+        { host: STORE_HOST }
+      );
+    }
+    const status = Number(response && response.status) || 0;
+    if (status === 403 || status === 429) {
+      tripBreaker(status === 429 ? '429 Too Many Requests' : 'HTTP 403');
+      throw new StoreError(
+        `Steam Store ответил ${status}: запросы к appdetails приостановлены на ` +
+          `${Math.round(breakerMs / 60000)} мин (breaker).`,
+        'store_rate_limited',
+        { host: STORE_HOST, status, retryAt: new Date(now() + breakerMs).toISOString() }
+      );
+    }
+    if (status < 200 || status >= 300) {
+      throw new StoreError(
+        `Steam Store ответил ${status} для appid ${appid} — ответ не закэширован (deferred).`,
+        'store_http_error',
+        { host: STORE_HOST, status }
+      );
+    }
+    let json;
+    try {
+      json = JSON.parse(String((response && response.body) || ''));
+    } catch (err) {
+      throw new StoreError(
+        `Steam Store вернул не JSON для appid ${appid} — ответ не закэширован (deferred).`,
+        'store_http_error',
+        { host: STORE_HOST, status }
+      );
+    }
+    const parsed = parseAppDetailsResponse(json, appid);
+    if (!parsed.found) {
+      throw new StoreError(
+        `Steam Store не вернул запись для appid ${appid} — ответ не закэширован (deferred).`,
+        'store_http_error',
+        { host: STORE_HOST, status }
+      );
+    }
+    return parsed.doc;
+  }
+
+  return {
+    options: { pauseMs, breakerMs },
+    getAppDetails,
+    assertNotBlocked,
+    tripBreaker,
+    breakerEntry,
+    detailsTtlMs,
+  };
+}
+
+module.exports = {
+  StoreError,
+  STORE_HOST,
+  DETAILS_URL,
+  DEFAULT_PAUSE_MS,
+  DEFAULT_BREAKER_MS,
+  DEFAULT_TTL_MS,
+  YEAR_MIN,
+  YEAR_MAX,
+  createClient,
+  storeUrl,
+  parseReleaseDate,
+  parseAppDetails,
+  parseAppDetailsResponse,
+  detailsFresh,
+  detailsTtlMs,
+  saneYear,
+};
