@@ -1,0 +1,69 @@
+{
+  "head": { "vars": ["appid", "game", "franchise", "franchiseEn", "franchiseRu", "date", "precision"] },
+  "results": {
+    "bindings": [
+      {
+        "appid": { "type": "literal", "value": "292030" },
+        "game": { "type": "uri", "value": "http://www.wikidata.org/entity/Q4267401" },
+        "franchise": { "type": "uri", "value": "http://www.wikidata.org/entity/Q1060747" },
+        "franchiseEn": { "type": "literal", "value": "The Witcher", "xml:lang": "en" },
+        "franchiseRu": { "type": "literal", "value": "Ведьмак", "xml:lang": "ru" },
+        "date": { "type": "literal", "value": "+2015-05-19T00:00:00Z", "datatype": "http://www.w3.org/2001/XMLSchema#dateTime" },
+        "precision": { "type": "literal", "value": "11", "datatype": "http://www.w3.org/2001/XMLSchema#integer" }
+      },
+      {
+        "appid": { "type": "literal", "value": "20900" },
+        "game": { "type": "uri", "value": "http://www.wikidata.org/entity/Q845211" },
+        "franchise": { "type": "uri", "value": "http://www.wikidata.org/entity/Q1060747" },
+        "franchiseEn": { "type": "literal", "value": "The Witcher", "xml:lang": "en" },
+        "franchiseRu": { "type": "literal", "value": "Ведьмак", "xml:lang": "ru" },
+        "date": { "type": "literal", "value": "+2007-10-26T00:00:00Z", "datatype": "http://www.w3.org/2001/XMLSchema#dateTime" },
+        "precision": { "type": "literal", "value": "11", "datatype": "http://www.w3.org/2001/XMLSchema#integer" }
+      },
+      {
+        "appid": { "type": "literal", "value": "220" },
+        "game": { "type": "uri", "value": "http://www.wikidata.org/entity/Q546207" },
+        "franchise": { "type": "uri", "value": "http://www.wikidata.org/entity/Q753753" },
+        "franchiseEn": { "type": "literal", "value": "Half-Life", "xml:lang": "en" },
+        "franchiseRu": { "type": "literal", "value": "Half-Life", "xml:lang": "ru" },
+        "date": { "type": "literal", "value": "+2004-11-16T00:00:00Z", "datatype": "http://www.w3.org/2001/XMLSchema#dateTime" },
+        "precision": { "type": "literal", "value": "11", "datatype": "http://www.w3.org/2001/XMLSchema#integer" }
+      },
+      {
+        "appid": { "type": "literal", "value": "70" },
+        "game": { "type": "uri", "value": "http://www.wikidata.org/entity/Q279744" },
+        "franchise": { "type": "uri", "value": "http://www.wikidata.org/entity/Q752241" },
+        "franchiseMul": { "type": "literal", "value": "Half-Life", "xml:lang": "mul" },
+        "date": { "type": "literal", "value": "+1998-11-19T00:00:00Z", "datatype": "http://www.w3.org/2001/XMLSchema#dateTime" },
+        "precision": { "type": "literal", "value": "11", "datatype": "http://www.w3.org/2001/XMLSchema#integer" }
+      },
+      {
+        "appid": { "type": "literal", "value": "12240" },
+        "game": { "type": "uri", "value": "http://www.wikidata.org/entity/Q1318551" },
+        "date": { "type": "literal", "value": "+2010-01-01T00:00:00Z", "datatype": "http://www.w3.org/2001/XMLSchema#dateTime" },
+        "precision": { "type": "literal", "value": "9", "datatype": "http://www.w3.org/2001/XMLSchema#integer" }
+      },
+      {
+        "appid": { "type": "literal", "value": "377160" },
+        "game": { "type": "uri", "value": "http://www.wikidata.org/entity/Q541936" },
+        "franchise": { "type": "uri", "value": "http://www.wikidata.org/entity/Q1048511" },
+        "franchiseEn": { "type": "literal", "value": "Fallout", "xml:lang": "en" },
+        "franchiseRu": { "type": "literal", "value": "Fallout", "xml:lang": "ru" },
+        "date": { "type": "literal", "value": "+2015-11-10T00:00:00Z", "datatype": "http://www.w3.org/2001/XMLSchema#dateTime" },
+        "precision": { "type": "literal", "value": "11", "datatype": "http://www.w3.org/2001/XMLSchema#integer" }
+      },
+      {
+        "appid": { "type": "literal", "value": "377160" },
+        "game": { "type": "uri", "value": "http://www.wikidata.org/entity/Q541936" },
+        "franchise": { "type": "uri", "value": "http://www.wikidata.org/entity/Q65967666" },
+        "franchiseEn": { "type": "literal", "value": "Fallout series", "xml:lang": "en" },
+        "date": { "type": "literal", "value": "+2015-11-09T00:00:00Z", "datatype": "http://www.w3.org/2001/XMLSchema#dateTime" },
+        "precision": { "type": "literal", "value": "11", "datatype": "http://www.w3.org/2001/XMLSchema#integer" }
+      },
+      {
+        "appid": { "type": "literal", "value": "91310" },
+        "game": { "type": "uri", "value": "http://www.wikidata.org/entity/Q3000562" }
+      }
+    ]
+  }
+}

@@ -30,6 +30,8 @@ const gameCache = require('./game-cache');
 const importJobs = require('./import');
 const enrichJobs = require('./enrich');
 const personnelJobs = require('./personnel/jobs');
+const franchiseJobs = require('./franchise-jobs');
+const franchise = require('./franchise');
 const { personnelForGame } = require('./personnel/personnel');
 const {
   buildGamesStatsFromCache,
@@ -211,7 +213,9 @@ function createRouter(deps = {}) {
       label,
       autoEnrich: deps.autoEnrich !== false,
       autoPersonnel: deps.autoPersonnel !== false,
+      autoFranchise: deps.autoFranchise !== false,
       personnelOptions: deps.personnelOptions,
+      franchiseOptions: deps.franchiseOptions,
       enrichClient: storeClient || undefined,
     });
     const created = job.status === 'running' && !job.reused && job.stage === 'queued';
@@ -250,7 +254,9 @@ function createRouter(deps = {}) {
         force: true,
         autoEnrich: deps.autoEnrich !== false,
         autoPersonnel: deps.autoPersonnel !== false,
+        autoFranchise: deps.autoFranchise !== false,
         personnelOptions: deps.personnelOptions,
+        franchiseOptions: deps.franchiseOptions,
         enrichClient: storeClient || undefined,
       });
       const created = job.status === 'running' && !job.reused && job.stage === 'queued';
@@ -327,11 +333,23 @@ function createRouter(deps = {}) {
           forceKick: true,
         });
       }
+      // M4-B: franchises/release years follow the same explicit action and
+      // share the WDQS lock with the credits pass.
+      let franchiseJob = null;
+      if (deps.autoFranchise !== false) {
+        franchiseJob = franchiseJobs.kickQuietly(scope.parsed.key, {
+          ...(deps.franchiseOptions || {}),
+          waitForEnrich: true,
+          forceKick: true,
+        });
+      }
       const created = job.status === 'running' && job.stage === 'queued';
       res.status(created ? 202 : 200).json({
         ...job,
         personnelJobId: personnelJob && personnelJob.id ? personnelJob.id : null,
         personnelSkipped: personnelJob ? personnelJob.skipped || null : null,
+        franchiseJobId: franchiseJob && franchiseJob.id ? franchiseJob.id : null,
+        franchiseSkipped: franchiseJob ? franchiseJob.skipped || null : null,
       });
     } catch (err) {
       next(mapError(err));
@@ -528,6 +546,10 @@ function createRouter(deps = {}) {
       const cached = gameCache.getAchievements(scope.parsed.userKey, appid);
       // M3: cached credits for this appid (no network, no fabrication).
       const personnel = personnelForGame(appid);
+      // M4-B: franchise / release year from links/<appid>.json (written by the
+      // WD pass). `null` when Wikidata has not answered yet — the card says so
+      // instead of pretending the game has no franchise.
+      const wdLinks = franchise.readLinks(appid);
       const achievements = cached
         ? {
             unlocked: cached.unlockedCount,
@@ -565,6 +587,21 @@ function createRouter(deps = {}) {
         // (studios from details + Wikidata/Moby, people, honest `pending`).
         // Never a network call — the personnel job fills the cache.
         personnel: personnelForGame(appid),
+        // M4-B: Wikidata series + P577 year (cache-games/links/<appid>.json).
+        franchise: wdLinks.franchiseKey
+          ? {
+              key: wdLinks.franchiseKey,
+              qid: wdLinks.franchise ? wdLinks.franchise.qid : null,
+              label:
+                (wdLinks.franchise && (wdLinks.franchise.labelEn || wdLinks.franchise.labelRu)) ||
+                null,
+              labelRu: (wdLinks.franchise && wdLinks.franchise.labelRu) || null,
+              source: 'wikidata',
+              confidence: 'high',
+            }
+          : null,
+        releaseYearWikidata: wdLinks.releaseYear,
+        releasePrecisionWikidata: wdLinks.releasePrecision,
         links: {
           steam: `https://store.steampowered.com/app/${appid}`,
           steamdb: `https://steamdb.info/app/${appid}/`,
@@ -582,7 +619,7 @@ function createRouter(deps = {}) {
               ...(personnel && Array.isArray(personnel.pending)
                 ? personnel.pending
                 : ['personnel']),
-              'links.wikidata',
+              ...(wdLinks.qid ? [] : ['links.wikidata']),
               'links.igdb',
             ]),
           ],

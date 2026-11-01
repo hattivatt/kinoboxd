@@ -249,7 +249,15 @@ function readDetails(appid) {
 /** External ids of one game: `{ qid, mobyId, mobyPlatformId, igdbId }`. */
 function readLinks(appid) {
   const doc = readJson(linksPath(appid)) || {};
-  const qidRaw = doc.wikidata || doc.wikidataQid || doc.qid || null;
+  // `links/<appid>.json` carries two shapes: the legacy string
+  // (`wikidata: "Q…"`) and the M4 object written by the franchise pass
+  // (`wikidata: { qid, franchise, releaseYear, … }`). Both must resolve to the
+  // same QID, otherwise the franchise pass would silently disable the
+  // «resolve once» reuse in the personnel pass.
+  const wikidataRaw = doc.wikidata && typeof doc.wikidata === 'object'
+    ? doc.wikidata.qid
+    : doc.wikidata;
+  const qidRaw = wikidataRaw || doc.wikidataQid || doc.qid || null;
   const qid = qidRaw && /^Q\d+$/i.test(String(qidRaw).trim())
     ? String(qidRaw).trim().toUpperCase()
     : null;
