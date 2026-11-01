@@ -260,3 +260,67 @@ test('cache module is reachable and epic profiles are listable', () => {
   assert.ok(Array.isArray(profiles));
   assert.equal(epicCache.CACHE_DIR, CACHE_DIR);
 });
+
+test('authorization-code connect over HTTP: auth-url → connect → code required', async (t) => {
+  epicAuth._reset();
+  const steamId = '76561198000000009';
+  const owner = `steam-${steamId}`;
+  await gameCache.saveProfile({
+    userKey: steamId,
+    personaName: 'SecondSteam',
+    privacy: 'public',
+    importedAt: future(),
+    fetchedAt: future(),
+  });
+  const client = createFakeEpicClient({ accountId: 'epic-account-2' });
+  const server = buildApp(client).listen(PORT + 5);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${PORT + 5}/api/games/epic`;
+
+  const info = await getJson(`${base}/auth-url`);
+  assert.equal(info.status, 200);
+  assert.match(info.body.url, /^https:\/\/www\.epicgames\.com\/id\/login\?redirectUrl=/);
+  assert.match(info.body.url, /responseType%3Dcode/);
+  assert.match(info.body.instructions, /code/);
+  assert.ok(['env', 'file', 'default'].includes(info.body.clientSource));
+  // The client id is public and lives in the redirect; the secret never does.
+  const decoded = decodeURIComponent(info.body.url);
+  assert.match(decoded, /\/id\/api\/redirect\?clientId=[A-Za-z0-9-]{5,}&responseType=code/);
+
+  const connected = await getJson(`${base}/connect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      owner,
+      code: 'https://www.epicgames.com/id/api/redirect?code=one-time-code',
+    }),
+  });
+  assert.equal(connected.status, 200);
+  assert.equal(connected.body.connected, true);
+  assert.equal(connected.body.accountId, 'epic-account-2');
+  assert.equal(connected.body.owner, owner);
+  assert.equal(connected.body.authMethod, 'authorization_code');
+  assert.equal(JSON.stringify(connected.body).includes('eg1~'), false);
+  assert.equal(JSON.stringify(connected.body).includes('one-time-code'), false);
+  assert.ok(client.calls.includes('code:https://www.epicgames.com/id/api/redirect?code=one-time-code'));
+
+  const missing = await getJson(`${base}/connect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ owner }),
+  });
+  assert.equal(missing.status, 400);
+  assert.equal(missing.body.code, 'epic_code_required');
+
+  const extra = await getJson(`${base}/connect?foo=1`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ owner, code: 'one-time-code' }),
+  });
+  assert.equal(extra.status, 400);
+  assert.equal(extra.body.code, 'unexpected_parameter');
+
+  const after = await getJson(`${base}/status?owner=${encodeURIComponent(owner)}`);
+  assert.equal(after.status, 200);
+  assert.equal(after.body.account.accountId, 'epic-account-2');
+});

@@ -7,15 +7,16 @@
  * render the GOG slot next to it on the same screen; nothing here assumes it
  * is the only source.
  *
- * Flow (device-code, §14.2):
- *   POST /api/games/epic/auth   → { userCode, verificationUriComplete, authId }
- *   GET  /api/games/epic/auth/:authId (polled; backend polls Epic)
- *   POST /api/games/epic/import → job (polled)
+ * Flow (authorization code, §14.2 — device-code is closed for public clients
+ * since 2026: Epic answers 400 unsupported_grant_type/1016):
+ *   GET  /api/games/epic/auth-url  → { url }  (epicgames.com/id/login…)
+ *   POST /api/games/epic/connect   { code }   (code or the whole redirect URL)
+ *   POST /api/games/epic/import    → job (polled)
  *   GET  /api/games/epic/status?owner=steam-<id64>
  *   POST /api/games/epic/disconnect
  *
- * The device code never reaches the browser; the access/refresh tokens never
- * leave the server. The UI only shows presence/expiry and the library counts.
+ * The one-time code is consumed server-side and the access/refresh tokens
+ * never leave the server. The UI only shows presence/expiry and library counts.
  */
 
 const PROFILE_KEY = 'kinoboxd.games.profile.v1';
@@ -29,8 +30,9 @@ const state = {
   status: null,
   loading: false,
   error: '',
-  auth: null, // { authId, userCode, verificationUri, verificationUriComplete, expiresAt, intervalMs }
-  authTimer: null,
+  authUrl: '', // epicgames.com/id/login… (authorization-code flow)
+  code: '', // what the user typed/pasted; survives re-renders
+  busy: false,
   importJobId: null,
   importTimer: null,
   stylesInjected: false,
@@ -116,6 +118,9 @@ function injectStyles() {
 .epic-conn-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:20px;
   letter-spacing:2px;padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.08);color:#fff}
 .epic-conn-link{color:#7cc4ff;text-decoration:none;word-break:break-all}
+.epic-conn-input{min-width:220px;flex:1;padding:7px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.16);
+  background:rgba(255,255,255,.06);color:#e8edf2;font-size:13px}
+.epic-conn-input:focus{outline:none;border-color:rgba(124,196,255,.6)}
 .epic-conn-link:hover{text-decoration:underline}
 .epic-conn-note{color:#9aa7b4;font-size:12px;line-height:1.45;flex-basis:100%}
 .epic-conn-error{color:#ff9b9b;font-size:13px;flex-basis:100%}
@@ -160,13 +165,6 @@ function statusLabel(status) {
     case 'not_connected':
     default:
       return { text: 'не подключено', cls: '' };
-  }
-}
-
-function clearAuthTimer() {
-  if (state.authTimer) {
-    clearInterval(state.authTimer);
-    state.authTimer = null;
   }
 }
 
@@ -219,37 +217,51 @@ function render() {
 
   const actions = el('div', { class: 'epic-conn-actions' });
 
-  if (state.auth) {
-    // Device-code pending: code + URL + cancel. The code is not a secret.
-    actions.append(
-      el('span', { class: 'epic-conn-code', text: state.auth.userCode || '—' }),
-      el('a', {
-        class: 'epic-conn-link',
-        href: state.auth.verificationUriComplete || state.auth.verificationUri || '#',
-        target: '_blank',
-        rel: 'noopener noreferrer',
-        text: 'открыть epicgames.com/id/activate',
-      }),
-      el('button', {
-        type: 'button',
-        class: 'btn btn-ghost',
-        text: 'Отмена',
-        onclick: () => cancelAuth(),
-      })
-    );
-  } else if (!owner) {
+  if (!owner) {
     actions.append(
       el('span', { class: 'epic-conn-sub', text: 'Сначала импортируйте Steam-профиль' })
     );
   } else if (status.status === 'not_connected' || status.status === 'auth_expired') {
+    // Authorization-code flow: open the official login page, paste the code.
     actions.append(
       el('button', {
         type: 'button',
         class: 'btn btn-primary',
-        text: status.status === 'auth_expired' ? 'Переподключить Epic' : 'Войти через Epic',
-        onclick: () => startAuth(),
+        text: state.authUrl ? 'Открыть вход Epic ещё раз' : 'Войти через Epic',
+        disabled: state.busy ? 'disabled' : null,
+        onclick: () => openLogin(),
+      }),
+      el('input', {
+        class: 'epic-conn-input',
+        id: 'epic-conn-code',
+        type: 'text',
+        autocomplete: 'off',
+        spellcheck: 'false',
+        placeholder: 'code или ссылка после входа',
+        value: state.code || '',
+        oninput: (event) => {
+          state.code = event && event.target ? String(event.target.value || '') : '';
+        },
+      }),
+      el('button', {
+        type: 'button',
+        class: 'btn btn-ghost',
+        text: state.busy ? 'Подключаем…' : 'Подключить',
+        disabled: state.busy || !state.code ? 'disabled' : null,
+        onclick: () => connectCode(),
       })
     );
+    if (state.authUrl) {
+      actions.append(
+        el('a', {
+          class: 'epic-conn-link',
+          href: state.authUrl,
+          target: '_blank',
+          rel: 'noopener noreferrer',
+          text: 'или открыть страницу входа Epic вручную',
+        })
+      );
+    }
   } else {
     if (status.status === 'not_imported' || status.status === 'stale') {
       actions.append(
@@ -297,6 +309,10 @@ function render() {
     el('div', {
       class: 'epic-conn-note',
       text:
+        'Epic не отдаёт чужую библиотеку публично, а вход по device-code закрыт для ' +
+        'публичных клиентов (Epic отвечает 400 unsupported_grant_type). Поэтому вход ' +
+        'по коду: «Войти через Epic» открывает официальную страницу входа, после входа ' +
+        'браузер покажет одноразовый code — вставьте его (или всю ссылку) в поле выше. ' +
         'Epic-токен хранится на сервере в файле 0600 и даёт доступ к аккаунту Epic ' +
         '(эквивалент пароля). Отключить доступ можно здесь или на epicgames.com → ' +
         'Account → Apps and Accounts. Часы Epic показываются отдельно от Steam.',
@@ -330,6 +346,13 @@ async function refreshStatus() {
     );
     state.status = status;
     state.error = '';
+    if (
+      (status.status === 'not_connected' || status.status === 'auth_expired') &&
+      !state.authUrl
+    ) {
+      // Prefetch so the click opens the page synchronously (popup blockers).
+      void loadAuthUrl();
+    }
   } catch (err) {
     state.error = err.message || 'не удалось получить статус Epic';
   } finally {
@@ -338,67 +361,63 @@ async function refreshStatus() {
   }
 }
 
-async function startAuth() {
+/**
+ * Load the official Epic login URL once (no network call on the server). It is
+ * prefetched so the «Войти через Epic» click can open it synchronously — a
+ * `window.open` after an `await` is blocked by popup blockers. The card also
+ * renders the URL as a plain link, so the flow works even when popups are
+ * blocked entirely.
+ */
+async function loadAuthUrl() {
   if (!state.owner) return;
+  try {
+    const info = await api('/api/games/epic/auth-url');
+    state.authUrl = info.url || '';
+  } catch (err) {
+    state.error = err.message || 'не удалось получить ссылку входа Epic';
+  }
+  render();
+}
+
+/** Open the login page (synchronous — the URL is prefetched). */
+function openLogin() {
+  if (!state.authUrl) {
+    loadAuthUrl();
+    return;
+  }
+  if (typeof window.open === 'function') {
+    window.open(state.authUrl, '_blank', 'noopener,noreferrer');
+  }
+}
+
+/**
+ * Exchange the pasted one-time code (or the whole redirect URL) for a token.
+ * The backend stores it 0600, binds the account to the same Steam owner and
+ * starts the library import.
+ */
+async function connectCode() {
+  if (!state.owner || !state.code) return;
   state.error = '';
+  state.busy = true;
   render();
   try {
-    const session = await api('/api/games/epic/auth', {
+    const result = await api('/api/games/epic/connect', {
       method: 'POST',
-      body: JSON.stringify({ owner: state.owner }),
+      body: JSON.stringify({ code: state.code, owner: state.owner }),
     });
-    state.auth = session;
-    render();
-    clearAuthTimer();
-    const interval = Math.max(2000, Number(session.intervalMs) || 3000);
-    state.authTimer = setInterval(() => pollAuth(session.authId), interval);
-    // Poll once right away so a fast confirmation is not delayed.
-    pollAuth(session.authId);
+    state.code = '';
+    state.importJobId = result.importJobId || null;
+    state.importStage = 'в очереди';
+    if (result.importError) state.error = result.importError;
+    await refreshStatus();
+    notifyEpicChanged();
+    if (state.importJobId) pollImport(state.importJobId);
   } catch (err) {
-    state.error = err.message || 'не удалось начать вход через Epic';
+    state.error = err.message || 'не удалось подключить Epic';
+  } finally {
+    state.busy = false;
     render();
   }
-}
-
-async function pollAuth(authId) {
-  if (!state.auth || state.auth.authId !== authId) return;
-  try {
-    const session = await api(`/api/games/epic/auth/${encodeURIComponent(authId)}`);
-    state.auth = { ...state.auth, ...session };
-    if (session.status === 'authorized') {
-      clearAuthTimer();
-      state.auth = null;
-      state.importJobId = session.importJobId || null;
-      if (state.importJobId) pollImport(state.importJobId);
-      await refreshStatus();
-      notifyEpicChanged();
-      return;
-    }
-    if (session.status === 'expired' || session.status === 'failed') {
-      clearAuthTimer();
-      state.error = session.error || 'Epic не подтвердил вход';
-      state.auth = null;
-    }
-    render();
-  } catch (err) {
-    // A transient network error must not kill the pending login.
-    state.error = err.message || 'не удалось проверить вход через Epic';
-    render();
-  }
-}
-
-async function cancelAuth() {
-  const authId = state.auth && state.auth.authId;
-  clearAuthTimer();
-  state.auth = null;
-  if (authId) {
-    try {
-      await api(`/api/games/epic/auth/${encodeURIComponent(authId)}`, { method: 'DELETE' });
-    } catch {
-      /* best-effort */
-    }
-  }
-  render();
 }
 
 async function startImport() {
@@ -492,7 +511,7 @@ export function initGamesEpic() {
   mountEpicSlot(host);
   // M6c: games.js asks for a refresh when the «Подключения» screen opens.
   document.addEventListener('games:connections-open', () => {
-    if (!state.auth) refreshStatus();
+    if (!state.busy) refreshStatus();
   });
   document.addEventListener('click', (event) => {
     if (event.target && event.target.closest && event.target.closest('#games-profile-list')) {
@@ -501,10 +520,10 @@ export function initGamesEpic() {
     }
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !state.auth) refreshStatus();
+    if (document.visibilityState === 'visible' && !state.busy) refreshStatus();
   });
   setInterval(() => {
-    if (document.visibilityState === 'visible' && !state.auth && !state.importJobId) {
+    if (document.visibilityState === 'visible' && !state.busy && !state.importJobId) {
       refreshStatus();
     }
   }, STATUS_REFRESH_MS);

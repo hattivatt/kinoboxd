@@ -46,6 +46,24 @@ function createFakeEpicClient(options = {}) {
   return {
     calls,
     state,
+    authorizeUrl() {
+      calls.push('authorizeUrl');
+      return epic.authorizeUrl('fake-client-id');
+    },
+    async exchangeAuthorizationCode(code) {
+      calls.push(`code:${code}`);
+      failFor('exchangeAuthorizationCode');
+      return {
+        accountId: state.accountId,
+        displayName: state.displayName,
+        accessToken: 'eg1~fake-access-token',
+        refreshToken: 'eg1~fake-refresh-token',
+        accessExpiresAt: new Date(Date.now() + 7200000).toISOString(),
+        refreshExpiresAt: new Date(Date.now() + 14400000).toISOString(),
+        tokenType: 'bearer',
+        clientId: 'fake-client',
+      };
+    },
     async getAccount(accountId) {
       calls.push('account');
       failFor('getAccount');

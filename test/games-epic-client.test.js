@@ -90,6 +90,10 @@ function baseHandler(overrides = {}) {
       if (String(body).includes('grant_type=client_credentials')) {
         return jsonResponse({ access_token: 'client-token', expires_in: 7200 });
       }
+      if (String(body).includes('grant_type=authorization_code')) {
+        if (overrides.authorizationCode) return overrides.authorizationCode(options);
+        return jsonResponse(readJson('token-response.json'));
+      }
       if (String(body).includes('grant_type=device_code')) {
         if (overrides.deviceCode) return overrides.deviceCode(options);
         return jsonResponse(readJson('token-response.json'));
@@ -420,4 +424,180 @@ test('maskSecrets hides tokens/device codes but keeps the user code', () => {
   assert.equal(masked.includes('eg1~json-secret'), false);
   assert.equal(masked.includes('s3'), false);
   assert.match(masked, /user_code=ABCD-1234/);
+});
+
+/* ------------------------------------------------------------------ */
+/* Authorization-code login (the flow that actually works, 01.11.2026) */
+/* ------------------------------------------------------------------ */
+
+function codeClient(request, extra = {}) {
+  return epic.createClient({
+    request,
+    pauseMs: 0,
+    breakerStore: createMemoryBreakerStore(),
+    tokenStore: createMemoryTokenStore([freshTokenDoc()]),
+    ...extra,
+  });
+}
+
+test('authorizeUrl is the official login page with an encoded redirect (no secret)', () => {
+  const url = epic.authorizeUrl('client-id-123');
+  assert.match(url, /^https:\/\/www\.epicgames\.com\/id\/login\?redirectUrl=/);
+  const redirect = decodeURIComponent(url.slice(url.indexOf('redirectUrl=') + 'redirectUrl='.length));
+  assert.equal(
+    redirect,
+    'https://www.epicgames.com/id/api/redirect?clientId=client-id-123&responseType=code'
+  );
+  // The client id is public and part of the URL; a secret must never be.
+  assert.equal(/secret/i.test(url), false);
+});
+
+test('extractAuthCode accepts a bare code, a redirect URL, a fragment and rejects junk', () => {
+  const code = 'abcdef0123456789abcdef0123456789';
+  assert.equal(epic.extractAuthCode(code), code);
+  assert.equal(epic.extractAuthCode(`https://www.epicgames.com/id/api/redirect?code=${code}`), code);
+  assert.equal(epic.extractAuthCode(`https://www.epicgames.com/id/api/redirect#code=${code}`), code);
+  assert.equal(epic.extractAuthCode(`code=${code}&state=xyz`), code);
+  assert.equal(epic.extractAuthCode('   '), null);
+  assert.equal(epic.extractAuthCode('https://example.com/nothing-here'), null);
+  assert.equal(epic.extractAuthCode('no code here!'), null);
+});
+
+test('authorization-code exchange: basic header + form body, code never in the URL', async () => {
+  const { request, calls } = makeRequest(baseHandler());
+  const client = codeClient(request);
+  const tokens = await client.exchangeAuthorizationCode(
+    'https://www.epicgames.com/id/api/redirect?code=one-time-code'
+  );
+  assert.equal(tokens.accountId, ACCOUNT);
+  assert.equal(tokens.displayName, 'EpicTester');
+  assert.equal(calls.length, 1);
+  assert.match(
+    calls[0].url,
+    /^https:\/\/account-public-service-prod03\.ol\.epicgames\.com\/account\/api\/oauth\/token$/
+  );
+  assert.equal(calls[0].url.includes('code='), false);
+  assert.equal(calls[0].method, 'POST');
+  assert.match(String(calls[0].headers['Content-Type']), /^application\/x-www-form-urlencoded/);
+
+  // Basic auth identifies the client; the secret is compared without being
+  // hardcoded in the test (policy: no secret literals in fixtures).
+  const basic = String(calls[0].headers.Authorization);
+  assert.match(basic, /^basic [A-Za-z0-9+/=]+$/);
+  const decoded = Buffer.from(basic.slice('basic '.length), 'base64').toString('utf8');
+  const [clientId, clientSecret] = decoded.split(':');
+  assert.equal(clientId, client._clientCredentials().clientId);
+  assert.ok(clientSecret && clientSecret.length >= 20);
+
+  const body = new URLSearchParams(String(calls[0].body));
+  assert.equal(body.get('grant_type'), 'authorization_code');
+  assert.equal(body.get('code'), 'one-time-code');
+  assert.equal(body.get('token_type'), 'eg1');
+});
+
+test('authorization-code exchange: invalid_client vs a dead code, code is never echoed', async () => {
+  const rejectedClient = makeRequest(
+    baseHandler({
+      authorizationCode: () =>
+        jsonResponse(
+          {
+            errorCode: 'errors.com.epicgames.common.oauth.invalid_client',
+            errorMessage: 'Invalid Client',
+            numericErrorCode: 1011,
+          },
+          400
+        ),
+    })
+  );
+  await assert.rejects(codeClient(rejectedClient.request).exchangeAuthorizationCode('one-time-code'), (err) => {
+    assert.equal(err.code, 'epic_client_invalid');
+    assert.equal(err.message.includes('one-time-code'), false);
+    return true;
+  });
+
+  const deadCode = makeRequest(
+    baseHandler({
+      authorizationCode: () =>
+        jsonResponse(
+          {
+            errorCode: 'errors.com.epicgames.common.oauth.invalid_grant',
+            errorMessage: 'Sorry the authorization code is invalid or expired.',
+            numericErrorCode: 1012,
+          },
+          400
+        ),
+    })
+  );
+  await assert.rejects(codeClient(deadCode.request).exchangeAuthorizationCode('one-time-code'), (err) => {
+    assert.equal(err.code, 'epic_invalid_code');
+    assert.equal(err.message.includes('one-time-code'), false);
+    assert.match(err.message, /одноразовый/);
+    return true;
+  });
+});
+
+test('an empty/garbage code is epic_code_required without any request', async () => {
+  const { request, calls } = makeRequest(baseHandler());
+  await assert.rejects(
+    codeClient(request).exchangeAuthorizationCode('   '),
+    (err) => err.code === 'epic_code_required' && err.status === 400
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('device-code grant (Epic 1016) becomes epic_device_grant_unavailable', async () => {
+  const { request } = makeRequest(
+    baseHandler({
+      deviceAuthorization: () =>
+        jsonResponse(
+          {
+            errorCode: 'errors.com.epicgames.common.oauth.unsupported_grant_type',
+            errorMessage: 'Sorry, your client does not have the proper grant_type for access.',
+            numericErrorCode: 1016,
+          },
+          400
+        ),
+    })
+  );
+  await assert.rejects(codeClient(request).deviceAuthorization(), (err) => {
+    assert.equal(err.code, 'epic_device_grant_unavailable');
+    assert.equal(err.status, 400);
+    assert.match(err.message, /authorization code/);
+    return true;
+  });
+});
+
+test('client credentials are resolved env → file → public default, source only', () => {
+  const previous = {
+    EPIC_CLIENT_ID: process.env.EPIC_CLIENT_ID,
+    EPIC_CLIENT_SECRET: process.env.EPIC_CLIENT_SECRET,
+    GAMES_EPIC_CLIENT_ID: process.env.GAMES_EPIC_CLIENT_ID,
+    GAMES_EPIC_CLIENT_SECRET: process.env.GAMES_EPIC_CLIENT_SECRET,
+    KINOBOXD_EPIC_CLIENT_FILE: process.env.KINOBOXD_EPIC_CLIENT_FILE,
+  };
+  try {
+    delete process.env.EPIC_CLIENT_ID;
+    delete process.env.EPIC_CLIENT_SECRET;
+    delete process.env.GAMES_EPIC_CLIENT_ID;
+    delete process.env.GAMES_EPIC_CLIENT_SECRET;
+    process.env.KINOBOXD_EPIC_CLIENT_FILE = path.join(CACHE_DIR, 'missing-epic-client.json');
+    epic.resetCredentialsCache();
+    assert.equal(epic.clientSource(), 'default');
+
+    process.env.EPIC_CLIENT_ID = 'env-client-id';
+    process.env.EPIC_CLIENT_SECRET = 'env-client-secret-value';
+    epic.resetCredentialsCache();
+    assert.equal(epic.clientSource(), 'env');
+
+    // A half-configured env pair falls back to the built-in pair.
+    delete process.env.EPIC_CLIENT_SECRET;
+    epic.resetCredentialsCache();
+    assert.equal(epic.clientSource(), 'default');
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+    epic.resetCredentialsCache();
+  }
 });

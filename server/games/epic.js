@@ -8,17 +8,26 @@
  * no-key path to somebody else's Epic library — every user endpoint answers
  * `401 authentication_failed` without the owner's token.
  *
- * Flow implemented here:
+ * Flow implemented here (primary — authorization code, the one that works):
  *
- *   1. `POST /account/api/oauth/token` (grant_type=client_credentials) with
- *      the public launcher client → a short-lived *client* token;
- *   2. `POST /account/api/oauth/deviceAuthorization` (bearer client token) →
- *      `{device_code, user_code, verification_uri_complete, expires_in,
- *      interval}`. The user opens the URL, types the code on
- *      epicgames.com/id/activate; the backend polls;
- *   3. `POST /account/api/oauth/token` (grant_type=device_code) →
+ *   1. the user opens `authorizeUrl()` → epicgames.com/id/login with
+ *      `redirectUrl=…/id/api/redirect?clientId=…&responseType=code`, logs in and
+ *      lands on a page that shows a one-time `code`;
+ *   2. `exchangeAuthorizationCode(codeOrUrl)` → `POST /account/api/oauth/token`
+ *      with `Authorization: basic <client_id:client_secret>`,
+ *      `Content-Type: application/x-www-form-urlencoded`,
+ *      `grant_type=authorization_code&code=…&token_type=eg1` →
  *      `{access_token, refresh_token, account_id, displayName, …}`;
- *   4. `grant_type=refresh_token` refreshes an expired access token.
+ *   3. `grant_type=refresh_token` refreshes an expired access token.
+ *
+ * Legacy device-code flow (`deviceAuthorization()` + `grant_type=device_code`)
+ * is kept for completeness, but since 2026 Epic answers **400
+ * `unsupported_grant_type` (1016)** for every public launcher client — the
+ * grant is reserved for console/Fortnite clients. Live proof (01.11.2026):
+ * launcherAppClient2 → 401 `authentication_failed` (1032),
+ * fortnitePCGameClient → 400 `unsupported_grant_type` (1016). That 400 is the
+ * exact error the user saw on production; it is a capability refusal, not a
+ * malformed request, so the fix is the authorization-code flow above.
  *
  * Read endpoints:
  *   - `GET /entitlement/api/account/{id}/entitlements` (primary ownership);
@@ -42,6 +51,8 @@
 
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 const { URL } = require('url');
 
 const gameCache = require('./game-cache');
@@ -54,14 +65,27 @@ const ENTITLEMENT_HOST = 'entitlement-public-service-prod08.ol.epicgames.com';
 const STORE_CONTENT_HOST = 'store-content.ak.epicgames.com';
 const VERIFY_URI = 'https://www.epicgames.com/id/activate';
 
+/** Authorization-code login: the page the user opens and the redirect it hits. */
+const AUTHORIZE_URI = 'https://www.epicgames.com/id/login';
+const REDIRECT_URI_BASE = 'https://www.epicgames.com/id/api/redirect';
+
 /**
  * Public launcher client credentials. They are hardcoded in Legendary,
  * Heroic and Playnite; they are not a user secret, but §14.5 still forbids
  * echoing the values. `EPIC_CLIENT_ID` / `EPIC_CLIENT_SECRET` (aliases
- * `GAMES_EPIC_*`) override them for a private deployment.
+ * `GAMES_EPIC_*`) override them for a private deployment, then
+ * `config/epic-client.json` (0600, gitignored).
+ *
+ * This is `launcherAppClient2` (Legendary). It is the client that is proven
+ * for `grant_type=authorization_code` + `token_type=eg1`. The device-code
+ * grant is **not** available to it (nor to any public client): Epic answers
+ * 1016 `unsupported_grant_type`.
  */
 const DEFAULT_CLIENT_ID = '34a02cf8f4414e29b15921876da36f9a';
 const DEFAULT_CLIENT_SECRET = 'daafbccc737745039dffe53d94fc76cf';
+
+const CLIENT_FILE_ENV = 'KINOBOXD_EPIC_CLIENT_FILE';
+const CLIENT_FILE_PATH = path.join(__dirname, '..', '..', 'config', 'epic-client.json');
 
 const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_PAUSE_MS = 300;
@@ -161,6 +185,58 @@ function parseJsonBody(body) {
 
 function unique(list) {
   return [...new Set(list.filter(Boolean))];
+}
+
+/**
+ * Epic login URL for the authorization-code flow (Legendary/Heroic pattern):
+ * `https://www.epicgames.com/id/login?redirectUrl=<…/id/api/redirect?clientId=…&responseType=code>`.
+ * After a successful login the browser lands on `id/api/redirect`, which shows
+ * a one-time `code` the user pastes into the UI.
+ */
+function authorizeUrl(clientId) {
+  const redirect = `${REDIRECT_URI_BASE}?clientId=${encodeURIComponent(
+    String(clientId || DEFAULT_CLIENT_ID)
+  )}&responseType=code`;
+  return `${AUTHORIZE_URI}?redirectUrl=${encodeURIComponent(redirect)}`;
+}
+
+/**
+ * Accept either the bare one-time `code` or any URL/string that carries it
+ * (`https://www.epicgames.com/id/api/redirect?code=…`, a `#code=…` fragment,
+ * or a pasted `code=…&…` fragment). Returns `null` when nothing looks like a
+ * code — the caller answers `epic_code_required` instead of sending garbage
+ * to Epic.
+ */
+function extractAuthCode(input) {
+  const raw = String(input == null ? '' : input).trim();
+  if (!raw) return null;
+  // Whole URL or query fragment: let URL parse the query, then the fragment.
+  if (/^https?:\/\//i.test(raw) || raw.includes('?') || raw.includes('#')) {
+    try {
+      const parsed = new URL(raw, 'https://www.epicgames.com');
+      const fromQuery = parsed.searchParams.get('code');
+      if (fromQuery) return fromQuery.trim();
+      const fragment = String(parsed.hash || '').replace(/^#/, '');
+      const fromFragment = new URLSearchParams(fragment).get('code');
+      if (fromFragment) return fromFragment.trim();
+    } catch (err) {
+      /* fall through to the regex */
+    }
+  }
+  // A pasted `code=…&state=…` fragment or a URL URL() could not parse.
+  const match = /(?:^|[?&#])code=([^&\s#]+)/.exec(raw);
+  if (match) {
+    try {
+      return decodeURIComponent(match[1]).trim();
+    } catch (err) {
+      return match[1].trim();
+    }
+  }
+  if (/^https?:\/\//i.test(raw)) return null;
+  // Bare value: Epic codes are 32 hex chars, but accept any token-shaped
+  // string so a future format is not rejected client-side.
+  if (!/^[A-Za-z0-9._~+/=-]{8,256}$/.test(raw)) return null;
+  return raw;
 }
 
 function normalizeSlug(value) {
@@ -651,18 +727,81 @@ function defaultBreakerStore() {
   };
 }
 
+function clientFilePath() {
+  const override = process.env[CLIENT_FILE_ENV];
+  if (typeof override === 'string' && override.trim()) return path.resolve(override.trim());
+  return CLIENT_FILE_PATH;
+}
+
+let credentialsCache = null;
+
+function readClientFile(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    const clientId = parsed && (parsed.clientId || parsed.client_id);
+    const clientSecret = parsed && (parsed.clientSecret || parsed.client_secret);
+    if (clientId && clientSecret) {
+      return { clientId: String(clientId), clientSecret: String(clientSecret), source: 'file' };
+    }
+    return null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Resolve the launcher client pair once: explicit options → env
+ * `EPIC_CLIENT_ID`+`EPIC_CLIENT_SECRET` (aliases `GAMES_EPIC_*`) →
+ * `config/epic-client.json` (0600, gitignored) → the built-in public pair.
+ * A half-configured env pair is ignored on purpose (the public pair still
+ * works); `source` is reported, the values never are.
+ */
+function loadCredentials(options = {}) {
+  if (options.clientId && options.clientSecret) {
+    return {
+      clientId: String(options.clientId),
+      clientSecret: String(options.clientSecret),
+      source: 'options',
+    };
+  }
+  if (credentialsCache) return credentialsCache;
+  const envId = process.env.EPIC_CLIENT_ID || process.env.GAMES_EPIC_CLIENT_ID;
+  const envSecret = process.env.EPIC_CLIENT_SECRET || process.env.GAMES_EPIC_CLIENT_SECRET;
+  if (envId && envSecret) {
+    credentialsCache = {
+      clientId: String(envId).trim(),
+      clientSecret: String(envSecret).trim(),
+      source: 'env',
+    };
+    return credentialsCache;
+  }
+  const fromFile = readClientFile(clientFilePath());
+  if (fromFile) {
+    credentialsCache = fromFile;
+    return credentialsCache;
+  }
+  credentialsCache = {
+    clientId: DEFAULT_CLIENT_ID,
+    clientSecret: DEFAULT_CLIENT_SECRET,
+    source: 'default',
+  };
+  return credentialsCache;
+}
+
 function clientCredentials(options) {
-  const id =
-    options.clientId ||
-    process.env.EPIC_CLIENT_ID ||
-    process.env.GAMES_EPIC_CLIENT_ID ||
-    DEFAULT_CLIENT_ID;
-  const secret =
-    options.clientSecret ||
-    process.env.EPIC_CLIENT_SECRET ||
-    process.env.GAMES_EPIC_CLIENT_SECRET ||
-    DEFAULT_CLIENT_SECRET;
-  return { clientId: id, clientSecret: secret };
+  const resolved = loadCredentials(options);
+  return { clientId: resolved.clientId, clientSecret: resolved.clientSecret };
+}
+
+/** `env` | `file` | `default` | `options` — never the value. */
+function clientSource(options) {
+  return loadCredentials(options).source;
+}
+
+/** Test helper: forget the cached pair so the next call re-reads env/file. */
+function resetCredentialsCache() {
+  credentialsCache = null;
 }
 
 function createClient(options = {}) {
@@ -895,24 +1034,115 @@ function createClient(options = {}) {
     return clientToken.token;
   }
 
+  /**
+   * Legacy device-code flow. Kept for completeness: Epic closed the grant for
+   * public clients (400 `unsupported_grant_type`, 1016), so this is expected
+   * to answer `epic_device_grant_unavailable` and the UI must use the
+   * authorization-code flow instead.
+   */
   async function deviceAuthorization() {
-    const requestDevice = async (clientToken) =>
-      requestAccountJson('/account/api/oauth/deviceAuthorization', {
+    const requestDevice = async (clientToken) => {
+      const host = accountHosts[0];
+      const url = `https://${host}/account/api/oauth/deviceAuthorization`;
+      const response = await requestRaw({
         method: 'POST',
+        url,
+        host,
         token: clientToken,
         contentType: 'application/x-www-form-urlencoded',
         body: '',
       });
+      const json = parseJsonBody(response.body) || {};
+      if (response.status >= 200 && response.status < 300) {
+        return normalizeDeviceAuthorization(json);
+      }
+      const errorText = `${json.errorCode || ''} ${json.error || ''}`.toLowerCase();
+      if (
+        response.status === 400 &&
+        (json.numericErrorCode === 1016 || errorText.includes('unsupported_grant_type'))
+      ) {
+        throw new EpicError(
+          'Epic закрыл вход по device-code для публичных клиентов лаунчера ' +
+            '(400 unsupported_grant_type, 1016): этот grant доступен только клиентам консолей. ' +
+            'Используйте вход по authorization code: «Войти через Epic» → ссылка → вставьте code.',
+          'epic_device_grant_unavailable',
+          { status: 400, host }
+        );
+      }
+      throw classify(response.status, url, host);
+    };
     let client = await getClientToken();
     try {
-      return normalizeDeviceAuthorization(await requestDevice(client));
+      return await requestDevice(client);
     } catch (err) {
       // A client token can be revoked between the cache write and this call;
       // retry exactly once with a fresh client_credentials token.
       if (!err || err.code !== 'epic_auth_expired') throw err;
       client = await getClientToken(true);
-      return normalizeDeviceAuthorization(await requestDevice(client));
+      return requestDevice(client);
     }
+  }
+
+  /**
+   * Exchange the one-time `code` from `id/api/redirect` for a user token.
+   * Basic auth (client_id:client_secret) is mandatory here — the values are
+   * never echoed, only Epic's own error text is.
+   */
+  async function exchangeAuthorizationCode(codeOrUrl) {
+    const code = extractAuthCode(codeOrUrl);
+    if (!code) {
+      throw new EpicError(
+        'Не найден authorization code: вставьте code из адресной строки epicgames.com/id/api/redirect ' +
+          'или всю ссылку целиком — сервер выделит code сам.',
+        'epic_code_required',
+        { status: 400 }
+      );
+    }
+    const host = accountHosts[0];
+    const url = `https://${host}/account/api/oauth/token`;
+    const response = await requestRaw({
+      method: 'POST',
+      url,
+      host,
+      basic: Buffer.from(`${creds.clientId}:${creds.clientSecret}`, 'utf8').toString('base64'),
+      contentType: 'application/x-www-form-urlencoded',
+      body: formEncode({
+        grant_type: 'authorization_code',
+        code,
+        // `eg1` is what the launcher clients request; without it Epic may
+        // answer a legacy non-prefixed token.
+        token_type: 'eg1',
+      }),
+    });
+    const json = parseJsonBody(response.body) || {};
+    if (response.status >= 200 && response.status < 300) {
+      return normalizeTokenResponse(json, now());
+    }
+    const errorText = `${json.errorCode || ''} ${json.error || ''}`.toLowerCase();
+    if (
+      response.status === 401 ||
+      (response.status === 400 &&
+        (json.numericErrorCode === 1011 || errorText.includes('invalid_client')))
+    ) {
+      throw new EpicError(
+        'Epic отклонил client credentials лаунчера при обмене code (значения не печатаются). ' +
+          'Проверьте EPIC_CLIENT_ID/EPIC_CLIENT_SECRET или config/epic-client.json.',
+        'epic_client_invalid',
+        { status: 502 }
+      );
+    }
+    if (response.status === 403 || response.status === 429) {
+      throw classify(response.status, url, host);
+    }
+    const detail = maskSecrets(
+      String(json.errorMessage || json.error_description || json.errorCode || '')
+    ).slice(0, 200);
+    throw new EpicError(
+      `Epic не принял code входа (${response.status})${detail ? `: ${detail}` : ''}. ` +
+        'Code одноразовый и живёт несколько минут — откройте ссылку входа заново и скопируйте новый.',
+      'epic_invalid_code',
+      { status: 400 }
+    );
   }
 
   /**
@@ -1283,8 +1513,11 @@ function createClient(options = {}) {
 
   return {
     options: { pauseMs, breakerMs, accountHosts, libraryHost, catalogHost, entitlementHost },
+    authorizeUrl: () => authorizeUrl(creds.clientId),
+    clientSource: () => clientSource(options),
     getClientToken,
     deviceAuthorization,
+    exchangeAuthorizationCode,
     exchangeDeviceCode,
     refreshTokens,
     getAccessToken,
@@ -1313,10 +1546,16 @@ module.exports = {
   ENTITLEMENT_HOST,
   STORE_CONTENT_HOST,
   VERIFY_URI,
+  AUTHORIZE_URI,
+  REDIRECT_URI_BASE,
   DEFAULT_PAUSE_MS,
   DEFAULT_BREAKER_MS,
   CATALOG_CHUNK,
+  authorizeUrl,
+  extractAuthCode,
   createClient,
+  clientSource,
+  resetCredentialsCache,
   httpRequest,
   maskSecrets,
   normalizeDeviceAuthorization,

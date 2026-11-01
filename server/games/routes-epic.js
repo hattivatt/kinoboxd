@@ -8,7 +8,10 @@
  * «Подключения» screen and the union aggregates.
  *
  *   GET  /api/games/epic/status?owner=steam-<id64>|accountId=<id>
- *   POST /api/games/epic/auth              { owner?, label? }
+ *   GET  /api/games/epic/auth-url          (login URL, no network call)
+ *   POST /api/games/epic/connect           { code, owner?, label? }   ← primary
+ *   POST /api/games/epic/auth              { owner?, label? }         (device-code,
+ *                                          unavailable for public clients)
  *   GET  /api/games/epic/auth/:authId
  *   DELETE /api/games/epic/auth/:authId    (cancel)
  *   POST /api/games/epic/import            { accountId?, owner?, force?, label? }
@@ -50,6 +53,9 @@ const EPIC_ERROR_STATUS = {
   epic_http_error: 502,
   epic_invalid_url: 400,
   epic_client_invalid: 502,
+  epic_device_grant_unavailable: 400,
+  epic_code_required: 400,
+  epic_invalid_code: 400,
   epic_library_empty: 400,
   epic_token_store_error: 500,
   epic_invalid_catalog_item: 400,
@@ -213,6 +219,65 @@ function createRouter(deps = {}) {
   });
 
   /* ------------------------ device auth ------------------------- */
+
+  /**
+   * Login URL for the authorization-code flow. No network call: the client id
+   * is public and the page is the official Epic login. The user copies the
+   * `code` from the redirect page and posts it to `/epic/connect`.
+   */
+  router.get('/epic/auth-url', (req, res, next) => {
+    try {
+      assertOnlyParams(req, [], 'GET /api/games/epic/auth-url');
+      const api = deps.client || epic.createClient({ tokenStore: store });
+      res.status(200).json({
+        source: 'epic',
+        url: api.authorizeUrl ? api.authorizeUrl() : epic.authorizeUrl(),
+        // Source only: the credentials themselves are never exposed.
+        clientSource: epic.clientSource(),
+        instructions:
+          'Откройте ссылку, войдите в аккаунт Epic и скопируйте значение code ' +
+          'со страницы epicgames.com/id/api/redirect (или адрес страницы целиком). ' +
+          'Вставьте в поле «code» сам код или всю ссылку: сервер разберёт её сам. ' +
+          'Код одноразовый и живёт несколько минут.',
+      });
+    } catch (err) {
+      next(mapError(err));
+    }
+  });
+
+  router.post('/epic/connect', async (req, res, next) => {
+    try {
+      assertOnlyParams(req, [], 'POST /api/games/epic/connect');
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const code = body.code != null ? body.code : req.query.code;
+      if (code == null || String(code).trim() === '') {
+        throw new HttpError(
+          400,
+          'Body must contain "code" — the one-time code from the Epic login redirect ' +
+            '(epicgames.com/id/api/redirect?code=…).',
+          'epic_code_required'
+        );
+      }
+      const owner = parseOwner(body.owner != null ? body.owner : body.profile, {
+        requireProfile: true,
+      });
+      const label =
+        typeof body.label === 'string' && body.label.trim()
+          ? body.label.trim().slice(0, 80)
+          : null;
+      const result = await auth.connectWithCode({
+        code: String(code).trim(),
+        ownerKey: owner,
+        label,
+        client: deps.client || undefined,
+        tokenStore: store,
+        autoImport: deps.autoImport !== false,
+      });
+      res.status(200).json({ connected: true, source: 'epic', ...result });
+    } catch (err) {
+      next(mapError(err));
+    }
+  });
 
   router.post('/epic/auth', async (req, res, next) => {
     try {

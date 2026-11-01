@@ -1,13 +1,23 @@
 # Epic Games Store — M6b контракт (server/games/epic*)
 
-Статус: **реализовано в ветке `agent/games-m6b`**, live-логин в этом раунде не
-выполнялся (headless, нет пользовательского токена). Все проверки — моки и
-фикстуры (`test/fixtures/games/epic/`). Живой smoke требует браузера
-пользователя: `POST /api/games/epic/auth` → открыть `verificationUriComplete` →
-дождаться `authorized` → `POST /api/games/epic/import`.
+Статус: **M6b + фикс-раунд 01.11.2026 (authorization code)**. Живой smoke требует
+браузера пользователя: `GET /api/games/epic/auth-url` → войти на
+epicgames.com → скопировать `code` со страницы `/id/api/redirect` →
+`POST /api/games/epic/connect { code, owner }` → импорт стартует сам.
 
-Источник фактов — `ИГРЫ-АРХИТЕКТУРА.md` §14 (research 01.11.2026): device-code
-OAuth, `library/api/public/items` (cursor), `playtime/account/{id}/all`
+**Device-code больше не используется.** Живая проверка 01.11.2026 (анонимные
+запросы, без аккаунтов): `launcherAppClient2` (Legendary) → `401
+authentication_failed` (1032); `fortnitePCGameClient` (EpicResearch) → `400
+unsupported_grant_type` (1016, «your client does not have the proper grant_type
+for access»). Это и есть прод-симптом «400 на
+`/account/api/oauth/deviceAuthorization`»: grant закрыт для **всех публичных**
+клиентов (оставлен консолям), а не «неверный заголовок». Хосты
+`account-public-service-prod03` и `…-prod` резолвятся в один и тот же
+weighted-сервис — дрейф хоста тут ни при чём.
+
+Источник фактов — `ИГРЫ-АРХИТЕКТУРА.md` §14 (research 01.11.2026) +
+EpicResearch (device_code.md, auth_clients.md) и Legendary/Heroic:
+`library/api/public/items` (cursor), `playtime/account/{id}/all`
 (**секунды**, без `lastPlayed`), catalog bulk (нужен токен), публичный
 `productmapping` как fallback slug.
 
@@ -31,8 +41,10 @@ Epic — **вторичная библиотека того же владель�
 | Метод | Путь | Body/Query | Ответ |
 |---|---|---|---|
 | GET | `/status?owner=steam-<id64>` | owner или accountId, иначе все аккаунты | статус, `summary`, `hoursBySource`, `ownedBySource`, `libraries[]`, redacted token |
-| POST | `/auth` | `{ owner?, label? }` | `201 { authId, status:'pending', userCode, verificationUri, verificationUriComplete, expiresIn, intervalMs, owner }` |
-| GET | `/auth/:authId` | — | сессия; `pending` опрашивается здесь же (rate-limit по `intervalMs`) |
+| GET | `/auth-url` | — | `{ url, clientSource, instructions }` — официальная страница входа Epic (без сетевого запроса) |
+| POST | `/connect` | `{ code, owner?, label? }` | `{ connected:true, accountId, displayName, owner, authMethod:'authorization_code', importJobId }`; `code` — сам код **или вся ссылка** `/id/api/redirect?code=…` |
+| POST | `/auth` | `{ owner?, label? }` | legacy device-code: теперь ожидаемо `400 epic_device_grant_unavailable` (Epic 1016) |
+| GET | `/auth/:authId` | — | сессия device-code (только для клиентов, которым grant разрешён) |
 | DELETE | `/auth/:authId` | — | отмена |
 | POST | `/import` | `{ accountId?, owner?, force?, label? }` | job (201/200) |
 | POST | `/refresh` | `{ accountId?, owner? }` | job с `force: true` |
@@ -46,7 +58,29 @@ Epic — **вторичная библиотека того же владель�
 
 Ошибки: `epic_not_connected` 400, `epic_auth_expired` 401, `owner_mismatch`
 400, `epic_account_required` 400, `epic_rate_limited` 429,
-`epic_unreachable`/`epic_http_error` 502, `epic_library_empty` 400.
+`epic_unreachable`/`epic_http_error` 502, `epic_library_empty` 400,
+`epic_code_required` 400 (пустой code), `epic_invalid_code` 400 (code
+использован/просрочен — открыть ссылку заново), `epic_client_invalid` 502
+(пара client_id/secret отклонена — это настройка сервера),
+`epic_device_grant_unavailable` 400 (Epic закрыл device-code: используйте
+`/connect`).
+
+### 2.1. Обмен code (как именно)
+
+```http
+POST /account/api/oauth/token HTTP/1.1
+Host: account-public-service-prod03.ol.epicgames.com
+Authorization: basic <base64(client_id:client_secret)>   ← заголовок, НЕ query/body
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code&code=<code>&token_type=eg1
+```
+
+Ответ: `access_token`, `refresh_token`, `account_id`, `displayName`,
+`expires_in`, `refresh_expires_in`. Refresh — тот же эндпоинт с
+`grant_type=refresh_token&refresh_token=…&token_type=eg1`. Значения
+client-пары не логируются и не возвращаются в API (`clientSource`:
+`env`/`file`/`default`).
 
 ## 3. Контракт для интеграции (M6c)
 
@@ -134,13 +168,19 @@ TTL: library/playtime 24 ч, catalog 180 д, productmapping 7 д. Свежест
   снимок, job получает `status: 'deferred'`;
 - 401 → `epic_auth_expired`, токен-файл помечается `lastAuthError`, job
   `failed`, старый снимок цел;
-- device-code: `authorization_pending` → pending, `slow_down` → interval+,
-  `expired`/`invalid_grant` → expired/failed;
+- device-code (legacy): `authorization_pending` → pending, `slow_down` →
+  interval+, `expired`/`invalid_grant` → expired/failed; 1016
+  `unsupported_grant_type` → `epic_device_grant_unavailable`;
+- authorization code: `invalid_client`/`1011` → `epic_client_invalid` (502),
+  остальные 400 → `epic_invalid_code` (400), 403/429 → breaker;
 - хосты дрейфуют: account `prod03` → fallback `prod`; entitlement —
   `entitlement-public-service-prod08` (не `entitlements-…prod06`, тот не
   резолвится); переопределяются env `GAMES_EPIC_*_HOST`;
 - client credentials лаунчера — публичные (Legendary/Heroic), но значения не
-  печатаются; переопределяются `EPIC_CLIENT_ID`/`EPIC_CLIENT_SECRET`.
+  печатаются; порядок: `EPIC_CLIENT_ID`+`EPIC_CLIENT_SECRET` (алиасы
+  `GAMES_EPIC_*`) → `config/epic-client.json` (0600, gitignored,
+  `KINOBOXD_EPIC_CLIENT_FILE` — путь) → встроенная пара. Половина пары в env
+  игнорируется.
 
 ## 6. Фильтры владения
 
@@ -156,8 +196,12 @@ TTL: library/playtime 24 ч, catalog 180 д, productmapping 7 д. Свежест
 
 ## 7. Что не проверено живьём
 
+- фактический обмен **реального** authorization code на боевом аккаунте
+  (анонимно проверены только форма запроса и отказы: client_credentials 200,
+  deviceAuthorization 401/400-1016; сам code требует логина пользователя);
 - фактический ответ `deviceAuthorization`/`device_code` на боевом аккаунте
-  (по EpicResearch/Legendary; в тестах — фейковый сервер);
+  (по EpicResearch/Legendary; в тестах — фейковый сервер) — сейчас недоступен
+  для публичных клиентов;
 - точность `totalTime` и охват сессий (Playnite: секунды);
 - покрытие catalog bulk и `productmapping` (1 283 записи — неполное);
 - поведение entitlement-хоста при ротации (prod08 → другой);
@@ -170,13 +214,18 @@ TTL: library/playtime 24 ч, catalog 180 д, productmapping 7 д. Свежест
 
 - `test/games-epic-token-store.test.js` — 0600/0700, атомарность, симлинки,
   починка mode, redaction;
-- `test/games-epic-client.test.js` — device-code (pending/slow_down/expired/
-  authorized), refresh, 401/429/5xx, cursor-пагинация, секунды→минуты,
-  catalog-чанки, маскировка;
+- `test/games-epic-client.test.js` — authorization code (URL/заголовок basic/
+  форма, `invalid_client` vs `invalid_grant`, code не эхоится, пустой code
+  без запроса), device-code (pending/slow_down/expired/authorized) + 1016,
+  refresh, 401/429/5xx, cursor-пагинация, секунды→минуты, catalog-чанки,
+  маскировка, источник client-пары env→file→default;
 - `test/games-epic-import.test.js` — цепочка, фильтры, deferred/auth_expired,
   reuse/force, owner_mismatch, `hoursBySource` не сливается со Steam;
-- `test/games-epic-auth.test.js` — сессии, 0600-токен, owner binding, expiry;
+- `test/games-epic-auth.test.js` — сессии, 0600-токен, owner binding, expiry,
+  `connectWithCode` (0600, owner, `owner_mismatch`, валидация owner до сети);
 - `test/games-epic-routes.test.js` — HTTP-контракт, redaction, strict query,
-  disconnect со сохранением снимка.
+  disconnect со сохранением снимка, `/auth-url` + `/connect` (code required,
+  unexpected_parameter).
 
-Итог раунда: 734 теста, 732 pass, 2 skip, 0 fail.
+Итог фикс-раунда 01.11.2026: полный `npm test` — **832 теста, 830 pass,
+2 skip, 0 fail** (+11 к базе 821: 7 client, 3 auth, 1 routes).

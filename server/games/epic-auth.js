@@ -106,15 +106,23 @@ function assertOwnerBinding(accountId, ownerKey) {
   }
 }
 
-async function completeAuth(session, tokens) {
-  const accountId = tokens.accountId;
-  assertOwnerBinding(accountId, session.ownerKey);
-  const existing = await tokenStore.getTokens(accountId);
-  await tokenStore.saveTokens({
+async function persistAuth({
+  accountId,
+  tokens,
+  ownerKey,
+  label,
+  authMethod,
+  client,
+  tokenStore: store,
+  autoImport = true,
+}) {
+  assertOwnerBinding(accountId, ownerKey);
+  const existing = await store.getTokens(accountId);
+  await store.saveTokens({
     ...(existing || {}),
     accountId,
     displayName: tokens.displayName || (existing && existing.displayName) || null,
-    ownerKey: session.ownerKey || (existing && existing.ownerKey) || null,
+    ownerKey: ownerKey || (existing && existing.ownerKey) || null,
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken || (existing && existing.refreshToken) || null,
     accessExpiresAt: tokens.accessExpiresAt,
@@ -122,7 +130,7 @@ async function completeAuth(session, tokens) {
     tokenType: tokens.tokenType || (existing && existing.tokenType) || null,
     clientId: tokens.clientId || (existing && existing.clientId) || null,
     deviceAuth: existing && existing.deviceAuth ? existing.deviceAuth : null,
-    authMethod: 'device_code',
+    authMethod,
     lastAuthError: null,
     lastAuthErrorAt: null,
   });
@@ -132,12 +140,48 @@ async function completeAuth(session, tokens) {
     ...(profile || {}),
     accountId,
     displayName: tokens.displayName || (profile && profile.displayName) || null,
-    ownerKey: session.ownerKey || (profile && profile.ownerKey) || null,
-    label: session.label || (profile && profile.label) || null,
-    authMethod: 'device_code',
+    ownerKey: ownerKey || (profile && profile.ownerKey) || null,
+    label: label || (profile && profile.label) || null,
+    authMethod,
     connectedAt: (profile && profile.connectedAt) || new Date().toISOString(),
     disconnectedAt: null,
   });
+
+  // The user just granted access: start the library import automatically so
+  // the «Подключения» card can show counts/hours without a second click.
+  let importJobId = null;
+  let importError = null;
+  if (!autoImport) return { importJobId, importError };
+  try {
+    const job = await importJobs.startImport({
+      accountId,
+      ownerKey,
+      force: true,
+      label,
+      client,
+      tokenStore: store,
+    });
+    importJobId = job && job.jobId ? job.jobId : null;
+  } catch (err) {
+    importError = epic.maskSecrets(err && err.message ? err.message : 'import failed');
+  }
+  return { importJobId, importError };
+}
+
+async function completeAuth(session, tokens) {
+  const accountId = tokens.accountId;
+  const { importJobId, importError } = await persistAuth({
+    accountId,
+    tokens,
+    ownerKey: session.ownerKey,
+    label: session.label,
+    authMethod: 'device_code',
+    client: session.client,
+    tokenStore: session.tokenStore,
+    autoImport: session.autoImport !== false,
+  });
+  session.importJobId = importJobId;
+  session.importError = importError;
 
   session.status = 'authorized';
   session.accountId = accountId;
@@ -149,24 +193,39 @@ async function completeAuth(session, tokens) {
     clearTimeout(session.timer);
     session.timer = null;
   }
+}
 
-  // The user just granted access: start the library import automatically so
-  // the «Подключения» card can show counts/hours without a second click.
-  if (session.autoImport) {
-    try {
-      const job = await importJobs.startImport({
-        accountId,
-        ownerKey: session.ownerKey,
-        force: true,
-        label: session.label,
-        client: session.client,
-        tokenStore: session.tokenStore,
-      });
-      session.importJobId = job && job.jobId ? job.jobId : null;
-    } catch (err) {
-      session.importError = epic.maskSecrets(err && err.message ? err.message : 'import failed');
-    }
-  }
+/**
+ * Authorization-code login (the working flow since Epic closed device-code
+ * for public clients): exchange the pasted one-time `code` for tokens, bind
+ * the account to the same Steam owner and start the import.
+ */
+async function connectWithCode(options = {}) {
+  const ownerKey = normalizeOwnerKey(options.ownerKey);
+  const store = options.tokenStore || tokenStore;
+  const client = options.client || epic.createClient({ tokenStore: store });
+  const tokens = await client.exchangeAuthorizationCode(options.code);
+  const accountId = tokens.accountId;
+  const { importJobId, importError } = await persistAuth({
+    accountId,
+    tokens,
+    ownerKey,
+    label: options.label || null,
+    authMethod: 'authorization_code',
+    client,
+    tokenStore: store,
+    autoImport: options.autoImport !== false,
+  });
+  return {
+    accountId,
+    displayName: tokens.displayName || null,
+    owner: ownerKey,
+    authMethod: 'authorization_code',
+    accessExpiresAt: tokens.accessExpiresAt,
+    refreshExpiresAt: tokens.refreshExpiresAt,
+    importJobId,
+    importError,
+  };
 }
 
 async function pollSession(authId) {
@@ -316,6 +375,8 @@ function _reset() {
 
 module.exports = {
   startDeviceAuth,
+  connectWithCode,
+  persistAuth,
   pollSession,
   getSession,
   cancelSession,

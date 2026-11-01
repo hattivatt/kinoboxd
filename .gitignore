@@ -5,6 +5,7 @@ config/hardcover-token
 config/gbooks-token
 config/steam-token
 config/gog-client.json
+config/epic-client.json
 
 *.token
 .env

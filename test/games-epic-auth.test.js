@@ -236,3 +236,70 @@ test('authorized login kicks the library import automatically', async () => {
   assert.equal(job.totalHours, 10.5);
 });
 
+
+/* ------------------------------------------------------------------ */
+/* Authorization-code connect (primary flow since 01.11.2026)          */
+/* ------------------------------------------------------------------ */
+
+test('connectWithCode stores the token 0600, binds the owner and starts the import', async () => {
+  epicAuth._reset();
+  const calls = [];
+  const client = {
+    async exchangeAuthorizationCode(code) {
+      calls.push(code);
+      return authorizedTokens();
+    },
+  };
+  const result = await epicAuth.connectWithCode({
+    code: 'https://www.epicgames.com/id/api/redirect?code=one-time-code',
+    ownerKey: OWNER,
+    client,
+    autoImport: false,
+  });
+  assert.deepEqual(calls, ['https://www.epicgames.com/id/api/redirect?code=one-time-code']);
+  assert.equal(result.accountId, ACCOUNT);
+  assert.equal(result.owner, OWNER);
+  assert.equal(result.authMethod, 'authorization_code');
+  assert.equal(JSON.stringify(result).includes('eg1~'), false);
+
+  const stored = await tokenStore.getTokens(ACCOUNT);
+  assert.equal(stored.authMethod, 'authorization_code');
+  assert.equal(stored.ownerKey, OWNER);
+  assert.equal(stored.accessToken, 'eg1~auth-access-token');
+  assert.equal(fs.statSync(tokenStore.tokenPath(ACCOUNT)).mode & 0o777, 0o600);
+
+  const profile = epicCache.getEpicProfile(ACCOUNT);
+  assert.equal(profile.ownerKey, OWNER);
+  assert.equal(profile.authMethod, 'authorization_code');
+  assert.equal(profile.disconnectedAt, null);
+});
+
+test('connectWithCode refuses a second owner for the same Epic account', async () => {
+  epicAuth._reset();
+  const client = {
+    async exchangeAuthorizationCode() {
+      return authorizedTokens();
+    },
+  };
+  await epicAuth.connectWithCode({ code: 'code-a', ownerKey: OWNER, client, autoImport: false });
+  await assert.rejects(
+    epicAuth.connectWithCode({ code: 'code-b', ownerKey: OTHER_OWNER, client, autoImport: false }),
+    (err) => err.code === 'owner_mismatch' && err.status === 400
+  );
+});
+
+test('connectWithCode validates the owner token shape before any request', async () => {
+  epicAuth._reset();
+  let requested = false;
+  const client = {
+    async exchangeAuthorizationCode() {
+      requested = true;
+      return authorizedTokens();
+    },
+  };
+  await assert.rejects(
+    epicAuth.connectWithCode({ code: 'code', ownerKey: 'epic-1', client, autoImport: false }),
+    (err) => err.code === 'invalid_owner'
+  );
+  assert.equal(requested, false);
+});
