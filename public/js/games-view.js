@@ -458,13 +458,31 @@ function normalizeFilterBlock(raw) {
   return { requested, applied, reason: text(raw.reason) };
 }
 
+/**
+ * `meta.filters.minHours` (M5-B) is numeric, so it gets its own block:
+ * `requested` is the integer the server understood (-1 all / 0 played only /
+ * N hours), `excluded` counts the canonical works the filter dropped.
+ */
+function normalizeMinHoursFilter(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const requested = numOrNull(raw.requested);
+  if (requested == null) return null;
+  return {
+    requested: Math.trunc(requested),
+    applied: raw.applied == null ? null : Boolean(raw.applied),
+    excluded: toCount(raw.excluded),
+    excludedAppids: toCount(raw.excludedAppids ?? raw.excluded_appids),
+  };
+}
+
 function normalizeFilters(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const out = {
     includeFree: normalizeFilterBlock(raw.includeFree),
     includeDlc: normalizeFilterBlock(raw.includeDlc),
+    minHours: normalizeMinHoursFilter(raw.minHours),
   };
-  return out.includeFree || out.includeDlc ? out : null;
+  return out.includeFree || out.includeDlc || out.minHours ? out : null;
 }
 
 /**
@@ -770,6 +788,15 @@ function normalizeGameIndexEntry(entry, appid) {
     franchise: normalizeFranchiseRef(item.franchise ?? item.collection ?? arr(item.franchises)[0]),
     achievements: normalizeIndexAchievements(item.achievements),
     metadataSources: arr(item.metadataSources).map((source) => text(source)).filter(Boolean),
+    // M5-B editions: identity of the canonical work. Absent on older payloads,
+    // in which case every appid stays its own row (the pre-edition behaviour).
+    canonicalWorkKey: firstString(item.canonicalWorkKey, item.canonical_work_key),
+    primaryAppid: numOrNull(item.primaryAppid ?? item.primary_appid),
+    isPrimary: item.isPrimary == null && item.is_primary == null
+      ? null
+      : Boolean(item.isPrimary ?? item.is_primary),
+    editionCount: toCount(item.editionCount ?? item.edition_count) || 1,
+    canonicalHours: numOrNull(item.canonicalHours ?? item.canonical_hours),
   };
 }
 
@@ -1160,13 +1187,62 @@ export function sortGameRows(rows, sortKey = 'hours') {
 }
 
 /** Every `gamesIndex` entry that matches `predicate`, as normalised rows. */
+/** Case-insensitive union of two name lists (edition merge). */
+function unionNames(left, right) {
+  const out = arr(left).slice();
+  for (const name of arr(right)) {
+    if (!out.some((value) => text(value).toLowerCase() === text(name).toLowerCase())) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * Two store editions of one game are **one canonical work** (M5-B): the same
+ * rules `stats.js` uses for its aggregates, so a drilldown list always matches
+ * the bar it was opened from.
+ *
+ * - the primary edition keeps the face (name/appid/icon → the card opens it);
+ * - `hours` is the canonical total, `hours2w` adds up across editions;
+ * - the release year is the earliest edition's (`workYear` = min) and
+ *   genres/tags are the union (`workGenres`).
+ */
+function mergeEditionRows(previous, row) {
+  const face = row.isPrimary === true && previous.isPrimary !== true ? row : previous;
+  const other = face === previous ? row : previous;
+  const canonical = [previous.canonicalHours, row.canonicalHours].filter((value) => value != null);
+  const hours = canonical.length
+    ? Math.max(...canonical)
+    : (previous.hours || 0) + (row.hours || 0);
+  const years = [previous.releaseYear, row.releaseYear].filter((value) => value != null);
+  const releaseYear = years.length ? Math.min(...years) : null;
+  return {
+    ...face,
+    hours,
+    hours2w: (previous.hours2w || 0) + (row.hours2w || 0),
+    releaseYear,
+    year: releaseYear,
+    genres: unionNames(face.genres, other.genres),
+    tags: unionNames(face.tags, other.tags),
+    editionCount: Math.max(previous.editionCount || 1, row.editionCount || 1),
+    canonicalHours: canonical.length ? hours : face.canonicalHours,
+  };
+}
+
 export function gameRowsFromIndex(gamesIndex, predicate = null) {
   const out = [];
   if (!gamesIndex || typeof gamesIndex !== 'object') return out;
+  // M5-B: group by canonical work first, so every list/drilldown counts one
+  // row per game — the same unit as `summary.gameCount` and the charts.
+  const works = new Map();
   for (const [appid, entry] of Object.entries(gamesIndex)) {
     if (!entry || typeof entry !== 'object') continue;
     const row = normalizeGameIndexEntry(entry, appid);
     if (row.appid == null) continue;
+    const key = row.canonicalWorkKey ? `work:${row.canonicalWorkKey}` : `appid:${row.appid}`;
+    const previous = works.get(key);
+    works.set(key, previous ? mergeEditionRows(previous, row) : row);
+  }
+  for (const row of works.values()) {
     if (predicate && !predicate(row)) continue;
     out.push(row);
   }
@@ -1205,14 +1281,18 @@ export function yearCountSeries(gamesIndex, genre = null) {
   const map = new Map();
   let unknown = 0;
   let unknownHours = 0;
-  for (const entry of Object.values(gamesIndex || {})) {
-    if (!entry || typeof entry !== 'object') continue;
-    if (target) {
-      const genres = arr(entry.genres);
-      if (!genres.some((name) => text(name).toLowerCase() === target)) continue;
-    }
-    const year = numOrNull(entry.releaseYear ?? entry.year);
-    const hours = numOrNull(entry.hours);
+  // Canonical rows (M5-B): one row per work, canonical hours — otherwise the
+  // client recount drifts from the server's `years[]` whenever a game has two
+  // store editions with different release years.
+  const rows = gameRowsFromIndex(
+    gamesIndex,
+    target
+      ? (row) => arr(row.genres).some((name) => text(name).toLowerCase() === target)
+      : null,
+  );
+  for (const row of rows) {
+    const year = row.releaseYear;
+    const hours = row.hours;
     if (year == null || year <= 0) {
       unknown += 1;
       if (hours != null) unknownHours += hours;
@@ -1758,11 +1838,18 @@ export const RECENT_STRIP_WINDOW_DAYS = 30;
  * source; `gamesIndex` is the tolerant fallback (and fills the icon/date for
  * entries the payload trimmed), so an older server that only sends the index
  * still paints an honest strip. `now` is injectable for tests.
+ *
+ * M5-B editions: two store editions of one game (GTA III vs GTA III
+ * re-release, BioShock vs Remastered) are **one canonical work** in every
+ * other widget, so they are one card here too. `canonicalWorkKey` from the
+ * payload/index is the merge key (fallback: appid); 2-week hours add up across
+ * editions, the newest launch wins the card face (its appid/icon).
  */
 export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STRIP_LIMIT, now = Date.now() } = {}) {
   const index = gamesIndex && typeof gamesIndex === 'object' ? gamesIndex : {};
   const max = Math.max(1, toCount(limit) || RECENT_STRIP_LIMIT);
   const cutoff = Math.floor(toNum(now, Date.now()) / 1000) - RECENT_STRIP_WINDOW_DAYS * 86400;
+  /** merge key → { face fields, hours2wByAppid, hoursTotal, fresh, recent } */
   const rows = new Map();
 
   const push = (raw, fallbackEntry) => {
@@ -1771,9 +1858,14 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     const name = firstString(item.name, item.title, entry.name);
     if (!name) return;
     const appid = numOrNull(item.appid ?? entry.appid);
-    const key = appid != null ? String(appid) : `name:${name}`;
+    const workKey = firstString(item.canonicalWorkKey, entry.canonicalWorkKey);
+    const appidKey = appid != null ? `appid:${appid}` : `name:${name}`;
+    // Canonical work first: editions of one game share a card (M5-B).
+    const key = workKey ? `work:${workKey}` : appidKey;
     const hours2w = numOrNull(item.hours2w ?? item.playtime_2weeks ?? entry.hours2w);
-    const hoursTotal = numOrNull(item.hoursTotal ?? item.hours ?? entry.hours);
+    const hoursTotal = numOrNull(
+      item.hoursTotal ?? item.canonicalHours ?? item.hours ?? entry.canonicalHours ?? entry.hours
+    );
     const lastPlayed = item.lastPlayed ?? item.rtime_last_played
       ?? entry.lastPlayed ?? entry.rtime ?? null;
     const rtime = epochSeconds(lastPlayed);
@@ -1781,33 +1873,43 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     const recent = rtime > 0 && rtime >= cutoff;
     // A never-launched game with no 2-week hours has nothing to say here.
     if (!fresh && rtime <= 0) return;
-    const row = {
-      appid,
-      name,
-      hours2w: fresh ? hours2w : 0,
-      hours2wText: fresh ? hoursText(hours2w) : '',
-      hoursTotalText: hoursTotal != null ? hoursText(hoursTotal) : '',
-      rtime,
-      lastPlayedText: shortDayText(rtime),
-      lastPlayedTitle: lastPlayedInfo(lastPlayed).title,
-      iconUrl: firstString(item.iconUrl, item.icon, entry.iconUrl) || '',
-      fresh,
-      // «Недавно» = 2-week hours or a launch inside the window. Older launches
-      // still fill the strip after them (the limit is what keeps it short).
-      recent: fresh || recent,
-    };
+    const iconUrl = firstString(item.iconUrl, item.icon, entry.iconUrl) || '';
     const previous = rows.get(key);
-    // The payload entry wins over the index fallback unless the index knows a
-    // newer launch (a re-import may have moved rtime). The index entry must
-    // not lose the payload's 2-week hours while doing so.
-    if (previous && !row.fresh && previous.fresh) {
-      row.fresh = true;
-      row.hours2w = previous.hours2w;
-      row.hours2wText = previous.hours2wText;
-      row.recent = true;
+    if (!previous) {
+      const hours2wByAppid = new Map();
+      if (fresh) hours2wByAppid.set(appidKey, hours2w);
+      rows.set(key, {
+        appid,
+        name,
+        rtime,
+        lastPlayed,
+        iconUrl,
+        hours2wByAppid,
+        hoursTotal,
+        fresh,
+        // «Недавно» = 2-week hours or a launch inside the window. Older launches
+        // still fill the strip after them (the limit is what keeps it short).
+        recent: fresh || recent,
+      });
+      return;
     }
-    if (!previous || (row.rtime > previous.rtime) || (row.rtime === previous.rtime && row.fresh && !previous.fresh)) {
-      rows.set(key, row);
+    // Same canonical work (or the payload row re-seen in the index): 2-week
+    // hours are additive per edition and never double-count one appid.
+    if (fresh) previous.hours2wByAppid.set(appidKey, hours2w);
+    if (hoursTotal != null) {
+      previous.hoursTotal =
+        previous.hoursTotal == null ? hoursTotal : Math.max(previous.hoursTotal, hoursTotal);
+    }
+    previous.fresh = previous.fresh || fresh;
+    previous.recent = previous.recent || (fresh || recent);
+    // The newest launch wins the card face; an older edition keeps its hours
+    // in the merged row (the payload entry must not lose 2-week hours either).
+    if (rtime > previous.rtime || (rtime === previous.rtime && fresh && !previous.fresh)) {
+      previous.appid = appid;
+      previous.name = name;
+      previous.rtime = rtime;
+      previous.lastPlayed = lastPlayed;
+      if (iconUrl) previous.iconUrl = iconUrl;
     }
   };
 
@@ -1826,19 +1928,35 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     ...all.filter((row) => !row.recent),
   ].slice(0, max);
   const items = ordered
-    .map((row) => ({
-      ...row,
-      caption: row.fresh
-        ? `${row.hours2wText} за 2 недели`
-        : row.lastPlayedText
-        ? `последний раз: ${row.lastPlayedText}`
-        : 'недавняя активность',
-      hint: [
-        row.fresh ? `${row.hours2wText} за 2 недели` : 'за 2 недели часов нет',
-        row.hoursTotalText ? `${row.hoursTotalText} всего` : '',
-        row.lastPlayedText ? `последний запуск ${row.lastPlayedText}` : '',
-      ].filter(Boolean).join(' · '),
-    }));
+    .map((row) => {
+      const hours2w = [...row.hours2wByAppid.values()].reduce((sum, value) => sum + value, 0);
+      const fresh = hours2w > 0;
+      const hours2wText = fresh ? hoursText(hours2w) : '';
+      const hoursTotalText = row.hoursTotal != null ? hoursText(row.hoursTotal) : '';
+      return {
+        appid: row.appid,
+        name: row.name,
+        hours2w,
+        hours2wText,
+        hoursTotalText,
+        rtime: row.rtime,
+        lastPlayedText: shortDayText(row.rtime),
+        lastPlayedTitle: lastPlayedInfo(row.lastPlayed).title,
+        iconUrl: row.iconUrl,
+        fresh,
+        recent: row.recent,
+        caption: fresh
+          ? `${hours2wText} за 2 недели`
+          : row.rtime
+          ? `последний раз: ${shortDayText(row.rtime)}`
+          : 'недавняя активность',
+        hint: [
+          fresh ? `${hours2wText} за 2 недели` : 'за 2 недели часов нет',
+          hoursTotalText ? `${hoursTotalText} всего` : '',
+          row.rtime ? `последний запуск ${shortDayText(row.rtime)}` : '',
+        ].filter(Boolean).join(' · '),
+      };
+    });
 
   const total2w = items.reduce((sum, item) => sum + (item.hours2w || 0), 0);
   return {
@@ -2462,11 +2580,39 @@ export function filtersView(filters, { includeFree = true, includeDlc = false } 
     'includeDlc', 'DLC', includeDlc,
     (requested) => requested === true, 'включить', 'исключены',
   );
+  // M5-B «мин. часов»: numeric, always applied once the payload exists, but
+  // the excluded count is printed so the user sees why the totals moved.
+  const minHoursRaw =
+    block && block.minHours && typeof block.minHours === 'object' ? block.minHours : null;
+  let minHours = null;
+  if (minHoursRaw && minHoursRaw.requested != null) {
+    const requested = Math.trunc(Number(minHoursRaw.requested)) || 0;
+    const excluded = minHoursRaw.excluded || 0;
+    const tail = excluded > 0
+      ? `исключено ${fmtInt(excluded)} ${plural(excluded, GAME_PLURAL)}`
+      : 'ничего не исключено';
+    const valueText = requested < 0
+      ? 'все игры, включая 0 ч'
+      : requested === 0
+      ? 'только с часами'
+      : `≥${fmtInt(requested)} ч`;
+    minHours = {
+      key: 'minHours',
+      label: 'мин. часов',
+      requested,
+      applied: minHoursRaw.applied !== false,
+      excluded,
+      excludedAppids: minHoursRaw.excludedAppids || 0,
+      status: minHoursRaw.applied === false ? 'pending' : 'applied',
+      text: `мин. часов: ${valueText} — ${tail}`,
+    };
+  }
   const honest = free.status === 'pending' || dlc.status === 'pending';
   return {
     includeFree: free,
     includeDlc: dlc,
-    items: [free, dlc],
+    minHours,
+    items: minHours ? [free, dlc, minHours] : [free, dlc],
     // A checkbox may be on/off; `requested` is what the server understood.
     state: { includeFree: free.requested !== false, includeDlc: dlc.requested === true },
     honest,

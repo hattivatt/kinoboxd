@@ -107,6 +107,15 @@ function payload(profileKey) {
       steamKeyConfigured: true,
     },
     hoursHistogram: [{ bucket: '5-20', count: 2 }],
+    // M5-B: the server reports the hours filter it applied (requested vs
+    // excluded) — the UI must read it instead of guessing.
+    meta: {
+      filters: {
+        includeFree: { requested: true, applied: true, excluded: 0, reason: null },
+        includeDlc: { requested: false, applied: true, excluded: 0, reason: null },
+        minHours: { requested: 3, applied: true, excluded: 2, excludedAppids: 2 },
+      },
+    },
     topGames: [{ appid: 203770, name: 'Crusader Kings II', hours: 1054.4, releaseYear: 2012 }],
     // Empty on purpose: the strip must fall back to gamesIndex (tolerant path).
     recentlyPlayed: [],
@@ -215,6 +224,9 @@ test('U5: removed widgets are never looked up, the strip paints and the filter r
   assert.equal(nodeFor('games-filter-hours').value, '3');
   assert.equal(lastStatsQuery().get('minHours'), '3');
   assert.equal(lastStatsQuery().get('profile'), KEY);
+  // meta.filters.minHours is read, not guessed: the note prints the applied
+  // threshold and how many works it dropped.
+  assert.match(textOf(nodeFor('games-filter-note')), /мин\. часов: ≥3 ч — исключено 2 игры/);
 
   // + → 4, persisted for THIS profile only.
   nodeFor('games-filter-hours-plus').click();
@@ -251,4 +263,129 @@ test('U5: removed widgets are never looked up, the strip paints and the filter r
   assert.equal(query.get('minHours'), '7');
   assert.equal(query.get('includeFree'), '0');
   assert.equal(query.get('includeDlc'), '1');
+});
+
+/* =========================================================
+   U5 × M5-B: the contract the two parallel rounds share
+   ========================================================= */
+
+test('U5×M5-B: filtersView reads meta.filters.minHours (requested / excluded)', async () => {
+  const { filtersView } = await import('../public/js/games-view.js');
+
+  const all = filtersView({
+    includeFree: { requested: true, applied: true },
+    includeDlc: { requested: false, applied: true },
+    minHours: { requested: -1, applied: true, excluded: 0, excludedAppids: 0 },
+  });
+  assert.equal(all.minHours.status, 'applied');
+  assert.equal(all.minHours.text, 'мин. часов: все игры, включая 0 ч — ничего не исключено');
+  assert.equal(all.items.length, 3);
+
+  const played = filtersView({ minHours: { requested: 0, applied: true, excluded: 110, excludedAppids: 110 } });
+  assert.equal(played.minHours.text, 'мин. часов: только с часами — исключено 110 игр');
+
+  const three = filtersView({ minHours: { requested: 3, applied: true, excluded: 2 } });
+  assert.equal(three.minHours.text, 'мин. часов: ≥3 ч — исключено 2 игры');
+  assert.equal(three.items.length, 3);
+
+  // An older server without the block: no invented line, the checkboxes keep
+  // their own honest requested-vs-applied state.
+  const legacy = filtersView({ includeFree: { requested: false, applied: false, reason: 'details_not_imported' } });
+  assert.equal(legacy.minHours, null);
+  assert.equal(legacy.items.length, 2);
+  assert.equal(legacy.honest, true);
+});
+
+test('U5×M5-B: the strip shows one card per canonical work, not per edition', async () => {
+  const { recentStripView } = await import('../public/js/games-view.js');
+  const now = Date.UTC(2026, 10, 1);
+  // Darksiders (2013) + Warmastered Edition (2017) are one canonical work in
+  // M5-B stats; the strip must not paint the same game twice.
+  const index = {
+    937: {
+      appid: 937, name: 'Darksiders', hours: 15.6, hours2w: 0, rtime: 1360224000,
+      canonicalWorkKey: 'steam:50620', primaryAppid: 937, isPrimary: true,
+      canonicalHours: 21, editionCount: 2,
+    },
+    462780: {
+      appid: 462780, name: 'Darksiders Warmastered Edition', hours: 5.4, hours2w: 1.2, rtime: 1512248250,
+      canonicalWorkKey: 'steam:50620', primaryAppid: 937, isPrimary: false,
+      canonicalHours: 21, editionCount: 2,
+    },
+  };
+  const view = recentStripView([], index, { now });
+  assert.equal(view.items.length, 1, 'одна работа — одна карточка');
+  // The newest launch wins the card face (its appid opens the right card)…
+  assert.equal(view.items[0].appid, 462780);
+  assert.equal(view.items[0].name, 'Darksiders Warmastered Edition');
+  // …2-week hours add up across editions, the total is the canonical one.
+  assert.equal(view.items[0].hours2w, 1.2);
+  assert.equal(view.items[0].caption, '1,2 ч за 2 недели');
+  assert.equal(view.items[0].hoursTotalText, '21,0 ч');
+
+  // The payload's canonical recentlyPlayed row and the per-edition index rows
+  // land in the same card: hours never double-count one appid.
+  const merged = recentStripView(
+    [{
+      appid: 937, name: 'Darksiders', hours2w: 0, hoursTotal: 21, lastPlayed: '2013-02-07T00:00:00.000Z',
+      canonicalWorkKey: 'steam:50620', editionCount: 2,
+    }],
+    index,
+    { now },
+  );
+  assert.equal(merged.items.length, 1);
+  assert.equal(merged.items[0].appid, 462780);
+  assert.equal(merged.items[0].hours2w, 1.2);
+  assert.equal(merged.items[0].hoursTotalText, '21,0 ч');
+});
+
+test('U5×M5-B: index drilldowns count canonical works (editions merged)', async () => {
+  const {
+    gameRowsFromIndex, allGames, yearCountSeries, gamesInYear, gamesByGenre,
+  } = await import('../public/js/games-view.js');
+
+  // BioShock (2007) + BioShock Remastered (2016) are one work: the primary
+  // edition is the face, the year is the earliest one (stats.js `workYear`
+  // takes the min), genres are the union (`workGenres`), hours are canonical.
+  const index = {
+    7670: {
+      appid: 7670, name: 'BioShock', hours: 0.5, hours2w: 0, releaseYear: 2007,
+      genres: ['Action'], tags: ['Atmospheric'], type: 'game',
+      canonicalWorkKey: 'steam:7670', primaryAppid: 409710, isPrimary: false,
+      editionCount: 2, canonicalHours: 2.6,
+    },
+    409710: {
+      appid: 409710, name: 'BioShock Remastered', hours: 2.1, hours2w: 0.3, releaseYear: 2016,
+      genres: ['Action', 'RPG'], tags: ['Story Rich'], type: 'game',
+      canonicalWorkKey: 'steam:7670', primaryAppid: 409710, isPrimary: true,
+      editionCount: 2, canonicalHours: 2.6,
+    },
+    550: {
+      appid: 550, name: 'Left 4 Dead 2', hours: 5, hours2w: 0, releaseYear: 2009,
+      genres: ['Action'], tags: [], type: 'game',
+      canonicalWorkKey: 'wd:Q472909', primaryAppid: 550, isPrimary: true,
+      editionCount: 1, canonicalHours: 5,
+    },
+  };
+
+  const rows = allGames(index);
+  assert.equal(rows.length, 2, 'две работы — две строки, не три издания');
+  const work = rows.find((row) => row.name === 'BioShock Remastered');
+  assert.equal(work.appid, 409710, 'лицо работы — primary-издание (карточка откроется по нему)');
+  assert.equal(work.hours, 2.6, 'часы работы канонические, а не одного издания');
+  assert.equal(work.hours2w, 0.3);
+  assert.equal(work.releaseYear, 2007, 'год работы — самый ранний (min по изданиям)');
+  assert.deepEqual(work.genres.sort(), ['Action', 'RPG'], 'жанры — объединение изданий');
+  assert.deepEqual(work.tags.sort(), ['Atmospheric', 'Story Rich']);
+  assert.equal(work.editionCount, 2);
+  assert.equal(gameRowsFromIndex(index).length, 2);
+
+  // The charts' client recount agrees with what the server would send.
+  const series = yearCountSeries(index);
+  assert.deepEqual(series.series.map((item) => [item.year, item.count]), [[2007, 1], [2009, 1]]);
+  assert.equal(series.total, 2);
+  assert.equal(series.unknown, 0);
+  assert.equal(gamesInYear(index, 2007).length, 1);
+  assert.equal(gamesInYear(index, 2016).length, 0, 'работа не считается дважды по году издания');
+  assert.equal(gamesByGenre(index, 'RPG').length, 1, 'жанр второго издания виден работе');
 });
