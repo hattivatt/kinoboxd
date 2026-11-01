@@ -37,6 +37,7 @@ const GOG_ERROR_STATUS = {
   gog_unreachable: 502,
   gog_http_error: 502,
   unknown_profile: 400,
+  steam_profile_required: 400,
   owner_required: 400,
   owner_mismatch: 400,
   gog_already_connected: 400,

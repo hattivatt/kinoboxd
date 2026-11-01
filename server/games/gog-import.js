@@ -126,7 +126,14 @@ function resolveOwner(ownerProfile, { userKey, existing }) {
   if (existing && existing.ownerProfile) return existing.ownerProfile;
   const profiles = gameCache.listProfiles();
   if (profiles.length === 1) return profiles[0].key;
-  if (profiles.length === 0) return null;
+  if (profiles.length === 0) {
+    throw new gog.GogError(
+      'Сначала импортируйте Steam-профиль: GOG — вторая библиотека того же владельца, ' +
+        'без владельца её не к чему привязать.',
+      'steam_profile_required',
+      { status: 400 }
+    );
+  }
   throw new gog.GogError(
     'Профилей Steam несколько: укажите "profile" (steam-<steamid64>), к какому владельцу привязать GOG.',
     'owner_required',
@@ -164,6 +171,14 @@ async function connect({ code, ownerProfile, profile, client }) {
 
   const existing = gogCache.getToken(userKey);
   const owner = resolveOwner(ownerProfile != null ? ownerProfile : profile, { userKey, existing });
+  if (existing && existing.ownerProfile && existing.ownerProfile !== owner) {
+    throw new gog.GogError(
+      `GOG-аккаунт ${userKey} уже привязан к профилю ${existing.ownerProfile}. ` +
+        'Чужой аккаунт нельзя перевесить на другого владельца: отключите его сначала.',
+      'owner_mismatch',
+      { status: 400 }
+    );
+  }
   assertOwnerFree(owner, userKey);
 
   const nowIso = new Date().toISOString();

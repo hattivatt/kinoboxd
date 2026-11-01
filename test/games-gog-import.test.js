@@ -166,6 +166,13 @@ test('GOG connect + import', async (t) => {
     );
   });
 
+  await t.test('a GOG account cannot be moved to another owner (owner_mismatch)', async () => {
+    await assert.rejects(
+      () => gogImport.connect({ code: 'ok', profile: 'steam-76561198000000002', client: fakeApi() }),
+      (err) => err.code === 'owner_mismatch'
+    );
+  });
+
   await t.test('import writes the library and playtime; movies get no sessions request', async () => {
     const api = fakeApi();
     const job = gogImport.startImport({ account: `gog-${USER_KEY}`, client: api, force: true, budget: 200 });
