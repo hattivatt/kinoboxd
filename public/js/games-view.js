@@ -28,6 +28,12 @@ const MONTHS_SHORT_RU = [
 ];
 
 const GAME_PLURAL = ['игра', 'игры', 'игр'];
+// M6c: secondary works are «работы», not Steam games — the union library is
+// wider than the journal, and the UI must not pretend every row is a Steam
+// game. Kept local so the existing GAME_PLURAL wording stays untouched.
+const SECONDARY_WORK_PLURAL = ['работа', 'работы', 'работ'];
+const SECONDARY_SOURCE_ORDER = ['steam', 'gog', 'epic'];
+const SECONDARY_SOURCE_LABELS = { steam: 'Steam', gog: 'GOG', epic: 'Epic' };
 
 /* =========================================================
    primitive coercion
@@ -812,6 +818,334 @@ function normalizeGameIndexEntry(entry, appid) {
   };
 }
 
+/* =========================================================
+   M6c: secondary (non-Steam) works
+   ========================================================= */
+
+function normalizeSourceKey(value) {
+  const key = text(value).toLowerCase();
+  if (key === 'steam' || key === 'gog' || key === 'epic') return key;
+  return '';
+}
+
+/** Protocol-relative GOG URLs (`//images.gog.com/…`) become https. */
+function normalizeHttpUrl(value) {
+  const raw = text(value);
+  if (!raw) return '';
+  if (raw.startsWith('//')) return `https:${raw}`;
+  return /^https?:\/\//i.test(raw) ? raw : '';
+}
+
+/** The four leading digits of an ISO date / year-ish string, else null. */
+function yearFromDate(value) {
+  const match = /(^|[^\d])(\d{4})([^\d]|$)/.exec(text(value));
+  if (!match) return null;
+  const year = Number(match[2]);
+  return Number.isFinite(year) && year > 0 ? year : null;
+}
+
+/**
+ * One `hoursBySource` value in **hours**. The M6a/M6c contract stores minutes
+ * there (GOG `time_sum`, Epic `totalMinutes`, Steam `playtime_forever`), but a
+ * newer backend may send an object (`{ minutes }` / `{ hours }`) or an explicit
+ * `hours` field. All spellings are accepted without inventing a number.
+ */
+function sourceHours(value) {
+  if (value == null) return null;
+  if (typeof value === 'object') {
+    const hours = numOrNull(value.hours ?? value.hoursTotal ?? value.playtimeHours);
+    if (hours != null) return hours;
+    const minutes = numOrNull(value.minutes ?? value.totalMinutes ?? value.playtime_forever);
+    return minutes != null ? minutes / 60 : null;
+  }
+  const minutes = numOrNull(value);
+  return minutes != null ? minutes / 60 : null;
+}
+
+function secondaryHoursBySource(entry, gog, epic) {
+  const raw = entry.hoursBySource && typeof entry.hoursBySource === 'object'
+    ? entry.hoursBySource
+    : {};
+  // A future contract may move hours into `entry.hours` (hours, not minutes).
+  const direct = entry.hours && typeof entry.hours === 'object' ? entry.hours : null;
+  const directHours = numOrNull(entry.hours);
+  const out = {};
+  for (const source of SECONDARY_SOURCE_ORDER) {
+    const value = direct && direct[source] != null ? direct[source] : raw[source];
+    let hours = sourceHours(value);
+    if (hours == null && directHours != null && source === normalizeSourceKey(entry.source)) {
+      hours = directHours;
+    }
+    out[source] = hours;
+  }
+  // GOG's library row is the historical source of the poster; keep the block
+  // shape so callers can still read `work.gog`.
+  if (out.gog == null && gog && gog.hours != null) out.gog = numOrNull(gog.hours);
+  if (out.epic == null && epic && epic.hours != null) out.epic = numOrNull(epic.hours);
+  return out;
+}
+
+/**
+ * Normalise one `secondaryWorks[]` entry (GOG work or Epic game).
+ *
+ * The list is deliberately independent from `gamesIndex`: these rows are not
+ * Steam games, they have no appid and no `/api/games/game/:appid` card. The
+ * view model therefore carries everything the client-side card needs.
+ */
+export function normalizeSecondaryWork(entry, context = {}) {
+  if (!entry || typeof entry !== 'object') return null;
+  const gog = entry.gog && typeof entry.gog === 'object' ? entry.gog : {};
+  const epic = entry.epic && typeof entry.epic === 'object' ? entry.epic : {};
+  const storeIds = entry.storeIds && typeof entry.storeIds === 'object' ? entry.storeIds : {};
+  const gogId = firstString(storeIds.gog, gog.gogGameId, gog.gogProductId);
+  const epicId = firstString(storeIds.epic, epic.catalogItemId);
+  const explicitSource = normalizeSourceKey(entry.source);
+  const sources = [];
+  for (const value of [...arr(entry.sources), ...arr(entry.ownedOn)]) {
+    const key = normalizeSourceKey(value);
+    if (key && !sources.includes(key)) sources.push(key);
+  }
+  if (!sources.length && explicitSource) sources.push(explicitSource);
+  if (!sources.length && gogId) sources.push('gog');
+  if (!sources.length && epicId) sources.push('epic');
+  if (!sources.length && storeIds.steam) sources.push('steam');
+  sources.sort((left, right) => {
+    const li = SECONDARY_SOURCE_ORDER.indexOf(left);
+    const ri = SECONDARY_SOURCE_ORDER.indexOf(right);
+    return (li < 0 ? 99 : li) - (ri < 0 ? 99 : ri);
+  });
+  const source = explicitSource || sources.find((key) => key !== 'steam') || sources[0] || '';
+  const name = firstString(entry.name, gog.title, epic.name, epic.title, entry.title);
+  if (!name) return null;
+  const hoursBySource = secondaryHoursBySource(entry, gog, epic);
+  const hoursKnownFlag = boolOrNull(
+    entry.hoursKnown ?? entry.playtimeKnown
+    ?? gog.playtimeKnown ?? epic.playtimeKnown
+  );
+  const knownHours = SECONDARY_SOURCE_ORDER
+    .map((key) => hoursBySource[key])
+    .filter((value) => value != null);
+  let hoursKnown = hoursKnownFlag == null ? knownHours.length > 0 : hoursKnownFlag;
+  // The server's playtime snapshot is the only honest way to tell «never
+  // launched» (0) from «playtime not fetched yet» (also 0). `playtimeFetchedAt`
+  // is present but null while the GOG/Epic playtime snapshot is missing.
+  if (hoursKnownFlag == null) {
+    const sourceZero = (key) => hoursBySource[key] == null || hoursBySource[key] === 0;
+    if (sources.includes('gog') && context.gogPlaytimeKnown === false && sourceZero('gog')) {
+      hoursKnown = false;
+    }
+    if (sources.includes('epic') && context.epicPlaytimeKnown === false && sourceZero('epic')) {
+      hoursKnown = false;
+    }
+  }
+  let hours = null;
+  let hoursSource = '';
+  for (const key of SECONDARY_SOURCE_ORDER) {
+    const value = hoursBySource[key];
+    if (value == null) continue;
+    if (hours == null || value > hours) {
+      hours = value;
+      hoursSource = key;
+    }
+  }
+  const hoursParts = SECONDARY_SOURCE_ORDER
+    .filter((key) => hoursKnown && hoursBySource[key] != null)
+    .map((key) => ({
+      source: key,
+      label: SECONDARY_SOURCE_LABELS[key] || key,
+      hours: hoursBySource[key],
+      hoursText: hoursText(hoursBySource[key]),
+    }));
+  const hoursTextValue = hoursParts.length === 1
+    ? hoursParts[0].hoursText
+    : hoursParts.map((part) => `${part.label} ${part.hoursText}`).join(' · ');
+  const image = normalizeHttpUrl(
+    entry.verticalCoverUrl || entry.coverUrl || entry.image
+    || gog.verticalCoverUrl || gog.coverUrl || gog.image
+    || epic.verticalCoverUrl || epic.coverUrl || epic.image
+  );
+  const coverUrl = normalizeHttpUrl(entry.verticalCoverUrl || entry.coverUrl) || image;
+  const releaseYear = numOrNull(entry.releaseYear ?? entry.year)
+    ?? yearFromDate(entry.releaseDate)
+    ?? yearFromDate(gog.releaseDate)
+    ?? yearFromDate(epic.releaseDate);
+  const genres = normalizeGenres(entry.genres ?? epic.genres ?? gog.genres);
+  const slug = firstString(entry.slug, gog.slug, epic.slug);
+  const gogSlug = firstString(gog.slug, entry.slug);
+  const epicSlug = firstString(epic.slug, entry.slug);
+  const storeLinks = [];
+  if (gogSlug && (sources.includes('gog') || source === 'gog')) {
+    storeLinks.push({ source: 'gog', label: 'GOG', href: `https://www.gog.com/game/${gogSlug}` });
+  }
+  if (epicSlug && (sources.includes('epic') || source === 'epic')) {
+    storeLinks.push({ source: 'epic', label: 'Epic Games Store', href: `https://store.epicgames.com/p/${epicSlug}` });
+  }
+  return {
+    workKey: text(entry.workKey) || null,
+    key: text(entry.workKey) || (gogId ? `gog:${gogId}` : epicId ? `epic:${epicId}` : name),
+    source,
+    sources,
+    sourceLabels: sources.map((key) => SECONDARY_SOURCE_LABELS[key] || key),
+    sourceChips: sources.map((key) => ({
+      source: key,
+      label: SECONDARY_SOURCE_LABELS[key] || key,
+    })),
+    name,
+    gogGameId: gogId,
+    epicId,
+    slug: slug || null,
+    image: image || null,
+    coverUrl: coverUrl || null,
+    releaseDate: text(entry.releaseDate) || text(gog.releaseDate) || text(epic.releaseDate) || null,
+    releaseYear: releaseYear != null ? Math.round(releaseYear) : null,
+    genres,
+    hoursBySource,
+    hoursKnown,
+    hours,
+    hoursSource,
+    hoursParts,
+    hoursText: hoursTextValue,
+    hoursUnknown: !hoursKnown || hours == null,
+    notPlayed: hoursKnown && hours === 0,
+    storeLinks,
+    // Backward-compatible flat aliases used by the old «Источники» chips.
+    gog,
+    epic,
+  };
+}
+
+function asSecondaryWork(work) {
+  if (!work || typeof work !== 'object') return null;
+  if (work.sourceLabels && work.hoursBySource && work.name) return work;
+  return normalizeSecondaryWork(work);
+}
+
+/**
+ * «Вне Steam» list view: every secondary work, sorted by its own hours (desc;
+ * unknown/zero hours last) and capped by `limit` (15 by default — the same
+ * «Показать все» pattern as the genre chart). `minHours` never reaches this
+ * list: a GOG work whose playtime is not resolved yet must stay visible with
+ * the «часы не получены» note instead of disappearing.
+ */
+export function secondaryWorksView(works, { limit = 15 } = {}) {
+  const rows = arr(works).map(asSecondaryWork).filter(Boolean);
+  const sortHours = (row) => (row.hoursUnknown ? -1 : (row.hours != null ? row.hours : -1));
+  const sorted = rows.slice().sort((left, right) => {
+    const leftHours = sortHours(left);
+    const rightHours = sortHours(right);
+    if (leftHours !== rightHours) return rightHours - leftHours;
+    return String(left.name || '').localeCompare(String(right.name || ''));
+  });
+  const total = sorted.length;
+  const cap = numOrNull(limit);
+  const visible = cap != null && cap > 0 ? sorted.slice(0, cap) : sorted;
+  const unknownHours = sorted.filter((row) => row.hoursUnknown).length;
+  const unplayed = sorted.filter((row) => row.notPlayed).length;
+  const parts = [`${fmtInt(total)} ${plural(total, SECONDARY_WORK_PLURAL)} вне Steam`];
+  if (unknownHours > 0) parts.push(`без часов: ${fmtInt(unknownHours)}`);
+  if (unplayed > 0) parts.push(`не запускали: ${fmtInt(unplayed)}`);
+  return {
+    rows: sorted,
+    visible,
+    total,
+    totalText: fmtInt(total),
+    hidden: Math.max(0, total - visible.length),
+    unknownHours,
+    unplayed,
+    note: total ? parts.join(' · ') : '',
+  };
+}
+
+/**
+ * Client-side card for a secondary work. No network: Steam has no card for a
+ * GOG/Epic-only game, and inventing one would be a lie. Every source gets its
+ * own hours row, never a combined total.
+ */
+export function secondaryWorkCardView(work) {
+  const row = asSecondaryWork(work);
+  if (!row) return null;
+  const hourRows = SECONDARY_SOURCE_ORDER.map((source) => {
+    const present = row.sources.includes(source) || row.hoursBySource[source] != null;
+    const hours = row.hoursBySource[source];
+    const known = row.hoursKnown !== false;
+    let status = '';
+    if (!present) status = 'нет в библиотеке';
+    else if (!known || hours == null) status = 'часы не получены';
+    else if (hours === 0) status = 'не запущена';
+    return {
+      source,
+      label: SECONDARY_SOURCE_LABELS[source] || source,
+      present,
+      hours: known ? hours : null,
+      hoursText: known && hours != null ? hoursText(hours) : '',
+      status,
+    };
+  });
+  return {
+    ...row,
+    hourRows,
+    hasKnownHours: hourRows.some((item) => item.hours != null),
+    title: row.name,
+    subtitle: [
+      row.releaseYear ? String(row.releaseYear) : '',
+      row.hoursText,
+    ].filter(Boolean).join(' · '),
+    note: 'Игра есть только вне Steam: карточка Steam Store, достижения и кредиты для неё не запрашиваются. '
+      + 'Данные взяты из объединённой модели источников.',
+  };
+}
+
+/**
+ * Whether the chart buckets (`genres` / `years` / `decades`) include
+ * secondary-only works. The M6c backend contract is additive; until it lands,
+ * this returns `{ included: false }` and the widgets simply do not claim
+ * anything. Both a summary flag and per-bucket counters are accepted.
+ */
+export function secondaryChartStatus(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const summary = p.summary && typeof p.summary === 'object' ? p.summary : {};
+  const charts = summary.charts && typeof summary.charts === 'object' ? summary.charts : {};
+  const meta = p.meta && typeof p.meta === 'object' ? p.meta : {};
+  const explicit = boolOrNull(
+    summary.chartsIncludeSecondary
+    ?? summary.includeSecondaryInCharts
+    ?? charts.includeSecondary
+    ?? charts.includesSecondary
+    ?? meta.chartsIncludeSecondary
+    ?? p.chartsIncludeSecondary
+  );
+  let bucketFlag = false;
+  for (const key of ['genres', 'years', 'decades']) {
+    for (const item of arr(p[key])) {
+      if (!item || typeof item !== 'object') continue;
+      if (item.includesSecondary === true || item.secondary === true) bucketFlag = true;
+      const count = numOrNull(
+        item.secondaryCount ?? item.secondaryOnlyCount
+        ?? item.secondaryWorks ?? item.secondary
+      );
+      if (count != null && count > 0) bucketFlag = true;
+    }
+  }
+  const count = numOrNull(
+    summary.secondaryWorksInCharts
+    ?? summary.secondaryChartsWorks
+    ?? summary.secondaryChartWorks
+    ?? charts.secondaryWorks
+    ?? charts.count
+  );
+  const included = (explicit === true && (count == null || count > 0))
+    || bucketFlag
+    || (count != null && count > 0);
+  if (!included) return { included: false, count: null, text: '' };
+  return {
+    included: true,
+    count: count != null ? count : null,
+    text: count != null
+      ? `включая вне Steam: ${fmtInt(count)}`
+      : 'включая работы вне Steam',
+  };
+}
+
 function normalizeStudios(raw) {
   return arr(raw)
     .map((item) => {
@@ -1109,6 +1443,18 @@ export function normalizeGamesPayload(raw) {
   const streaks = normalizeStreaks(source.streaks, achievementDays);
   const filters = normalizeFilters(source.meta && source.meta.filters)
     || normalizeFilters(summaryRaw.filters);
+  // `playtimeFetchedAt` is present-but-null when a secondary library was
+  // imported without its playtime snapshot; that is what lets 0 h mean
+  // «часы не получены» instead of a confident «не запущена».
+  const playtimeFlag = (block) => {
+    if (!block || typeof block !== 'object') return null;
+    if (!Object.prototype.hasOwnProperty.call(block, 'playtimeFetchedAt')) return null;
+    return Boolean(block.playtimeFetchedAt);
+  };
+  const secondaryContext = {
+    gogPlaytimeKnown: playtimeFlag(sourcesBlock.gog),
+    epicPlaytimeKnown: playtimeFlag(sourcesBlock.epic),
+  };
 
   return {
     profile,
@@ -1137,33 +1483,11 @@ export function normalizeGamesPayload(raw) {
     // stay empty for a Steam-only payload, so existing widgets are unchanged.
     sources: sourcesBlock,
     secondaryWorks: arr(source.secondaryWorks)
-      .map((entry) => {
-        if (!entry || typeof entry !== 'object') return null;
-        const gog = entry.gog && typeof entry.gog === 'object' ? entry.gog : {};
-        const epic = entry.epic && typeof entry.epic === 'object' ? entry.epic : {};
-        const storeIds = entry.storeIds && typeof entry.storeIds === 'object' ? entry.storeIds : {};
-        const bySource = entry.hoursBySource && typeof entry.hoursBySource === 'object'
-          ? entry.hoursBySource
-          : {};
-        // GOG hours come in minutes; Epic hours are already minutes too
-        // (`totalMinutes` in the read model). One entry = one store.
-        const minutes = bySource.gog != null ? bySource.gog : bySource.epic;
-        const hours = minutes != null ? numOrNull(minutes) / 60 : null;
-        const kind = text(entry.source)
-          || (storeIds.gog || gog.gogGameId ? 'gog' : storeIds.epic || epic.catalogItemId ? 'epic' : '');
-        return {
-          workKey: text(entry.workKey),
-          source: kind,
-          name: text(entry.name) || text(gog.title) || text(epic.name) || '—',
-          gogGameId: text(storeIds.gog) || text(gog.gogGameId),
-          epicId: text(storeIds.epic) || text(epic.catalogItemId),
-          slug: text(gog.slug) || text(epic.slug) || null,
-          image: text(gog.image) || text(epic.image) || null,
-          releaseDate: text(gog.releaseDate) || null,
-          hours,
-        };
-      })
-      .filter((entry) => entry && entry.name),
+      .map((entry) => normalizeSecondaryWork(entry, secondaryContext))
+      .filter(Boolean),
+    // Whether the server counted secondary-only works in genres/years/decades.
+    // The raw buckets are read here because normalisation drops unknown flags.
+    secondaryChart: secondaryChartStatus(source),
     has: {
       profile: Boolean(profile),
       games: gameCount > 0 || ownedCount > 0,
@@ -3450,11 +3774,28 @@ export function gogSourcesView(payload) {
         ? `снимок от ${formatDateRu(epicFetchedAt)} — подключите Epic заново`
         : 'снимок — подключите Epic заново')
     : gogStatusText(epicStatus, epicFetchedAt);
-  const secondaryWorks = arr(p.secondaryWorks);
+  const secondaryWorks = arr(p.secondaryWorks).map(asSecondaryWork).filter(Boolean);
   const secondaryOnly =
     toCount(summary.secondaryWorksTotal)
     || toCount(summary.secondaryOnlyWorks)
     || secondaryWorks.length;
+  // `summary.worksTotal` is the union over `workKey`; when a backend has not
+  // sent it yet, the honest fallback is Steam works + secondary-only works
+  // (overlapping GOG/Epic rows are already excluded from `secondaryOnly`).
+  const steamWorks = numOrNull(summary.gameCount);
+  const worksTotal = numOrNull(summary.worksTotal)
+    ?? (steamWorks != null ? steamWorks + secondaryOnly : null);
+  // `normalizeGamesPayload` keeps the raw chart flags on the top-level
+  // `secondaryChart`; a raw `/stats` payload is read directly.
+  const secondaryChart = p.secondaryChart && typeof p.secondaryChart === 'object'
+    ? p.secondaryChart
+    : secondaryChartStatus(p);
+  // Per-source hours for the compact «Вне Steam» summary line. They are never
+  // added together: GOG and Epic are separate libraries.
+  const secondaryHours = [
+    { source: 'gog', label: 'GOG', hours: numOrNull(hoursBySource.gog) },
+    { source: 'epic', label: 'Epic', hours: numOrNull(hoursBySource.epic) },
+  ].filter((row) => row.hours != null);
 
   const rows = [
     {
@@ -3505,6 +3846,12 @@ export function gogSourcesView(payload) {
     epicStatusText,
     secondaryOnly,
     secondaryWorks,
-    worksTotal: numOrNull(summary.worksTotal),
+    secondaryHours,
+    secondaryChart,
+    worksTotal,
+    unionText: worksTotal != null
+      ? `${fmtInt(worksTotal)} ${plural(worksTotal, SECONDARY_WORK_PLURAL)} в объединённой библиотеке`
+        + (secondaryOnly > 0 ? ` (включая вне Steam: ${fmtInt(secondaryOnly)})` : '')
+      : '',
   };
 }
