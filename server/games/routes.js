@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * `/api/games/*` router (M1). Mounted under the existing auth gate in
+ * `/api/games/*` router (M1 import/achievements + M2 enrich). Mounted under the existing auth gate in
  * server/index.js, exactly like `/api/books`.
  *
  *   GET  /api/games/profiles
@@ -9,6 +9,9 @@
  *   POST /api/games/import/steam      { steamid64 | vanityUrl, label?, force? }
  *   GET  /api/games/import/:jobId
  *   GET  /api/games/import/status?id=…
+ *   POST /api/games/enrich            { profile, force?, recheckDays? }
+ *   GET  /api/games/enrich/:jobId
+ *   GET  /api/games/enrich/status?id=…
  *   GET  /api/games/stats?profile=steam-<steamid64>&includeFree=0|1&includeDlc=0|1
  *   GET  /api/games/achievements?profile=…&appid=…&refresh=0|1
  *   GET  /api/games/game/:appid?profile=…
@@ -22,9 +25,17 @@ const express = require('express');
 const { HttpError } = require('../upload');
 const config = require('../config');
 const steam = require('./steam');
+const store = require('./store');
 const gameCache = require('./game-cache');
 const importJobs = require('./import');
-const { buildGamesStatsFromCache, profileSummary, minutesToHours } = require('./stats');
+const enrichJobs = require('./enrich');
+const {
+  buildGamesStatsFromCache,
+  profileSummary,
+  minutesToHours,
+  genreNamesOf,
+  categoryNamesOf,
+} = require('./stats');
 
 const STEAM_ERROR_STATUS = {
   invalid_steamid: 400,
@@ -39,15 +50,24 @@ const STEAM_ERROR_STATUS = {
   steam_forbidden: 502,
   steam_http_error: 502,
   steam_invalid_url: 400,
+  store_rate_limited: 429,
+  store_unreachable: 502,
+  store_http_error: 502,
+  store_invalid_appid: 400,
 };
 
 function mapError(err) {
   if (err instanceof HttpError) return err;
-  if (err instanceof steam.SteamError) {
+  if (err instanceof steam.SteamError || err instanceof store.StoreError) {
     const status = STEAM_ERROR_STATUS[err.code] || 502;
     const mapped = new HttpError(status, err.message, err.code);
     if (err.retryAt) mapped.retryAt = err.retryAt;
     return mapped;
+  }
+  // Job starters throw plain errors with an explicit HTTP status
+  // (`invalid_profile`/`unknown_profile` from the enrich job).
+  if (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600) {
+    return new HttpError(err.status, err.message, err.code || 'games_error');
   }
   return err;
 }
@@ -131,6 +151,7 @@ function keyInfo() {
 function createRouter(deps = {}) {
   const client = deps.client || steam.createClient();
   const importer = deps.importer || importJobs;
+  const storeClient = deps.storeClient || null;
   const router = express.Router();
 
   /* ------------------------- profiles ------------------------- */
@@ -239,6 +260,68 @@ function createRouter(deps = {}) {
     try {
       const status = importer.getStatus(req.params.jobId);
       if (!status) throw new HttpError(404, 'Unknown import job id.', 'unknown_job');
+      res.status(200).json(status);
+    } catch (err) {
+      next(mapError(err));
+    }
+  });
+
+  /* --------------------------- enrich ------------------------- */
+
+  /**
+   * `POST /api/games/enrich` — fetch Steam Store details for the library of
+   * one profile. Body: `{ profile, force?, recheckDays? }` (query fallback for
+   * curl). Resumable: the cache is the progress; `force` re-fetches all.
+   */
+  router.post('/enrich', (req, res, next) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const requested = body.profile != null ? body.profile : req.query.profile;
+      const scope = resolveProfileOrThrow(requested);
+      const force = parseForce(body.force != null ? body.force : req.query.force);
+      let recheckDays;
+      const rawRecheck = body.recheckDays != null ? body.recheckDays : req.query.recheckDays;
+      if (rawRecheck != null && String(rawRecheck).trim() !== '') {
+        const value = Number(rawRecheck);
+        if (!Number.isFinite(value) || value < 0) {
+          throw new HttpError(
+            400,
+            'Parameter "recheckDays" must be a non-negative number of days.',
+            'invalid_recheckDays'
+          );
+        }
+        recheckDays = value;
+      }
+      const job = enrichJobs.startEnrich(scope.parsed.key, {
+        force,
+        recheckDays,
+        client: storeClient || undefined,
+      });
+      const created = job.status === 'running' && job.stage === 'queued';
+      res.status(created ? 202 : 200).json(job);
+    } catch (err) {
+      next(mapError(err));
+    }
+  });
+
+  router.get('/enrich/status', (req, res, next) => {
+    try {
+      const id = req.query.id;
+      if (id == null || String(id).trim() === '') {
+        throw new HttpError(400, 'Query parameter "id" is required.', 'job_id_required');
+      }
+      const status = enrichJobs.getStatus(String(id).trim());
+      if (!status) throw new HttpError(404, 'Unknown enrich job id.', 'unknown_job');
+      res.status(200).json(status);
+    } catch (err) {
+      next(mapError(err));
+    }
+  });
+
+  router.get('/enrich/:jobId', (req, res, next) => {
+    try {
+      const status = enrichJobs.getStatus(req.params.jobId);
+      if (!status) throw new HttpError(404, 'Unknown enrich job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
       next(mapError(err));
@@ -375,6 +458,33 @@ function createRouter(deps = {}) {
           'game_not_in_library'
         );
       }
+      const detailsDoc = gameCache.getDetails(appid);
+      const details =
+        detailsDoc && detailsDoc.success
+          ? {
+              type: detailsDoc.type || null,
+              name: detailsDoc.name || null,
+              isFree: typeof detailsDoc.is_free === 'boolean' ? detailsDoc.is_free : null,
+              developers: detailsDoc.developers || [],
+              publishers: detailsDoc.publishers || [],
+              genres: genreNamesOf(detailsDoc),
+              categories: categoryNamesOf(detailsDoc),
+              releaseDate: (detailsDoc.release_date && detailsDoc.release_date.date) || null,
+              releaseYear: detailsDoc.releaseYear == null ? null : detailsDoc.releaseYear,
+              releasePrecision: detailsDoc.releasePrecision || null,
+              earlyAccess: Boolean(detailsDoc.earlyAccess),
+              metacritic:
+                detailsDoc.metacritic && detailsDoc.metacritic.score != null
+                  ? detailsDoc.metacritic.score
+                  : null,
+              dlc: Array.isArray(detailsDoc.dlc) ? detailsDoc.dlc : [],
+              dlcCount: detailsDoc.dlcCount == null ? null : detailsDoc.dlcCount,
+              platforms: detailsDoc.platforms || null,
+              screenshots: Array.isArray(detailsDoc.screenshots) ? detailsDoc.screenshots : [],
+              fetchedAt: detailsDoc.fetchedAt || null,
+              metadataSource: detailsDoc.metadataSource || 'steam-store',
+            }
+          : null;
       const cached = gameCache.getAchievements(scope.parsed.userKey, appid);
       const achievements = cached
         ? {
@@ -407,8 +517,9 @@ function createRouter(deps = {}) {
           ? `https://media.steampowered.com/steamcommunity/public/images/apps/${appid}/${game.img_icon_url}.jpg`
           : null,
         achievements,
-        // M2/M3: store appdetails, personnel and external links.
-        details: null,
+        // M2: store appdetails (null until the enrich job has fetched it).
+        details,
+        // M3: personnel and external links.
         personnel: null,
         links: {
           steam: `https://store.steampowered.com/app/${appid}`,
@@ -416,7 +527,13 @@ function createRouter(deps = {}) {
         },
         meta: {
           achievementsCached: Boolean(cached),
-          pending: ['details', 'personnel', 'links.wikidata', 'links.igdb'],
+          detailsCached: Boolean(details),
+          pending: [
+            ...(details ? [] : ['details']),
+            'personnel',
+            'links.wikidata',
+            'links.igdb',
+          ],
         },
       });
     } catch (err) {
