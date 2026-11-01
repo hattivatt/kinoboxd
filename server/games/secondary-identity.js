@@ -181,6 +181,25 @@ function chunk(list, size) {
 }
 
 /**
+ * Raw slugs, de-duplicated by their normalised form: `the-witcher-3-wild-hunt`
+ * (Epic) and `the_witcher_3_wild_hunt` (GOG) are the same key but different
+ * literals, and Wikidata stores each store's own spelling.
+ */
+function uniqueSlugs(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    const raw = String(value == null ? '' : value).trim();
+    if (!raw) continue;
+    const key = normalizeSlug(raw);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(raw);
+  }
+  return out;
+}
+
+/**
  * Resolve GOG/Epic slugs to Wikidata items and Steam appids, merging into the
  * cached document.
  *
@@ -189,25 +208,28 @@ function chunk(list, size) {
  * @returns {Promise<{entries, queries, resolved, cached, skipped, errors}>}
  */
 async function fetchSecondaryLinks(input = {}, options = {}) {
-  const gogSlugs = [...new Set((input.gogSlugs || []).map(normalizeSlug).filter(Boolean))];
-  const epicSlugs = [...new Set((input.epicSlugs || []).map(normalizeSlug).filter(Boolean))];
+  // The **raw** slug is what Wikidata stores (`P6278 the-witcher-3-wild-hunt`,
+  // `P2725 game/the_witcher_3_wild_hunt`); the normalised form is only the
+  // cache key, because the two stores spell the same game differently.
+  const rawGog = uniqueSlugs(input.gogSlugs);
+  const rawEpic = uniqueSlugs(input.epicSlugs);
   const cached = readCache();
   const cachedEntries = cached && cached.entries && typeof cached.entries === 'object'
     ? cached.entries
     : {};
   const fresh = cached && gameCache.isFresh(cached, options.ttlMs || ttlMs());
-  const known = (store, slug) => Boolean(cachedEntries[`${store}:${slug}`]);
+  const known = (store, slug) => Boolean(cachedEntries[`${store}:${normalizeSlug(slug)}`]);
   const pendingGog = fresh && options.force !== true
-    ? gogSlugs.filter((slug) => !known('gog', slug))
-    : gogSlugs;
+    ? rawGog.filter((slug) => !known('gog', slug))
+    : rawGog;
   const pendingEpic = fresh && options.force !== true
-    ? epicSlugs.filter((slug) => !known('epic', slug))
-    : epicSlugs;
+    ? rawEpic.filter((slug) => !known('epic', slug))
+    : rawEpic;
   const result = {
     entries: { ...cachedEntries },
     queries: 0,
     resolved: 0,
-    cached: gogSlugs.length + epicSlugs.length - pendingGog.length - pendingEpic.length,
+    cached: rawGog.length + rawEpic.length - pendingGog.length - pendingEpic.length,
     skipped: null,
     errors: [],
   };
@@ -251,14 +273,18 @@ async function fetchSecondaryLinks(input = {}, options = {}) {
     const parsed = parseBridgeResponse(data);
     // A slug the query did not answer is a real miss for the cached document.
     for (const slug of batch.gogSlugs) {
-      const key = `gog:${slug}`;
+      const key = `gog:${normalizeSlug(slug)}`;
       if (parsed[key]) result.entries[key] = parsed[key];
-      else if (!result.entries[key]) result.entries[key] = { qid: null, appid: null, store: 'gog' };
+      else if (!result.entries[key]) {
+        result.entries[key] = { qid: null, appid: null, store: 'gog', slug };
+      }
     }
     for (const slug of batch.epicSlugs) {
-      const key = `epic:${slug}`;
+      const key = `epic:${normalizeSlug(slug)}`;
       if (parsed[key]) result.entries[key] = parsed[key];
-      else if (!result.entries[key]) result.entries[key] = { qid: null, appid: null, store: 'epic' };
+      else if (!result.entries[key]) {
+        result.entries[key] = { qid: null, appid: null, store: 'epic', slug };
+      }
     }
     result.resolved += Object.values(parsed).filter((entry) => entry.qid).length;
   }
@@ -267,7 +293,7 @@ async function fetchSecondaryLinks(input = {}, options = {}) {
   // keeps the previous `fetchedAt` so the next run retries.
   if (!result.skipped || result.resolved > 0) {
     writeCache(result.entries, {
-      stats: { gogSlugs: gogSlugs.length, epicSlugs: epicSlugs.length, queries: result.queries },
+      stats: { gogSlugs: rawGog.length, epicSlugs: rawEpic.length, queries: result.queries },
     });
   }
   return result;
@@ -275,16 +301,8 @@ async function fetchSecondaryLinks(input = {}, options = {}) {
 
 /** Slugs of the GOG products / Epic games that still need an identity. */
 function collectSlugs({ gogProducts = [], epicGames = [] } = {}) {
-  const gogSlugs = [];
-  for (const product of gogProducts) {
-    const slug = normalizeSlug(product && product.slug);
-    if (slug && !gogSlugs.includes(slug)) gogSlugs.push(slug);
-  }
-  const epicSlugs = [];
-  for (const game of epicGames) {
-    const slug = normalizeSlug(game && game.slug);
-    if (slug && !epicSlugs.includes(slug)) epicSlugs.push(slug);
-  }
+  const gogSlugs = uniqueSlugs(gogProducts.map((product) => product && product.slug));
+  const epicSlugs = uniqueSlugs(epicGames.map((game) => game && game.slug));
   return { gogSlugs, epicSlugs };
 }
 

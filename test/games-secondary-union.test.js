@@ -138,7 +138,7 @@ test('secondary union', async (t) => {
     assert.equal(only.hoursStatus.epic, 'unknown');
   });
 
-  await t.test('collectSlugs normalises both stores and drops duplicates', () => {
+  await t.test('collectSlugs keeps the store spelling, de-dupes by normal form', () => {
     const { gogSlugs, epicSlugs } = collectSlugs({
       gogProducts: [
         { slug: 'the_witcher_3_wild_hunt' },
@@ -147,8 +147,10 @@ test('secondary union', async (t) => {
       ],
       epicGames: [{ slug: 'the-witcher-3-wild-hunt' }, { slug: 'Control' }],
     });
+    // GOG and Epic spell the same game differently; Wikidata stores each
+    // literal, so the raw slug is what goes into the query.
     assert.deepEqual(gogSlugs, ['the_witcher_3_wild_hunt']);
-    assert.deepEqual(epicSlugs, ['the_witcher_3_wild_hunt', 'control']);
+    assert.deepEqual(epicSlugs, ['the-witcher-3-wild-hunt', 'Control']);
   });
 
   await t.test('bridge query uses the P2725 `game/` form and a UNION of both stores', () => {

@@ -104,6 +104,7 @@ test('secondary identity bridge', async (t) => {
       qid: null,
       appid: null,
       store: 'gog',
+      slug: 'no_such_game',
     });
   });
 
@@ -143,6 +144,24 @@ test('secondary identity bridge', async (t) => {
     });
     assert.equal(report.queries, 2);
     assert.equal(fetchImpl.calls.length, 2);
+  });
+
+  await t.test('the query uses the raw Epic slug (dashes), the cache key does not', async () => {
+    // Live shape (verified 01.11.2026): P6278 is `the-witcher-3-wild-hunt`
+    // while P2725 is `game/the_witcher_3_wild_hunt`. Sending the normalised
+    // `the_witcher_3_wild_hunt` to P6278 matches nothing — the 0-hit bug this
+    // test pins.
+    const fetchImpl = fakeFetch((url, init) => {
+      assert.match(String(init.body), /the-witcher-3-wild-hunt/);
+      assert.equal(String(init.body).includes('"the_witcher_3_wild_hunt"'), false);
+      return jsonResponse(RESPONSE);
+    });
+    const report = await identity.fetchSecondaryLinks(
+      { gogSlugs: ['the_witcher_3_wild_hunt'], epicSlugs: ['the-witcher-3-wild-hunt'] },
+      { fetchImpl, force: true }
+    );
+    // One cache key per store, both normalised for lookup.
+    assert.equal(report.entries['epic:the_witcher_3_wild_hunt'].appid, '292030');
   });
 
   await t.test('refreshForJob is skipped for an injected client and for a disabled pass', async () => {
