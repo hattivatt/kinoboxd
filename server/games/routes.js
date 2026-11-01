@@ -29,6 +29,7 @@ const store = require('./store');
 const gameCache = require('./game-cache');
 const importJobs = require('./import');
 const enrichJobs = require('./enrich');
+const { personnelForGame } = require('./personnel/personnel');
 const {
   buildGamesStatsFromCache,
   profileSummary,
@@ -503,6 +504,8 @@ function createRouter(deps = {}) {
             }
           : null;
       const cached = gameCache.getAchievements(scope.parsed.userKey, appid);
+      // M3: cached credits for this appid (no network, no fabrication).
+      const personnel = personnelForGame(appid);
       const achievements = cached
         ? {
             unlocked: cached.unlockedCount,
@@ -536,8 +539,10 @@ function createRouter(deps = {}) {
         achievements,
         // M2: store appdetails (null until the enrich job has fetched it).
         details,
-        // M3: personnel and external links.
-        personnel: null,
+        // M3: credits for this game from cache-games/personnel/<appid>.json
+        // (studios from details + Wikidata/Moby, people, honest `pending`).
+        // Never a network call — the personnel job fills the cache.
+        personnel: personnelForGame(appid),
         links: {
           steam: `https://store.steampowered.com/app/${appid}`,
           steamdb: `https://steamdb.info/app/${appid}/`,
@@ -545,11 +550,19 @@ function createRouter(deps = {}) {
         meta: {
           achievementsCached: Boolean(cached),
           detailsCached: Boolean(details),
+          personnelCached: Boolean(personnel && personnel.coverage),
           pending: [
-            ...(details ? [] : ['details']),
-            'personnel',
-            'links.wikidata',
-            'links.igdb',
+            ...new Set([
+              ...(details ? [] : ['details']),
+              // `personnelForGame` already says whether details/credits are
+              // missing for this appid, so the card never claims a full
+              // payload it does not have (and never lists what is present).
+              ...(personnel && Array.isArray(personnel.pending)
+                ? personnel.pending
+                : ['personnel']),
+              'links.wikidata',
+              'links.igdb',
+            ]),
           ],
         },
       });

@@ -179,6 +179,14 @@ test('import → stats → achievements over HTTP', async (t) => {
   assert.equal(card.achievements.unlocked, 3);
   assert.equal(card.details, null);
   assert.match(card.links.steam, /store\.steampowered\.com\/app\/620/);
+  // M3 (API.md «что появится после интеграции»): the card reads cached
+  // credits instead of the M1 `null`, and `pending` is honest about them.
+  assert.ok(card.personnel, 'card.personnel must not be null');
+  assert.deepEqual(card.personnel.studios, []);
+  assert.deepEqual(card.personnel.people, []);
+  assert.ok(card.personnel.pending.includes('credits'));
+  assert.ok(!card.meta.pending.includes('personnel'));
+  assert.equal(card.meta.personnelCached, false);
 
   /* cached achievements survive a cache read after the import */
   assert.ok(gameCache.getAchievements(ID, 620));
