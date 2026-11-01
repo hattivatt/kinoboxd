@@ -69,6 +69,11 @@
 const gameCache = require('./game-cache');
 const gogCache = require('./gog-cache');
 const { buildSecondaryUnion } = require('./secondary-union');
+const {
+  readDetailsIndex,
+  enrichUnionWithDetails,
+  runningFor: secondaryDetailsRunning,
+} = require('./secondary-details');
 const { readSecondaryLinks } = require('./secondary-identity');
 const { buildEpicLayerSync, epicSourceBlock } = require('./epic-layer');
 const franchise = require('./franchise');
@@ -526,6 +531,18 @@ function buildGamesStats(input = {}) {
     links: linkDocs,
     secondaryLinks: input.secondaryLinks,
   });
+  // M6d: store metadata (genres/year/vertical poster) of secondary-only works.
+  // The index is read from the cache by `buildGamesStatsFromCache`; the pure
+  // builder stays pure (no disk read) and only applies what it was given.
+  const secondaryDetailsIndex =
+    input.secondaryDetails && typeof input.secondaryDetails === 'object'
+      ? input.secondaryDetails
+      : {};
+  enrichUnionWithDetails(union, secondaryDetailsIndex);
+  const secondaryDetailTotal = union.works.filter(
+    (entry) => (entry.gog && entry.gog.gogGameId) || (entry.epic && entry.epic.slug)
+  ).length;
+  const secondaryDetailResolved = union.works.filter((entry) => entry.secondaryDetails).length;
   // Legacy alias: the GOG block below and the per-appid annotations read the
   // same union object (it exposes `byAppid`/`secondaryWorks`/`summary`).
   // Annotate Steam rows with cross-store fields only when a secondary library
@@ -1876,7 +1893,17 @@ function buildGamesStats(input = {}) {
       matchedBy: entry.matchedBy,
       confidence: entry.confidence,
       releaseYear: entry.releaseYear == null ? null : entry.releaseYear,
+      releaseYearSource: entry.releaseYearSource || null,
       releaseDate: entry.releaseDate || null,
+      // M6d: vertical poster from the store product page (GOG box art,
+      // Epic CMS portrait). `null` when the detail is not cached yet — the UI
+      // falls back to the horizontal `gog.image`/`epic.image`.
+      verticalCover: entry.verticalCover || null,
+      image:
+        entry.image ||
+        (entry.gog && entry.gog.image) ||
+        (entry.epic && entry.epic.image) ||
+        null,
       genres: [...entry.genres],
       developers: [...entry.developers],
       publishers: [...entry.publishers],
@@ -1913,6 +1940,18 @@ function buildGamesStats(input = {}) {
     ).length,
     meta: {
       buildMs: Number(elapsedMs.toFixed(1)),
+      // M6d: how many secondary works already have store metadata cached
+      // (genres/year/poster) and whether the details job is running right now.
+      // `total` counts works with a store id; `resolved` those with a detail
+      // document — never a percentage of an empty set.
+      secondaryDetails: {
+        resolved: secondaryDetailResolved,
+        total: secondaryDetailTotal,
+        running:
+          input.secondaryDetailsRunning === true
+            ? true
+            : secondaryDetailsRunning(profileKey),
+      },
       libraryFingerprint: library.fingerprint || null,
       libraryFetchedAt: library.fetchedAt || null,
       libraryStale: !gameCache.isFresh(library, gameCache.libraryTtlMs()),
@@ -2088,6 +2127,24 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
       });
     }
   }
+  // M6d: store metadata of the secondary works (public GOG/Epic product pages,
+  // cached 30 days). Collected from the same snapshots the union will read, so
+  // the index never asks for a product that is not in the library.
+  const epicLayerView = buildEpicLayerSync({ ownerKey: profileKey });
+  const detailGogIds = [];
+  for (const snapshot of gogSnapshots) {
+    for (const product of (snapshot.library && snapshot.library.products) || []) {
+      if (product && product.gogGameId) detailGogIds.push(String(product.gogGameId));
+    }
+  }
+  const detailEpicSlugs = [];
+  for (const game of (epicLayerView && epicLayerView.games) || []) {
+    if (game && game.slug) detailEpicSlugs.push(game.slug);
+  }
+  const secondaryDetailsIndex = readDetailsIndex({
+    gogIds: detailGogIds,
+    epicSlugs: detailEpicSlugs,
+  });
   return buildGamesStats({
     steamId64: parsed.userKey,
     profile,
@@ -2115,7 +2172,10 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     // polled; it reads only the redacted token summary, never a token value.
     // `null` when no Epic account is bound — `sources.epic` then reports
     // `not_connected` and `hoursBySource.epic` stays `null` (not 0).
-    epic: buildEpicLayerSync({ ownerKey: profileKey }),
+    epic: epicLayerView,
+    // M6d: cached store metadata for secondary-only works (genres/year/poster).
+    secondaryDetails: secondaryDetailsIndex,
+    secondaryDetailsRunning: secondaryDetailsRunning(profileKey),
     // M5-B: canonical works (one game per owner-visible title).
     editions: editionDoc,
     includeFree: options.includeFree !== false,

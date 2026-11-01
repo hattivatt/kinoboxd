@@ -62,6 +62,32 @@ function genreNames(value) {
   return out;
 }
 
+/**
+ * GOG's library snapshot carries `tags[]` as slugs (`role-playing`,
+ * `open-world`). They are the store's own tag list, so they are a legitimate
+ * **fallback** genre source when the product page (`secondary-details.js`) is
+ * not cached yet. The canonical genre line from the product page replaces them
+ * once it arrives (`genresSource` tracks which one is in use).
+ */
+function prettifyTagSlug(value) {
+  const text = String(value == null ? '' : value).trim();
+  if (!text) return null;
+  return text
+    // GOG keeps hyphens in its display names (`Role-playing`), so only
+    // underscores are turned into spaces here.
+    .replace(/_+/g, ' ')
+    .replace(/^\s+|\s+$/g, '')
+    .replace(/^./, (char) => char.toUpperCase());
+}
+
+function genreNamesFromTags(tags) {
+  return genreNames(
+    (Array.isArray(tags) ? tags : []).map((tag) =>
+      typeof tag === 'string' ? prettifyTagSlug(tag) : tag
+    )
+  );
+}
+
 function stringList(value) {
   const list = Array.isArray(value) ? value : value == null ? [] : [value];
   return list
@@ -166,7 +192,11 @@ function buildSecondaryUnion({
       matchedBy: 'steam',
       confidence: 'single',
       releaseYear: null,
+      releaseYearSource: null,
+      verticalCover: null,
+      image: null,
       genres: [],
+      genresSource: null,
       developers: [],
       publishers: [],
       metadataSources: ['steam-store'],
@@ -201,7 +231,11 @@ function buildSecondaryUnion({
       matchedBy: 'none',
       confidence: 'single',
       releaseYear: null,
+      releaseYearSource: null,
+      verticalCover: null,
+      image: null,
       genres: [],
+      genresSource: null,
       developers: [],
       publishers: [],
       metadataSources: [],
@@ -276,8 +310,19 @@ function buildSecondaryUnion({
       entry.matchedBy = 'none';
       entry.confidence = 'single';
     }
-    if (entry.releaseYear == null) entry.releaseYear = yearOfDate(product.releaseDate);
+    if (entry.releaseYear == null) {
+      entry.releaseYear = yearOfDate(product.releaseDate);
+      // A snapshot date is the **store listing** date, not the original
+      // release: `secondary-details.js` may replace it with the product's
+      // `globalReleaseDate` once that cache exists (M6d).
+      if (entry.releaseYear != null) entry.releaseYearSource = 'gog-library';
+    }
     if (!entry.genres.length) entry.genres = genreNames(product.genres);
+    if (!entry.genres.length && Array.isArray(product.tags) && product.tags.length) {
+      // Fallback until the product page answers: the library's own tag slugs.
+      entry.genres = genreNamesFromTags(product.tags);
+      if (entry.genres.length) entry.genresSource = 'gog-library';
+    }
     if (!entry.developers.length) entry.developers = stringList(product.developers);
     if (!entry.publishers.length) entry.publishers = stringList(product.publishers);
     if (!entry.metadataSources.includes('gog-catalog')) entry.metadataSources.push('gog-catalog');
@@ -341,7 +386,10 @@ function buildSecondaryUnion({
       entry.matchedBy = 'none';
       entry.confidence = 'single';
     }
-    if (entry.releaseYear == null) entry.releaseYear = yearOfDate(game.releaseDate);
+    if (entry.releaseYear == null) {
+      entry.releaseYear = yearOfDate(game.releaseDate);
+      if (entry.releaseYear != null) entry.releaseYearSource = 'epic-library';
+    }
     if (!entry.genres.length) entry.genres = genreNames(game.genres);
     if (!entry.developers.length && game.developer) entry.developers = [String(game.developer)];
     if (!entry.publishers.length && game.publisher) entry.publishers = [String(game.publisher)];

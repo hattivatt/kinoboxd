@@ -1,0 +1,113 @@
+{
+  "_links": {
+    "self": {
+      "href": "https://api.gog.com/v2/games/1207658924?locale=en-US"
+    },
+    "store": {
+      "href": "https://www.gog.com/en/game/the_witcher"
+    },
+    "boxArtImage": {
+      "href": "https://images.gog-statics.com/32385c2c39b8715a9ccfb159ed481b55503b96526b00866f75a4af48461615a5.jpg"
+    },
+    "backgroundImage": {
+      "href": "https://images.gog-statics.com/c73009d18e964448b9704ad9d69a7c68bab5f8a10df410254bb511f2f9198a3a.jpg"
+    },
+    "logo": {
+      "href": "https://images.gog-statics.com/def9381ff2a8047fc343f023e3f976a65818f81381e616ac04094595cb1893a0.png"
+    }
+  },
+  "_embedded": {
+    "product": {
+      "id": 1207658924,
+      "title": "The Witcher: Enhanced Edition",
+      "category": "GAME",
+      "globalReleaseDate": "2007-10-26T00:00:00+02:00",
+      "gogReleaseDate": "2011-05-09T23:00:00+02:00",
+      "isInstallable": true
+    },
+    "tags": [
+      {
+        "id": 57,
+        "name": "Role-playing",
+        "level": 1,
+        "slug": "rpg"
+      },
+      {
+        "id": 64,
+        "name": "Action",
+        "level": 2,
+        "slug": "action"
+      },
+      {
+        "id": 71,
+        "name": "Fantasy",
+        "level": 3,
+        "slug": "fantasy"
+      }
+    ],
+    "properties": [
+      {
+        "name": "Action",
+        "slug": "action"
+      },
+      {
+        "name": "Fantasy",
+        "slug": "fantasy"
+      },
+      {
+        "name": "Story Rich",
+        "slug": "story-rich"
+      },
+      {
+        "name": "Atmospheric",
+        "slug": "atmospheric"
+      },
+      {
+        "name": "Role-playing",
+        "slug": "role-playing"
+      },
+      {
+        "name": "Classic",
+        "slug": "classic"
+      },
+      {
+        "name": "Great Soundtrack",
+        "slug": "great-soundtrack"
+      },
+      {
+        "name": "Choices Matter",
+        "slug": "choices-matter"
+      }
+    ],
+    "developers": [
+      {
+        "name": "CD PROJEKT RED",
+        "searchIndex": "cd-projekt-red"
+      }
+    ],
+    "publishers": [
+      {
+        "name": "CD PROJEKT RED",
+        "searchIndex": "cd-projekt-red"
+      }
+    ],
+    "series": {
+      "id": 71,
+      "name": "The Witcher"
+    },
+    "supportedOperatingSystems": [
+      {
+        "operatingSystem": {
+          "name": "windows",
+          "versions": "Windows"
+        }
+      },
+      {
+        "operatingSystem": {
+          "name": "osx",
+          "versions": "Mac OS X"
+        }
+      }
+    ]
+  }
+}

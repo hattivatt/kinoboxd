@@ -1,0 +1,106 @@
+{
+  "_links": {
+    "self": {
+      "href": "https://api.gog.com/v2/games/1207658787?locale=en-US"
+    },
+    "store": {
+      "href": "https://www.gog.com/en/game/heroes_of_might_and_magic_3_complete_edition"
+    },
+    "boxArtImage": {
+      "href": "https://images.gog-statics.com/869b56a1048405d97f48358ea537af2c08c9d8cd508f8e4a82883bf8eafad361.jpg"
+    },
+    "backgroundImage": {
+      "href": "https://images.gog-statics.com/cd47dd7a5938c4db4f9cd161746a362ec72c07a0f9bd253d423ad5af5f87a988.jpg"
+    },
+    "logo": {
+      "href": "https://images.gog-statics.com/6d04ac88628e9622eb4859e0cabfdc891d41de7922d3422edf0d75356f04fe90.png"
+    }
+  },
+  "_embedded": {
+    "product": {
+      "id": 1207658787,
+      "title": "Heroes of Might and Magic® 3: Complete",
+      "category": "GAME",
+      "globalReleaseDate": "1999-06-01T00:00:00+02:00",
+      "isInstallable": true
+    },
+    "tags": [
+      {
+        "id": 56,
+        "name": "Strategy",
+        "level": 1,
+        "slug": "strategy"
+      },
+      {
+        "id": 63,
+        "name": "Turn-based",
+        "level": 2,
+        "slug": "turnbased"
+      },
+      {
+        "id": 71,
+        "name": "Fantasy",
+        "level": 3,
+        "slug": "fantasy"
+      }
+    ],
+    "properties": [
+      {
+        "name": "Fantasy",
+        "slug": "fantasy"
+      },
+      {
+        "name": "Atmospheric",
+        "slug": "atmospheric"
+      },
+      {
+        "name": "Strategy",
+        "slug": "strategy"
+      },
+      {
+        "name": "Turn-Based",
+        "slug": "turn-based"
+      },
+      {
+        "name": "Classic",
+        "slug": "classic"
+      },
+      {
+        "name": "Great Soundtrack",
+        "slug": "great-soundtrack"
+      },
+      {
+        "name": "Tactical",
+        "slug": "tactical"
+      },
+      {
+        "name": "Management",
+        "slug": "management"
+      }
+    ],
+    "developers": [
+      {
+        "name": "New World Computing, Inc.",
+        "searchIndex": "new-world-computing-inc"
+      }
+    ],
+    "publishers": [
+      {
+        "name": "Ubisoft",
+        "searchIndex": "ubisoft"
+      }
+    ],
+    "series": {
+      "id": 42,
+      "name": "Heroes of Might & Magic"
+    },
+    "supportedOperatingSystems": [
+      {
+        "operatingSystem": {
+          "name": "windows",
+          "versions": "Windows"
+        }
+      }
+    ]
+  }
+}
