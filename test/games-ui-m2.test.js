@@ -138,7 +138,11 @@ test('games.js requests personnel and keeps the games URL addressable', () => {
   assert.match(games, /getGamesPersonnel/);
   // `developer` is the split role; an older server that only knows `studio`
   // is retried inside fetchPersonnel instead of blanking the widget.
-  assert.match(games, /getGamesPersonnel\(\{ profile: state\.profileKey, role \}\)/);
+  assert.match(games, /getGamesPersonnel\(\{ profile: profileKey, role \}\)/);
+  // P2: the profile is captured when the request starts, so an answer that
+  // arrives after a switch cannot paint another owner's credits.
+  assert.match(games, /const requestProfile = state\.profileKey;/);
+  assert.match(games, /const sameOwner = \(\) => state\.profileKey === requestProfile;/);
   assert.match(games, /role: 'studio'/);
   assert.match(games, /error\.code === 'invalid_role'/);
   assert.match(games, /writeViewParam\('personnel'\)/);
