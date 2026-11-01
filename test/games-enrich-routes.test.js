@@ -151,8 +151,11 @@ test('import → enrich → stats with applied filters and details on the card',
   assert.equal(enriched.detailsResolved, 10);
   assert.equal(storeClient.calls.length, 10);
 
-  /* stats after enrich: real filters + M2 buckets */
-  const stats = await (await fetch(`${base}/api/games/stats?profile=${PROFILE_KEY}`)).json();
+  /* stats after enrich: real filters + M2 buckets (minHours=-1 keeps the
+     two 0-hour backlog rows so the enrich coverage numbers stay comparable) */
+  const stats = await (
+    await fetch(`${base}/api/games/stats?profile=${PROFILE_KEY}&minHours=-1`)
+  ).json();
   assert.equal(stats.summary.gameCount, 10);
   assert.equal(stats.summary.gameCountEstimated, false);
   assert.equal(stats.meta.filters.includeDlc.applied, true);

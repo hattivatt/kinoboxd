@@ -231,6 +231,12 @@ test('gamesIndex carries the full details entry; top/backlog are enriched', () =
     rtime: 0,
     lastPlayed: null,
     iconUrl: null,
+    // M5-B (additive): edition identity; `hours` above stays this row's own.
+    canonicalWorkKey: 'steam:1001',
+    primaryAppid: 1001,
+    isPrimary: true,
+    editionCount: 1,
+    canonicalHours: 100,
     type: 'game',
     year: 2015,
     releaseYear: 2015,

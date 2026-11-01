@@ -20,6 +20,7 @@
  *     reviews/<appid>.json                appreviews summary (M4, global)
  *     achievements/<steamid64>/<appid>.json  player achievements (unlockTimestamp)
  *     global/<appid>.json                 global achievement percentages
+ *     editions.json                       canonical edition index (M5-B, profiles keyed)
  *     state/games-breaker.json            host breakers (30 min) — see §10.1
  *     state/enrich-state.json             details enrich progress/journal (resume)
  *     state/spy-state.json                SteamSpy phase progress/journal

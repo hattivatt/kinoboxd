@@ -111,16 +111,41 @@ test('import → stats → achievements over HTTP', async (t) => {
   const stats = await statsResponse.json();
   assert.equal(stats.sources.selected.length, 1);
   assert.equal(stats.sources.profile.key, PROFILE_KEY);
+  // M5-B: the endpoint defaults to minHours=0 → only played works.
   assert.equal(stats.summary.ownedCount, 10);
+  assert.equal(stats.summary.gameCount, 8);
   assert.equal(stats.summary.playedCount, 8);
-  assert.equal(stats.summary.unplayedCount, 2);
+  assert.equal(stats.summary.unplayedCount, 0);
   assert.equal(stats.summary.totalHours, 616.2);
   assert.equal(stats.summary.recent2wHours, 1.8);
   assert.equal(stats.summary.lastPlayedAt, '2026-10-29T17:34:11.000Z');
   assert.equal(stats.summary.top10HoursShare, 0.556);
-  assert.equal(stats.summary.medianHours, 9.1);
+  assert.equal(stats.summary.medianHours, 12.2);
   assert.equal(stats.libraryPartial, false);
-  assert.equal(Object.keys(stats.gamesIndex).length, 10);
+  assert.equal(Object.keys(stats.gamesIndex).length, 8);
+  assert.equal(stats.meta.filters.minHours.requested, 0);
+  assert.equal(stats.meta.filters.minHours.excluded, 2);
+  assert.equal(stats.backlog.count, 0);
+
+  // minHours=-1 restores the 0-hour backlog (the pre-M5-B payload).
+  const all = await (
+    await fetch(`${base}/api/games/stats?profile=${PROFILE_KEY}&minHours=-1`)
+  ).json();
+  assert.equal(all.summary.gameCount, 10);
+  assert.equal(all.summary.playedCount, 8);
+  assert.equal(all.summary.unplayedCount, 2);
+  assert.equal(all.summary.medianHours, 9.1);
+  assert.equal(Object.keys(all.gamesIndex).length, 10);
+  assert.equal(all.backlog.count, 2);
+  assert.equal(all.meta.filters.minHours.requested, -1);
+
+  // minHours=2 keeps works with ≥2 hours (Cyberpunk at 1.8 h drops out).
+  const twoHours = await (
+    await fetch(`${base}/api/games/stats?profile=${PROFILE_KEY}&minHours=2`)
+  ).json();
+  assert.equal(twoHours.summary.gameCount, 7);
+  assert.equal(twoHours.summary.totalHours, 614.4);
+  assert.equal(twoHours.meta.filters.minHours.excluded, 3);
 
   /* profiles */
   const profiles = await (await fetch(`${base}/api/games/profiles`)).json();
@@ -209,6 +234,9 @@ test('strict query contract and error mapping', async (t) => {
     [`${base}/api/games/stats?profile=livelib-Margaret`, 'invalid_profile'],
     [`${base}/api/games/stats?profile=${PROFILE_KEY}`, null],
     [`${base}/api/games/stats?profile=${PROFILE_KEY}&includeFree=banana`, 'invalid_includeFree'],
+    [`${base}/api/games/stats?profile=${PROFILE_KEY}&minHours=banana`, 'invalid_minHours'],
+    [`${base}/api/games/stats?profile=${PROFILE_KEY}&minHours=-2`, 'invalid_minHours'],
+    [`${base}/api/games/stats?profile=${PROFILE_KEY}&minHours=1.5`, 'invalid_minHours'],
     [`${base}/api/games/stats?profile=${PROFILE_KEY}&sources=steam`, 'unexpected_parameter'],
     [`${base}/api/games/stats?profile=steam-76561198000000009`, 'unknown_profile'],
     [`${base}/api/games/stats?profile=${PROFILE_KEY},${PROFILE_KEY}`, 'invalid_profile'],

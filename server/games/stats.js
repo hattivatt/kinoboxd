@@ -33,6 +33,18 @@
  * Without details every M2 bucket stays empty/null and `meta.pending` says
  * why — the payload is exactly M1, never invented data.
  *
+ * M5-B (editions + hours filter):
+ *   - every aggregate counts a **canonical work** once
+ *     (`cache-games/editions.json`): `The Elder Scrolls V: Skyrim` + `…
+ *     Special Edition`, `GTA V Legacy` + `GTA V Enhanced`, regional cards and
+ *     catalog duplicates (`Wasteland 2` / `… Director's Cut`) are one game;
+ *   - `gamesIndex` still keeps every appid (the library table must not lose
+ *     rows) and adds `canonicalWorkKey`/`primaryAppid`/`isPrimary`/
+ *     `editionCount`/`canonicalHours`;
+ *   - `minHours` (-1 all, 0 played only, N≥1 at least N hours) runs after the
+ *     type/free filters and after the edition merge, so a work with a 0-hour
+ *     edition and a played edition stays when its canonical hours pass.
+ *
  * Hours come only from `GetOwnedGames` (`playtime_forever`, minutes).
  * `<stats><hoursPlayed>` from the achievements XML is never aggregated: it is
  * "time under stats tracking", not full playtime (§2.1 п. 3).
@@ -40,6 +52,7 @@
 
 const gameCache = require('./game-cache');
 const franchise = require('./franchise');
+const editions = require('./editions');
 const config = require('../config');
 
 const RECENT_LIMIT = 10;
@@ -163,6 +176,25 @@ function minutesToHours(minutes) {
   return round1((Number(minutes) || 0) / 60);
 }
 
+/**
+ * `minHours`: -1 = every game (0-hour backlog included), 0 = only played
+ * works, N≥1 = works with at least N hours. Invalid values fall back to the
+ * caller's default (the route rejects them before this point).
+ */
+function normalizeMinHours(raw, fallback = -1) {
+  if (raw == null || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < -1) return fallback;
+  return value;
+}
+
+/** Does a canonical work (raw minutes) pass the hours filter? */
+function hoursFilterPass(minutes, minHours) {
+  if (minHours < 0) return true;
+  if (minHours === 0) return minutes > 0;
+  return minutes >= minHours * 60;
+}
+
 function median(values) {
   const list = (Array.isArray(values) ? values : []).filter((value) => Number.isFinite(value));
   if (!list.length) return null;
@@ -208,10 +240,16 @@ function hoursHistogram(hoursList) {
 /**
  * Days (UTC) with at least one achievement unlock, plus current/best streak.
  * This is "achievement activity", not "days played" — the UI must say so.
+ *
+ * `keyOf(doc)` maps a document to the identity counted in `timeline.games`;
+ * the stats builder passes the canonical work key so two editions of one game
+ * are not counted twice. Defaults to the appid (the M1 behaviour).
  */
-function calendarFromAchievements(docs) {
+function calendarFromAchievements(docs, keyOf) {
+  const identityOf = typeof keyOf === 'function' ? keyOf : (doc) => doc.appid;
   const dayCounts = new Map();
   const dayAppids = new Map();
+  const dayWorks = new Map();
   for (const doc of docs) {
     for (const entry of doc.achievements || []) {
       if (!entry.achieved || !entry.unlockTimestamp) continue;
@@ -221,6 +259,9 @@ function calendarFromAchievements(docs) {
       const set = dayAppids.get(day) || new Set();
       if (doc.appid != null) set.add(doc.appid);
       dayAppids.set(day, set);
+      const works = dayWorks.get(day) || new Set();
+      works.add(identityOf(doc));
+      dayWorks.set(day, works);
     }
   }
   const days = [...dayCounts.keys()].sort();
@@ -234,7 +275,7 @@ function calendarFromAchievements(docs) {
     const month = day.date.slice(0, 7);
     const entry = months.get(month) || { month, unlocked: 0, games: new Set() };
     entry.unlocked += day.count;
-    for (const appid of day.appids) entry.games.add(appid);
+    for (const work of dayWorks.get(day.date) || []) entry.games.add(work);
     months.set(month, entry);
   }
   const timeline = [...months.values()]
@@ -286,6 +327,21 @@ function calendarFromAchievements(docs) {
 /**
  * Build the payload. Pure: the caller supplies the library snapshot, the
  * profile document, cached achievement documents and global percentages.
+ *
+ * Edition aggregation (M5-B): the payload counts **canonical works**, not
+ * appids. `input.editions` is the persisted `cache-games/editions.json`
+ * document (see `editions.js`); when it is missing or does not cover the
+ * library rows, the index is rebuilt here so the builder stays pure. Every
+ * aggregate (gameCount, hours, Pareto, genres, years/decades, tags, scores,
+ * DLC, completion, franchises) iterates works once. `gamesIndex` still has
+ * every owned appid (the library table must not lose rows); each entry carries
+ * `canonicalWorkKey` / `primaryAppid` / `isPrimary` / `canonicalHours` so the
+ * frontend can group without re-deriving anything.
+ *
+ * `minHours` (M5-B): -1 = every game (including 0-hour backlog), 0 = only
+ * works with >0 hours, N≥1 = works with at least N hours. The HTTP route
+ * defaults to 0; the pure builder defaults to -1 so internal callers that do
+ * not care about the filter keep the full payload.
  */
 function buildGamesStats(input = {}) {
   const startedAt = process.hrtime.bigint();
@@ -295,6 +351,7 @@ function buildGamesStats(input = {}) {
   const profileKey = gameCache.profileKeyOf(steamId64);
   const games = Array.isArray(library.games) ? library.games : [];
   const partial = Boolean(library.partial);
+  const minHours = normalizeMinHours(input.minHours, -1);
 
   /* ---------------- details + filters (M2) ---------------- */
   // `details` is the `{ [appid]: details/<appid>.json }` map. With no details
@@ -314,6 +371,9 @@ function buildGamesStats(input = {}) {
   // Filter semantics (M2): DLC/demo/software/video are not games; a DLC is
   // included only with `includeDlc=1`. Unknown type (no details yet) is kept —
   // it must never be silently dropped. `includeFree=0` removes F2P games.
+  // These run BEFORE edition grouping and `minHours` (the order is part of the
+  // contract: `includeFree=1&minHours=1` means "paid-or-free works with ≥1 h",
+  // not "paid works + every free work with ≥1 h").
   const excluded = { dlc: 0, otherType: 0, free: 0, unknownType: 0 };
   const keptGames = [];
   for (const game of games) {
@@ -336,40 +396,186 @@ function buildGamesStats(input = {}) {
     keptGames.push(game);
   }
 
-  const minutesList = keptGames.map((game) => Number(game.playtime_forever) || 0);
+  /* ---------------- canonical works (M5-B editions) ---------------- */
+  const editionDoc =
+    input.editions &&
+    (!input.editions.algorithmVersion ||
+      Number(input.editions.algorithmVersion) === editions.ALGORITHM_VERSION) &&
+    editions.covers(input.editions, keptGames) &&
+    input.editions.canonical &&
+    typeof input.editions.canonical === 'object'
+      ? input.editions
+      : editions.buildEditionIndex({
+          games: keptGames,
+          details,
+          links: linkDocs,
+          manual: input.editions && input.editions.manual,
+          profileKey,
+          libraryFingerprint: library.fingerprint,
+        });
+  const canonicalOf = (appid) =>
+    editionDoc.canonical[String(appid)] || {
+      workKey: `steam:${appid}`,
+      primaryAppid: appid,
+      appids: [appid],
+      editionCount: 1,
+      confidence: 'single',
+    };
+
+  const workMap = new Map();
+  for (const game of keptGames) {
+    const canon = canonicalOf(game.appid);
+    let work = workMap.get(canon.workKey);
+    if (!work) {
+      work = {
+        workKey: canon.workKey,
+        canonical: canon,
+        games: [],
+        minutes: 0,
+        minutes2w: 0,
+        rtime: 0,
+      };
+      workMap.set(canon.workKey, work);
+    }
+    work.games.push(game);
+    work.minutes += Number(game.playtime_forever) || 0;
+    work.minutes2w += Number(game.playtime_2weeks) || 0;
+    work.rtime = Math.max(work.rtime, Number(game.rtime_last_played) || 0);
+  }
+
+  const allWorks = [...workMap.values()];
+  for (const work of allWorks) {
+    const persistedPrimary = work.canonical.primaryAppid;
+    work.games.sort((left, right) => {
+      const minutes =
+        (Number(right.playtime_forever) || 0) - (Number(left.playtime_forever) || 0);
+      if (minutes) return minutes;
+      if (left.appid === persistedPrimary) return -1;
+      if (right.appid === persistedPrimary) return 1;
+      return Number(left.appid) - Number(right.appid);
+    });
+    // Effective primary: the edition the owner actually played (the persisted
+    // primary can be an edition dropped by `includeFree=0`).
+    work.primary = work.games[0];
+    work.hours = work.minutes / 60;
+  }
+
+  const visibleWorks = [];
+  const excludedWorks = [];
+  for (const work of allWorks) {
+    if (hoursFilterPass(work.minutes, minHours)) visibleWorks.push(work);
+    else excludedWorks.push(work);
+  }
+  const visibleGames = [];
+  const workByAppid = new Map();
+  for (const work of visibleWorks) {
+    for (const game of work.games) {
+      visibleGames.push(game);
+      workByAppid.set(game.appid, work);
+    }
+  }
+  const excludedByHours = excludedWorks.length;
+
+  const minutesList = visibleGames.map((game) => Number(game.playtime_forever) || 0);
   const hoursList = minutesList.map((minutes) => minutes / 60);
   const ownedCount = games.length;
-  const gameCount = keptGames.length;
+  const gameCount = visibleWorks.length;
   const totalMinutes = minutesList.reduce((sum, minutes) => sum + minutes, 0);
   const rawTotalHours = totalMinutes / 60;
   const totalHours = round1(rawTotalHours);
-  const playedCount = minutesList.filter((minutes) => minutes > 0).length;
-  const unplayedCount = minutesList.filter((minutes) => minutes === 0).length;
+  const playedCount = visibleWorks.filter((work) => work.minutes > 0).length;
+  const unplayedCount = visibleWorks.filter((work) => work.minutes === 0).length;
 
-  // Pareto: the share of hours held by the top 10% of games (by hours).
-  const sortedMinutes = [...minutesList].sort((a, b) => b - a);
+  // Pareto: the share of hours held by the top 10% of works (by hours).
+  const sortedWorkMinutes = visibleWorks
+    .map((work) => work.minutes)
+    .sort((a, b) => b - a);
   const topCount = Math.max(1, Math.ceil(gameCount * 0.1));
-  const topMinutes = sortedMinutes.slice(0, topCount).reduce((sum, minutes) => sum + minutes, 0);
+  const topMinutes = sortedWorkMinutes.slice(0, topCount).reduce((sum, minutes) => sum + minutes, 0);
   const top10HoursShare = totalMinutes > 0 ? round3(topMinutes / totalMinutes) : 0;
 
-  const medianHours = round1((median(minutesList) || 0) / 60);
+  const medianHours = round1((median(sortedWorkMinutes) || 0) / 60);
   const meanHours = gameCount ? round2(totalHours / gameCount) : 0;
 
-  const recent2wMinutes = keptGames.reduce(
-    (sum, game) => sum + (Number(game.playtime_2weeks) || 0),
-    0
-  );
-  const lastPlayedSeconds = keptGames.reduce(
-    (max, game) => Math.max(max, Number(game.rtime_last_played) || 0),
-    0
-  );
+  const recent2wMinutes = visibleWorks.reduce((sum, work) => sum + work.minutes2w, 0);
+  const lastPlayedSeconds = visibleWorks.reduce((max, work) => Math.max(max, work.rtime), 0);
 
-  const hoursOf = (game) => (Number(game.playtime_forever) || 0) / 60;
+  const hoursOf = (work) => work.minutes / 60;
 
-  // Per-game completion from the achievements cache (only games with stats).
+  /* ---------------- per-work metadata helpers ---------------- */
+  const workYear = (work) => {
+    let year = null;
+    for (const game of work.games) {
+      const value = releaseYearOf(detailOf(details, game.appid));
+      if (value == null) continue;
+      year = year == null ? value : Math.min(year, value);
+    }
+    return year;
+  };
+  const workGenres = (work) => {
+    const out = [];
+    for (const game of work.games) {
+      for (const name of genreNamesOf(detailOf(details, game.appid))) {
+        if (!out.includes(name)) out.push(name);
+      }
+    }
+    return out;
+  };
+  const workSpy = (work) => {
+    for (const game of work.games) {
+      const doc = spyOf(spyDocs, game.appid);
+      if (doc && Array.isArray(doc.tags) && doc.tags.length) return doc;
+    }
+    return null;
+  };
+  const workReview = (work) => {
+    for (const game of work.games) {
+      const doc = reviewsOf(reviewDocs, game.appid);
+      if (doc && doc.score != null) return doc;
+    }
+    return null;
+  };
+  const workDlc = (work) => {
+    let maxCount = 0;
+    const ids = new Set();
+    for (const game of work.games) {
+      const doc = detailOf(details, game.appid);
+      if (!doc) continue;
+      if (Array.isArray(doc.dlc)) {
+        for (const id of doc.dlc) ids.add(Number(id));
+      }
+      const count = Number(doc.dlcCount);
+      if (Number.isFinite(count)) maxCount = Math.max(maxCount, count);
+    }
+    return {
+      hasDetails: work.games.some((game) => detailOf(details, game.appid)),
+      // Union of edition DLC appids; a document that only has `dlcCount`
+      // (no array) still contributes its count.
+      count: Math.max(ids.size, maxCount),
+    };
+  };
+  const workModeFlags = (work) => {
+    const flags = {};
+    for (const game of work.games) {
+      const doc = detailOf(details, game.appid);
+      if (!doc) continue;
+      const own = modeFlagsOf(doc);
+      for (const key of Object.keys(own)) if (own[key]) flags[key] = true;
+    }
+    return flags;
+  };
+  const workHasFlag = (work, predicate) =>
+    work.games.some((game) => {
+      const doc = detailOf(details, game.appid);
+      return Boolean(doc && predicate(doc));
+    });
+
+  /* ---------------- achievements (one document per work) ---------------- */
+  const visibleAppids = new Set(visibleGames.map((game) => game.appid));
   const achievementDocs = (input.achievements || []).filter(
-    (doc) => doc && doc.totalCount > 0 && keptGames.some((game) => game.appid === doc.appid)
+    (doc) => doc && doc.totalCount > 0 && visibleAppids.has(doc.appid)
   );
+  const achievementByAppid = new Map(achievementDocs.map((doc) => [doc.appid, doc]));
   const completionByAppid = new Map();
   for (const doc of achievementDocs) {
     completionByAppid.set(doc.appid, {
@@ -379,18 +585,39 @@ function buildGamesStats(input = {}) {
     });
   }
 
-  const percentList = achievementDocs.map(
-    (doc) => (doc.unlockedCount / doc.totalCount) * 100
-  );
-  const unlockedTotal = achievementDocs.reduce((sum, doc) => sum + doc.unlockedCount, 0);
-  const achievementsTotal = achievementDocs.reduce((sum, doc) => sum + doc.totalCount, 0);
+  // One achievement document per work: the effective primary's, otherwise the
+  // first edition that has stats. Two editions must not double the counters.
+  const workAchievement = new Map();
+  for (const work of visibleWorks) {
+    let chosen = null;
+    for (const game of work.games) {
+      const doc = achievementByAppid.get(game.appid);
+      if (doc) {
+        chosen = doc;
+        break;
+      }
+    }
+    workAchievement.set(work.workKey, chosen);
+    work.completion = chosen
+      ? {
+          unlocked: chosen.unlockedCount,
+          total: chosen.totalCount,
+          percent: round1((chosen.unlockedCount / chosen.totalCount) * 100),
+        }
+      : null;
+  }
+
+  const chosenDocs = [...workAchievement.values()].filter(Boolean);
+  const percentList = chosenDocs.map((doc) => (doc.unlockedCount / doc.totalCount) * 100);
+  const unlockedTotal = chosenDocs.reduce((sum, doc) => sum + doc.unlockedCount, 0);
+  const achievementsTotal = chosenDocs.reduce((sum, doc) => sum + doc.totalCount, 0);
 
   // Rare = unlocked with a global percent below 5. Global percentages are
   // matched case-insensitively (XML apiname is lowercase, the official API
   // returns uppercase names).
   const globalByAppid = input.globals || new Map();
   let rareUnlocked = 0;
-  for (const doc of achievementDocs) {
+  for (const doc of chosenDocs) {
     const global = globalByAppid.get ? globalByAppid.get(doc.appid) : null;
     if (!global || !global.byName) continue;
     for (const entry of doc.achievements || []) {
@@ -403,11 +630,14 @@ function buildGamesStats(input = {}) {
     }
   }
 
-  const calendar = calendarFromAchievements(achievementDocs);
+  const calendar = calendarFromAchievements(
+    achievementDocs,
+    (doc) => canonicalOf(doc.appid).workKey
+  );
 
-  /* ---------------- per-game index ---------------- */
+  /* ---------------- per-appid index (keeps every edition) ---------------- */
   const gamesIndex = {};
-  for (const game of keptGames) {
+  for (const game of visibleGames) {
     const appid = game.appid;
     if (appid == null) continue;
     const completion = completionByAppid.get(appid) || null;
@@ -416,14 +646,22 @@ function buildGamesStats(input = {}) {
     const spyDoc = spyOf(spyDocs, appid);
     const reviewDoc = reviewsOf(reviewDocs, appid);
     const linkDoc = linksOf(linkDocs, appid);
+    const work = workByAppid.get(appid) || null;
     gamesIndex[appid] = {
       appid,
       name: game.name || null,
+      // Per-edition hours stay per-edition; the canonical total is additive.
       hours: minutesToHours(game.playtime_forever),
       hours2w: game.playtime_2weeks ? minutesToHours(game.playtime_2weeks) : 0,
       rtime: Number(game.rtime_last_played) || 0,
       lastPlayed: isoOfSeconds(game.rtime_last_played),
       iconUrl: iconUrlOf(appid, game.img_icon_url),
+      // M5-B: edition identity (additive; `hours` above is still this row's).
+      canonicalWorkKey: work ? work.workKey : `steam:${appid}`,
+      primaryAppid: work ? work.primary.appid : appid,
+      isPrimary: Boolean(work && work.primary.appid === appid),
+      editionCount: work ? work.games.length : 1,
+      canonicalHours: work ? round1(work.hours) : minutesToHours(game.playtime_forever),
       // M2 (appdetails) — null/[] while details are missing, never invented.
       type: doc ? doc.type : null,
       year,
@@ -478,77 +716,95 @@ function buildGamesStats(input = {}) {
     };
   }
 
-  const byHoursDesc = [...keptGames].sort(
+  const byHoursDesc = [...visibleWorks].sort(
     (left, right) =>
-      (Number(right.playtime_forever) || 0) - (Number(left.playtime_forever) || 0) ||
-      String(left.name || '').localeCompare(String(right.name || ''))
+      right.minutes - left.minutes ||
+      String(left.primary.name || '').localeCompare(String(right.primary.name || ''))
   );
 
-  const topGames = byHoursDesc.slice(0, TOP_LIMIT).map((game) => {
+  const topGames = byHoursDesc.slice(0, TOP_LIMIT).map((work) => {
+    const game = work.primary;
     const doc = detailOf(details, game.appid);
-    return {
+    const entry = {
       appid: game.appid,
       name: game.name || null,
-      hours: minutesToHours(game.playtime_forever),
-      hours2w: game.playtime_2weeks ? minutesToHours(game.playtime_2weeks) : 0,
-      lastPlayed: isoOfSeconds(game.rtime_last_played),
-      releaseYear: releaseYearOf(doc),
-      genres: genreNamesOf(doc),
+      hours: round1(work.hours),
+      hours2w: work.minutes2w ? minutesToHours(work.minutes2w) : 0,
+      lastPlayed: isoOfSeconds(work.rtime),
+      releaseYear: workYear(work),
+      genres: workGenres(work),
       type: doc ? doc.type : null,
       isFree: doc && typeof doc.is_free === 'boolean' ? doc.is_free : null,
-      completion: completionByAppid.has(game.appid)
-        ? completionByAppid.get(game.appid).percent
-        : null,
+      completion: work.completion ? work.completion.percent : null,
       cover: null,
       iconUrl: iconUrlOf(game.appid, game.img_icon_url),
+      canonicalWorkKey: work.workKey,
+      editionCount: work.games.length,
     };
+    if (work.games.length > 1) {
+      entry.editions = work.games.map((edition) => ({
+        appid: edition.appid,
+        name: edition.name || null,
+        hours: minutesToHours(edition.playtime_forever),
+        isPrimary: edition.appid === game.appid,
+      }));
+    }
+    return entry;
   });
 
-  const recentlyPlayed = [...keptGames]
-    .filter((game) => Number(game.rtime_last_played) > 0)
-    .sort((left, right) => Number(right.rtime_last_played) - Number(left.rtime_last_played))
+  const recentlyPlayed = [...visibleWorks]
+    .filter((work) => work.rtime > 0)
+    .sort((left, right) => right.rtime - left.rtime)
     .slice(0, RECENT_LIMIT)
-    .map((game) => ({
-      appid: game.appid,
-      name: game.name || null,
-      hours2w: game.playtime_2weeks ? minutesToHours(game.playtime_2weeks) : 0,
-      hoursTotal: minutesToHours(game.playtime_forever),
-      lastPlayed: isoOfSeconds(game.rtime_last_played),
-      iconUrl: iconUrlOf(game.appid, game.img_icon_url),
+    .map((work) => ({
+      appid: work.primary.appid,
+      name: work.primary.name || null,
+      hours2w: work.minutes2w ? minutesToHours(work.minutes2w) : 0,
+      hoursTotal: round1(work.hours),
+      lastPlayed: isoOfSeconds(work.rtime),
+      iconUrl: iconUrlOf(work.primary.appid, work.primary.img_icon_url),
+      canonicalWorkKey: work.workKey,
+      editionCount: work.games.length,
     }));
 
-  const recently2w = [...keptGames]
-    .filter((game) => Number(game.playtime_2weeks) > 0)
-    .sort((left, right) => Number(right.playtime_2weeks) - Number(left.playtime_2weeks))
-    .map((game) => ({
-      appid: game.appid,
-      name: game.name || null,
-      hours2w: minutesToHours(game.playtime_2weeks),
-      hoursTotal: minutesToHours(game.playtime_forever),
-      lastPlayed: isoOfSeconds(game.rtime_last_played),
-      iconUrl: iconUrlOf(game.appid, game.img_icon_url),
+  const recently2w = [...visibleWorks]
+    .filter((work) => work.minutes2w > 0)
+    .sort((left, right) => right.minutes2w - left.minutes2w)
+    .map((work) => ({
+      appid: work.primary.appid,
+      name: work.primary.name || null,
+      hours2w: minutesToHours(work.minutes2w),
+      hoursTotal: round1(work.hours),
+      lastPlayed: isoOfSeconds(work.rtime),
+      iconUrl: iconUrlOf(work.primary.appid, work.primary.img_icon_url),
+      canonicalWorkKey: work.workKey,
+      editionCount: work.games.length,
     }));
 
-  const backlogItems = [...keptGames]
-    .filter((game) => (Number(game.playtime_forever) || 0) === 0)
-    .sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')))
+  const backlogItems = [...visibleWorks]
+    .filter((work) => work.minutes === 0)
+    .sort((left, right) =>
+      String(left.primary.name || '').localeCompare(String(right.primary.name || ''))
+    )
     .slice(0, BACKLOG_LIMIT)
-    .map((game) => {
-      const doc = detailOf(details, game.appid);
-      const year = releaseYearOf(doc);
+    .map((work) => {
+      const game = work.primary;
+      const year = workYear(work);
       return {
         appid: game.appid,
         name: game.name || null,
         iconUrl: iconUrlOf(game.appid, game.img_icon_url),
         year,
         releaseYear: year,
-        genres: genreNamesOf(doc),
+        genres: workGenres(work),
+        canonicalWorkKey: work.workKey,
+        editionCount: work.games.length,
       };
     });
 
   // Platform hours are in the library snapshot (playtime_*_forever). Deck hours
   // are a subset of Linux hours and are reported separately, never added.
-  const platformMinutes = keptGames.reduce(
+  const platformMinutes = visibleGames.reduce(
     (acc, game) => {
       acc.windows += Number(game.playtime_windows_forever) || 0;
       acc.mac += Number(game.playtime_mac_forever) || 0;
@@ -564,10 +820,9 @@ function buildGamesStats(input = {}) {
   const decadeMap = new Map();
   let unknownYearCount = 0;
   let unknownYearHours = 0;
-  for (const game of keptGames) {
-    const doc = detailOf(details, game.appid);
-    const year = releaseYearOf(doc);
-    const hours = hoursOf(game);
+  for (const work of visibleWorks) {
+    const year = workYear(work);
+    const hours = hoursOf(work);
     if (year == null) {
       unknownYearCount++;
       unknownYearHours += hours;
@@ -602,13 +857,12 @@ function buildGamesStats(input = {}) {
   const realYears = years.filter((entry) => entry.year != null);
 
   // Genres: the wall is playtime-weighted, so `hours` (and `weight`, kept for
-  // the frontend) drives the size; `count`/`share` stay available.
+  // the frontend) drives the size; `count`/`share` stay available. One work
+  // counts once even when two editions carry the same genre.
   const genreMap = new Map();
-  for (const game of keptGames) {
-    const doc = detailOf(details, game.appid);
-    if (!doc) continue;
-    const hours = hoursOf(game);
-    for (const name of genreNamesOf(doc)) {
+  for (const work of visibleWorks) {
+    const hours = hoursOf(work);
+    for (const name of workGenres(work)) {
       const entry = genreMap.get(name) || { name, count: 0, hours: 0 };
       entry.count++;
       entry.hours += hours;
@@ -633,17 +887,17 @@ function buildGamesStats(input = {}) {
     : [];
 
   /* ---------------- M4: SteamSpy tags ---------------- */
-  // `count` = how many games of this library carry the tag, `hours` = their
+  // `count` = how many works of this library carry the tag, `hours` = their
   // playtime, `weight` = the summed SteamSpy popularity weight (the same
   // number the store tag cloud uses). Tags are metadata, not owner events:
   // one game can carry 20 of them and none of them is invented.
   const tagMap = new Map();
   let gamesWithTags = 0;
-  for (const game of keptGames) {
-    const doc = spyOf(spyDocs, game.appid);
-    if (!doc || !Array.isArray(doc.tags) || !doc.tags.length) continue;
+  for (const work of visibleWorks) {
+    const doc = workSpy(work);
+    if (!doc) continue;
     gamesWithTags++;
-    const hours = hoursOf(game);
+    const hours = hoursOf(work);
     for (const tag of doc.tags) {
       const name = tag && tag.name ? String(tag.name) : null;
       if (!name) continue;
@@ -679,12 +933,12 @@ function buildGamesStats(input = {}) {
   const scoreCounts = new Map();
   const scoreValues = [];
   let gamesWithReviews = 0;
-  for (const game of keptGames) {
-    const doc = reviewsOf(reviewDocs, game.appid);
+  for (const work of visibleWorks) {
+    const doc = workReview(work);
     if (!doc || doc.score == null) continue;
     const score = Number(doc.score);
     if (!Number.isInteger(score) || score < 1 || score > 9) continue;
-    const hours = hoursOf(game);
+    const hours = hoursOf(work);
     gamesWithReviews++;
     scoreValues.push(score);
     const entry = scoreCounts.get(score) || { score, count: 0, hours: 0 };
@@ -715,20 +969,20 @@ function buildGamesStats(input = {}) {
 
   /* ---------------- M4: DLC facts ---------------- */
   // `dlcCount` already lives in the details document (`dlc[]` length); the
-  // widget only needs the facts, not the DLC appids.
+  // widget only needs the facts, not the DLC appids. Editions share DLCs, so
+  // the work's count is the union of its editions' DLC appids.
   let dlcSummary = null;
   if (hasDetails) {
     const dlcGames = [];
     let dlcTotal = 0;
-    for (const game of keptGames) {
-      const doc = detailOf(details, game.appid);
-      if (!doc) continue;
-      const count = Number.isFinite(Number(doc.dlcCount)) ? Number(doc.dlcCount) : 0;
-      dlcTotal += count;
+    for (const work of visibleWorks) {
+      const info = workDlc(work);
+      if (!info.hasDetails) continue;
+      dlcTotal += info.count;
       dlcGames.push({
-        appid: game.appid,
-        name: game.name || doc.name || null,
-        dlcCount: count,
+        appid: work.primary.appid,
+        name: work.primary.name || null,
+        dlcCount: info.count,
       });
     }
     const withDlc = dlcGames.filter((entry) => entry.dlcCount > 0);
@@ -752,11 +1006,17 @@ function buildGamesStats(input = {}) {
   // — `summary.coverage.franchises` is therefore Wikidata-only on purpose.
   let gamesWithFranchiseLinks = 0;
   let linksResolved = 0;
-  for (const game of keptGames) {
-    const links = linksOf(linkDocs, game.appid);
-    if (!links) continue;
-    if (links.resolved) linksResolved++;
-    if (links.franchiseKey) gamesWithFranchiseLinks++;
+  for (const work of visibleWorks) {
+    let answered = false;
+    let franchise = false;
+    for (const game of work.games) {
+      const links = linksOf(linkDocs, game.appid);
+      if (!links) continue;
+      if (links.resolved) answered = true;
+      if (links.franchiseKey) franchise = true;
+    }
+    if (answered) linksResolved++;
+    if (franchise) gamesWithFranchiseLinks++;
   }
   const franchiseCoverage = {
     source: 'wikidata',
@@ -786,27 +1046,27 @@ function buildGamesStats(input = {}) {
   let freeHours = 0;
   const platformGames = { windows: 0, mac: 0, linux: 0 };
   if (hasDetails) {
-    for (const game of keptGames) {
-      const doc = detailOf(details, game.appid);
-      if (!doc) continue;
-      const hours = hoursOf(game);
-      const flags = modeFlagsOf(doc);
+    for (const work of visibleWorks) {
+      const hours = hoursOf(work);
+      const flags = workModeFlags(work);
       for (const key of Object.keys(modes)) {
         if (flags[key]) modes[key]++;
       }
-      if (doc.earlyAccess) {
+      if (workHasFlag(work, (doc) => doc.earlyAccess)) {
         earlyCount++;
         earlyHours += hours;
       }
-      if (doc.is_free === true) {
-        freeCount++;
-        freeHours += hours;
+      let workFree = false;
+      for (const game of work.games) {
+        const doc = detailOf(details, game.appid);
+        if (!doc || doc.is_free !== true) continue;
+        workFree = true;
+        freeHours += (Number(game.playtime_forever) || 0) / 60;
       }
-      if (doc.platforms && typeof doc.platforms === 'object') {
-        if (doc.platforms.windows) platformGames.windows++;
-        if (doc.platforms.mac) platformGames.mac++;
-        if (doc.platforms.linux) platformGames.linux++;
-      }
+      if (workFree) freeCount++;
+      if (workHasFlag(work, (doc) => doc.platforms && doc.platforms.windows)) platformGames.windows++;
+      if (workHasFlag(work, (doc) => doc.platforms && doc.platforms.mac)) platformGames.mac++;
+      if (workHasFlag(work, (doc) => doc.platforms && doc.platforms.linux)) platformGames.linux++;
     }
   }
   const earlyAccess = hasDetails
@@ -868,6 +1128,19 @@ function buildGamesStats(input = {}) {
 
   const allProfileKeys = gameCache.listProfiles().map((entry) => entry.key);
 
+  const mergedWorks = visibleWorks.filter((work) => work.games.length > 1);
+  const editionsMeta = {
+    source: 'cache-games/editions.json',
+    algorithmVersion: editionDoc.algorithmVersion || editions.ALGORITHM_VERSION,
+    fromCache: editionDoc === input.editions,
+    appids: visibleGames.length,
+    works: visibleWorks.length,
+    // User-facing number: how many rows the edition merge removed.
+    groups: mergedWorks.length,
+    gamesMerged: mergedWorks.reduce((sum, work) => sum + work.games.length, 0),
+    savedCount: visibleGames.length - visibleWorks.length,
+  };
+
   return {
     sources: {
       connected: [profileKey],
@@ -894,6 +1167,7 @@ function buildGamesStats(input = {}) {
     // gameCount is an estimate until appdetails (M2) separates DLC/tools.
     libraryPartial: partial,
     summary: {
+      // M5-B: one canonical work per game, not per store edition.
       gameCount,
       // Honest: with no details (or with unavailable/unknown types) the type
       // split is still an estimate; a fully enriched library flips it to false.
@@ -915,7 +1189,7 @@ function buildGamesStats(input = {}) {
         avgPercent: percentList.length ? round1(percentList.reduce((a, b) => a + b, 0) / percentList.length) : null,
         medianPercent: percentList.length ? round1(median(percentList)) : null,
         perfectCount: percentList.filter((percent) => percent >= 100).length,
-        gamesWithStats: achievementDocs.length,
+        gamesWithStats: chosenDocs.length,
         gamesTotal: gameCount,
       },
       achievements: {
@@ -923,7 +1197,7 @@ function buildGamesStats(input = {}) {
         total: achievementsTotal,
         rareUnlocked,
         rareThresholdPercent: RARE_PERCENT,
-        coverage: { gamesWithStats: achievementDocs.length, gamesTotal: gameCount },
+        coverage: { gamesWithStats: chosenDocs.length, gamesTotal: gameCount },
       },
       platformHours: {
         windows: minutesToHours(platformMinutes.windows),
@@ -943,7 +1217,7 @@ function buildGamesStats(input = {}) {
       dlc: dlcSummary,
       metadata,
     },
-    hoursHistogram: hoursHistogram(hoursList),
+    hoursHistogram: hoursHistogram(visibleWorks.map((work) => work.hours)),
     topGames,
     recentlyPlayed,
     recently2w,
@@ -968,19 +1242,23 @@ function buildGamesStats(input = {}) {
     achievementDays: calendar.achievementDays,
     streaks: calendar.streaks,
     gamesIndex,
-    // Games of the visible (filtered) set with no successful details.
-    unmatchedCount: keptGames.filter((game) => !detailOf(details, game.appid)).length,
+    // Works of the visible (filtered) set with no successful details.
+    unmatchedCount: visibleWorks.filter((work) =>
+      work.games.every((game) => !detailOf(details, game.appid))
+    ).length,
     meta: {
       buildMs: Number(elapsedMs.toFixed(1)),
       libraryFingerprint: library.fingerprint || null,
       libraryFetchedAt: library.fetchedAt || null,
       libraryStale: !gameCache.isFresh(library, gameCache.libraryTtlMs()),
       libraryTtlHours: Math.round(gameCache.libraryTtlMs() / 3600000),
-      achievementsCachedGames: achievementDocs.length,
+      achievementsCachedGames: chosenDocs.length,
       calendarAvailable: achievementDocs.length > 0,
       keyConfigured,
       keySource: keyConfigured ? config.steamKeySource() : null,
       details: metadata,
+      // M5-B: canonical-work merge facts (additive, UI-safe).
+      editions: editionsMeta,
       // M4 coverage: how much of the visible library has tags / a review grade.
       // `percent` is honest: 0 with no documents, never a fake 100.
       tags: {
@@ -1017,6 +1295,14 @@ function buildGamesStats(input = {}) {
           excludedTypes: excluded.otherType,
           reason: hasDetails ? null : 'details_not_imported',
         },
+        // M5-B: the hours filter runs after type/free filters and after the
+        // edition merge (one canonical work, one decision).
+        minHours: {
+          requested: minHours,
+          applied: true,
+          excluded: excludedByHours,
+          excludedAppids: excludedWorks.reduce((sum, work) => sum + work.games.length, 0),
+        },
       },
       pending: [
         ...(hasDetails
@@ -1032,7 +1318,6 @@ function buildGamesStats(input = {}) {
     },
   };
 }
-
 /**
  * Load one profile from cache and build the payload.
  * Returns null when the token names no cached profile/library.
@@ -1051,6 +1336,29 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
   }
   const appids = (Array.isArray(library.games) ? library.games : []).map((game) => game.appid);
   const details = gameCache.listDetails(appids);
+  // M4-B: Wikidata links (franchise key + P577 year) for the games index.
+  const links = franchise.readLinksMap(appids);
+  // M5-B: canonical edition index. Persisted in `cache-games/editions.json`
+  // (manual overrides survive); a read-only cache (worktree) still works —
+  // the index is then rebuilt in memory for this request.
+  let editionDoc = null;
+  try {
+    editionDoc = editions.ensureEditions(profileKey, {
+      library,
+      games: Array.isArray(library.games) ? library.games : [],
+      details,
+      links,
+    }).doc;
+  } catch (err) {
+    console.warn(`[games-stats] editions index not persisted: ${err.message}`);
+    editionDoc = editions.buildEditionIndex({
+      games: Array.isArray(library.games) ? library.games : [],
+      details,
+      links,
+      profileKey,
+      libraryFingerprint: library.fingerprint,
+    });
+  }
   return buildGamesStats({
     steamId64: parsed.userKey,
     profile,
@@ -1061,10 +1369,14 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     // M4 metadata: global per appid, no owner dimension.
     spy: gameCache.listSpy(appids),
     reviews: gameCache.listReviews(appids),
-    // M4-B: Wikidata links (franchise key + P577 year) for the games index.
-    links: franchise.readLinksMap(appids),
+    links,
+    // M5-B: canonical works (one game per owner-visible title).
+    editions: editionDoc,
     includeFree: options.includeFree !== false,
     includeDlc: Boolean(options.includeDlc),
+    // M5-B: the route defaults to 0 (played games only); the pure builder
+    // defaults to -1 (no filter) for internal callers.
+    minHours: options.minHours,
     // Set by the route from the enrich job registry (no live request).
     enrichRunning: options.enrichRunning === true,
   });
@@ -1115,6 +1427,8 @@ module.exports = {
   round3,
   minutesToHours,
   median,
+  normalizeMinHours,
+  hoursFilterPass,
   hoursHistogram,
   calendarFromAchievements,
   buildGamesStats,
