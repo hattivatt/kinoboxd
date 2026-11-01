@@ -1840,6 +1840,11 @@ function renderPersonsWidget(data) {
   widget.hidden = false;
   if (select && select.value !== state.role) select.value = state.role;
   if (searchWrap) searchWrap.hidden = !(state.personnel.expanded || state.personnel.query);
+  for (const button of document.querySelectorAll('[data-games-weight]')) {
+    const active = button.dataset.gamesWeight === state.weight;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
 
   const payload = state.personnel.data;
   const role = personnelRoleMeta(state.role);
