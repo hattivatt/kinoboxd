@@ -162,8 +162,17 @@ function buildFranchises(profileKey, options = {}) {
   if (!profile || !library) return null;
 
   const games = [];
-  const release = { fromDetails: 0, fromWikidata: 0, unknown: 0, unavailableDetails: 0 };
-  const linksCoverage = { documents: 0, withQid: 0, withFranchise: 0, withReleaseYear: 0, fresh: 0 };
+  const release = { fromDetails: 0, fromWikidata: 0, fromBase: 0, unknown: 0, unavailableDetails: 0 };
+  const linksCoverage = {
+    documents: 0,
+    withQid: 0,
+    withBase: 0,
+    withFranchise: 0,
+    withReleaseYear: 0,
+    fresh: 0,
+  };
+  /** `qid: null` rows whose base version has not been looked up yet (B6). */
+  let bridgePending = 0;
 
   for (const game of library.games || []) {
     const appid = Number(game.appid);
@@ -175,6 +184,7 @@ function buildFranchises(profileKey, options = {}) {
     const links = readLinks(appid) || {};
     if (links.resolved || links.qid || links.franchise || links.releaseYear) linksCoverage.documents++;
     if (links.qid) linksCoverage.withQid++;
+    if (links.baseQid) linksCoverage.withBase++;
     if (links.franchiseKey || links.franchise) linksCoverage.withFranchise++;
     if (links.releaseYear) linksCoverage.withReleaseYear++;
     const linksAt = Date.parse(String(links.fetchedAt || ''));
@@ -184,6 +194,16 @@ function buildFranchises(profileKey, options = {}) {
         ? true
         : Number.isFinite(linksAt) && nowMs - linksAt >= 0 && nowMs - linksAt < ttlMs);
     if (linksFresh) linksCoverage.fresh++;
+
+    // B6: a `qid: null` row is not «done» any more — the base-version bridge
+    // may still give the work an identity. `baseCheckedAt` is its own
+    // negative marker, inside the same 90-day window.
+    if (links.resolved && !links.qid && !links.baseQid) {
+      const baseAt = Date.parse(String(links.baseCheckedAt || ''));
+      const baseFresh =
+        ttlMs != null && Number.isFinite(baseAt) && nowMs - baseAt >= 0 && nowMs - baseAt < ttlMs;
+      if (!baseFresh) bridgePending++;
+    }
 
     let releaseYear = null;
     let releaseSource = null;
@@ -196,6 +216,11 @@ function buildFranchises(profileKey, options = {}) {
       releaseYear = Number(links.releaseYear);
       releaseSource = 'wikidata';
       release.fromWikidata++;
+    } else if (Number.isInteger(Number(links.baseReleaseYear)) && Number(links.baseReleaseYear) > 0) {
+      // B6: the regional SKU has no P577 of its own; its work does.
+      releaseYear = Number(links.baseReleaseYear);
+      releaseSource = 'wikidata-base';
+      release.fromBase++;
     } else {
       release.unknown++;
     }
@@ -362,6 +387,9 @@ function buildFranchises(profileKey, options = {}) {
     pending: {
       // Games the WD pass has not answered inside the TTL (the route may kick).
       wikidata: pendingWikidata,
+      // B6: `qid: null` rows whose base version is still unknown (the bridge
+      // runs in the same job, so this is part of the same kick decision).
+      bridge: bridgePending,
       // Games with no year from either source.
       releaseYears: release.unknown,
       unavailableDetails: release.unavailableDetails,
@@ -377,7 +405,7 @@ function buildFranchises(profileKey, options = {}) {
         blacklistPairs: BLACKLIST_PAIRS.length,
       },
       sourceOrder: ['wikidata', 'heuristic'],
-      yearsSource: ['steam-store', 'wikidata'],
+      yearsSource: ['steam-store', 'wikidata', 'wikidata-base'],
     },
   };
 }

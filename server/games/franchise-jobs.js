@@ -105,6 +105,12 @@ function publicStatus(job) {
     wdAnswered: job.wdAnswered,
     wdSkipped: job.wdSkipped,
     wdDisabledUntil: job.wdDisabledUntil,
+    // B6: base-version bridge + its store step.
+    bridgeCandidates: job.bridgeCandidates == null ? null : job.bridgeCandidates,
+    bridgeQueries: job.bridgeQueries || 0,
+    bridged: job.bridged || 0,
+    bridgeMisses: job.bridgeMisses || 0,
+    baseDetails: job.baseDetails || null,
     enrichWait: job.enrichWait || null,
     lockWaitMs: job.lockWaitMs == null ? null : job.lockWaitMs,
     errors: job.errors ? [...job.errors] : [],
@@ -215,12 +221,14 @@ async function runPass(job, parsed, options) {
     job.code = 'franchise_lock_busy';
     return;
   }
+  let ran = false;
   try {
     job.stage = 'fetching';
     const report = await franchise.enrichFranchises({
       profileKey: parsed.key,
       limit: job.limit,
       force: job.force,
+      bridge: options.bridge,
       wikidata: options.wikidata,
       stateStore: options.stateStore,
       fetchImpl: options.fetchImpl,
@@ -239,10 +247,15 @@ async function runPass(job, parsed, options) {
     job.wdAnswered = report.wdAnswered;
     job.wdSkipped = report.wdSkipped || null;
     job.wdDisabledUntil = report.wdDisabledUntil || null;
+    job.bridgeCandidates = report.bridgeCandidates == null ? null : report.bridgeCandidates;
+    job.bridgeQueries = report.bridgeQueries || 0;
+    job.bridged = report.bridged || 0;
+    job.bridgeMisses = report.bridgeMisses || 0;
     job.errors = [...(report.errors || [])];
     if (report.skipped) job.skipped = report.skipped;
     job.status = 'done';
     job.stage = 'done';
+    ran = true;
   } catch (err) {
     job.status = 'failed';
     job.stage = 'failed';
@@ -251,6 +264,29 @@ async function runPass(job, parsed, options) {
     console.error(`[games-franchise ${job.id}] ${job.code}: ${job.error}`);
   } finally {
     lock.releaseLock(held.token);
+  }
+
+  // B6: the store step runs AFTER the WD lock is released — it is a different
+  // host with its own 1.7 s pause and 30-minute breaker, and holding the WD
+  // lock for a minute of store requests would starve the personnel pass.
+  if (ran && options.baseDetails !== false) {
+    job.stage = 'base_details';
+    try {
+      const baseReport = await franchise.enrichBaseDetails({
+        profileKey: parsed.key,
+        limit: options.baseDetailsLimit,
+        storeClient: options.storeClient,
+        now: options.now,
+      });
+      job.baseDetails = baseReport;
+      if (baseReport.errors && baseReport.errors.length) {
+        job.errors = [...job.errors, ...baseReport.errors];
+      }
+    } catch (err) {
+      job.baseDetails = { skipped: 'base_details_failed', error: String((err && err.message) || '').slice(0, 200) };
+      console.warn(`[games-franchise ${job.id}] base details failed: ${job.baseDetails.error}`);
+    }
+    job.stage = job.status === 'failed' ? 'failed' : 'done';
   }
 }
 
@@ -335,6 +371,11 @@ function startFranchise(profileToken, options = {}) {
     wdAnswered: 0,
     wdSkipped: null,
     wdDisabledUntil: null,
+    bridgeCandidates: null,
+    bridgeQueries: 0,
+    bridged: 0,
+    bridgeMisses: 0,
+    baseDetails: null,
     enrichWait: null,
     lockWaitMs: null,
     errors: [],

@@ -53,7 +53,7 @@ const path = require('path');
 
 const gameCache = require('./game-cache');
 
-const ALGORITHM_VERSION = 1;
+const ALGORITHM_VERSION = 2;
 const EDITIONS_PATH = path.join(gameCache.GAMES_CACHE_DIR, 'editions.json');
 
 const MAX_YEAR_GAP_EXACT = 3;
@@ -265,12 +265,53 @@ function yearOf(detailsDoc, linkDoc) {
   if (Number.isInteger(detailYear) && detailYear >= 1970 && detailYear <= 2100) return detailYear;
   const linkYear = linkDoc ? Number(linkDoc.releaseYear) : NaN;
   if (Number.isInteger(linkYear) && linkYear >= 1970 && linkYear <= 2100) return linkYear;
+  // Deliberately NOT `baseReleaseYear`: this year feeds the «≤3/≤15 years»
+  // merge guard, and the base version's original year is often a decade away
+  // from the store's re-release date (`GTA III` 2001 vs 2008) — using it would
+  // *break* an otherwise valid title merge. The base year is a display
+  // fallback (`stats.js workYear`), not an edition-matching signal.
   return null;
 }
 
+function asQid(value) {
+  if (value == null) return null;
+  const text = String(value).trim().toUpperCase();
+  return /^Q\d+$/.test(text) ? text : null;
+}
+
+/**
+ * Wikidata identity of one library row.
+ *
+ * **Two document shapes must both work** (audit §4.4e): the raw file on disk
+ * stores `{"wikidata": {"qid": "Q…"}}` (and a legacy `{"wikidata": "Q…"}`
+ * string), while `franchise.readLinks()` hands out a flat
+ * `{qid, baseQid, baseAppid}` view. Reading only `linkDoc.qid` silently lost
+ * every QID merge whenever the raw documents were passed in — that is a
+ * contract bug, not a heuristic.
+ */
 function qidOf(linkDoc) {
-  const qid = linkDoc && linkDoc.qid ? String(linkDoc.qid).trim().toUpperCase() : null;
-  return qid && /^Q\d+$/.test(qid) ? qid : null;
+  if (!linkDoc || typeof linkDoc !== 'object') return null;
+  const nested =
+    linkDoc.wikidata && typeof linkDoc.wikidata === 'object' ? linkDoc.wikidata : null;
+  return asQid(linkDoc.qid) || asQid(nested && nested.qid) || asQid(linkDoc.wikidata);
+}
+
+/** B6: QID of the base version of a regional SKU (`wikidata.baseQid`). */
+function baseQidOf(linkDoc) {
+  if (!linkDoc || typeof linkDoc !== 'object') return null;
+  const nested =
+    linkDoc.wikidata && typeof linkDoc.wikidata === 'object' ? linkDoc.wikidata : null;
+  return asQid(linkDoc.baseQid) || asQid(nested && nested.baseQid);
+}
+
+/** B6: Steam appid of the base version (`wikidata.baseAppid`). */
+function baseAppidOf(linkDoc) {
+  if (!linkDoc || typeof linkDoc !== 'object') return null;
+  const nested =
+    linkDoc.wikidata && typeof linkDoc.wikidata === 'object' ? linkDoc.wikidata : null;
+  const raw = linkDoc.baseAppid != null ? linkDoc.baseAppid : nested && nested.baseAppid;
+  const appid = Number(raw);
+  return Number.isInteger(appid) && appid > 0 ? appid : null;
 }
 
 /** One library row with the name it is matched by. */
@@ -294,6 +335,8 @@ function nodeOf(game, detailsDoc, linkDoc) {
     developers: normalizedDevelopers(detailsDoc),
     year: yearOf(detailsDoc, linkDoc),
     qid: qidOf(linkDoc),
+    baseQid: baseQidOf(linkDoc),
+    baseAppid: baseAppidOf(linkDoc),
     franchiseKey: (linkDoc && linkDoc.franchiseKey) || null,
   };
 }
@@ -315,6 +358,22 @@ function editionMatch(left, right) {
 
   if (left.qid && right.qid && left.qid === right.qid) {
     return { confidence: 'qid', reason: 'wikidata_qid', qid: left.qid };
+  }
+
+  // B6: the base-version bridge. A regional SKU has no P1733 of its own, so
+  // `qid` is null and `baseQid` names the work; the base card carries the same
+  // QID as its own `qid`. Two regional SKUs of one base share `baseQid` only.
+  // The bridge writes `baseQid` under strict guards (exact normalized label +
+  // numeric signature, `franchise.js`), so this is as strong as a QID hit —
+  // but the QIDs must actually agree, `null` never matches.
+  if (left.qid && right.baseQid && left.qid === right.baseQid) {
+    return { confidence: 'qid', reason: 'wikidata_base_qid', qid: left.qid };
+  }
+  if (right.qid && left.baseQid && right.qid === left.baseQid) {
+    return { confidence: 'qid', reason: 'wikidata_base_qid', qid: right.qid };
+  }
+  if (left.baseQid && right.baseQid && left.baseQid === right.baseQid) {
+    return { confidence: 'qid', reason: 'wikidata_base_qid', qid: left.baseQid };
   }
 
   if (
@@ -387,13 +446,27 @@ function primaryOf(appids, nodes, gamesByAppid) {
   return sorted[0];
 }
 
+/**
+ * Work key of a connected component.
+ *
+ * Precedence: **one own QID** (the SKU's own `P1733` item) beats **one base
+ * QID**, and only when neither is unique does the key fall back to
+ * `steam:<min appid>`. This matters for a component like
+ * `Serious Sam HD: The Second Encounter` + `Serious Sam Classic: …` — Wikidata
+ * models them as two items (HD is a remaster), so after the bridge there are
+ * two QIDs in one work; the own QID keeps the stable key the title merge had.
+ */
 function componentKey(appids, nodes) {
-  const qids = new Set();
+  const own = new Set();
+  const base = new Set();
   for (const appid of appids) {
     const node = nodes.get(appid);
-    if (node && node.qid) qids.add(node.qid);
+    if (!node) continue;
+    if (node.qid) own.add(node.qid);
+    if (node.baseQid) base.add(node.baseQid);
   }
-  if (qids.size === 1) return `wd:${[...qids][0]}`;
+  if (own.size === 1) return `wd:${[...own][0]}`;
+  if (own.size === 0 && base.size === 1) return `wd:${[...base][0]}`;
   return `steam:${Math.min(...appids)}`;
 }
 
@@ -442,14 +515,15 @@ function buildEditionIndex(input = {}) {
   };
 
   const appids = [...nodes.keys()];
-  // Pass 1: same Wikidata QID is authoritative.
+  // Pass 1: same Wikidata QID (own or base version) is authoritative.
   const byQid = new Map();
   for (const appid of appids) {
     const node = nodes.get(appid);
-    if (!node.qid) continue;
-    const list = byQid.get(node.qid) || [];
-    list.push(appid);
-    byQid.set(node.qid, list);
+    for (const qid of new Set([node.qid, node.baseQid].filter(Boolean))) {
+      const list = byQid.get(qid) || [];
+      if (!list.includes(appid)) list.push(appid);
+      byQid.set(qid, list);
+    }
   }
   for (const list of byQid.values()) {
     for (let i = 0; i < list.length; i++) {
@@ -595,6 +669,7 @@ function buildEditionIndex(input = {}) {
       merges: Array.isArray(manual.merges) ? manual.merges : [],
       splits: Array.isArray(manual.splits) ? manual.splits : [],
     },
+    manualFingerprint: manualSignature(manual),
     groups,
     canonical,
     meta: {
@@ -626,6 +701,32 @@ function inputSignature(library, details, links) {
     return `${count}:${latest}`;
   };
   return `${libraryFingerprint}|d${describe(details)}|l${describe(links)}`;
+}
+
+/**
+ * Content fingerprint of the manual overrides.
+ *
+ * `ensureEditions` used to decide freshness on `inputsFingerprint` only, so
+ * editing `manual.merges` / `manual.splits` in `editions.json` did **nothing**
+ * until the library or the metadata moved (audit §4.4d: «ручные мержи
+ * инертны»). The manual list is part of the inputs, so it gets its own
+ * fingerprint and a change forces a rebuild.
+ */
+function manualSignature(manual) {
+  const pairs = (value) =>
+    (Array.isArray(value) ? value : [])
+      .map((pair) => {
+        if (!Array.isArray(pair) || pair.length < 2) return null;
+        const left = Number(pair[0]);
+        const right = Number(pair[1]);
+        if (!Number.isInteger(left) || !Number.isInteger(right)) return null;
+        return `${Math.min(left, right)}:${Math.max(left, right)}`;
+      })
+      .filter(Boolean)
+      .sort();
+  const merges = pairs(manual && manual.merges);
+  const splits = pairs(manual && manual.splits);
+  return `m[${merges.join(',')}]s[${splits.join(',')}]`;
 }
 
 /** True when every one of `games` has a canonical entry in `doc`. */
@@ -685,17 +786,20 @@ function saveEditions(profileKey, doc) {
 function ensureEditions(profileKey, input = {}) {
   const existing = readEditions(profileKey);
   const signature = inputSignature(input.library, input.details, input.links);
+  const manual = existing && existing.manual;
   const fresh =
     existing &&
     Number(existing.algorithmVersion) === ALGORITHM_VERSION &&
     existing.inputsFingerprint === signature &&
+    // A hand-edited `manual.merges`/`splits` is an input too (audit §4.4d).
+    existing.manualFingerprint === manualSignature(manual) &&
     covers(existing, input.games);
   if (fresh) return { doc: existing, rebuilt: false };
   const built = buildEditionIndex({
     games: input.games,
     details: input.details,
     links: input.links,
-    manual: existing && existing.manual,
+    manual,
     profileKey,
     libraryFingerprint: input.library && input.library.fingerprint,
     inputsFingerprint: signature,
@@ -721,8 +825,13 @@ module.exports = {
   numericSignature,
   levenshtein,
   editionMatch,
+  qidOf,
+  baseQidOf,
+  baseAppidOf,
+  nodeOf,
   buildEditionIndex,
   inputSignature,
+  manualSignature,
   covers,
   editionKeyOf,
   readEditionsFile,
