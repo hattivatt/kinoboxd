@@ -217,7 +217,8 @@ app.use('/api/games', gamesPersonnelRouter);
    джоба `skipped`, `skipped: "lock_busy"`, без запросов к WDQS.
 6. **Coalescing**: повторный `kick` во время работы возвращает тот же `jobId`;
    повторный ленивый kick в течение 10 минут не перезапускает пасс
-   (`recent_cooldown`).
+   (`recent_cooldown`). Явный импорт/refresh/enrich этот лимит **обходит**
+   (`forceKick`): это действие пользователя, а не фоновый опрос.
 7. **Полит-корректность WDQS не меняется**: один SPARQL-батч на ≤450
    appid/QID, пауза между батчами, breaker 30 мин на 403/429/5xx
    (`wikidata.js`). Лок персоналий — отдельный от enrich, счётчики не

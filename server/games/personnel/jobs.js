@@ -177,7 +177,14 @@ function kickGate(profileKey, options = {}) {
     : DEFAULT_KICK_COOLDOWN_MS;
   const last = lastFinished.get(parsed.key);
   // A failed pass is not throttled: the WD breaker already protects WDQS.
-  if (last && last.status !== 'failed' && Date.now() - last.at < cooldownMs) {
+  // An explicit user action (import/refresh/enrich) sets `forceKick` and skips
+  // this guard — coalescing still prevents a second concurrent pass.
+  if (
+    options.forceKick !== true &&
+    last &&
+    last.status !== 'failed' &&
+    Date.now() - last.at < cooldownMs
+  ) {
     return 'recent_cooldown';
   }
   return null;
@@ -298,7 +305,10 @@ function enqueue(job, task) {
 function startPersonnel(profileToken, options = {}) {
   const parsed = gameCache.parseProfileToken(profileToken);
   if (!parsed) {
-    throw codedError(`"profile": expected "steam-<steamid64>", got: ${profileToken}.`, 'invalid_profile');
+    throw codedError(
+      `"profile": expected "steam-<steamid64>", got: ${profileToken}.`,
+      'invalid_profile'
+    );
   }
   const profile = gameCache.getProfile(parsed.userKey);
   const library = gameCache.getLibrary(parsed.userKey);

@@ -322,6 +322,8 @@ function createRouter(deps = {}) {
         personnelJob = personnelJobs.kickQuietly(scope.parsed.key, {
           ...(deps.personnelOptions || {}),
           waitForEnrich: true,
+          // Explicit «Обогатить» must not be swallowed by the lazy cooldown.
+          forceKick: true,
         });
       }
       const created = job.status === 'running' && job.stage === 'queued';

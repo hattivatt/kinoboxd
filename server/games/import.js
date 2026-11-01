@@ -201,6 +201,9 @@ function kickPersonnelQuietly(job, options = {}) {
   const status = personnelJobs.kickQuietly(job.profile, {
     ...(options.personnelOptions || {}),
     waitForEnrich: true,
+    // An explicit import/refresh is a user action: it must not be swallowed by
+    // the lazy re-kick cooldown (coalescing still prevents a second pass).
+    forceKick: true,
   });
   if (status && status.id) {
     job.personnelJobId = status.id;

@@ -384,3 +384,29 @@ test('a lock held by another pass makes the job skip instead of racing', async (
   assert.equal(personnelJobs.getStatus(retry.id).status, 'done');
   assert.equal(wd.calls.appids.length, 1);
 });
+
+test('an explicit import/enrich kick bypasses the lazy re-kick cooldown', async () => {
+  const userKey = '76561198000001006';
+  const profileKey = await seedProfile(userKey, [8601]);
+  personnelJobs.resetCooldown();
+  const wd = createWdMock();
+  const lazy = personnelJobs.kickQuietly(profileKey, { wikidata: wd, moby: createMobyMock() });
+  assert.ok(lazy.id);
+  await personnelJobs.whenIdle();
+
+  const blocked = personnelJobs.kickQuietly(profileKey, { wikidata: wd, moby: createMobyMock() });
+  assert.equal(blocked.id, null);
+  assert.equal(blocked.skipped, 'recent_cooldown');
+
+  const forced = personnelJobs.kickQuietly(profileKey, {
+    wikidata: wd,
+    moby: createMobyMock(),
+    forceKick: true,
+  });
+  assert.ok(forced.id, 'a user action must still start a pass');
+  await personnelJobs.whenIdle();
+  const status = personnelJobs.getStatus(forced.id);
+  assert.equal(status.status, 'done');
+  assert.equal(status.skippedFresh, 1, 'the cache is the progress: nothing refetched');
+  assert.equal(wd.calls.appids.length, 1);
+});
