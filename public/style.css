@@ -4394,6 +4394,26 @@ img { display: block; }
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.32);
   outline: none;
 }
+/* M6c: «also owned in another store» — a badge, never a second hours sum. */
+.games-recent-source {
+  position: absolute;
+  left: 5px;
+  bottom: 5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #efe8ff;
+  background: rgba(20, 16, 30, 0.82);
+  border: 1px solid rgba(177, 140, 255, 0.5);
+  pointer-events: none;
+}
+.games-recent-source.is-epic {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(20, 20, 20, 0.85);
+}
 .games-recent-icon {
   width: 100%;
   height: 100%;
@@ -5204,4 +5224,34 @@ img { display: block; }
   border-radius: 999px;
   font-size: 10.5px;
   color: var(--muted);
+}
+.games-sources-chip.is-epic { border-color: rgba(255, 255, 255, 0.22); }
+.games-sources-chip.is-gog { border-color: rgba(177, 140, 255, 0.35); }
+
+/* ── M6c: «Подключения» — one screen for GOG + Epic ── */
+.games-connections-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.games-connections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.games-connections:empty { display: none; }
+.games-connections-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.games-connections-grid .book-source-card[data-source="secondary-note"] {
+  border-top: 2px solid rgba(255, 255, 255, 0.1);
+}
+.games-connections-back {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+.games-import-connections-hint { margin-top: 14px; }
+.games-source-row.is-epic .games-source-name { color: #f0e6ff; }
+@media (max-width: 720px) {
+  .games-connections-grid { grid-template-columns: minmax(0, 1fr); }
 }

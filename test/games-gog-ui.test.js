@@ -133,7 +133,7 @@ test('GOG UI', async (t) => {
     assert.equal(gog.hours, 120.4);
     assert.equal(gog.canConnect, false);
     assert.equal(gog.statusText, 'данные от 1 нояб. 2026');
-    assert.equal(epic.status, 'soon');
+    assert.equal(epic.status, 'not_connected');
     assert.equal(epic.games, null);
     assert.equal(epic.hours, null);
     assert.equal(view.secondaryOnly, 96);

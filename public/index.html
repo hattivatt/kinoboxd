@@ -948,7 +948,7 @@
             </nav>
           </div>
           <div class="topbar-actions">
-            <button type="button" class="btn btn-ghost" id="games-connections" hidden title="Подключения: GOG и другие библиотеки" aria-label="Подключения">
+            <button type="button" class="btn btn-ghost" id="games-connections-btn" hidden title="Подключения: GOG, Epic и другие библиотеки" aria-label="Подключения">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M9 7H7a5 5 0 0 0 0 10h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><path d="M8 12h8"/>
               </svg>
@@ -991,9 +991,83 @@
           <span class="games-profile-empty" id="games-profile-empty" hidden>профиль ещё не импортирован</span>
         </section>
 
-        <!-- M6b: Epic secondary library (device-code). The shared
-             «Подключения» screen of M6c renders the GOG slot next to it. -->
-        <section class="games-connections" id="games-connections" hidden aria-label="Подключения библиотек"></section>
+        <!-- M6c: «Подключения» — one screen for every secondary library of the
+             same owner. GOG (M6a) and Epic (M6b) are wired here; Steam stays
+             the journal and is imported from the screen below. -->
+        <section class="games-connections-screen" id="games-connections-screen" hidden aria-label="Подключения библиотек">
+          <div class="dash-hero books-import-hero">
+            <div class="kicker dash-kicker">подключения</div>
+            <h1>Вторые библиотеки</h1>
+            <p class="dash-sub">GOG и Epic — библиотеки того же владельца. Их игры и часы показываются отдельной строкой и никогда не складываются с журналом Steam: одна игра могла запускаться в двух магазинах, это два факта, а не одна сумма.</p>
+          </div>
+
+          <!-- Epic (M6b) mounts its slot into #games-connections; the GOG card
+               below is painted by the M6a code. One screen, no duplicate
+               «подключено» state. -->
+          <section class="games-connections" id="games-connections" aria-label="Слоты подключений"></section>
+
+          <div class="games-import-grid games-connections-grid">
+            <article class="book-source-card" data-source="gog" id="games-gog-card">
+              <div class="book-source-head">
+                <span class="book-source-logo is-gog" aria-hidden="true">GOG</span>
+                <span class="book-source-copy">
+                  <span class="book-source-title">GOG</span>
+                  <span class="book-source-hint">вторая библиотека того же владельца · часы отдельно от Steam</span>
+                </span>
+              </div>
+
+              <p class="games-gog-status" id="games-gog-status">GOG: не подключён</p>
+
+              <div class="books-source-form" id="games-gog-form">
+                <button type="button" class="btn btn-primary books-source-submit" id="games-gog-login">
+                  <span class="spinner spinner-sm" id="games-gog-login-spinner" hidden aria-hidden="true"></span>
+                  <span id="games-gog-login-label">Войти через GOG</span>
+                </button>
+                <label class="books-field" for="games-gog-code">
+                  <span class="books-field-label">code из адресной строки <span>после входа на GOG</span></span>
+                  <input class="books-input" id="games-gog-code" name="gog-code" type="text" autocomplete="off" spellcheck="false" placeholder="вставьте code">
+                </label>
+                <div class="books-source-error" id="games-gog-error" role="alert" hidden></div>
+                <div class="games-gog-actions">
+                  <button type="button" class="btn btn-primary books-source-submit" id="games-gog-connect">Подключить</button>
+                  <button type="button" class="btn btn-ghost" id="games-gog-import" hidden>Импортировать библиотеку</button>
+                  <button type="button" class="btn btn-link" id="games-gog-logout" hidden>Отключить</button>
+                </div>
+              </div>
+
+              <p class="book-source-note">
+                GOG не отдаёт чужую библиотеку публично. Кнопка «Войти через GOG» открывает страницу входа GOG;
+                после входа браузер попадёт на <code>embed.gog.com/on_login_success</code> — скопируйте
+                значение <code>code</code> из адресной строки и вставьте сюда. Код одноразовый. Часы GOG
+                показываются отдельной строкой и никогда не складываются с часами Steam: игра могла
+                запускаться в обеих библиотеках.
+              </p>
+            </article>
+
+            <article class="book-source-card" data-source="secondary-note">
+              <div class="book-source-head">
+                <span class="book-source-logo" aria-hidden="true">§</span>
+                <span class="book-source-copy">
+                  <span class="book-source-title">Как это считается</span>
+                  <span class="book-source-hint">одно правило для GOG и Epic</span>
+                </span>
+              </div>
+              <ul class="games-facts-list">
+                <li><b>Владелец один.</b> Вторая библиотека привязывается к выбранному профилю Steam и никогда не попадает под другого человека.</li>
+                <li><b>Часы не суммируются.</b> «Steam 5 862 ч» и «GOG 120 ч» — две строки; итоговой суммы по магазинам нет.</li>
+                <li><b>Достижения и календарь</b> — только Steam: у GOG и Epic нет той же модели достижений и дат сессий.</li>
+                <li><b>Даты.</b> Снимок библиотеки хранится с датой: после отключения аккаунта цифры остаются, но помечены «данные от …».</li>
+              </ul>
+              <p class="book-source-note">
+                Epic подключается по device-code: сервер показывает код и ссылку на
+                <code>epicgames.com/id/activate</code>, токен остаётся на сервере.
+                GOG — через одноразовый <code>code</code> после входа.
+              </p>
+            </article>
+          </div>
+
+          <button type="button" class="btn btn-link games-connections-back" id="games-connections-back">← к профилю Steam</button>
+        </section>
 
         <!-- empty state: Steam import card -->
         <section class="games-import" id="games-import" hidden>
@@ -1057,42 +1131,11 @@
               </p>
             </article>
 
-            <article class="book-source-card" data-source="gog" id="games-gog-card">
-              <div class="book-source-head">
-                <span class="book-source-logo is-gog" aria-hidden="true">GOG</span>
-                <span class="book-source-copy">
-                  <span class="book-source-title">GOG</span>
-                  <span class="book-source-hint">вторая библиотека того же владельца · часы отдельно от Steam</span>
-                </span>
-              </div>
-
-              <p class="games-gog-status" id="games-gog-status">GOG: не подключён</p>
-
-              <div class="books-source-form" id="games-gog-form">
-                <button type="button" class="btn btn-primary books-source-submit" id="games-gog-login">
-                  <span class="spinner spinner-sm" id="games-gog-login-spinner" hidden aria-hidden="true"></span>
-                  <span id="games-gog-login-label">Войти через GOG</span>
-                </button>
-                <label class="books-field" for="games-gog-code">
-                  <span class="books-field-label">code из адресной строки <span>после входа на GOG</span></span>
-                  <input class="books-input" id="games-gog-code" name="gog-code" type="text" autocomplete="off" spellcheck="false" placeholder="вставьте code">
-                </label>
-                <div class="books-source-error" id="games-gog-error" role="alert" hidden></div>
-                <div class="games-gog-actions">
-                  <button type="button" class="btn btn-primary books-source-submit" id="games-gog-connect">Подключить</button>
-                  <button type="button" class="btn btn-ghost" id="games-gog-import" hidden>Импортировать библиотеку</button>
-                  <button type="button" class="btn btn-link" id="games-gog-logout" hidden>Отключить</button>
-                </div>
-              </div>
-
-              <p class="book-source-note">
-                GOG не отдаёт чужую библиотеку публично. Кнопка «Войти через GOG» открывает страницу входа GOG;
-                после входа браузер попадёт на <code>embed.gog.com/on_login_success</code> — скопируйте
-                значение <code>code</code> из адресной строки и вставьте сюда. Код одноразовый. Часы GOG
-                показываются отдельной строкой и никогда не складываются с часами Steam: игра могла
-                запускаться в обеих библиотеках.
-              </p>
-            </article>
+            <p class="book-source-note games-import-connections-hint">
+              GOG и Epic — вторые библиотеки того же владельца. Подключение и статус — на экране
+              <button type="button" class="btn btn-link" id="games-import-connections-link">«Подключения»</button>.
+              Их часы не складываются с журналом Steam.
+            </p>
           </div>
         </section>
 
@@ -1164,8 +1207,8 @@
               <div class="games-sources-body" id="games-sources-body"></div>
               <div class="games-sources-secondary" id="games-sources-secondary" hidden></div>
               <div class="chart-foot">
-                <span><i class="swatch blue"></i>Steam — журнал, GOG — вторая библиотека</span>
-                <span class="chart-foot-hint">часы по источникам не суммируются: одна игра могла запускаться в обеих</span>
+                <span><i class="swatch blue"></i>Steam — журнал, GOG и Epic — вторые библиотеки</span>
+                <span class="chart-foot-hint">часы по источникам не суммируются: одна игра могла запускаться в нескольких</span>
               </div>
             </section>
 

@@ -65,6 +65,11 @@ class FakeNode {
     }
   }
   appendChild(kid) { this.append(kid); return kid; }
+  replaceChildren(...kids) {
+    for (const kid of this.children) kid.parentNode = null;
+    this.children = [];
+    this.append(...kids);
+  }
   insertBefore(next, ref) {
     const index = ref ? this.children.indexOf(ref) : -1;
     if (index < 0) { this.append(next); return next; }

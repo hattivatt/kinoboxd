@@ -180,6 +180,8 @@ function clearImportTimer() {
 function render() {
   const host = state.host;
   if (!host) return;
+  // Defensive: a DOM-free harness may hand a stub host without children APIs.
+  if (typeof host.replaceChildren !== 'function') return;
   host.hidden = false;
   host.replaceChildren();
   injectStyles();
@@ -303,6 +305,16 @@ function render() {
   host.append(card);
 }
 
+/**
+ * Tell the games dashboard that the Epic library changed (import finished,
+ * account connected/disconnected). The stats payload carries the Epic numbers,
+ * so it has to be rebuilt — the slot itself never renders Steam data.
+ */
+function notifyEpicChanged() {
+  if (typeof document === 'undefined' || typeof document.dispatchEvent !== 'function') return;
+  document.dispatchEvent(new CustomEvent('games:epic-changed'));
+}
+
 async function refreshStatus() {
   if (!state.host) return;
   state.owner = currentOwner();
@@ -359,6 +371,7 @@ async function pollAuth(authId) {
       state.importJobId = session.importJobId || null;
       if (state.importJobId) pollImport(state.importJobId);
       await refreshStatus();
+      notifyEpicChanged();
       return;
     }
     if (session.status === 'expired' || session.status === 'failed') {
@@ -421,6 +434,7 @@ async function pollImport(jobId) {
           state.error = job.error || 'импорт Epic не удался';
         }
         await refreshStatus();
+        if (job.status !== 'failed') notifyEpicChanged();
         return;
       }
       render();
@@ -451,6 +465,7 @@ async function disconnect() {
     });
     state.status = { status: 'not_connected', summary: null, account: null };
     await refreshStatus();
+    notifyEpicChanged();
   } catch (err) {
     state.error = err.message || 'не удалось отключить Epic';
     render();
@@ -475,6 +490,10 @@ export function initGamesEpic() {
   }
   state.initialized = true;
   mountEpicSlot(host);
+  // M6c: games.js asks for a refresh when the «Подключения» screen opens.
+  document.addEventListener('games:connections-open', () => {
+    if (!state.auth) refreshStatus();
+  });
   document.addEventListener('click', (event) => {
     if (event.target && event.target.closest && event.target.closest('#games-profile-list')) {
       // The switcher writes the new key synchronously; let it settle first.

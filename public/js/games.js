@@ -50,6 +50,15 @@ import {
   configureGamesModals, openGameCardModal, openGameListModal, openPersonModal, personAvatarEl,
   openFranchiseModal, gameCoverVerticalEl,
 } from './games-modal.js';
+// M6c: the Epic slot is a self-contained module loaded by index.html. games.js
+// never imports it (that would drag its DOM/timers into DOM-free tests); it
+// asks for a refresh through a DOM event instead.
+const CONNECTIONS_OPEN_EVENT = 'games:connections-open';
+
+function requestEpicRefresh() {
+  if (typeof document === 'undefined' || typeof document.dispatchEvent !== 'function') return;
+  document.dispatchEvent(new CustomEvent(CONNECTIONS_OPEN_EVENT));
+}
 import { renderAchievementCalendar, renderAchievementStreaks } from './games-charts.js';
 
 const PROFILE_KEY = 'kinoboxd.games.profile.v1';
@@ -210,6 +219,10 @@ function showScreen(name) {
     progress: $('games-progress'),
     dashboard: $('games-dash'),
     personnel: $('games-personnel'),
+    // M6c: one screen for every secondary library (GOG + Epic). It is a real
+    // screen, not a section glued to the dashboard, so the Epic slot and the
+    // GOG card are never painted twice.
+    connections: $('games-connections-screen'),
   };
   for (const [key, node] of Object.entries(screens)) {
     if (node) node.hidden = key !== name;
@@ -219,6 +232,11 @@ function showScreen(name) {
   updateActions();
   const back = $('games-progress-back');
   if (back) back.hidden = false;
+  // M6c: opening «Подключения» refreshes both slots (GOG status + Epic slot).
+  if (name === 'connections' && previous !== name) {
+    ensureGogStatus();
+    requestEpicRefresh();
+  }
   // `onActivate` is main.js's `showView('games')`, which scrolls to top. Calling
   // it on every render would throw the user back to the top on each poll tick.
   if (previous !== name && state.active && state.onActivate) state.onActivate();
@@ -237,8 +255,11 @@ function updateActions() {
   }
   const reimport = $('games-reimport');
   if (reimport) reimport.hidden = state.view === 'progress';
-  const connections = $('games-connections');
-  if (connections) connections.hidden = state.view === 'progress';
+  const connections = $('games-connections-btn');
+  // M6c: «Подключения» is offered only when there is an owner to attach a
+  // library to (a secondary library needs a Steam profile) and never on the
+  // import-progress screen.
+  if (connections) connections.hidden = state.view === 'progress' || !state.profileKey;
 }
 
 function showLoading(visible) {
@@ -490,7 +511,9 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
       renderProfiles();
       return;
     }
-    showScreen(state.view === 'personnel' ? 'personnel' : 'dashboard');
+    showScreen(
+      state.view === 'personnel' || state.view === 'connections' ? state.view : 'dashboard'
+    );
     if (silent) {
       withPreservedScroll(
         () => (typeof window !== 'undefined' ? window.scrollY || 0 : 0),
@@ -885,7 +908,7 @@ async function ensureGogStatus() {
   }
 }
 
-/** «Источники»: Steam journal + GOG secondary + Epic «скоро», never summed. */
+/** «Источники»: Steam journal + GOG + Epic secondary, never summed. */
 function renderSources(data) {
   const widget = $('games-sources-widget');
   const host = $('games-sources-body');
@@ -900,7 +923,7 @@ function renderSources(data) {
   }
   for (const row of view.rows) {
     const node = el('div', {
-      class: `games-source-row is-${row.key}${row.journal ? ' is-journal' : ''}${row.soon ? ' is-soon' : ''}`,
+      class: `games-source-row is-${row.key}${row.journal ? ' is-journal' : ''}`,
     });
     node.append(el('span', { class: 'games-source-name', text: row.label }));
     const parts = [];
@@ -912,12 +935,12 @@ function renderSources(data) {
     }));
     const stateNode = el('span', { class: 'games-source-state' });
     stateNode.append(document.createTextNode(row.statusText));
-    if (row.key === 'gog' && row.canConnect) {
+    // M6c: both secondary libraries connect on the «Подключения» screen; the
+    // row only links there, it never grows a second connect form.
+    if ((row.key === 'gog' || row.key === 'epic') && row.canConnect) {
       const link = el('button', { type: 'button', class: 'btn btn-link', text: 'Подключить' });
       link.addEventListener('click', () => {
-        showScreen('import');
-        const card = $('games-gog-card');
-        if (card && typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'center' });
+        showScreen('connections');
       });
       stateNode.append(document.createTextNode(' · '));
       stateNode.append(link);
@@ -937,10 +960,15 @@ function renderSources(data) {
         const chips = el('div', { class: 'games-sources-secondary-list' });
         for (const work of view.secondaryWorks.slice(0, 8)) {
           const hours = work.hours != null ? ` · ${hoursText(work.hours, 1)}` : '';
+          const label = work.source === 'epic' ? 'Epic' : work.source === 'gog' ? 'GOG' : '';
           chips.append(el('span', {
-            class: 'games-sources-chip',
-            text: `${work.name}${hours}`,
-            title: work.gogGameId ? `GOG id ${work.gogGameId}` : '',
+            class: `games-sources-chip is-${work.source || 'unknown'}`,
+            text: `${label ? `${label} · ` : ''}${work.name}${hours}`,
+            title: work.gogGameId
+              ? `GOG id ${work.gogGameId}`
+              : work.epicId
+                ? `Epic ${work.epicId}`
+                : '',
           }));
         }
         secondary.append(chips);
@@ -1465,9 +1493,25 @@ function renderRecentStrip(data) {
       'aria-label': `${item.name}: открыть карточку игры`,
     });
     art.append(gameCoverVerticalEl(
-      { name: item.name, appid: item.appid, primaryAppid: item.primaryAppid, iconUrl: item.iconUrl },
+      {
+        name: item.name,
+        appid: item.appid,
+        primaryAppid: item.primaryAppid,
+        iconUrl: item.iconUrl,
+        coverUrl: item.coverUrl,
+      },
       { className: 'games-recent-icon' },
     ));
+    // M6c: the same work can be owned in another store; the badge says so
+    // without touching the Steam hours printed below.
+    const extraSources = (item.sources || []).filter((source) => source && source !== 'steam');
+    if (extraSources.length) {
+      art.append(el('span', {
+        class: `games-recent-source is-${extraSources[0]}`,
+        text: extraSources.map((source) => (source === 'gog' ? 'GOG' : source === 'epic' ? 'Epic' : source)).join(' · '),
+        title: `также в: ${extraSources.join(', ')} — часы по источникам не суммируются`,
+      }));
+    }
     card.append(art);
     card.append(el('span', { class: 'games-recent-name', text: item.name, title: item.name }));
     card.append(el('span', {
@@ -3086,16 +3130,34 @@ export function initGames({ onActivate } = {}) {
     refresh.addEventListener('click', () => refreshProfile());
   }
 
-  /* M6a: GOG connect card. The token never reaches the browser — the code is
-     exchanged server-side and only a sanitized status comes back. */
-  const connections = $('games-connections');
+  /* M6c: «Подключения» — one screen for GOG + Epic. The GOG token never
+     reaches the browser (the code is exchanged server-side); the Epic slot
+     lives in the same screen and refreshes itself. */
+  const connections = $('games-connections-btn');
   if (connections) {
     connections.addEventListener('click', () => {
-      showScreen('import');
-      renderProfiles();
-      ensureGogStatus();
-      const card = $('games-gog-card');
-      if (card && typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'center' });
+      showScreen('connections');
+    });
+  }
+  const importConnections = $('games-import-connections-link');
+  if (importConnections) {
+    importConnections.addEventListener('click', () => {
+      showScreen('connections');
+    });
+  }
+  const connectionsBack = $('games-connections-back');
+  if (connectionsBack) {
+    connectionsBack.addEventListener('click', () => {
+      showScreen(state.profileKey ? 'dashboard' : 'import');
+    });
+  }
+  /* M6c: an Epic connect/import/disconnect changes `hoursBySource.epic` and
+     `secondaryWorks` in the stats payload — rebuild it once, silently. */
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('games:epic-changed', () => {
+      if (!state.profileKey || !state.active) return;
+      state.loaded = false;
+      loadStats({ force: true });
     });
   }
   const gogLogin = $('games-gog-login');
@@ -3332,15 +3394,20 @@ export async function showGames() {
   if (state.view === 'personnel') {
     showScreen('dashboard');
   }
-  if (state.view === 'dashboard' && state.data) {
+  if ((state.view === 'dashboard' || state.view === 'connections') && state.data) {
     renderProfiles();
-    if (!state.personnel.data && !state.personnel.loading) ensurePersonnel(state.role);
+    if (state.view === 'dashboard' && !state.personnel.data && !state.personnel.loading) {
+      ensurePersonnel(state.role);
+    }
     // A silent background refresh keeps a long-lived tab honest (the library
     // may have changed on another device). The dashboard is rebuilt wholesale,
     // so the window scroll is restored explicitly — the books pattern.
     if (Date.now() - (state.loadedAt || 0) > 60_000) {
       await loadStats({ force: true, silent: true });
     }
+    // M6c: the Epic slot is on its own 15 s timer; a tab activation is a good
+    // moment to ask once more (the owner may have changed elsewhere).
+    if (state.view === 'connections') requestEpicRefresh();
     return;
   }
   await loadStats({ force: true });

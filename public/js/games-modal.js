@@ -204,6 +204,11 @@ export function gameVerticalCoverUrls(game) {
     urls.push(`${STEAM_CDN}/${appid}/header.jpg`);
     urls.push(`${STEAM_CDN}/${appid}/capsule_231x87.jpg`);
   }
+  // M6c: a cross-store row may bring its own poster (GOG/Epic art is not on
+  // the Steam CDN). Steam rows keep the Steam chain first; the provided URL is
+  // the only art when there is no appid at all.
+  const provided = game && (game.verticalCoverUrl || game.coverUrl);
+  if (/^https?:\/\//i.test(String(provided || ''))) urls.push(String(provided));
   const icon = game && /^https?:\/\//i.test(String(game.iconUrl || '')) ? String(game.iconUrl) : '';
   if (icon) urls.push(icon);
   return urls;
@@ -801,9 +806,15 @@ function fillGameCard({ head, copy, body, game }) {
   clear(copy);
   clear(body);
   head.insertBefore(gameCoverVerticalEl(game, { className: 'modal-game-cover' }), copy);
+  // M6c: the card may be opened for a work owned in several stores. The role
+  // line names every store; the hours below stay Steam-only (the journal).
+  const extraStores = (Array.isArray(game.sources) ? game.sources : [])
+    .filter((source) => source && source !== 'steam')
+    .map((source) => (source === 'gog' ? 'GOG' : source === 'epic' ? 'Epic' : source));
+  const storeLabel = extraStores.length ? `Steam + ${extraStores.join(' + ')}` : 'Steam';
   copy.append(el('div', {
     class: 'modal-role',
-    text: game.type && game.type !== 'game' ? `Steam · ${game.typeLabel}` : 'Игра · Steam',
+    text: game.type && game.type !== 'game' ? `${storeLabel} · ${game.typeLabel}` : `Игра · ${storeLabel}`,
   }));
   copy.append(el('h2', { class: 'modal-title', id: head.dataset.titleId || '', text: game.name }));
   const subParts = [];

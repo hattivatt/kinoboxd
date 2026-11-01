@@ -38,6 +38,13 @@ function minutesToHours(minutes) {
   return Math.round((value / 60) * 10) / 10;
 }
 
+/**
+ * Steam side of the contract: the **raw library sum** (`totalMinutes` of every
+ * entry). `/api/games/stats` reports the filtered journal total (games only,
+ * canonical works), which can be a few hours lower — the stats payload
+ * therefore overrides this field with its own `totalHours` instead of copying
+ * the layer value.
+ */
 function steamSide(ownerKey) {
   const match = /^steam-(\d{17})$/.exec(String(ownerKey == null ? '' : ownerKey).trim());
   if (!match) return { hours: null, owned: null };
@@ -139,39 +146,154 @@ function toExportedGame(game, accountId, ownerKey) {
  * they must agree with the stored binding.
  */
 async function buildEpicLayer(options = {}) {
+  const { ownerKey, accountId } = resolveOwner(options);
+  const steam = steamSide(ownerKey);
+  const libraries = ownerKey ? epicCache.librariesForOwner(ownerKey) : [];
+  if (!accountId) return emptyLayer(ownerKey, libraries, steam);
+  // Only the redacted summary is needed here (presence/expiry/auth error):
+  // the layer never reads or returns a token value.
+  const token = tokenStore.readTokenSummarySync(accountId);
+  return composeLayer({ ownerKey, accountId, token, steam, libraries });
+}
+
+/**
+ * Synchronous variant for the `/stats` builder (the route is synchronous and
+ * polled by the UI). Same numbers as `buildEpicLayer`, but no `exportedGames`
+ * array is materialized — the stats payload only needs the aggregate and the
+ * per-game `secondaryWorks` entries, and copying 300+ objects on every poll is
+ * waste. The contract version and all `hoursBySource`/`ownedBySource` fields
+ * are identical, so the UI cannot see two different answers.
+ */
+function buildEpicLayerSync(options = {}) {
+  const { ownerKey, accountId } = resolveOwner(options);
+  const steam = steamSide(ownerKey);
+  const libraries = ownerKey ? epicCache.librariesForOwner(ownerKey) : [];
+  if (!accountId) {
+    const { exportedGames, ...rest } = emptyLayer(ownerKey, libraries, steam);
+    return rest;
+  }
+  const token = tokenStore.readTokenSummarySync(accountId);
+  const { exportedGames, ...rest } = composeLayer({ ownerKey, accountId, token, steam, libraries });
+  return rest;
+}
+
+/**
+ * The `sources.epic` block of the games payload — the same shape as
+ * `sources.gog`, so the «Источники» widget and the «Подключения» screen read
+ * both secondary libraries through one contract. Numbers stay per source.
+ */
+function epicSourceBlock(layer) {
+  if (!layer) {
+    return {
+      configured: false,
+      connected: false,
+      status: 'not_connected',
+      accountId: null,
+      displayName: null,
+      ownerProfile: null,
+      lastImportAt: null,
+      libraryFetchedAt: null,
+      playtimeFetchedAt: null,
+      productCount: null,
+      hours: null,
+      stale: false,
+    };
+  }
+  const status = layer.status || 'not_connected';
+  return {
+    configured: status !== 'not_connected',
+    connected: status !== 'not_connected' && status !== 'auth_expired',
+    status,
+    accountId: layer.accountId || null,
+    displayName: (layer.account && layer.account.displayName) || null,
+    ownerProfile: layer.owner || null,
+    lastImportAt: (layer.meta && layer.meta.fetchedAt) || null,
+    libraryFetchedAt: (layer.meta && layer.meta.fetchedAt) || null,
+    playtimeFetchedAt: (layer.meta && layer.meta.playtimeFetchedAt) || null,
+    productCount: layer.summary ? layer.summary.ownedCount : null,
+    hours: layer.summary ? layer.summary.hours : null,
+    // A stale snapshot keeps its numbers and its date, never a zero.
+    stale: status === 'stale' || status === 'auth_expired' || status === 'not_imported',
+  };
+}
+
+/**
+ * Epic games as `secondaryWorks` entries. Epic has **no** work identity yet
+ * (the Wikidata bridge P6278/P2725/P1733 is M6c), so every game is its own
+ * secondary entry with `workKey: null` and is never merged into a Steam work.
+ * The shape mirrors the GOG entries so the UI renders one list.
+ */
+function epicSecondaryWorks(layer, { limit = 200 } = {}) {
+  const games = Array.isArray(layer && layer.games) ? layer.games : [];
+  return games
+    .filter((game) => game && game.name)
+    .slice(0, limit)
+    .map((game) => ({
+      workKey: null,
+      source: 'epic',
+      name: game.name,
+      sources: ['epic'],
+      ownedOn: ['epic'],
+      storeIds: { steam: null, gog: null, epic: game.catalogItemId || null },
+      hoursBySource: {
+        steam: null,
+        gog: null,
+        epic: game.totalMinutes == null ? null : game.totalMinutes,
+      },
+      primaryAppid: null,
+      gog: null,
+      epic: {
+        accountId: (layer && layer.accountId) || null,
+        appName: game.appName || null,
+        catalogItemId: game.catalogItemId || null,
+        slug: game.slug || null,
+        namespace: game.namespace || null,
+        platforms: game.platforms || [],
+        image: null,
+      },
+      matchedBy: 'none',
+      confidence: 'single',
+    }));
+}
+
+function resolveOwner(options = {}) {
   const ownerKey = options.ownerKey ? String(options.ownerKey).trim() : null;
   let accountId = options.accountId ? String(options.accountId).trim() : null;
   if (!accountId && ownerKey) accountId = epicCache.epicAccountForOwner(ownerKey);
+  return { ownerKey, accountId };
+}
 
-  const steam = steamSide(ownerKey);
-  const libraries = ownerKey ? epicCache.librariesForOwner(ownerKey) : [];
+function emptyLayer(ownerKey, libraries, steam) {
+  return {
+    source: 'epic',
+    contractVersion: CONTRACT_VERSION,
+    owner: ownerKey,
+    accountId: null,
+    status: 'not_connected',
+    account: null,
+    libraries,
+    summary: null,
+    hoursBySource: { steam: steam.hours, epic: null },
+    ownedBySource: { steam: steam.owned, epic: null },
+    games: [],
+    exportedGames: [],
+    meta: {
+      note:
+        'Epic не подключён: часы Epic отсутствуют (null), а не 0. ' +
+        'Steam-журнал не меняется.',
+    },
+  };
+}
 
-  if (!accountId) {
-    return {
-      source: 'epic',
-      contractVersion: CONTRACT_VERSION,
-      owner: ownerKey,
-      accountId: null,
-      status: 'not_connected',
-      account: null,
-      libraries,
-      summary: null,
-      hoursBySource: { steam: steam.hours, epic: null },
-      ownedBySource: { steam: steam.owned, epic: null },
-      games: [],
-      exportedGames: [],
-      meta: {
-        note:
-          'Epic не подключён: часы Epic отсутствуют (null), а не 0. ' +
-          'Steam-журнал не меняется.',
-      },
-    };
-  }
-
+/**
+ * Assemble the layer from already-read cache documents. Pure apart from the
+ * cache reads inside; the token arrives as a **redacted summary**, so no token
+ * value ever reaches this function.
+ */
+function composeLayer({ ownerKey, accountId, token, steam, libraries }) {
   const profile = epicCache.getEpicProfile(accountId);
   const library = epicCache.getEpicLibrary(accountId);
   const playtime = epicCache.getEpicPlaytime(accountId);
-  const token = await tokenStore.getTokens(accountId);
   const tokenState = tokenStatus(token, profile);
   const status = libraryStatus(tokenState, library);
 
@@ -216,7 +338,7 @@ async function buildEpicLayer(options = {}) {
       importedAt: (profile && profile.importedAt) || null,
       disconnectedAt: (profile && profile.disconnectedAt) || null,
       authMethod: (token && token.authMethod) || null,
-      token: tokenStore.redactTokens(token),
+      token: token || null,
     },
     libraries,
     summary: library
@@ -280,7 +402,10 @@ async function buildEpicSources(ownerKey) {
 module.exports = {
   CONTRACT_VERSION,
   buildEpicLayer,
+  buildEpicLayerSync,
   buildEpicSources,
+  epicSourceBlock,
+  epicSecondaryWorks,
   steamSide,
   minutesToHours,
 };

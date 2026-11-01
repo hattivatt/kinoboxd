@@ -53,6 +53,7 @@
 const gameCache = require('./game-cache');
 const gogCache = require('./gog-cache');
 const { buildGogUnion } = require('./gog-union');
+const { buildEpicLayerSync, epicSourceBlock, epicSecondaryWorks } = require('./epic-layer');
 const franchise = require('./franchise');
 const editions = require('./editions');
 const config = require('../config');
@@ -560,6 +561,26 @@ function buildGamesStats(input = {}) {
       gogStatus === 'stale' || gogStatus === 'auth_expired' || gogStatus === 'connected_no_import',
   };
 
+  /* ---------------- M6b/M6c: Epic same-owner secondary library ------------ */
+  // Epic is an **isolated read model**, not a unioner (§14.4, M6b contract):
+  // its games have no `workKey` yet (the Wikidata bridge P6278/P2725/P1733 is
+  // M6c), so they never join a Steam work. They are listed in `secondaryWorks`
+  // with `workKey: null` and `source: 'epic'`, and their hours live only in
+  // `hoursBySource.epic`. Nothing is added to `totalHours`, `topGames` or the
+  // achievement calendar.
+  const epicLayer =
+    input.epic && typeof input.epic === 'object' && input.epic.accountId ? input.epic : null;
+  const epicSource = epicSourceBlock(epicLayer);
+  const epicHoursValue =
+    epicLayer && epicLayer.summary && epicLayer.summary.hours != null
+      ? epicLayer.summary.hours
+      : null;
+  const epicOwnedValue =
+    epicLayer && epicLayer.summary && epicLayer.summary.ownedCount != null
+      ? epicLayer.summary.ownedCount
+      : null;
+  const epicSecondaryList = epicLayer ? epicSecondaryWorks(epicLayer, { limit: 200 }) : [];
+
   const minutesList = visibleGames.map((game) => Number(game.playtime_forever) || 0);
   const hoursList = minutesList.map((minutes) => minutes / 60);
   const ownedCount = games.length;
@@ -992,6 +1013,15 @@ function buildGamesStats(input = {}) {
       iconUrl: iconUrlOf(work.primary.appid, work.primary.img_icon_url),
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
+      // M6c: when the same work is owned outside Steam, the strip card can say
+      // so (a small «GOG» badge) and show per-source hours. Additive: a
+      // Steam-only payload keeps exactly the M1 shape.
+      ...(gogUnion && gogUnion.byAppid[String(work.primary.appid)]
+        ? {
+            sources: gogUnion.byAppid[String(work.primary.appid)].sources,
+            hoursBySource: gogUnion.byAppid[String(work.primary.appid)].hoursBySource,
+          }
+        : {}),
     }));
 
   const recently2w = [...visibleWorks]
@@ -1402,6 +1432,9 @@ function buildGamesStats(input = {}) {
         gameCount: library.game_count == null ? ownedCount : library.game_count,
       },
       gog: gogSource,
+      // M6c: Epic read-model state. Same shape as `gog`, so the «Источники»
+      // widget and the «Подключения» screen render both through one contract.
+      epic: epicSource,
     },
     // M1 has no `type` in GetOwnedGames: ownedCount is the honest number,
     // gameCount is an estimate until appdetails (M2) separates DLC/tools.
@@ -1417,14 +1450,21 @@ function buildGamesStats(input = {}) {
       unplayedCount,
       backlogShare: gameCount ? round3(unplayedCount / gameCount) : 0,
       totalHours,
-      // M6a: hours and ownership per source — **never summed** across sources
-      // (§14.4 п. 2). `steam` is the journal total above; `gog` is null when
-      // no GOG account is connected and 0 when connected but empty.
-      hoursBySource: { steam: totalHours, gog: gogHoursValue, epic: null },
-      ownedBySource: { steam: ownedCount, gog: gogOwnedValue, epic: null },
+      // M6a/M6c: hours and ownership per source — **never summed** across
+      // sources (§14.4 п. 2). `steam` is the journal total above; `gog`/`epic`
+      // are null when that library is not connected and 0 when connected but
+      // empty. The UI prints one row per source, never a combined total.
+      hoursBySource: { steam: totalHours, gog: gogHoursValue, epic: epicHoursValue },
+      ownedBySource: { steam: ownedCount, gog: gogOwnedValue, epic: epicOwnedValue },
       // Union over canonical works (`workKey`): Steam + GOG, one row per work.
       worksTotal: gogSummary ? gogSummary.worksTotal : gameCount,
       secondaryOnlyWorks: gogSummary ? gogSummary.secondaryOnlyWorks : 0,
+      // Epic games have no work identity yet: counted as separate entries of
+      // `secondaryWorks`, never added to `worksTotal` (that would pretend an
+      // identity the bridge has not proven).
+      epicSecondaryGames: epicSecondaryList.length,
+      secondaryWorksTotal:
+        (gogSummary ? gogSummary.secondaryOnlyWorks : 0) + epicSecondaryList.length,
       meanHours,
       medianHours,
       top10HoursShare,
@@ -1490,11 +1530,31 @@ function buildGamesStats(input = {}) {
     achievementDays: calendar.achievementDays,
     streaks: calendar.streaks,
     gamesIndex,
-    // M6a: works that exist only outside Steam (GOG today, Epic later). The
-    // list is capped for payload size; `summary.secondaryOnlyWorks` is the
-    // full count. Never merged into the Steam journal aggregates.
-    secondaryWorks: gogUnion ? gogUnion.secondaryWorks.slice(0, 200) : [],
+    // M6a/M6c: entries that exist only outside Steam — GOG works (union by
+    // `workKey`) followed by Epic games (`workKey: null`, no identity yet).
+    // The list is capped for payload size; `summary.secondaryWorksTotal` is
+    // the full count. Never merged into the Steam journal aggregates.
+    secondaryWorks: [
+      ...(gogUnion ? gogUnion.secondaryWorks.slice(0, 200) : []),
+      ...epicSecondaryList.slice(0, 100),
+    ],
     gog: gogSummary ? { ...gogSummary, status: gogStatus } : null,
+    // M6c: the Epic read model without per-game arrays (they are already in
+    // `secondaryWorks`). `null` when no Epic account is bound to this owner.
+    epic: epicLayer
+      ? {
+          contractVersion: epicLayer.contractVersion,
+          status: epicSource.status,
+          accountId: epicLayer.accountId || null,
+          summary: epicLayer.summary,
+          // Inside this payload the Steam side must be the **journal** total
+          // (`summary.hoursBySource.steam`, games only), not the raw library
+          // sum the layer computes on its own (`/api/games/epic/status`).
+          hoursBySource: { steam: totalHours, epic: epicHoursValue },
+          ownedBySource: { steam: ownedCount, epic: epicOwnedValue },
+          meta: epicLayer.meta,
+        }
+      : null,
     // Works of the visible (filtered) set with no successful details.
     unmatchedCount: visibleWorks.filter((work) =>
       work.games.every((game) => !detailOf(details, game.appid))
@@ -1674,6 +1734,12 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     gogAccounts,
     gogSnapshots,
     gogConnected: gogTokenAccounts.length > 0,
+    // M6b/M6c: Epic read model of the same owner. Built synchronously from the
+    // cache (`buildEpicLayerSync`) because the stats route is synchronous and
+    // polled; it reads only the redacted token summary, never a token value.
+    // `null` when no Epic account is bound — `sources.epic` then reports
+    // `not_connected` and `hoursBySource.epic` stays `null` (not 0).
+    epic: buildEpicLayerSync({ ownerKey: profileKey }),
     // M5-B: canonical works (one game per owner-visible title).
     editions: editionDoc,
     includeFree: options.includeFree !== false,

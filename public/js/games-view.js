@@ -274,6 +274,12 @@ function normalizeRecent(raw) {
     // The top strip paints the Steam capsule icon; the index may not have it
     // for entries the payload already carries.
     iconUrl: firstString(item.iconUrl, item.icon) || '',
+    // M6c: cross-store ownership of the same work (GOG today) and an optional
+    // store-provided poster for rows that are not on the Steam CDN.
+    sources: arr(item.sources).map((value) => String(value)).filter(Boolean),
+    hoursBySource:
+      item.hoursBySource && typeof item.hoursBySource === 'object' ? item.hoursBySource : null,
+    coverUrl: firstString(item.verticalCoverUrl, item.coverUrl) || '',
   };
 }
 
@@ -797,6 +803,12 @@ function normalizeGameIndexEntry(entry, appid) {
       : Boolean(item.isPrimary ?? item.is_primary),
     editionCount: toCount(item.editionCount ?? item.edition_count) || 1,
     canonicalHours: numOrNull(item.canonicalHours ?? item.canonical_hours),
+    // M6c: cross-store ownership of this appid's work (`['steam','gog']`) and
+    // its per-source minutes. Absent on a Steam-only payload.
+    sources: arr(item.sources).map((value) => text(value)).filter(Boolean),
+    storeIds: item.storeIds && typeof item.storeIds === 'object' ? item.storeIds : null,
+    hoursBySource:
+      item.hoursBySource && typeof item.hoursBySource === 'object' ? item.hoursBySource : null,
   };
 }
 
@@ -1128,15 +1140,25 @@ export function normalizeGamesPayload(raw) {
       .map((entry) => {
         if (!entry || typeof entry !== 'object') return null;
         const gog = entry.gog && typeof entry.gog === 'object' ? entry.gog : {};
-        const hours = entry.hoursBySource && entry.hoursBySource.gog != null
-          ? numOrNull(entry.hoursBySource.gog) / 60
-          : null;
+        const epic = entry.epic && typeof entry.epic === 'object' ? entry.epic : {};
+        const storeIds = entry.storeIds && typeof entry.storeIds === 'object' ? entry.storeIds : {};
+        const bySource = entry.hoursBySource && typeof entry.hoursBySource === 'object'
+          ? entry.hoursBySource
+          : {};
+        // GOG hours come in minutes; Epic hours are already minutes too
+        // (`totalMinutes` in the read model). One entry = one store.
+        const minutes = bySource.gog != null ? bySource.gog : bySource.epic;
+        const hours = minutes != null ? numOrNull(minutes) / 60 : null;
+        const kind = text(entry.source)
+          || (storeIds.gog || gog.gogGameId ? 'gog' : storeIds.epic || epic.catalogItemId ? 'epic' : '');
         return {
           workKey: text(entry.workKey),
-          name: text(entry.name) || text(gog.title) || '—',
-          gogGameId: text(entry.storeIds && entry.storeIds.gog) || text(gog.gogGameId),
-          slug: text(gog.slug) || null,
-          image: text(gog.image) || null,
+          source: kind,
+          name: text(entry.name) || text(gog.title) || text(epic.name) || '—',
+          gogGameId: text(storeIds.gog) || text(gog.gogGameId),
+          epicId: text(storeIds.epic) || text(epic.catalogItemId),
+          slug: text(gog.slug) || text(epic.slug) || null,
+          image: text(gog.image) || text(epic.image) || null,
           releaseDate: text(gog.releaseDate) || null,
           hours,
         };
@@ -1928,6 +1950,11 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     // A never-launched game with no 2-week hours has nothing to say here.
     if (!fresh && rtime <= 0) return;
     const iconUrl = firstString(item.iconUrl, item.icon, entry.iconUrl) || '';
+    // M6c: cross-store facts travel with the card face (GOG badge, own poster).
+    const sources = arr(item.sources ?? entry.sources)
+      .map((value) => String(value))
+      .filter(Boolean);
+    const coverUrl = firstString(item.coverUrl, entry.coverUrl) || '';
     const previous = rows.get(key);
     if (!previous) {
       const hours2wByAppid = new Map();
@@ -1939,6 +1966,8 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
         rtime,
         lastPlayed,
         iconUrl,
+        coverUrl,
+        sources,
         hours2wByAppid,
         hoursTotal,
         fresh,
@@ -1955,6 +1984,10 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     // Same canonical work (or the payload row re-seen in the index): 2-week
     // hours are additive per edition and never double-count one appid.
     if (fresh) previous.hours2wByAppid.set(appidKey, hours2w);
+    for (const source of sources) {
+      if (!previous.sources.includes(source)) previous.sources.push(source);
+    }
+    if (!previous.coverUrl && coverUrl) previous.coverUrl = coverUrl;
     if (hoursTotal != null) {
       previous.hoursTotal =
         previous.hoursTotal == null ? hoursTotal : Math.max(previous.hoursTotal, hoursTotal);
@@ -2020,6 +2053,9 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
         lastPlayedText: shortDayText(row.rtime),
         lastPlayedTitle: lastPlayedInfo(row.lastPlayed).title,
         iconUrl: row.iconUrl,
+        // M6c: the card face can carry a non-Steam poster and a store badge.
+        coverUrl: row.coverUrl,
+        sources: row.sources,
         fresh,
         recent: row.recent,
         caption: fresh
@@ -3365,7 +3401,6 @@ const GOG_STATUS_LABEL = {
   connected_no_import: 'подключён, библиотека не импортирована',
   not_connected: 'не подключён',
   snapshot_only: 'GOG отключён — показан сохранённый снимок',
-  soon: 'скоро',
 };
 
 /** Human status of the GOG source: never a bare `status` code in the UI. */
@@ -3381,15 +3416,17 @@ export function gogStatusText(status, fetchedAt = null) {
 
 /**
  * View model for the «Источники» widget. Steam is the journal (its hours are
- * the headline); GOG is a same-owner secondary library and its hours are a
- * **separate** number — the view model never adds them together (§14.4 п. 2).
- * Epic is a placeholder until M6b and says «скоро» instead of a fake zero.
+ * the headline); GOG and Epic are same-owner secondary libraries and their
+ * hours are **separate** numbers — the view model never adds them together
+ * (§14.4 п. 2). A library that is not connected shows a connect hint instead
+ * of a fake zero.
  */
 export function gogSourcesView(payload) {
   const p = payload && typeof payload === 'object' ? payload : {};
   const summary = p.summary && typeof p.summary === 'object' ? p.summary : {};
   const sources = p.sources && typeof p.sources === 'object' ? p.sources : {};
   const gog = sources.gog && typeof sources.gog === 'object' ? sources.gog : {};
+  const epic = sources.epic && typeof sources.epic === 'object' ? sources.epic : {};
   const hoursBySource = summary.hoursBySource && typeof summary.hoursBySource === 'object'
     ? summary.hoursBySource
     : {};
@@ -3400,8 +3437,24 @@ export function gogSourcesView(payload) {
   const gogHasData = gogConnected || numOrNull(gog.productCount) != null;
   const gogStatus = gogConnected ? text(gog.status) || 'ok' : text(gog.status) || 'not_connected';
   const gogFetchedAt = gog.libraryFetchedAt || gog.lastImportAt || null;
+  const epicConnected = epic.connected === true || epic.configured === true;
+  const epicHasData = epicConnected || numOrNull(epic.productCount) != null;
+  const epicStatus = epicConnected ? text(epic.status) || 'ok' : text(epic.status) || 'not_connected';
+  const epicFetchedAt = epic.libraryFetchedAt || epic.lastImportAt || null;
+  // A disconnected Epic account keeps its dated snapshot (the layer reports
+  // `not_connected` with a summary, never zeros) — say «снимок», not «не
+  // подключён», while numbers are on screen.
+  const epicSnapshot = !epicConnected && numOrNull(epic.productCount) != null;
+  const epicStatusText = epicSnapshot
+    ? (formatDateRu(epicFetchedAt)
+        ? `снимок от ${formatDateRu(epicFetchedAt)} — подключите Epic заново`
+        : 'снимок — подключите Epic заново')
+    : gogStatusText(epicStatus, epicFetchedAt);
   const secondaryWorks = arr(p.secondaryWorks);
-  const secondaryOnly = toCount(summary.secondaryOnlyWorks) || secondaryWorks.length;
+  const secondaryOnly =
+    toCount(summary.secondaryWorksTotal)
+    || toCount(summary.secondaryOnlyWorks)
+    || secondaryWorks.length;
 
   const rows = [
     {
@@ -3429,13 +3482,15 @@ export function gogSourcesView(payload) {
     {
       key: 'epic',
       label: 'Epic Games Store',
-      games: null,
-      hours: null,
-      status: 'soon',
-      statusText: 'скоро',
+      games: epicHasData ? numOrNull(ownedBySource.epic) ?? numOrNull(epic.productCount) : null,
+      hours: epicHasData ? numOrNull(hoursBySource.epic) ?? numOrNull(epic.hours) : null,
+      status: epicStatus,
+      statusText: epicStatusText,
+      fetchedAt: epicFetchedAt,
+      username: text(epic.displayName) || null,
       journal: false,
+      // The Epic card itself lives in «Подключения»; the row only reports.
       canConnect: false,
-      soon: true,
     },
   ];
 
@@ -3444,6 +3499,9 @@ export function gogSourcesView(payload) {
     gogConnected,
     gogStatus,
     gogStatusText: gogStatusText(gogStatus, gogFetchedAt),
+    epicConnected,
+    epicStatus,
+    epicStatusText,
     secondaryOnly,
     secondaryWorks,
     worksTotal: numOrNull(summary.worksTotal),

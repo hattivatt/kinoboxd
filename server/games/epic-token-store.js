@@ -219,6 +219,40 @@ async function getTokens(accountId) {
   return readTokenDoc(accountId);
 }
 
+/**
+ * Synchronous **summary** of a token document for read-only paths that cannot
+ * await (the `/stats` builder is synchronous and polled by the UI). Returns the
+ * same redacted shape as `redactTokens()` — presence booleans and dates, never
+ * a token value. A symlink or a non-regular file is refused, exactly like the
+ * async reader; the file mode is NOT repaired here (a read-only stats call must
+ * not mutate the cache), so an operator mistake is still fixed on the next
+ * async read.
+ */
+function readTokenSummarySync(accountId) {
+  let filePath;
+  try {
+    filePath = tokenPath(accountId);
+  } catch (err) {
+    return null;
+  }
+  let stat;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch (err) {
+    return null;
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) return null;
+  let doc;
+  try {
+    doc = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (err) {
+    return null;
+  }
+  if (!doc || typeof doc !== 'object') return null;
+  if (String(doc.accountId || '') !== String(accountId)) return null;
+  return redactTokens(doc);
+}
+
 /** All token documents, newest first. Internal use only (refresh/import). */
 async function listTokenDocs() {
   let names = [];
@@ -289,6 +323,7 @@ module.exports = {
   writeSecretAtomic,
   saveTokens,
   getTokens,
+  readTokenSummarySync,
   listTokenDocs,
   listTokenAccounts,
   deleteTokens,
