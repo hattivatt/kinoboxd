@@ -20,6 +20,7 @@
             "node_modules"
             "cache"
             "cache-book"
+            "cache-games"
             "config"
             ".git"
             "result"
@@ -60,6 +61,7 @@
               # The caches live at canonical paths and do not follow the copy:
               #   $state/app/cache       (KINOBOXD_CACHE_DIR)
               #   $state/app/cache-book  (KINOBOXD_CACHE_BOOK_DIR)
+              #   $state/app/cache-games (KINOBOXD_CACHE_GAMES_DIR)
               # Old stamps are inert and can be deleted at any time.
               cat > $out/share/kinoboxd/prepare-state.sh <<'PREPARE'
 # shellcheck shell=sh
@@ -77,11 +79,16 @@ prepare_state() {
   stamp="$app/server@$rev"
 
   # The caches are canonical: they do not follow the code copy, so a new
-  # version reuses the same data without a migration step. Both are still
+  # version reuses the same data without a migration step. All three are still
   # overridable, which is what tests and alternative layouts rely on.
+  #
+  # cache-games must be exported too: without it game-cache.js falls back to
+  # <stamp>/cache-games, a per-version path that looks empty after every
+  # rebuild (the whole Steam import/enrich then re-runs).
   export KINOBOXD_CACHE_DIR="''${KINOBOXD_CACHE_DIR:-$app/cache}"
   export KINOBOXD_CACHE_BOOK_DIR="''${KINOBOXD_CACHE_BOOK_DIR:-$app/cache-book}"
-  mkdir -p "$app" "$KINOBOXD_CACHE_DIR" "$KINOBOXD_CACHE_BOOK_DIR"
+  export KINOBOXD_CACHE_GAMES_DIR="''${KINOBOXD_CACHE_GAMES_DIR:-$app/cache-games}"
+  mkdir -p "$app" "$KINOBOXD_CACHE_DIR" "$KINOBOXD_CACHE_BOOK_DIR" "$KINOBOXD_CACHE_GAMES_DIR"
 
   if [ ! -f "$stamp/.kinoboxd-stamp" ]; then
     # An interrupted copy may hold 0444/0555 entries taken from the store;
@@ -127,6 +134,7 @@ PREPARE
 #   KINOBOXD_STATE_DIR  writable runtime dir (default: $XDG_STATE_HOME/kinoboxd)
 #   KINOBOXD_CACHE_DIR  override the film cache (default: $state/app/cache)
 #   KINOBOXD_CACHE_BOOK_DIR  override the book cache (default: $state/app/cache-book)
+#   KINOBOXD_CACHE_GAMES_DIR override the games cache (default: $state/app/cache-games)
 set -eu
 
 store='@store@'
