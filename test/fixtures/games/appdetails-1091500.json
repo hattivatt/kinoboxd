@@ -1,0 +1,147 @@
+{
+  "1091500": {
+    "success": true,
+    "data": {
+      "type": "game",
+      "name": "Cyberpunk 2077",
+      "steam_appid": 1091500,
+      "required_age": "18",
+      "is_free": false,
+      "developers": [
+        "CD PROJEKT RED"
+      ],
+      "publishers": [
+        "CD PROJEKT RED"
+      ],
+      "genres": [
+        {
+          "id": "3",
+          "description": "RPG"
+        }
+      ],
+      "categories": [
+        {
+          "id": 2,
+          "description": "Single-player"
+        },
+        {
+          "id": 22,
+          "description": "Steam Achievements"
+        },
+        {
+          "id": 28,
+          "description": "Full controller support"
+        },
+        {
+          "id": 29,
+          "description": "Steam Trading Cards"
+        },
+        {
+          "id": 64,
+          "description": "Adjustable Text Size"
+        },
+        {
+          "id": 67,
+          "description": "Camera Comfort"
+        },
+        {
+          "id": 66,
+          "description": "Color Alternatives"
+        },
+        {
+          "id": 68,
+          "description": "Custom Volume Controls"
+        },
+        {
+          "id": 78,
+          "description": "Adjustable Difficulty"
+        },
+        {
+          "id": 74,
+          "description": "Playable without Timed Input"
+        },
+        {
+          "id": 55,
+          "description": "DualShock Controller Support"
+        },
+        {
+          "id": 57,
+          "description": "DualSense Controller Support"
+        },
+        {
+          "id": 58,
+          "description": "DualSense Controller Support"
+        },
+        {
+          "id": 79,
+          "description": "Save Anytime"
+        },
+        {
+          "id": 69,
+          "description": "Stereo Sound"
+        },
+        {
+          "id": 65,
+          "description": "Subtitle Options"
+        },
+        {
+          "id": 70,
+          "description": "Surround Sound"
+        },
+        {
+          "id": 23,
+          "description": "Steam Cloud"
+        },
+        {
+          "id": 61,
+          "description": "HDR available"
+        },
+        {
+          "id": 62,
+          "description": "Family Sharing"
+        }
+      ],
+      "release_date": {
+        "coming_soon": false,
+        "date": "9 Dec, 2020"
+      },
+      "dlc": [
+        2138330,
+        1495710,
+        2060310
+      ],
+      "metacritic": {
+        "score": 86,
+        "url": "https://www.metacritic.com/game/pc/cyberpunk-2077?ftag=MCD-06-10aaa1f"
+      },
+      "recommendations": {
+        "total": 907333
+      },
+      "achievements": {
+        "total": 57
+      },
+      "platforms": {
+        "windows": true,
+        "mac": true,
+        "linux": false
+      },
+      "screenshots": [
+        {
+          "id": 0,
+          "path_thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1091500/ss_2f649b68d579bf87011487d29bc4ccbfdd97d34f.600x338.jpg?t=1792682505",
+          "path_full": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1091500/ss_2f649b68d579bf87011487d29bc4ccbfdd97d34f.1920x1080.jpg?t=1792682505"
+        },
+        {
+          "id": 1,
+          "path_thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1091500/900f9bda156599fcd235f08ffb64667f9baa1afe/ss_900f9bda156599fcd235f08ffb64667f9baa1afe.600x338.jpg?t=1792682505",
+          "path_full": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1091500/900f9bda156599fcd235f08ffb64667f9baa1afe/ss_900f9bda156599fcd235f08ffb64667f9baa1afe.1920x1080.jpg?t=1792682505"
+        },
+        {
+          "id": 2,
+          "path_thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1091500/f678ed77c2fe7060ac9c64e32e1472e3ec3ab7dc/ss_f678ed77c2fe7060ac9c64e32e1472e3ec3ab7dc.600x338.jpg?t=1792682505",
+          "path_full": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1091500/f678ed77c2fe7060ac9c64e32e1472e3ec3ab7dc/ss_f678ed77c2fe7060ac9c64e32e1472e3ec3ab7dc.1920x1080.jpg?t=1792682505"
+        }
+      ]
+    }
+  }
+}
