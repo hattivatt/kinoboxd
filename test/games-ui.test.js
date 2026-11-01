@@ -194,7 +194,10 @@ test('games.js + games-view.js exist and the router knows ?tab=games', () => {
   for (const fn of ['initGames', 'showGames', 'hideGames', 'resetGames']) {
     assert.match(games, new RegExp(`export (async )?function ${fn}\\(`), `games.js не экспортирует ${fn}`);
   }
-  assert.match(games, /getGamesStats\(\{ profile: state\.profileKey \}\)/);
+  // The request is always scoped to the single active profile; M2 filters are
+  // appended only when they differ from the server defaults.
+  assert.match(games, /const query = \{ profile: state\.profileKey \};/);
+  assert.match(games, /getGamesStats\(query\)/);
   assert.match(games, /startGamesImportSteam\(/);
   assert.match(games, /withPreservedScroll\(/, 'тихий re-render должен сохранять скролл');
   // No other network calls: only api.js endpoints of the games contract.

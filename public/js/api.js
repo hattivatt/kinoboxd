@@ -378,3 +378,33 @@ export function getGameDetails(appid, { profile = '', signal } = {}) {
   const query = params.toString();
   return request(`/api/games/game/${encodeURIComponent(appid)}${query ? `?${query}` : ''}`, { signal });
 }
+
+/**
+ * Personnel list for ONE role (ИГРЫ-АРХИТЕКТУРА §5.3):
+ * `studio|publisher|composer|designer|writer|artist|programmer|producer|voice`.
+ *
+ * `role` is optional: without it the server returns its default (studios
+ * first). Unknown query parameters are rejected with 400, so nothing else is
+ * appended here.
+ */
+export function getGamesPersonnel({ profile = '', role = '', signal } = {}) {
+  const params = new URLSearchParams();
+  if (profile) params.set('profile', profile);
+  if (role) params.set('role', role);
+  const query = params.toString();
+  return request(`/api/games/personnel${query ? `?${query}` : ''}`, { signal });
+}
+
+/**
+ * Enrichment progress (`details`/`credits` backfill), when the server exposes
+ * it as its own route. The dashboard prefers `summary.metadata` from
+ * `/api/games/stats`; this call is the fallback for servers that report only
+ * «running» there. A 404 means the route is not mounted — the caller stops
+ * asking instead of polling a missing endpoint forever.
+ */
+export function getGamesEnrichStatus({ profile = '', signal } = {}) {
+  const params = new URLSearchParams();
+  if (profile) params.set('profile', profile);
+  const query = params.toString();
+  return request(`/api/games/enrich/status${query ? `?${query}` : ''}`, { signal });
+}

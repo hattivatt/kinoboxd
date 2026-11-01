@@ -1,0 +1,59 @@
+{
+  "role": "studio",
+  "items": [
+    {
+      "id": "wd:Q1151645",
+      "name": "CD PROJEKT RED",
+      "aliases": ["CD Projekt RED", "CDPR"],
+      "qid": "Q1151645",
+      "mobyId": 123,
+      "roles": ["developer", "publisher"],
+      "count": 3,
+      "hours": 203.5,
+      "hoursShare": 0.0347,
+      "avgCompletion": 55,
+      "games": [
+        { "appid": 292030, "name": "The Witcher 3: Wild Hunt", "hours": 107 },
+        { "appid": 20900, "name": "The Witcher: Enhanced Edition", "hours": 60 },
+        { "appid": 20920, "name": "The Witcher 2: Assassins of Kings", "hours": 36.5 }
+      ],
+      "ambiguous": false,
+      "sources": ["steam-store", "wikidata"]
+    },
+    {
+      "id": "wd:Q193559",
+      "name": "Valve",
+      "aliases": [],
+      "qid": "Q193559",
+      "roles": ["developer", "publisher"],
+      "count": 12,
+      "hours": 420.2,
+      "hoursShare": 0.0717,
+      "avgCompletion": 41,
+      "games": [
+        { "appid": 570, "name": "Dota 2", "hours": 213.3 },
+        { "appid": 400, "name": "Portal", "hours": 6.4 }
+      ],
+      "ambiguous": false,
+      "sources": ["steam-store"]
+    },
+    {
+      "id": "wd:Q739764",
+      "name": "Blizzard Entertainment",
+      "aliases": ["Blizzard"],
+      "qid": "Q739764",
+      "roles": ["developer", "publisher"],
+      "count": 5,
+      "hours": 380.4,
+      "hoursShare": 0.0649,
+      "avgCompletion": 33,
+      "games": [
+        { "appid": 2357570, "name": "Overwatch 2", "hours": 300.1 },
+        { "appid": 304390, "name": "For Honor", "hours": 80.3 }
+      ],
+      "ambiguous": false,
+      "sources": ["steam-store", "wikidata"]
+    }
+  ],
+  "coverage": { "gamesWithCredits": 187, "gamesTotal": 340, "percent": 55 }
+}
