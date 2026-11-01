@@ -55,11 +55,22 @@ function makeServer() {
         grant,
         code: url.searchParams.get('code'),
         refresh: url.searchParams.get('refresh_token'),
+        redirectUri: url.searchParams.get('redirect_uri'),
         hasSecret: Boolean(url.searchParams.get('client_secret')),
+        secretLength: String(url.searchParams.get('client_secret') || '').length,
       });
       if (grant === 'authorization_code') {
         if (url.searchParams.get('code') === 'bad-code') {
           return send(400, { error: 'invalid_grant', error_description: 'bad code' });
+        }
+        if (url.searchParams.get('code') === 'bad-client') {
+          return send(400, {
+            error: 'invalid_client',
+            error_description: 'The client credentials are invalid',
+          });
+        }
+        if (url.searchParams.get('code') === 'bad-request') {
+          return send(400, { error: 'invalid_request', error_description: 'missing code' });
         }
         return send(200, fixture('token.json'));
       }
@@ -144,6 +155,9 @@ test('GOG client', async (t) => {
     assert.equal(url.searchParams.get('response_type'), 'code');
     assert.equal(url.searchParams.get('layout'), 'client2');
     assert.equal(url.searchParams.get('redirect_uri'), gog.REDIRECT_URI);
+    // The exact registered Galaxy redirect (byte-for-byte, incl. ?origin=client):
+    // a different string makes the later exchange fail with invalid_grant.
+    assert.equal(gog.REDIRECT_URI, 'https://embed.gog.com/on_login_success?origin=client');
     // No user token exists yet.
     assert.equal(url.searchParams.get('access_token'), null);
   });
@@ -157,6 +171,41 @@ test('GOG client', async (t) => {
     assert.equal(state.tokenCalls.at(-1).grant, 'authorization_code');
     assert.equal(state.tokenCalls.at(-1).code, 'one-time-code');
     assert.equal(state.tokenCalls.at(-1).hasSecret, true);
+    // The exchange repeats the exact redirect_uri from the auth URL.
+    assert.equal(state.tokenCalls.at(-1).redirectUri, gog.REDIRECT_URI);
+  });
+
+  await t.test('a pasted full redirect URL is reduced to its code', async () => {
+    const tokens = await client.exchangeCode(
+      'https://embed.gog.com/on_login_success?origin=client&code=pasted-url-code'
+    );
+    assert.equal(tokens.accessToken, 'fake-access-token-value');
+    assert.equal(state.tokenCalls.at(-1).code, 'pasted-url-code');
+
+    await client.exchangeCode('  "https://embed.gog.com/on_login_success?code=quoted%2Bcode"  ');
+    assert.equal(state.tokenCalls.at(-1).code, 'quoted+code');
+
+    await client.exchangeCode('code=bare-pair-code');
+    assert.equal(state.tokenCalls.at(-1).code, 'bare-pair-code');
+
+    // A login-page URL without a code must not be sent as a code value.
+    await assert.rejects(
+      () => client.exchangeCode('https://embed.gog.com/on_login_success?origin=client'),
+      (err) => err.code === 'gog_code_required'
+    );
+  });
+
+  await t.test('extractAuthCode: bare codes, URLs, fragments, junk', () => {
+    assert.equal(gog.extractAuthCode('abc123'), 'abc123');
+    assert.equal(gog.extractAuthCode('  abc123  '), 'abc123');
+    assert.equal(gog.extractAuthCode('https://embed.gog.com/on_login_success?origin=client&code=xyz'), 'xyz');
+    assert.equal(gog.extractAuthCode('https://embed.gog.com/on_login_success#code=frag'), 'frag');
+    assert.equal(gog.extractAuthCode('code=xyz&origin=client'), 'xyz');
+    assert.equal(gog.extractAuthCode('https://embed.gog.com/on_login_success?origin=client'), '');
+    assert.equal(gog.extractAuthCode(''), '');
+    assert.equal(gog.extractAuthCode(null), '');
+    // A code that merely contains "code=" as text is not re-parsed.
+    assert.equal(gog.extractAuthCode('plain-code-value'), 'plain-code-value');
   });
 
   await t.test('a rejected code is gog_invalid_code and never echoes the code', async () => {
@@ -165,10 +214,31 @@ test('GOG client', async (t) => {
       (err) => {
         assert.equal(err.code, 'gog_invalid_code');
         assert.equal(err.message.includes('bad-code'), false);
+        assert.match(err.message, /invalid_grant/);
         return true;
       }
     );
     await assert.rejects(() => client.exchangeCode(''), (err) => err.code === 'gog_code_required');
+  });
+
+  await t.test('invalid_client is a server-credential verdict, not a bad code', async () => {
+    await assert.rejects(
+      () => client.exchangeCode('bad-client'),
+      (err) => {
+        assert.equal(err.code, 'gog_client_rejected');
+        assert.equal(err.status, 502);
+        assert.match(err.message, /client credentials/i);
+        assert.match(err.message, /64 hex/);
+        // Neither the code nor the secret is echoed.
+        assert.equal(err.message.includes('bad-client'), false);
+        assert.equal(err.message.includes('test-secret'), false);
+        return true;
+      }
+    );
+    await assert.rejects(
+      () => client.exchangeCode('bad-request'),
+      (err) => err.code === 'gog_invalid_request' && err.status === 400
+    );
   });
 
   await t.test('refresh rotates the token; a dead refresh is auth_expired', async () => {
@@ -270,6 +340,42 @@ test('GOG client', async (t) => {
       ]),
       '1,2,1'
     );
+  });
+
+  await t.test('built-in Galaxy credentials are the full 64-hex pair', () => {
+    const savedId = process.env.GOG_CLIENT_ID;
+    const savedSecret = process.env.GOG_CLIENT_SECRET;
+    const savedFile = process.env.KINOBOXD_GOG_CLIENT_FILE;
+    delete process.env.GOG_CLIENT_ID;
+    delete process.env.GOG_CLIENT_SECRET;
+    process.env.KINOBOXD_GOG_CLIENT_FILE = path.join(CACHE_DIR, 'missing-gog-client.json');
+    gog.resetCredentialsCache();
+    try {
+      const creds = gog.loadCredentials();
+      assert.equal(creds.source, 'default');
+      assert.equal(creds.clientId, '46899977096215655');
+      // The 01.11.2026 incident: a truncated 32-hex secret is rejected by GOG
+      // with invalid_client («The client credentials are invalid»).
+      assert.match(creds.clientSecret, /^[0-9a-f]{64}$/);
+      assert.notEqual(creds.clientSecret.length, 32);
+      assert.equal(gog.clientSource(), 'default');
+
+      process.env.GOG_CLIENT_ID = 'env-client-id';
+      process.env.GOG_CLIENT_SECRET = 'env-client-secret';
+      gog.resetCredentialsCache();
+      const fromEnv = gog.loadCredentials();
+      assert.equal(fromEnv.source, 'env');
+      assert.equal(fromEnv.clientId, 'env-client-id');
+      assert.equal(gog.clientSource(), 'env');
+    } finally {
+      if (savedId == null) delete process.env.GOG_CLIENT_ID;
+      else process.env.GOG_CLIENT_ID = savedId;
+      if (savedSecret == null) delete process.env.GOG_CLIENT_SECRET;
+      else process.env.GOG_CLIENT_SECRET = savedSecret;
+      if (savedFile == null) delete process.env.KINOBOXD_GOG_CLIENT_FILE;
+      else process.env.KINOBOXD_GOG_CLIENT_FILE = savedFile;
+      gog.resetCredentialsCache();
+    }
   });
 
   await t.test('token directory/file are 0600 and never written to the real cache', () => {

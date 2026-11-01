@@ -33,6 +33,9 @@ function fakeClient() {
     },
     async exchangeCode(code) {
       if (code === 'bad') throw new gog.GogError('GOG не принял code', 'gog_invalid_code');
+      if (code === 'bad-client') {
+        throw new gog.GogError('GOG отклонил client credentials', 'gog_client_rejected', { status: 502 });
+      }
       return {
         accessToken: 'secret-access-token',
         refreshToken: 'secret-refresh-token',
@@ -120,6 +123,8 @@ test('GOG routes', async (t) => {
     assert.equal(body.redirectUri, gog.REDIRECT_URI);
     assert.equal(body.clientSource, 'default');
     assert.equal(JSON.stringify(body).includes('secret'), false);
+    // The user may paste the whole redirect URL, not only the bare code.
+    assert.match(body.instructions, /ссылк/i);
     const extra = await call('/api/games/gog/auth-url?foo=1');
     assert.equal(extra.status, 400);
     assert.equal(extra.body.code, 'unexpected_parameter');
@@ -148,8 +153,25 @@ test('GOG routes', async (t) => {
     assert.equal(fs.statSync(gogCache.tokenPath(USER_KEY)).mode & 0o777, 0o600);
   });
 
-  await t.test('status lists a sanitized account and the owner catalogue', async () => {
-    const { status, body } = await call('/api/games/gog/status');
+  await t.test('rejected code → 400, broken client pair → 502', async () => {
+    const bad = await call('/api/games/gog/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'bad' }),
+    });
+    assert.equal(bad.status, 400);
+    assert.equal(bad.body.code, 'gog_invalid_code');
+
+    const rejected = await call('/api/games/gog/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'bad-client' }),
+    });
+    assert.equal(rejected.status, 502);
+    assert.equal(rejected.body.code, 'gog_client_rejected');
+  });
+
+  await t.test('status lists a sanitized account and the owner catalogue', async () => {    const { status, body } = await call('/api/games/gog/status');
     assert.equal(status, 200);
     assert.equal(body.accounts.length, 1);
     assert.equal(body.accounts[0].username, 'gog_tester');

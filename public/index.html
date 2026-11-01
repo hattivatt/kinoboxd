@@ -1024,8 +1024,8 @@
                   <span id="games-gog-login-label">Войти через GOG</span>
                 </button>
                 <label class="books-field" for="games-gog-code">
-                  <span class="books-field-label">code из адресной строки <span>после входа на GOG</span></span>
-                  <input class="books-input" id="games-gog-code" name="gog-code" type="text" autocomplete="off" spellcheck="false" placeholder="вставьте code">
+                  <span class="books-field-label">code или ссылка <span>после входа на GOG</span></span>
+                  <input class="books-input" id="games-gog-code" name="gog-code" type="text" autocomplete="off" spellcheck="false" placeholder="вставьте code или всю ссылку">
                 </label>
                 <div class="books-source-error" id="games-gog-error" role="alert" hidden></div>
                 <div class="games-gog-actions">
@@ -1037,8 +1037,9 @@
 
               <p class="book-source-note">
                 GOG не отдаёт чужую библиотеку публично. Кнопка «Войти через GOG» открывает страницу входа GOG;
-                после входа браузер попадёт на <code>embed.gog.com/on_login_success</code> — скопируйте
-                значение <code>code</code> из адресной строки и вставьте сюда. Код одноразовый. Часы GOG
+                после входа браузер попадёт на <code>embed.gog.com/on_login_success</code> — вставьте сюда
+                либо значение <code>code</code> из адресной строки, либо адрес страницы целиком: сервер сам
+                выделит code из ссылки. Код одноразовый. Часы GOG
                 показываются отдельной строкой и никогда не складываются с часами Steam: игра могла
                 запускаться в обеих библиотеках.
               </p>

@@ -30,7 +30,9 @@ const GOG_ERROR_STATUS = {
   gog_auth_expired: 401,
   gog_not_connected: 400,
   gog_invalid_code: 400,
+  gog_invalid_request: 400,
   gog_code_required: 400,
+  gog_client_rejected: 502,
   gog_invalid_user: 400,
   gog_invalid_url: 400,
   gog_rate_limited: 429,
@@ -98,7 +100,8 @@ function createRouter(deps = {}) {
         clientSource: gog.clientSource(),
         instructions:
           'Откройте ссылку, войдите в GOG и скопируйте параметр code из адресной строки ' +
-          'страницы embed.gog.com/on_login_success, затем вставьте его в поле «code».',
+          'страницы embed.gog.com/on_login_success — или скопируйте адрес страницы целиком. ' +
+          'Вставьте в поле «code» сам code или всю ссылку: сервер разберёт её сам.',
       });
     } catch (err) {
       next(mapError(err));

@@ -1013,7 +1013,7 @@ async function openGogLogin() {
     } else {
       window.location.href = url;
     }
-    setGogError('Войдите в GOG в новой вкладке. После входа скопируйте параметр code из адресной строки и вставьте его ниже.');
+    setGogError('Войдите в GOG в новой вкладке. После входа скопируйте code из адресной строки — или адрес страницы целиком — и вставьте ниже.');
   } catch (error) {
     if (popup) popup.close();
     if (error && error.status === 401) return;
@@ -1027,7 +1027,7 @@ async function connectGogAccount() {
   const input = $('games-gog-code');
   const code = input ? text(input.value) : '';
   if (!code) {
-    setGogError('Вставьте code из адресной строки GOG.');
+    setGogError('Вставьте code из адресной строки GOG или всю ссылку on_login_success?…&code=…');
     return;
   }
   setGogError('');

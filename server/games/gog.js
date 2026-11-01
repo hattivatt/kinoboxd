@@ -12,11 +12,16 @@
  *
  * Flow:
  *   1. `authorizeUrl()` — `auth.gog.com/auth?...` with the public Galaxy
- *      `client_id`; the user logs in in their browser and is redirected to
+ *      `client_id` and the exact registered `redirect_uri`
+ *      (`https://embed.gog.com/on_login_success?origin=client`), plus
+ *      `layout=client2` (the Galaxy login layout); the user logs in in their
+ *      browser and is redirected to
  *      `embed.gog.com/on_login_success?...&code=<code>`;
- *   2. `exchangeCode(code)` — `GET auth.gog.com/token?grant_type=
- *      authorization_code...` → `access_token` (≈1 h), `refresh_token`,
- *      `user_id`;
+ *   2. `exchangeCode(codeOrUrl)` — accepts the bare `code` **or** the whole
+ *      redirect URL (see `extractAuthCode`), then `GET auth.gog.com/token?
+ *      grant_type=authorization_code...&redirect_uri=<exact>` (the same
+ *      `redirect_uri` is mandatory in the exchange) → `access_token` (≈1 h),
+ *      `refresh_token`, `user_id`;
  *   3. `refresh(refreshToken)` — same endpoint with `grant_type=refresh_token`;
  *   4. `getUserData(token)` — `embed.gog.com/userData.json` (identity);
  *   5. `getFilteredProducts(token, page)` — `embed.gog.com/account/
@@ -60,9 +65,16 @@ const REDIRECT_URI = 'https://embed.gog.com/on_login_success?origin=client';
  * Public GOG Galaxy client credentials. They are not user secrets: every
  * open-source GOG client ships them. Policy (§14.5, AGENTS §2) still forbids
  * echoing them in docs/logs, so they are never interpolated into messages.
+ *
+ * The secret is the **full 64-hex** value (`gogapidocs`, lgogdownloader,
+ * Heroic, Minigalaxy). A truncated 32-hex prefix is rejected by
+ * `auth.gog.com/token` with `invalid_client` / «The client credentials are
+ * invalid» — that truncated literal was the 01.11.2026 production bug (the
+ * user saw exactly that message for a fresh, unused code). Guarded by a unit
+ * test: `GOG_CLIENT_SECRET` must match /^[0-9a-f]{64}$/.
  */
 const PUBLIC_CLIENT_ID = '46899977096215655';
-const PUBLIC_CLIENT_SECRET = '9d85c43b1482497dbbce61f6d2aa1734';
+const PUBLIC_CLIENT_SECRET = '9d85c43b1482497dbbce61f6e4aa173a433796eeae2ca8c5f6129f2dc4de46d9';
 
 const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_LIBRARY_PAUSE_MS = 400;
@@ -99,6 +111,126 @@ function maskSecrets(value) {
   return String(value == null ? '' : value)
     .replace(/([?&](?:access_token|refresh_token|client_secret|code)=)[^&\s"']+/gi, '$1***')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1***');
+}
+
+/* ------------------------------------------------------------------ */
+/* auth code input                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Accept both shapes a user can realistically paste after the GOG login:
+ *   - the bare `code` value;
+ *   - the whole redirect URL (`https://embed.gog.com/on_login_success?
+ *     origin=client&code=<code>`), including the `#code=…` fragment form and
+ *     a stray `code=…` string with no scheme;
+ *   - the same value wrapped in quotes/angle brackets by a copy action.
+ * Returns `''` when the input carries no code (e.g. a login page URL pasted
+ * before the login finished) so the caller can raise `gog_code_required`.
+ * The value is a one-time secret: it is never logged, only trimmed.
+ */
+function extractAuthCode(raw) {
+  const value = String(raw == null ? '' : raw)
+    .trim()
+    .replace(/^[<"'\s]+/, '')
+    .replace(/[>"'\s]+$/, '');
+  if (!value) return '';
+  const isUrl = /^https?:\/\//i.test(value);
+  const hasCodeParam = /(^|[?&#])code=/i.test(value);
+  if (!isUrl && !hasCodeParam) return value;
+
+  let candidate = '';
+  if (isUrl) {
+    try {
+      const parsed = new URL(value);
+      candidate = parsed.searchParams.get('code') || '';
+      if (!candidate && parsed.hash) {
+        candidate = new URLSearchParams(parsed.hash.replace(/^#/, '')).get('code') || '';
+      }
+    } catch (err) {
+      candidate = '';
+    }
+  }
+  if (!candidate) {
+    const match =
+      /[?&#]code=([^&#\s]+)/i.exec(value) ||
+      /^code=([^&#\s]+)/i.exec(value);
+    if (match) {
+      try {
+        candidate = decodeURIComponent(match[1]);
+      } catch (err) {
+        candidate = match[1];
+      }
+    }
+  }
+  return String(candidate || '').trim();
+}
+
+/**
+ * Human-readable verdicts for the OAuth error codes GOG returns from
+ * `/token`. The important distinction (01.11.2026 incident): `invalid_client`
+ * means **our app credentials** are rejected — retrying the code is useless;
+ * `invalid_grant` means the **code** is expired/used or the `redirect_uri`
+ * did not match the auth request.
+ */
+const OAUTH_ERRORS = {
+  invalid_client: {
+    code: 'gog_client_rejected',
+    status: 502,
+    message:
+      'GOG отклонил client credentials (invalid_client): встроенная пара Galaxy-клиента не принята. ' +
+      'Это ошибка настройки сервера, а не вашего code — повторная вставка не поможет. ' +
+      'Проверьте GOG_CLIENT_ID/GOG_CLIENT_SECRET (secret — полные 64 hex-символа) ' +
+      'или config/gog-client.json.',
+  },
+  invalid_grant: {
+    code: 'gog_invalid_code',
+    status: 400,
+    message:
+      'GOG не принял code (invalid_grant): он просрочен, уже использован или redirect_uri не совпал ' +
+      'со ссылкой входа. Нажмите «Войти через GOG» ещё раз и вставьте новый code (или всю ссылку).',
+  },
+  invalid_request: {
+    code: 'gog_invalid_request',
+    status: 400,
+    message:
+      'GOG отклонил запрос обмена (invalid_request): не хватает параметра или он продублирован. ' +
+      'Вставьте code целиком, без обрезания.',
+  },
+  unauthorized_client: {
+    code: 'gog_client_rejected',
+    status: 502,
+    message:
+      'GOG не разрешает этому клиенту обмен по authorization_code (unauthorized_client). ' +
+      'Это ошибка настройки сервера, code тут ни при чём.',
+  },
+  unsupported_grant_type: {
+    code: 'gog_invalid_request',
+    status: 502,
+    message: 'GOG не поддерживает запрошенный grant_type: обмен code недоступен.',
+  },
+};
+
+/**
+ * Map a failed `/token` response to `{ code, status, message }`. `detail` is
+ * GOG's own `error_description` (already masked) and is appended so the user
+ * sees the real reason instead of a generic «не принял code».
+ */
+function oauthFailure(response, { detail = '', rawError = '' } = {}) {
+  const known = OAUTH_ERRORS[rawError] || null;
+  if (known) {
+    return {
+      code: known.code,
+      status: known.status,
+      message: `${known.message}${detail ? ` Ответ GOG: «${detail}».` : ''}`,
+    };
+  }
+  return {
+    code: 'gog_invalid_code',
+    status: 400,
+    message:
+      `GOG не принял code (${response.status})${detail ? `: ${detail}` : ''}. ` +
+      'Скопируйте code заново: он одноразовый и живёт несколько минут.',
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -298,6 +430,16 @@ function parseJsonBody(response, url) {
   }
 }
 
+/** Best-effort JSON for error bodies: never throws, never logs. */
+function safeJson(body) {
+  try {
+    const parsed = JSON.parse(String(body == null ? '' : body));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (err) {
+    return null;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* client                                                              */
 /* ------------------------------------------------------------------ */
@@ -492,33 +634,42 @@ function createClient(options = {}) {
   }
 
   async function exchangeCode(code) {
-    const value = String(code == null ? '' : code).trim();
+    const value = extractAuthCode(code);
     if (!value) {
       throw new GogError(
-        'Параметр "code" обязателен: вставьте code из адресной строки после входа в GOG.',
+        'Параметр "code" обязателен: вставьте code из адресной строки после входа в GOG ' +
+          'или всю ссылку embed.gog.com/on_login_success?…&code=…',
         'gog_code_required'
       );
     }
     const url = tokenUrl({
       grant_type: 'authorization_code',
       code: value,
+      // The exchange MUST repeat the exact redirect_uri used in the auth URL,
+      // otherwise GOG answers invalid_grant even for a fresh code.
       redirect_uri: REDIRECT_URI,
     });
     const response = await request(url, { followRedirect: false });
     if (response.status < 200 || response.status >= 300) {
-      // Never echo the code: only the status and GOG's error code.
-      let detail = '';
-      try {
-        const body = JSON.parse(response.body);
-        detail = body && (body.error_description || body.error) ? String(body.error_description || body.error) : '';
-      } catch (err) {
-        detail = '';
+      if (response.status === 429) {
+        throw new GogError(
+          'GOG ответил 429 на обмен code: повторите через несколько минут.',
+          'gog_rate_limited',
+          { status: 429 }
+        );
       }
+      // Never echo the code or the secret: only GOG's own error code/text.
+      const parsed = safeJson(response.body);
+      const rawError = parsed && parsed.error ? String(parsed.error) : '';
+      const detail = parsed && parsed.error_description
+        ? maskSecrets(String(parsed.error_description))
+        : '';
+      const failure = oauthFailure(response, { detail, rawError });
+      const source = failure.code === 'gog_client_rejected' ? credentialProvider().source : null;
       throw new GogError(
-        `GOG не принял code (${response.status})${detail ? `: ${maskSecrets(detail)}` : ''}. ` +
-          'Скопируйте code заново: он одноразовый и живёт несколько минут.',
-        response.status === 429 ? 'gog_rate_limited' : 'gog_invalid_code',
-        { status: response.status }
+        `${failure.message}${source ? ` (источник пары: ${source})` : ''}`,
+        failure.code,
+        { status: failure.status }
       );
     }
     return normalizeTokenResponse(parseJsonBody(response, url), null);
@@ -531,14 +682,22 @@ function createClient(options = {}) {
     }
     const url = tokenUrl({ grant_type: 'refresh_token', refresh_token: value });
     const response = await request(url, { followRedirect: false });
-    if (response.status === 400 || response.status === 401) {
-      throw new GogError(
-        'GOG refresh_token больше не действителен: подключите GOG заново.',
-        'gog_auth_expired',
-        { status: response.status }
-      );
-    }
     if (response.status < 200 || response.status >= 300) {
+      const parsed = safeJson(response.body);
+      const rawError = parsed && parsed.error ? String(parsed.error) : '';
+      if (rawError === 'invalid_client' || rawError === 'unauthorized_client') {
+        // The app credentials broke, not the user's session: reconnect would
+        // fail the same way, so say so instead of «подключите GOG заново».
+        const failure = oauthFailure(response, { rawError });
+        throw new GogError(failure.message, failure.code, { status: failure.status });
+      }
+      if (response.status === 400 || response.status === 401) {
+        throw new GogError(
+          'GOG refresh_token больше не действителен: подключите GOG заново.',
+          'gog_auth_expired',
+          { status: response.status }
+        );
+      }
       throw new GogError(
         `GOG не обновил токен (${response.status}).`,
         response.status === 429 ? 'gog_rate_limited' : 'gog_http_error',
@@ -773,6 +932,8 @@ module.exports = {
   createClient,
   httpGet,
   maskSecrets,
+  extractAuthCode,
+  OAUTH_ERRORS,
   loadCredentials,
   clientSource,
   resetCredentialsCache,
