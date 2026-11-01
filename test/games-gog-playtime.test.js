@@ -179,6 +179,13 @@ test('GOG playtime: uid, response shapes, diagnostics', async (t) => {
     assert.equal(status.status, 'done');
     assert.equal(gogCache.getToken(USER_KEY).galaxyUserId, GALAXY_ID);
     assert.equal(status.playtime.uidSource, 'token:user_id');
+    // Both ids with their sources: the decisive diagnostic when «0.0 ч»
+    // persists (if `token:user_id` and `userData:userId` are the same number,
+    // the OAuth id is not the Galaxy id and the *order* is the bug).
+    assert.deepEqual(status.playtime.uidCandidates, [
+      { value: GALAXY_ID, source: 'token:user_id' },
+      { value: USER_KEY, source: 'userData:userId' },
+    ]);
     assert.equal(status.playtime.ok, 2);
     assert.equal(status.playtime.notFound, 1);
     assert.equal(status.playtime.fields.time_sum, 2);

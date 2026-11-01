@@ -496,6 +496,11 @@ async function runImport(job, api, options) {
     // The uid this run will use: a snapshot written with a different one has
     // untrustworthy zeros and is re-checked immediately.
     const currentUidSource = gog.gameplayUserId(tokenDoc).source;
+    // Every id the token can offer, with its source: the decisive diagnostic
+    // for a persisting «0.0 ч» (same number in `token:user_id` and
+    // `userData:userId`, different `userData:galaxyUserId` → the order is the
+    // remaining bug, not a missing field).
+    const uidCandidates = gog.gameplayUserIdCandidates(tokenDoc);
     const minutes = job.force ? {} : { ...priorMinutes };
     const entries = job.force ? {} : { ...priorEntries };
     const errors = [];
@@ -508,6 +513,9 @@ async function runImport(job, api, options) {
       errors: 0,
       fields: {},
       uidSource: null,
+      // Which numeric ids the token carries and which one the run used. Ids are
+      // account labels, not secrets; no token value is included.
+      uidCandidates,
       dump: [],
     };
     const sample = [];
@@ -650,6 +658,7 @@ async function runImport(job, api, options) {
       budget,
       budgetExceeded: Boolean(job.budgetExceeded),
       uidSource: stats.uidSource,
+      uidCandidates,
       fields: stats.fields,
       errors,
       libraryFingerprint: library ? library.fingerprint || null : null,

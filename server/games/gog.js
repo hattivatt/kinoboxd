@@ -491,17 +491,34 @@ function truncateBody(body, max = 5 * 1024) {
  * (the `userId` field older snapshots stored).
  */
 function gameplayUserId(tokenDoc) {
+  const candidates = gameplayUserIdCandidates(tokenDoc);
+  return candidates.length ? { uid: candidates[0].value, source: candidates[0].source } : { uid: null, source: null };
+}
+
+/**
+ * Every numeric id the token can offer for `gameplay.gog.com`, in preference
+ * order, **with the source label**. Reported in the import status as
+ * `playtime.uidCandidates` so «0.0 ч» can be answered with facts: if
+ * `token:user_id` and `userData:userId` carry the same number and
+ * `userData:galaxyUserId` differs, the OAuth `user_id` is not the Galaxy id and
+ * the order (not the presence) is the remaining problem.
+ */
+function gameplayUserIdCandidates(tokenDoc) {
   const candidates = [
     { value: tokenDoc && tokenDoc.userId, source: 'token:user_id' },
     { value: tokenDoc && tokenDoc.galaxyUserId, source: 'userData:galaxyUserId' },
     { value: tokenDoc && tokenDoc.userKey, source: 'userData:userId' },
   ];
+  const out = [];
+  const seen = new Set();
   for (const candidate of candidates) {
-    if (gogCache.isValidUserKey(candidate.value)) {
-      return { uid: String(candidate.value).trim(), source: candidate.source };
-    }
+    if (!gogCache.isValidUserKey(candidate.value)) continue;
+    const value = String(candidate.value).trim();
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push({ value, source: candidate.source });
   }
-  return { uid: null, source: null };
+  return out;
 }
 
 /**
@@ -1082,6 +1099,7 @@ module.exports = {
   normalizeProduct,
   libraryFingerprint,
   gameplayUserId,
+  gameplayUserIdCandidates,
   minutesOfSessionsPayload,
   truncateBody,
 };
