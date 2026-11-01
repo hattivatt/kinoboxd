@@ -31,6 +31,7 @@ const crypto = require('crypto');
 const config = require('../config');
 const steam = require('./steam');
 const gameCache = require('./game-cache');
+const enrichJobs = require('./enrich');
 
 const jobs = new Map();
 const jobOrder = [];
@@ -92,6 +93,11 @@ function publicStatus(job) {
     finishedAt: job.finishedAt || null,
     elapsedMs: job.finishedAt ? job.finishedAt - job.startedAt : null,
     cachedAt: job.cachedAt || null,
+    // Auto-enrich (§UX): the enrich job started right after the library
+    // landed, so the UI can follow it without guessing. Null when the kick
+    // was disabled, skipped (partial library) or failed.
+    enrichJobId: job.enrichJobId || null,
+    enrichSkipped: job.enrichSkipped || null,
   };
 }
 
@@ -132,6 +138,44 @@ function enqueue(job, task) {
           `partial=${job.libraryPartial}${job.code ? `, code=${job.code}` : ''})`
       );
     });
+}
+
+/**
+ * Store enrichment is a follow-up job, not part of the import contract: the
+ * library is the primary artifact (same policy as the books resolve chain).
+ * Called from the route layer right after a successful import/refresh so the
+ * UI does not have to POST /api/games/enrich itself. `enrichJobs` coalesces
+ * into an already running job for the same profile, so a double import never
+ * queues two enrich runs. A failure here becomes a job warning — the import
+ * stays `done`.
+ */
+function kickEnrichQuietly(job, options = {}) {
+  if (options.autoEnrich !== true) return null;
+  if (!job || !job.profile) return null;
+  // A partial library (no STEAM_API_KEY) has 3 games at most and no hours;
+  // enriching it would spend store requests on a snapshot that is about to be
+  // replaced by the next real import.
+  if (job.libraryPartial) {
+    job.enrichSkipped = 'library_partial';
+    return null;
+  }
+  try {
+    const enrichJob = enrichJobs.startEnrich(job.profile, {
+      client: options.enrichClient || undefined,
+    });
+    job.enrichJobId = enrichJob.id;
+    console.log(
+      `[games-import ${job.id}] store enrich kicked: ${enrichJob.id} ` +
+        `(stage=${enrichJob.stage}, running=${enrichJob.status === 'running'})`
+    );
+    return enrichJob;
+  } catch (err) {
+    const message = steam.maskSecrets(err && err.message ? err.message : 'enrich failed');
+    job.warnings = [...(job.warnings || []), `enrich_${(err && err.code) || 'failed'}`];
+    job.warning = [job.warning, `обогащение: ${message}`].filter(Boolean).join(' ');
+    console.warn(`[games-import ${job.id}] enrich kick failed (import kept): ${message}`);
+    return null;
+  }
 }
 
 /** Resolve a vanity against the cached profiles (idempotent re-import). */
@@ -243,6 +287,8 @@ async function runImport(job, target, client, options) {
     job.backlogCount = library.games.filter((game) => game.playtime_forever === 0).length;
     job.percent = 100;
     job.warnings = ['steam_key_missing'];
+    // Nothing to enrich without a real library; records `enrichSkipped`.
+    kickEnrichQuietly(job, options);
     return;
   }
 
@@ -306,6 +352,10 @@ async function runImport(job, target, client, options) {
   job.backlogCount = owned.games.filter((game) => game.playtime_forever === 0).length;
   job.percent = 100;
   job.stage = 'done';
+
+  // Auto-enrich (§UX): the UI should not have to start the details job by
+  // hand after a successful import or refresh.
+  kickEnrichQuietly(job, options);
 }
 
 /**
@@ -375,6 +425,9 @@ function startImport(rawTarget, options = {}) {
         `[games-import ${reused.id}] library reused from cache ` +
           `(${reused.ownedCount} games, fetchedAt=${library.fetchedAt})`
       );
+      // A cached library still needs details: the UI treats "import done" as
+      // the moment to show the dashboard, so the enrich job starts here too.
+      kickEnrichQuietly(reused, options);
       return publicStatus(reused);
     }
   }

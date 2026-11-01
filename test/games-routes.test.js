@@ -35,7 +35,10 @@ const PORT = 7035;
 function buildApp(client) {
   const app = express();
   app.use(express.json());
-  app.use('/api/games', createRouter({ client }));
+  // `autoEnrich: false` — this file drives the import/refresh contract with a
+  // fake Steam client only; the store enrich kick is covered by
+  // `games-auto-enrich.test.js` with an injected store client.
+  app.use('/api/games', createRouter({ client, autoEnrich: false }));
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
     if (err && err.status) {

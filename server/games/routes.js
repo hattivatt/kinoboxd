@@ -202,7 +202,13 @@ function createRouter(deps = {}) {
       typeof body.label === 'string' && body.label.trim()
         ? body.label.trim().slice(0, 80)
         : null;
-    const job = importer.startImport(rawTarget, { client, force, label });
+    const job = importer.startImport(rawTarget, {
+      client,
+      force,
+      label,
+      autoEnrich: deps.autoEnrich !== false,
+      enrichClient: storeClient || undefined,
+    });
     const created = job.status === 'running' && !job.reused && job.stage === 'queued';
     res.status(created ? 201 : 200).json(job);
   }
@@ -234,7 +240,12 @@ function createRouter(deps = {}) {
       const body = req.body && typeof req.body === 'object' ? req.body : {};
       const requested = body.profile != null ? body.profile : req.query.profile;
       const scope = resolveProfileOrThrow(requested);
-      const job = importer.startImport(scope.parsed.userKey, { client, force: true });
+      const job = importer.startImport(scope.parsed.userKey, {
+        client,
+        force: true,
+        autoEnrich: deps.autoEnrich !== false,
+        enrichClient: storeClient || undefined,
+      });
       const created = job.status === 'running' && !job.reused && job.stage === 'queued';
       res.status(created ? 201 : 200).json(job);
     } catch (err) {

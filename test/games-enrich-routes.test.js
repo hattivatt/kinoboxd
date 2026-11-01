@@ -70,7 +70,10 @@ function createFakeStoreClient() {
 function buildApp(steamClient, storeClient) {
   const app = express();
   app.use(express.json());
-  app.use('/api/games', createRouter({ client: steamClient, storeClient }));
+  // The enrich job is started explicitly in these tests (`POST /enrich`), so
+  // the import-time auto kick is off — otherwise the "before enrich" snapshot
+  // would race with it. `games-auto-enrich.test.js` pins the auto kick.
+  app.use('/api/games', createRouter({ client: steamClient, storeClient, autoEnrich: false }));
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
     if (err && err.status) {
