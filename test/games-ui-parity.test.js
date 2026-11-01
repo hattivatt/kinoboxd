@@ -152,15 +152,17 @@ test('layout: decades + years are adjacent (no 6-column holes)', () => {
   const decades = html.indexOf('id="games-decades-widget"');
   const years = html.indexOf('id="games-years-widget"');
   const genres = html.indexOf('id="games-genres-widget"');
-  const modes = html.indexOf('id="games-modes-widget"');
-  const access = html.indexOf('id="games-access-widget"');
   const meta = html.indexOf('id="games-meta-widget"');
   const achievements = html.indexOf('id="games-achievements-widget"');
   const calendar = html.indexOf('id="games-calendar-widget"');
   const persons = html.indexOf('id="games-persons-widget"');
-  assert.ok(decades > 0 && decades < years && years < genres, 'годы должны идти сразу за десятилетиями');
-  assert.ok(genres < modes && modes < access && access < meta && meta < achievements);
+  assert.ok(genres > 0 && genres < decades && decades < years, 'годы должны идти сразу за десятилетиями');
+  assert.ok(years < meta && meta < achievements);
   assert.ok(achievements < calendar && calendar < persons);
+  // U5 removed the four widgets for good: their markup must not come back.
+  for (const id of ['games-histogram-widget', 'games-backlog-widget', 'games-modes-widget', 'games-access-widget']) {
+    assert.equal(html.includes(`id="${id}"`), false, `виджет #${id} должен быть удалён`);
+  }
 
   const css = readPublic('style.css');
   const span = (selector) => {
@@ -170,11 +172,9 @@ test('layout: decades + years are adjacent (no 6-column holes)', () => {
   };
   assert.equal(span('.w-games-decades'), 6);
   assert.equal(span('.w-games-years'), 6);
-  assert.equal(span('.w-games-genres'), 8);
-  assert.equal(span('.w-games-modes'), 4);
-  assert.equal(span('.w-games-access'), 4);
-  assert.equal(span('.w-games-meta'), 4);
-  assert.equal(span('.w-games-achievements'), 4);
+  assert.equal(span('.w-games-genres'), 6);
+  assert.equal(span('.w-games-meta'), 6);
+  assert.equal(span('.w-games-achievements'), 6);
   assert.equal(span('.w-games-calendar'), 12);
   assert.equal(span('.w-games-persons'), 12);
   // The count-by-release-year chart is a second, independent span-12 block:
@@ -197,11 +197,11 @@ test('year-count chart: span 12, own ids, counts above bars, genre filter', () =
   // Own select, distinct from the persons role select and the weight toggles.
   assert.match(html, /id="games-yearcount-genre"[^>]*aria-label="Фильтр по жанру Steam Store"/);
 
-  // Order: decades + years pair, then the full-width count chart, then genres.
+  // Order: decades + years pair, then the full-width count chart, then tags.
   const years = html.indexOf('id="games-years-widget"');
   const count = html.indexOf('id="games-yearcount-widget"');
-  const genres = html.indexOf('id="games-genres-widget"');
-  assert.ok(years > 0 && years < count && count < genres,
+  const tags = html.indexOf('id="games-tags-widget"');
+  assert.ok(years > 0 && years < count && count < tags,
     'count chart must sit right after the years pair (no grid holes)');
   // The existing decade-gated card keeps its own title — no duplicate wording.
   assert.match(html, /id="games-years-title"[^>]*>[\s\S]{0,120}Годы релиза/);
@@ -329,11 +329,10 @@ test('summary metrics add the 7th «не типизированы» tile', async
    client-side drilldowns
    ========================================================= */
 
-test('drilldowns from gamesIndex: year, decade, unknown year, genre, mode, access, bucket', async () => {
+test('drilldowns from gamesIndex: year, decade, unknown year, genre, recent', async () => {
   const {
     gamesInYear, gamesInDecade, gamesWithoutYear, gamesWithoutType, gamesByGenre,
-    gamesByMode, gamesByAccess, gamesInHoursBucket, gamesWithRecentHours,
-    backlogGames, hoursBucketOf, yearsInDecade,
+    gamesWithRecentHours, yearsInDecade,
   } = await view();
   const index = miniIndex();
 
@@ -346,26 +345,9 @@ test('drilldowns from gamesIndex: year, decade, unknown year, genre, mode, acces
   assert.deepEqual(gamesByGenre(index, 'RPG').map((game) => game.name).sort(), ['Alpha', 'Delta']);
   assert.deepEqual(gamesByGenre(index, 'rpg').map((game) => game.name).sort(), ['Alpha', 'Delta']);
 
-  assert.deepEqual(gamesByMode(index, 'single').map((game) => game.name).sort(), ['Alpha', 'Delta']);
-  assert.deepEqual(gamesByMode(index, 'multi').map((game) => game.name), ['Beta']);
-  assert.deepEqual(gamesByMode(index, 'onlinePvp').map((game) => game.name), ['Epsilon']);
-  assert.deepEqual(gamesByMode(index, 'nonsense'), []);
-
-  assert.deepEqual(gamesByAccess(index, 'freeToPlay').map((game) => game.name), ['Beta']);
-  assert.deepEqual(gamesByAccess(index, 'earlyAccess').map((game) => game.name), ['Delta']);
-
-  assert.deepEqual(gamesInHoursBucket(index, '0').map((game) => game.name), ['Beta']);
-  assert.deepEqual(gamesInHoursBucket(index, '5-20').map((game) => game.name).sort(), ['Alpha', 'Gamma']);
-  assert.deepEqual(gamesInHoursBucket(index, '100-500').map((game) => game.name), ['Delta']);
-  assert.deepEqual(gamesInHoursBucket(index, 'nope'), []);
-  assert.equal(hoursBucketOf(0), '0');
-  assert.equal(hoursBucketOf(0.5), '<1');
-  assert.equal(hoursBucketOf(5), '5-20');
-  assert.equal(hoursBucketOf(500), '500+');
-  assert.equal(hoursBucketOf(null), null);
-
+  // U5: mode/access/hours-bucket drilldowns died with their widgets; the
+  // «за 2 недели» summary tile still drills into this helper.
   assert.deepEqual(gamesWithRecentHours(index).map((game) => game.name), ['Alpha']);
-  assert.deepEqual(backlogGames(index).map((game) => game.name), ['Beta']);
 
   const years = yearsInDecade([
     { year: 2009, count: 1 },
@@ -579,8 +561,8 @@ test('live snapshot: 332 games, year 2013 = 34, RPG = 97, untyped = 21', async (
     return;
   }
   const {
-    normalizeGamesPayload, gamesInYear, gamesByGenre, gamesWithoutType, backlogGames,
-    gamesByMode, gamesInHoursBucket, decadesView, summaryMetrics,
+    normalizeGamesPayload, gamesInYear, gamesByGenre, gamesWithoutType,
+    decadesView, summaryMetrics,
   } = await view();
   const data = normalizeGamesPayload(raw);
 
@@ -591,9 +573,6 @@ test('live snapshot: 332 games, year 2013 = 34, RPG = 97, untyped = 21', async (
   assert.equal(gamesInYear(data.gamesIndex, 2013).length, 34);
   assert.equal(gamesByGenre(data.gamesIndex, 'RPG').length, 97);
   assert.equal(gamesWithoutType(data.gamesIndex).length, 21);
-  assert.equal(backlogGames(data.gamesIndex).length, 119);
-  assert.equal(gamesByMode(data.gamesIndex, 'single').length, 292);
-  assert.equal(gamesInHoursBucket(data.gamesIndex, '5-20').length, 68);
   assert.deepEqual(decadesView(data.decades).rows.map((row) => row.label), [
     '1990-е', '2000-е', '2010-е', '2020-е', 'год неизвестен',
   ]);

@@ -308,11 +308,13 @@ export async function getBooksImportStatus(jobId, { source = '', signal } = {}) 
  * parameters are rejected with `400 unexpected_parameter`, so nothing else is
  * appended here.
  */
-export function getGamesStats({ profile = '', includeFree = null, includeDlc = null, signal } = {}) {
+export function getGamesStats({ profile = '', includeFree = null, includeDlc = null, minHours = null, signal } = {}) {
   const params = new URLSearchParams();
   if (profile) params.set('profile', profile);
   if (includeFree != null) params.set('includeFree', includeFree ? '1' : '0');
   if (includeDlc != null) params.set('includeDlc', includeDlc ? '1' : '0');
+  // -1 = every game (0-hour included), 0 = server default (>0 hours), N = ≥N h.
+  if (minHours != null) params.set('minHours', String(minHours));
   const query = params.toString();
   return request(`/api/games/stats${query ? `?${query}` : ''}`, { signal });
 }

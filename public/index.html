@@ -1096,10 +1096,31 @@
               <input type="checkbox" id="games-filter-dlc">
               <span>включить DLC</span>
             </label>
+            <span class="games-filter games-filter-hours">
+              <label class="games-filter-hours-label" for="games-filter-hours">мин. часов</label>
+              <span class="games-hours-stepper" role="group" aria-label="Минимальное количество часов">
+                <button type="button" class="games-hours-step" id="games-filter-hours-minus" aria-label="Уменьшить минимальное количество часов">−</button>
+                <input type="number" id="games-filter-hours" class="games-hours-input" min="-1" step="1" value="0" inputmode="numeric" aria-describedby="games-filter-hours-hint">
+                <button type="button" class="games-hours-step" id="games-filter-hours-plus" aria-label="Увеличить минимальное количество часов">+</button>
+              </span>
+              <span class="games-filter-hours-hint" id="games-filter-hours-hint">−1 — все игры, 0 — с часами</span>
+            </span>
             <span class="games-filter-note" id="games-filter-note"></span>
           </section>
 
           <div class="widgets" id="games-widgets">
+            <section class="widget w-games-recent" id="games-recent-widget" aria-labelledby="games-recent-title" hidden>
+              <div class="widget-head recent-head">
+                <h2 class="widget-title" id="games-recent-title"><span class="w-dot green"></span>Недавно играл</h2>
+                <span class="widget-note" id="games-recent-note"></span>
+              </div>
+              <div class="games-recent-strip" id="games-recent-strip"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>сортировка по дате последнего запуска</span>
+                <span class="chart-foot-hint">«последний раз» — дата запуска, а не игровая сессия; клик — карточка игры</span>
+              </div>
+            </section>
+
             <section class="widget w-games-profile" id="games-profile-widget" aria-labelledby="games-profile-title" hidden>
               <div class="widget-head">
                 <h2 class="widget-title" id="games-profile-title"><span class="w-dot green"></span>Профиль Steam</h2>
@@ -1135,39 +1156,23 @@
               </div>
             </section>
 
-            <section class="widget w-games-histogram" id="games-histogram-widget" aria-labelledby="games-histogram-title" hidden>
+            <section class="widget w-games-genres" id="games-genres-widget" aria-labelledby="games-genres-title" hidden>
               <div class="widget-head">
-                <h2 class="widget-title" id="games-histogram-title"><span class="w-dot blue"></span>Часы: длинный хвост</h2>
-                <span class="widget-note" id="games-histogram-note"></span>
+                <h2 class="widget-title" id="games-genres-title"><span class="w-dot green"></span>Жанры</h2>
+                <span class="widget-note" id="games-genres-note"></span>
               </div>
-              <div class="genre-list games-hist-list" id="games-histogram"></div>
+              <div class="games-genre-toolbar">
+                <div class="games-weight-toggle" role="group" aria-label="Вес жанров">
+                  <button type="button" class="games-weight-btn is-active" data-games-genre-weight="hours">по часам</button>
+                  <button type="button" class="games-weight-btn" data-games-genre-weight="count">по числу игр</button>
+                </div>
+                <span class="games-genre-hint">наведи — детали, клик — список</span>
+              </div>
+              <div class="genre-list games-genre-chart" id="games-genres-chart"></div>
+              <div class="games-genre-more" id="games-genres-more"></div>
               <div class="chart-foot">
-                <span><i class="swatch blue"></i>игры по бакетам часов</span>
-                <span class="chart-foot-hint">сколько игр в каждом диапазоне часов</span>
-              </div>
-            </section>
-
-            <section class="widget w-games-backlog" id="games-backlog-widget" aria-labelledby="games-backlog-title" hidden>
-              <div class="widget-head">
-                <h2 class="widget-title" id="games-backlog-title"><span class="w-dot orange"></span>Backlog</h2>
-                <span class="widget-note" id="games-backlog-note"></span>
-              </div>
-              <div class="genre-list games-backlog-list" id="games-backlog-list"></div>
-              <div class="chart-foot">
-                <span><i class="swatch orange"></i>0 часов по данным Steam</span>
-                <span class="chart-foot-hint">куплено/получено, но ни разу не запущено</span>
-              </div>
-            </section>
-
-            <section class="widget w-games-recent" id="games-recent-widget" aria-labelledby="games-recent-title" hidden>
-              <div class="widget-head">
-                <h2 class="widget-title" id="games-recent-title"><span class="w-dot green"></span>За 2 недели</h2>
-                <span class="widget-note" id="games-recent-note"></span>
-              </div>
-              <div class="games-recent-list" id="games-recent-list"></div>
-              <div class="chart-foot">
-                <span><i class="swatch green"></i>playtime_2weeks по данным Steam</span>
-                <span class="chart-foot-hint">«последний раз» — дата запуска, а не игровая сессия</span>
+                <span><i class="swatch green"></i>доля часов по жанрам Steam Store</span>
+                <span class="chart-foot-hint">одна игра может быть в нескольких жанрах</span>
               </div>
             </section>
 
@@ -1259,38 +1264,6 @@
               </div>
             </section>
 
-            <section class="widget w-games-genres" id="games-genres-widget" aria-labelledby="games-genres-title" hidden>
-              <div class="widget-head">
-                <h2 class="widget-title" id="games-genres-title"><span class="w-dot green"></span>Жанры</h2>
-                <span class="widget-note" id="games-genres-note"></span>
-              </div>
-              <div class="games-genre-toolbar">
-                <div class="games-weight-toggle" role="group" aria-label="Вес жанров">
-                  <button type="button" class="games-weight-btn is-active" data-games-genre-weight="hours">по часам</button>
-                  <button type="button" class="games-weight-btn" data-games-genre-weight="count">по числу игр</button>
-                </div>
-                <span class="games-genre-hint">наведи — детали, клик — список</span>
-              </div>
-              <div class="genre-list games-genre-chart" id="games-genres-chart"></div>
-              <div class="games-genre-more" id="games-genres-more"></div>
-              <div class="chart-foot">
-                <span><i class="swatch green"></i>доля часов по жанрам Steam Store</span>
-                <span class="chart-foot-hint">одна игра может быть в нескольких жанрах</span>
-              </div>
-            </section>
-
-            <section class="widget w-games-modes" id="games-modes-widget" aria-labelledby="games-modes-title" hidden>
-              <div class="widget-head">
-                <h2 class="widget-title" id="games-modes-title"><span class="w-dot orange"></span>Режимы</h2>
-                <span class="widget-note" id="games-modes-note"></span>
-              </div>
-              <div class="genre-list" id="games-modes-list"></div>
-              <div class="chart-foot">
-                <span><i class="swatch orange"></i>single / multi / co-op</span>
-                <span class="chart-foot-hint">категории Steam Store</span>
-              </div>
-            </section>
-
             <section class="widget w-games-franchises" id="games-franchises-widget" aria-labelledby="games-franchises-title" hidden>
               <div class="widget-head">
                 <h2 class="widget-title" id="games-franchises-title"><span class="w-dot green"></span>Франшизы</h2>
@@ -1317,18 +1290,6 @@
               <div class="chart-foot">
                 <span><i class="swatch orange"></i>сколько DLC у игр библиотеки</span>
                 <span class="chart-foot-hint">нажми на строку — карточка игры</span>
-              </div>
-            </section>
-
-            <section class="widget w-games-access" id="games-access-widget" aria-labelledby="games-access-title" hidden>
-              <div class="widget-head">
-                <h2 class="widget-title" id="games-access-title"><span class="w-dot blue"></span>Доступ</h2>
-                <span class="widget-note" id="games-access-note"></span>
-              </div>
-              <div class="games-access" id="games-access-body"></div>
-              <div class="chart-foot">
-                <span><i class="swatch blue"></i>Early Access и бесплатные</span>
-                <span class="chart-foot-hint">доля от числа игр библиотеки</span>
               </div>
             </section>
 

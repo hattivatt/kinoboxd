@@ -31,21 +31,21 @@ import { withPreservedScroll } from './books-refresh.js';
 import { renderYearBars, renderDonut } from './charts.js';
 import {
   normalizeGamesPayload, normalizeProfilesList, accountFromInput, profileCardView, summaryMetrics,
-  paretoView, topHoursRows, backlogView, recentlyView, histogramView, lastPlayedInfo,
+  paretoView, topHoursRows, recentStripView, lastPlayedInfo,
   importErrorText, jobStageText, jobProgress, gamesJobId, hoursText, HOURS_HINT,
-  decadesView, yearsView, genreChartView, modesView, accessView, metadataProgressView, filtersView,
+  decadesView, yearsView, genreChartView, metadataProgressView, filtersView,
   calendarView, achievementStreaksView, achievementsOverviewView, normalizePersonnel, personnelRows,
   studiosView, coverageBadge, PERSONNEL_ROLES, formatDateRu, normalizePersonnelRole,
   personnelRoleOptions, personnelRoleCountText, GENRE_CHART_LIMIT,
-  gamesInDecade, gamesWithoutYear, gamesWithoutType, gamesByGenre, gamesByMode,
-  gamesByAccess, gamesInHoursBucket, gamesWithRecentHours, backlogGames, allGames, sortGameRows,
+  gamesInDecade, gamesWithoutYear, gamesWithoutType, gamesByGenre,
+  gamesWithRecentHours, allGames, sortGameRows,
   yearsInDecade, gamesInYearGenre, yearCountView, yearCountGenreOptions,
   tagsChartView, TAG_CHART_LIMIT, gamesByTag, scoresView, gamesByReviewBucket,
   franchisesView, gamesInFranchise, dlcView, normalizeFranchisesResponse,
 } from './games-view.js';
 import {
   configureGamesModals, openGameCardModal, openGameListModal, openPersonModal, personAvatarEl,
-  openFranchiseModal,
+  openFranchiseModal, gameIconEl,
 } from './games-modal.js';
 import { renderAchievementCalendar, renderAchievementStreaks } from './games-charts.js';
 
@@ -68,7 +68,6 @@ const ENRICH_POLL_LIMIT = 120;
 const PROFILES_RELOAD_MS = 30_000;
 const GAME_PLURAL = ['игра', 'игры', 'игр'];
 const TOP_LIMIT = 10;
-const BACKLOG_LIMIT = 24;
 const PERSONS_INITIAL = 15;
 const PERSONS_BATCH = 50;
 
@@ -92,7 +91,9 @@ const state = {
   onActivate: null,
   // M2: includeFree/includeDlc are sent only when they differ from the server
   // defaults (free included, DLC excluded) — a default request stays clean.
-  filters: { includeFree: true, includeDlc: false },
+  // The min-hours filter follows the same rule: -1 = every game (including
+  // 0-hour ones), 0 = the server default (only games with >0 hours), N = ≥N h.
+  filters: { includeFree: true, includeDlc: false, minHours: 0 },
   // Genre bar chart: weight + «Показать все» (top 12 first).
   genreWeight: 'hours',
   genresExpanded: false,
@@ -457,6 +458,7 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
     const query = { profile: state.profileKey };
     if (state.filters.includeFree === false) query.includeFree = false;
     if (state.filters.includeDlc === true) query.includeDlc = true;
+    if (state.filters.minHours !== 0) query.minHours = state.filters.minHours;
     const raw = await getGamesStats(query);
     if (seq !== state.seq) return;
     const data = normalizeGamesPayload(raw);
@@ -803,25 +805,23 @@ function renderDashboard(data) {
   renderSummary(data);
   renderPartialNote(data);
   renderFilters(data);
+  // The top strip is first in the grid (films/books pattern): newest launches
+  // first, then the rest of the dashboard.
+  renderRecentStrip(data);
   renderTopHours(data);
   renderPareto(data);
-  renderBacklog(data);
-  renderRecently(data);
-  renderHistogram(data);
   // M2/M3 widgets: every one of them hides itself when its payload block is
   // missing, so an M1 server keeps a clean dashboard.
   renderDecades(data);
   renderYears(data);
   renderYearCount(data);
-  // M4: tags + Steam scores sit next to the genre/mode pair; franchises and
-  // DLC follow. Every widget hides itself when its block is absent.
+  // M4: tags + Steam scores, then genres (paired with Pareto), franchises and
+  // DLC. Every widget hides itself when its block is absent.
   renderTags(data);
   renderScores(data);
   renderGenreChart(data);
-  renderModes(data);
   renderFranchises(data);
   renderDlc(data);
-  renderAccess(data);
   renderMetadataProgress(data);
   renderAchievements(data);
   renderCalendar(data);
@@ -948,22 +948,6 @@ function showAllButton(label, onClick) {
 
 function openSummaryList(kind, data) {
   const index = data.gamesIndex || {};
-  if (kind === 'backlog') {
-    const games = sortGameRows(backlogGames(index), 'hours');
-    openGameListModal({
-      kicker: 'Backlog',
-      title: `Backlog — ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`,
-      subtitle: `${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)} с playtime_forever = 0`,
-      hint: 'Полный backlog: игры есть в библиотеке Steam, но ни разу не запускались по данным Steam. '
-        + 'Бесплатные раздачи и софт могут его завышать.',
-      groupLabel: 'Backlog',
-      emptyText: 'Backlog пуст',
-      games,
-      sortScope: 'backlog',
-      defaultSort: 'name',
-    });
-    return;
-  }
   if (kind === 'recent') {
     const games = sortGameRows(gamesWithRecentHours(index), 'hours');
     openGameListModal({
@@ -1014,7 +998,9 @@ function renderSummary(data) {
   host.hidden = false;
   host.classList.add('games-summary');
   host.classList.toggle('has-unmatched', metrics.some((entry) => entry.key === 'unmatched'));
-  const clickable = new Set(['backlog', 'recent', 'unmatched']);
+  // The backlog tile stays a number: its list widget is gone, so a drilldown
+  // would open a list the dashboard no longer shows.
+  const clickable = new Set(['recent', 'unmatched']);
   for (const descriptor of metrics) {
     host.append(metric(clickable.has(descriptor.key)
       ? { ...descriptor, onClick: () => openSummaryList(descriptor.key, data) }
@@ -1168,167 +1154,49 @@ function renderPareto(data) {
   host.append(el('p', { class: 'games-pareto-hint', text: view.hint }));
 }
 
-function renderBacklog(data) {
-  const widget = $('games-backlog-widget');
-  const host = $('games-backlog-list');
-  const note = $('games-backlog-note');
-  if (!widget || !host) return;
-  clear(host);
-  const view = backlogView(data.backlog, data.summary);
-  if (!view) {
-    widget.hidden = true;
-    return;
-  }
-  widget.hidden = false;
-  if (note) {
-    note.textContent = `${view.countText} ${plural(view.count, GAME_PLURAL)}${view.shareText ? ` · ${view.shareText} библиотеки` : ''}`;
-  }
-  if (!view.hasItems) {
-    host.append(el('p', { class: 'games-backlog-empty', text: `Состав backlog сервер не передал — известен только счётчик: ${view.countText}.` }));
-    return;
-  }
-  for (const item of view.items.slice(0, BACKLOG_LIMIT)) {
-    const row = el('div', {
-      class: 'games-list-row is-clickable',
-      role: 'button',
-      tabIndex: 0,
-      'aria-label': `${item.name}: открыть карточку игры`,
-    });
-    row.append(el('span', { class: 'games-list-name', text: item.name }));
-    const meta = [item.yearText, item.genresText].filter(Boolean).join(' · ');
-    row.append(el('span', { class: 'games-list-meta', text: meta }));
-    host.append(row);
-    const activate = () => {
-      hideTooltip();
-      if (item.appid != null) openGameCardModal(item.appid, { fallback: item });
-    };
-    row.addEventListener('click', activate);
-    row.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      activate();
-    });
-    row.addEventListener('pointerenter', (event) => {
-      showTooltip(item.name, `${meta || 'метадата неизвестна'} · нажмите, чтобы открыть карточку`);
-      moveTooltip(event);
-    });
-    row.addEventListener('pointermove', moveTooltip);
-    row.addEventListener('pointerleave', hideTooltip);
-  }
-  const all = sortGameRows(backlogGames(data.gamesIndex), 'name');
-  const total = Math.max(view.count, all.length);
-  if (total > BACKLOG_LIMIT) {
-    host.append(showAllButton(`Показать все ${fmtInt(total)} игр backlog`, () => openSummaryList('backlog', data)));
-  }
-}
-
-function renderRecently(data) {
+function renderRecentStrip(data) {
   const widget = $('games-recent-widget');
-  const host = $('games-recent-list');
+  const host = $('games-recent-strip');
   const note = $('games-recent-note');
   if (!widget || !host) return;
   clear(host);
-  const view = recentlyView(data.recentlyPlayed);
+  const view = recentStripView(data.recentlyPlayed, data.gamesIndex);
   if (!view.visible) {
     widget.hidden = true;
     return;
   }
   widget.hidden = false;
-  if (note) note.textContent = `${view.total2wText} за две недели`;
+  if (note) note.textContent = view.note;
   for (const item of view.items) {
-    const row = el('div', {
-      class: 'games-recent-row is-clickable',
+    const card = el('div', { class: 'games-recent-card' });
+    const art = el('div', {
+      class: 'games-recent-art',
       role: 'button',
       tabIndex: 0,
-      title: item.lastPlayedTitle,
+      title: `${item.name}${item.lastPlayedText ? ` · последний раз ${item.lastPlayedText}` : ''}`,
       'aria-label': `${item.name}: открыть карточку игры`,
     });
-    row.append(el('span', { class: 'games-list-name', text: item.name }));
-    row.append(el('span', {
-      class: 'games-recent-hours',
-      text: item.hours2wText || '—',
+    art.append(gameIconEl({ name: item.name, iconUrl: item.iconUrl }, { className: 'games-recent-icon' }));
+    card.append(art);
+    card.append(el('span', { class: 'games-recent-name', text: item.name, title: item.name }));
+    card.append(el('span', {
+      class: `games-recent-meta${item.fresh ? ' is-fresh' : ''}`,
+      text: item.caption,
       title: item.hint,
     }));
-    const last = el('span', {
-      class: 'games-recent-last',
-      text: item.lastPlayedText ? `последний раз ${item.lastPlayedText}` : 'последний запуск неизвестен',
-      title: item.lastPlayedTitle,
-    });
-    row.append(last);
-    host.append(row);
-    row.addEventListener('pointerenter', (event) => {
-      showTooltip(`${item.name} — ${item.hours2wText || 'нет часов'} за 2 недели`, `${item.hint} · нажмите, чтобы открыть карточку`);
+    host.append(card);
+    art.addEventListener('pointerenter', (event) => {
+      showTooltip(item.name, `${item.hint} · нажмите, чтобы открыть карточку`);
       moveTooltip(event);
     });
-    row.addEventListener('pointermove', moveTooltip);
-    row.addEventListener('pointerleave', hideTooltip);
+    art.addEventListener('pointermove', moveTooltip);
+    art.addEventListener('pointerleave', hideTooltip);
     const activate = () => {
       hideTooltip();
       if (item.appid != null) openGameCardModal(item.appid, { fallback: item });
     };
-    row.addEventListener('click', activate);
-    row.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      activate();
-    });
-  }
-}
-
-function renderHistogram(data) {
-  const widget = $('games-histogram-widget');
-  const host = $('games-histogram');
-  const note = $('games-histogram-note');
-  if (!widget || !host) return;
-  clear(host);
-  const view = histogramView(data.histogram);
-  if (!view) {
-    widget.hidden = true;
-    return;
-  }
-  widget.hidden = false;
-  if (note) note.textContent = `${view.totalText} ${plural(view.total, GAME_PLURAL)}`;
-  for (const row of view.rows) {
-    const node = el('div', {
-      class: 'genre-row games-hist-row is-clickable',
-      title: row.title,
-      role: 'button',
-      tabIndex: 0,
-      'aria-label': `${row.bucket} ч: ${row.countText} игр. Открыть список`,
-    });
-    node.append(el('span', { class: 'games-hist-bucket', text: row.bucket }));
-    const track = el('div', { class: 'genre-track' });
-    const fill = el('div', { class: 'genre-fill' });
-    track.append(fill);
-    node.append(track);
-    node.append(el('span', { class: 'genre-avg', text: row.countText }));
-    host.append(node);
-    requestAnimationFrame(() => {
-      fill.style.width = `${row.widthPercent}%`;
-    });
-    node.addEventListener('pointerenter', (event) => {
-      showTooltip(row.title, 'Бакеты по часам playtime_forever · нажмите, чтобы открыть список');
-      moveTooltip(event);
-    });
-    node.addEventListener('pointermove', moveTooltip);
-    node.addEventListener('pointerleave', hideTooltip);
-    const activate = () => {
-      hideTooltip();
-      const games = sortGameRows(gamesInHoursBucket(data.gamesIndex, row.bucket), 'hours');
-      openGameListModal({
-        kicker: 'Часы: длинный хвост',
-        title: `${row.bucket} ч — ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`,
-        subtitle: 'Игры по бакету playtime_forever',
-        hint: 'Границы бакетов совпадают с серверными: 0, <1, 1–5, 5–20, 20–50, 50–100, 100–500, 500+.',
-        groupLabel: `${row.bucket} ч`,
-        emptyText: 'В этом бакете нет игр',
-        games,
-        sortScope: 'histogram',
-        defaultSort: 'hours',
-      });
-    };
-    node.addEventListener('click', activate);
-    node.addEventListener('keydown', (event) => {
+    art.addEventListener('click', activate);
+    art.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
       activate();
@@ -1337,7 +1205,7 @@ function renderHistogram(data) {
 }
 
 /* =========================================================
-   M2: filters, decades, years, genres, modes, access, enrichment
+   M2: filters, decades, years, genres, enrichment
    ========================================================= */
 
 /** Requested-vs-applied is printed as-is: a silent filter would be a lie. */
@@ -1346,6 +1214,7 @@ function renderFilters(data) {
   const note = $('games-filter-note');
   const free = $('games-filter-free');
   const dlc = $('games-filter-dlc');
+  const hours = $('games-filter-hours');
   if (!section) return;
   const view = filtersView(data.filters, {
     includeFree: state.filters.includeFree,
@@ -1358,6 +1227,11 @@ function renderFilters(data) {
   if (dlc && dlc.checked !== (view.state.includeDlc === true)) {
     dlc.checked = view.state.includeDlc === true;
   }
+  // The stepper shows the stored per-profile value; it is not a checkbox, so
+  // it is only overwritten when it differs (never mid-typing).
+  if (hours && String(hours.value) !== String(state.filters.minHours)) {
+    hours.value = String(state.filters.minHours);
+  }
   if (note) {
     const texts = view.items
       .filter((item) => item.status === 'pending' || item.status === 'applied' || item.status === 'unknown')
@@ -1368,11 +1242,23 @@ function renderFilters(data) {
   section.hidden = false;
 }
 
+const MIN_HOURS_FLOOR = -1;
+
+/** Clamp the «мин. часов» value: integer, never below -1. */
+function normalizeMinHours(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  const integer = Math.trunc(parsed);
+  return integer < MIN_HOURS_FLOOR ? MIN_HOURS_FLOOR : integer;
+}
+
 function applyFilters(next) {
   state.filters = {
     includeFree: next.includeFree !== false,
     includeDlc: next.includeDlc === true,
+    minHours: normalizeMinHours(next.minHours != null ? next.minHours : state.filters.minHours),
   };
+  syncFilterInputs();
   safeStorageSet(filtersStorageKey(), JSON.stringify(state.filters));
   state.loaded = false;
   loadStats({ force: true });
@@ -2124,130 +2010,6 @@ function renderDlc(data) {
   }
 }
 
-function renderModes(data) {
-  const widget = $('games-modes-widget');
-  const host = $('games-modes-list');
-  const note = $('games-modes-note');
-  if (!widget || !host) return;
-  clear(host);
-  const view = modesView(data.summary.modes);
-  if (!view) {
-    widget.hidden = true;
-    return;
-  }
-  widget.hidden = false;
-  if (note) note.textContent = view.note;
-  for (const row of view.rows) {
-    const node = el('div', {
-      class: 'genre-row is-clickable',
-      title: row.title,
-      role: 'button',
-      tabIndex: 0,
-      'aria-label': `${row.label}: ${row.countText} игр. Открыть список`,
-    });
-    const name = el('div', { class: 'genre-name' });
-    name.append(el('span', { class: 'genre-label', text: row.label }));
-    name.append(el('span', { class: 'genre-count', text: row.countText }));
-    node.append(name);
-    const track = el('div', { class: 'genre-track' });
-    const fill = el('div', { class: 'genre-fill' });
-    track.append(fill);
-    node.append(track);
-    node.append(el('div', { class: 'genre-avg', text: row.hoursText || row.shareText || '—' }));
-    host.append(node);
-    requestAnimationFrame(() => {
-      fill.style.width = `${row.widthPercent}%`;
-    });
-    node.addEventListener('pointerenter', (event) => {
-      showTooltip(row.title, `${row.hint} · нажмите, чтобы открыть список`);
-      moveTooltip(event);
-    });
-    node.addEventListener('pointermove', moveTooltip);
-    node.addEventListener('pointerleave', hideTooltip);
-    const activate = () => {
-      hideTooltip();
-      const games = sortGameRows(gamesByMode(data.gamesIndex, row.key), 'hours');
-      openGameListModal({
-        kicker: 'Режимы',
-        title: `${row.label} — ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`,
-        subtitle: `${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)} с категорией «${row.label}»`,
-        hint: 'Категории Steam Store (categories[]): одна игра может быть и одиночной, и кооперативной. '
-          + 'Счётчик совпадает с summary.modes, потому что клиент использует те же регулярные выражения.',
-        groupLabel: row.label,
-        emptyText: 'Нет игр с этой категорией',
-        games,
-        sortScope: 'mode',
-        defaultSort: 'hours',
-      });
-    };
-    node.addEventListener('click', activate);
-    node.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      activate();
-    });
-  }
-}
-
-function renderAccess(data) {
-  const widget = $('games-access-widget');
-  const host = $('games-access-body');
-  const note = $('games-access-note');
-  if (!widget || !host) return;
-  clear(host);
-  const view = accessView(data.summary);
-  if (!view) {
-    widget.hidden = true;
-    return;
-  }
-  widget.hidden = false;
-  if (note) note.textContent = view.note;
-  for (const item of view.items) {
-    const node = el('div', {
-      class: 'games-access-item is-clickable',
-      title: item.hint,
-      role: 'button',
-      tabIndex: 0,
-      'aria-label': `${item.label}: ${item.countText} игр. Открыть список`,
-    });
-    node.append(el('span', { class: 'games-access-label', text: item.label }));
-    node.append(el('span', { class: 'games-access-value', text: item.countText }));
-    const sub = [
-      item.hoursText ? `${item.hoursText}` : '',
-      item.shareText ? `${item.shareText} библиотеки` : '',
-    ].filter(Boolean).join(' · ');
-    if (sub) node.append(el('span', { class: 'games-access-sub', text: sub }));
-    host.append(node);
-    node.addEventListener('pointerenter', (event) => {
-      showTooltip(`${item.label} — ${item.countText} ${plural(item.count, GAME_PLURAL)}`, `${item.hint} · нажмите, чтобы открыть список`);
-      moveTooltip(event);
-    });
-    node.addEventListener('pointermove', moveTooltip);
-    node.addEventListener('pointerleave', hideTooltip);
-    const activate = () => {
-      hideTooltip();
-      const games = sortGameRows(gamesByAccess(data.gamesIndex, item.key), 'hours');
-      openGameListModal({
-        kicker: 'Доступ',
-        title: `${item.label} — ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`,
-        subtitle: `${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)} · ${item.shareText || 'доля неизвестна'} библиотеки`,
-        hint: item.hint,
-        groupLabel: item.label,
-        emptyText: 'Нет игр с этим признаком',
-        games,
-        sortScope: 'access',
-        defaultSort: 'hours',
-      });
-    };
-    node.addEventListener('click', activate);
-    node.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      activate();
-    });
-  }
-}
-
 function renderMetadataProgress(data) {
   const widget = $('games-meta-widget');
   const host = $('games-meta-body');
@@ -2992,6 +2754,7 @@ export function initGames({ onActivate } = {}) {
     free.addEventListener('change', () => applyFilters({
       includeFree: !free.checked,
       includeDlc: Boolean($('games-filter-dlc') && $('games-filter-dlc').checked),
+      minHours: state.filters.minHours,
     }));
   }
   const dlc = $('games-filter-dlc');
@@ -2999,7 +2762,33 @@ export function initGames({ onActivate } = {}) {
     dlc.addEventListener('change', () => applyFilters({
       includeFree: !($('games-filter-free') && $('games-filter-free').checked),
       includeDlc: dlc.checked,
+      minHours: state.filters.minHours,
     }));
+  }
+  /* «мин. часов»: a numeric field with −/+ steppers (step 1 hour).
+     -1 = every game, 0 = default (only >0 h), N = ≥N h. Per-profile storage. */
+  const hours = $('games-filter-hours');
+  if (hours) {
+    const commit = (value) => {
+      const next = normalizeMinHours(value);
+      hours.value = String(next);
+      if (next === state.filters.minHours) return;
+      applyFilters({ ...state.filters, minHours: next });
+    };
+    hours.addEventListener('change', () => commit(hours.value));
+    hours.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      commit(hours.value);
+    });
+    const minus = $('games-filter-hours-minus');
+    if (minus) {
+      minus.addEventListener('click', () => commit(state.filters.minHours - 1));
+    }
+    const plus = $('games-filter-hours-plus');
+    if (plus) {
+      plus.addEventListener('click', () => commit(state.filters.minHours + 1));
+    }
   }
 
   /* M2: genre chart weight (local re-sort, no request). */
@@ -3086,19 +2875,22 @@ function readStoredFilters(profileKey = state.profileKey) {
       return {
         includeFree: parsed.includeFree !== false,
         includeDlc: parsed.includeDlc === true,
+        minHours: normalizeMinHours(parsed.minHours),
       };
     }
   } catch {
     /* corrupted storage — fall back to the server defaults */
   }
-  return { includeFree: true, includeDlc: false };
+  return { includeFree: true, includeDlc: false, minHours: 0 };
 }
 
 function syncFilterInputs() {
   const free = $('games-filter-free');
   const dlc = $('games-filter-dlc');
+  const hours = $('games-filter-hours');
   if (free) free.checked = state.filters.includeFree === false;
   if (dlc) dlc.checked = state.filters.includeDlc === true;
+  if (hours) hours.value = String(state.filters.minHours);
 }
 
 async function refreshProfile() {

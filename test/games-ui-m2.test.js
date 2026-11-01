@@ -58,16 +58,22 @@ test('index.html carries the M2 widgets', () => {
     'games-decades-widget', 'games-decades-list',
     'games-years-widget', 'games-years-chart',
     'games-genres-widget', 'games-genres-chart', 'games-genres-more',
-    'games-modes-widget', 'games-modes-list',
-    'games-access-widget', 'games-access-body',
     'games-meta-widget', 'games-meta-body',
     'games-achievements-widget', 'games-achievements-body',
     'games-calendar-widget', 'games-calendar-host', 'games-streak-card',
   ]) {
     assert.match(html, new RegExp(`id="${id}"`), `нет узла #${id}`);
   }
-  for (const label of ['Десятилетия', 'Годы релиза', 'Жанры', 'Режимы', 'Доступ', 'Обогащение', 'Календарь достижений']) {
+  for (const label of ['Десятилетия', 'Годы релиза', 'Жанры', 'Обогащение', 'Календарь достижений']) {
     assert.ok(html.includes(label), `нет подписи «${label}»`);
+  }
+  // U5: «Режимы» and «Доступ» are gone for good (with the histogram and the
+  // backlog list); the dashboard must not paint them again.
+  for (const id of ['games-modes-widget', 'games-access-widget']) {
+    assert.equal(html.includes(`id="${id}"`), false, `виджет #${id} должен быть удалён`);
+  }
+  for (const label of ['Режимы', 'Доступ']) {
+    assert.equal(html.includes(`>${label}<`), false, `подпись «${label}» должна быть удалена`);
   }
   // Honest wording: the calendar is achievements, the years are release years.
   assert.match(html, /по датам разблокировок, а не игровое время/);
@@ -79,12 +85,20 @@ test('index.html carries the filters panel and the personnel screen', () => {
   const html = readPublic('index.html');
   for (const id of [
     'games-filters', 'games-filter-free', 'games-filter-dlc', 'games-filter-note',
+    'games-filter-hours', 'games-filter-hours-minus', 'games-filter-hours-plus',
+    'games-filter-hours-hint',
     'games-personnel-back', 'games-personnel',
     'games-personnel-coverage', 'games-role-chips', 'games-personnel-body',
     'games-personnel-loading', 'games-personnel-error', 'games-personnel-note',
   ]) {
     assert.match(html, new RegExp(`id="${id}"`), `нет узла #${id}`);
   }
+  // U5: «мин. часов» — a numeric field with −/+ steppers; −1 = all games,
+  // 0 = default (>0 h), N = ≥N h. The label and the range are printed.
+  assert.match(html, /for="games-filter-hours">мин\. часов</);
+  assert.match(html, /id="games-filter-hours"[^>]*min="-1"[^>]*step="1"[^>]*value="0"/);
+  assert.match(html, /id="games-filter-hours-minus"[^>]*>−</);
+  assert.match(html, /id="games-filter-hours-plus"[^>]*>\+</);
   // The hero «Персоналии» button is gone: the inline span-12 widget owns the
   // personnel entry now, and its «Все персоналии» opens the sub-screen.
   assert.doesNotMatch(html, /id="games-personnel-open"/);
@@ -110,17 +124,21 @@ test('index.html carries the filters panel and the personnel screen', () => {
 test('style.css ships the M2/M3 games widgets', () => {
   const css = readPublic('style.css');
   for (const selector of [
-    '.w-games-decades', '.w-games-years', '.w-games-genres', '.w-games-modes',
-    '.w-games-access', '.w-games-meta', '.w-games-achievements', '.w-games-calendar',
+    '.w-games-decades', '.w-games-years', '.w-games-genres',
+    '.w-games-meta', '.w-games-achievements', '.w-games-calendar',
     '.games-genre-chart', '.games-genre-row', '.games-genre-value',
     '.games-genre-more', '.games-weight-toggle', '.games-weight-btn',
     '.games-filter-bar', '.games-filter', '.games-filter-note',
-    '.games-access-item', '.games-meta-track', '.games-meta-fill',
+    '.games-hours-stepper', '.games-hours-step', '.games-hours-input',
+    '.games-meta-track', '.games-meta-fill',
     '.games-achievement-metric', '.games-coverage-badge', '.games-role-chip',
     '.games-personnel-row', '.games-personnel-fill', '.games-personnel-games',
     '.games-personnel-empty',
   ]) {
     assert.ok(css.includes(selector), `нет стилей для ${selector}`);
+  }
+  for (const selector of ['.w-games-modes', '.w-games-access', '.games-access-item']) {
+    assert.equal(css.includes(selector), false, `стили ${selector} должны быть удалены`);
   }
 });
 
@@ -336,33 +354,6 @@ test('genre chart: horizontal bars by share of hours, count on demand', async ()
   assert.match(noHours.rows[0].secondaryText, /часы неизвестны/);
 
   assert.equal(genreChartView([]), null);
-});
-
-test('modes: Steam categories with Russian labels', async () => {
-  const { modesView } = await view();
-  const data = modesView(fixture('stats-m2-mock.json').summary.modes);
-  assert.deepEqual(data.rows.map((row) => row.label), [
-    'одиночная', 'мультиплеер', 'кооператив', 'PvP онлайн', 'кооп локально', 'MMO',
-  ]);
-  assert.equal(data.rows[0].countText, '300');
-  assert.equal(plain(data.rows[0].shareText), '55,5%');
-  assert.equal(data.rows[0].widthPercent, 100);
-  assert.equal(data.note, '6 режимов');
-  assert.equal(modesView(null), null);
-  assert.equal(modesView({ single: 0 }), null, 'нулевые категории не рисуются');
-});
-
-test('access: Early Access and F2P with hours and share', async () => {
-  const { accessView, normalizeGamesPayload } = await view();
-  const data = normalizeGamesPayload(fixture('stats-m2-mock.json'));
-  const list = accessView(data.summary);
-  assert.deepEqual(list.items.map((item) => item.label), ['Early Access', 'Бесплатные (F2P)']);
-  assert.equal(list.items[0].countText, '18');
-  assert.equal(plain(list.items[0].shareText), '5,3%');
-  assert.equal(plain(list.items[0].hoursText), '120,5 ч');
-  assert.equal(list.items[1].countText, '60');
-  assert.equal(plain(list.items[1].shareText), '17,6%');
-  assert.equal(accessView({}), null);
 });
 
 test('enrichment progress: «детали N/M» and «кредиты N/M», hidden at 100%', async () => {
@@ -659,7 +650,7 @@ test('coverage badge: visible below 100%, hidden at 100%', async () => {
 
 test('an M1 payload hides every M2/M3 widget instead of printing zeroes', async () => {
   const {
-    normalizeGamesPayload, decadesView, yearsView, genreChartView, modesView, accessView,
+    normalizeGamesPayload, decadesView, yearsView, genreChartView,
     metadataProgressView, filtersView, calendarView, achievementStreaksView, achievementsOverviewView,
     studiosView, normalizePersonnel,
   } = await view();
@@ -687,8 +678,6 @@ test('an M1 payload hides every M2/M3 widget instead of printing zeroes', async 
   assert.equal(decadesView(data.decades), null);
   assert.equal(yearsView(data.years), null);
   assert.equal(genreChartView(data.genres), null);
-  assert.equal(modesView(data.summary.modes), null);
-  assert.equal(accessView(data.summary), null);
   assert.equal(metadataProgressView(data.summary.metadata), null);
   assert.equal(calendarView(data.achievementDays, data.timeline), null);
   assert.equal(achievementStreaksView(data.streaks, data.achievementDays), null);
@@ -701,7 +690,7 @@ test('an M1 payload hides every M2/M3 widget instead of printing zeroes', async 
 
 test('malformed M2/M3 input never throws', async () => {
   const {
-    decadesView, yearsView, genreChartView, modesView, accessView, metadataProgressView,
+    decadesView, yearsView, genreChartView, metadataProgressView,
     filtersView, calendarView, achievementStreaksView, achievementsOverviewView,
     personnelRows, studiosView, coverageBadge, normalizePersonnel,
   } = await view();
@@ -710,8 +699,6 @@ test('malformed M2/M3 input never throws', async () => {
     assert.doesNotThrow(() => decadesView(raw));
     assert.doesNotThrow(() => yearsView(raw));
     assert.doesNotThrow(() => genreChartView(raw));
-    assert.doesNotThrow(() => modesView(raw));
-    assert.doesNotThrow(() => accessView(raw));
     assert.doesNotThrow(() => metadataProgressView(raw));
     assert.doesNotThrow(() => filtersView(raw));
     assert.doesNotThrow(() => calendarView(raw));
@@ -723,8 +710,6 @@ test('malformed M2/M3 input never throws', async () => {
     assert.equal(decadesView(raw), null);
     assert.equal(yearsView(raw), null);
     assert.equal(genreChartView(raw), null);
-    assert.equal(modesView(raw), null);
-    assert.equal(accessView(raw), null);
     assert.equal(metadataProgressView(raw), null);
     assert.equal(calendarView(raw), null);
     assert.equal(achievementStreaksView(raw, raw), null);
@@ -739,7 +724,7 @@ test('malformed M2/M3 input never throws', async () => {
 });
 
 test('alternate M2 spellings (minutes, array modes, kebab roles) are accepted', async () => {
-  const { normalizeGamesPayload, decadesView, modesView } = await view();
+  const { normalizeGamesPayload, decadesView } = await view();
   const data = normalizeGamesPayload({
     summary: {
       gameCount: 2,
@@ -753,7 +738,6 @@ test('alternate M2 spellings (minutes, array modes, kebab roles) are accepted', 
   assert.equal(data.summary.modes.onlinePvp.count, 1);
   assert.equal(data.summary.earlyAccess.share, 0.5, 'доля выводится из числа игр, если её нет');
   assert.equal(decadesView(data.decades).rows[0].label, '1970-е');
-  assert.equal(modesView(data.summary.modes).rows.length, 2);
 });
 
 /* =========================================================
@@ -762,7 +746,7 @@ test('alternate M2 spellings (minutes, array modes, kebab roles) are accepted', 
 
 test('mock payloads render the same numbers end to end', async () => {
   const {
-    normalizeGamesPayload, decadesView, yearsView, genreChartView, modesView, accessView,
+    normalizeGamesPayload, decadesView, yearsView, genreChartView,
     metadataProgressView, filtersView, calendarView, achievementStreaksView,
     achievementsOverviewView, normalizePersonnel, personnelRows, coverageBadge,
   } = await view();
@@ -773,8 +757,6 @@ test('mock payloads render the same numbers end to end', async () => {
   assert.equal(decadesView(data.decades).total, 340);
   assert.equal(yearsView(data.years).note, '2004 — 2025 · 340 игр');
   assert.equal(genreChartView(data.genres).rows[0].name, 'Action');
-  assert.equal(modesView(data.summary.modes).rows.length, 6);
-  assert.equal(accessView(data.summary).items.length, 2);
   assert.equal(metadataProgressView(data.summary.metadata).details.text, 'детали 312/340');
   assert.equal(filtersView(data.filters).includeFree.status, 'applied');
   assert.equal(calendarView(data.achievementDays, data.timeline).total, 70);

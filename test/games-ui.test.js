@@ -162,19 +162,26 @@ test('dashboard markup keeps the M1 widgets and their honest labels', () => {
     'games-profile-widget',
     'games-top-widget',
     'games-pareto-widget',
-    'games-histogram-widget',
-    'games-backlog-widget',
     'games-recent-widget',
+    'games-recent-strip',
     'games-profile-bar',
     'games-progress',
   ]) {
     assert.match(html, new RegExp(`id="${id}"`), `нет узла #${id}`);
   }
+  // U5: the four widgets the user asked to remove stay removed.
+  for (const id of ['games-histogram-widget', 'games-backlog-widget']) {
+    assert.equal(html.includes(`id="${id}"`), false, `виджет #${id} должен быть удалён`);
+  }
+  assert.equal(html.includes('Часы: длинный хвост'), false, 'гистограмма часов должна быть удалена');
   assert.match(html, /Топ по часам/);
   assert.match(html, /Топ-10% и остальные/);
-  assert.match(html, /Backlog/);
-  assert.match(html, /За 2 недели/);
+  assert.match(html, /Недавно играл/);
+  // The old text-list card is gone; the top strip replaces it.
+  assert.equal(html.includes('id="games-recent-list"'), false, 'старый список «За 2 недели» должен быть удалён');
   assert.match(html, /Профиль Steam/);
+  // The backlog tile stays a number in the summary strip, without a list.
+  assert.match(html, /мин\. часов/);
   // Honest wording that must not be lost: hours are Steam's, last played is a
   // launch stamp, the calendar is not "time in game".
   assert.match(html, /дата запуска, а не игровая сессия/);
@@ -220,11 +227,11 @@ test('api.js games methods are additive next to films/books', () => {
   assert.match(api, /\/api\/games\/stats/);
   assert.match(api, /\/api\/games\/import\/steam/);
   assert.match(api, /\/api\/games\/import\/status/);
-  // Unknown query params are a 400 on the stats route: only the three allowed
-  // keys may be appended there.
+  // Unknown query params are a 400 on the stats route: only the allowed keys
+  // may be appended there. U5 adds `minHours` (B's parallel backend contract).
   const statsFn = /export function getGamesStats\([\s\S]*?\n\}/.exec(api)[0];
   const params = [...statsFn.matchAll(/params\.set\('([^']+)'/g)].map((m) => m[1]);
-  assert.deepEqual(params, ['profile', 'includeFree', 'includeDlc']);
+  assert.deepEqual(params, ['profile', 'includeFree', 'includeDlc', 'minHours']);
 });
 
 test('every DOM id games.js asks for exists in index.html', () => {
@@ -240,12 +247,15 @@ test('every DOM id games.js asks for exists in index.html', () => {
 test('style.css ships the games widgets', () => {
   const css = readPublic('style.css');
   for (const selector of [
-    '.w-games-profile', '.w-games-top', '.w-games-pareto',
-    '.w-games-histogram', '.w-games-backlog', '.w-games-recent',
+    '.w-games-profile', '.w-games-top', '.w-games-pareto', '.w-games-recent',
+    '.games-recent-strip', '.games-recent-card', '.games-recent-art',
     '.games-pareto-track', '.games-pareto-fill', '.games-profile-chip',
     '.games-key-state', '.games-import-grid',
   ]) {
     assert.ok(css.includes(selector), `нет стилей для ${selector}`);
+  }
+  for (const selector of ['.w-games-histogram', '.w-games-backlog', '.games-recent-row', '.games-hist-row']) {
+    assert.equal(css.includes(selector), false, `стили ${selector} должны быть удалены`);
   }
 });
 
@@ -397,37 +407,60 @@ test('Pareto lane explains the top-10% share in Russian', async () => {
   assert.equal(paretoView({ gameCount: 340 }), null, 'без доли Pareto скрывается');
 });
 
-test('backlog view: counter, share and the known items', async () => {
-  const { normalizeGamesPayload, backlogView } = await import('../public/js/games-view.js');
-  const data = normalizeGamesPayload(statsPayload());
-  const view = backlogView(data.backlog, data.summary);
-
-  assert.equal(view.count, 124);
-  assert.equal(view.countText, '124');
-  assert.equal(plain(view.shareText), '36,5%');
-  assert.equal(view.items.length, 3);
-  assert.equal(view.items[0].name, 'Horizon Zero Dawn');
-  assert.equal(view.items[0].yearText, '2017');
-  assert.equal(view.items[0].genresText, 'Action, Adventure');
-
-  // Counter-only payload: the list is honestly empty, not invented.
-  const counterOnly = backlogView({ count: 12, share: 0.5 }, { gameCount: 24 });
-  assert.equal(counterOnly.hasItems, false);
-  assert.match(counterOnly.note, /сервер не передал/);
-});
-
-test('«За 2 недели»: hours and the launch-stamp tooltip', async () => {
-  const { normalizeGamesPayload, recentlyView, lastPlayedInfo } = await import('../public/js/games-view.js');
-  const data = normalizeGamesPayload(statsPayload());
-  const view = recentlyView(data.recentlyPlayed);
+test('«Недавно играл»: rtime desc, 2-week hours and the launch-stamp tooltip', async () => {
+  const { recentStripView, lastPlayedInfo } = await import('../public/js/games-view.js');
+  // The payload's recentlyPlayed is already sorted by rtime; the strip keeps
+  // that order, prints 2-week hours when they exist and the launch day when
+  // they do not. The index fills the icon/date the payload may have trimmed.
+  const now = Date.UTC(2026, 8, 20, 12, 0, 0);
+  const view = recentStripView([
+    { appid: 1091500, name: 'Cyberpunk 2077', hours2w: 1.8, hoursTotal: 108, lastPlayed: '2026-10-29T17:34:11.000Z' },
+    { appid: 3008130, name: 'Dying Light: The Beast', hours2w: 1.5, hoursTotal: 50.35, lastPlayed: '2026-10-21T17:40:00.000Z' },
+  ], {
+    203770: {
+      appid: 203770,
+      name: 'Crusader Kings II',
+      hours: 1054.4,
+      hours2w: 0,
+      rtime: 1703784534,
+      lastPlayed: '2023-12-28T17:28:54.000Z',
+      iconUrl: 'https://cdn.example/ck2.jpg',
+    },
+    606150: {
+      appid: 606150,
+      name: 'Moonlighter',
+      hours: 11.9,
+      hours2w: 0,
+      rtime: 1788714314,
+      lastPlayed: '2026-09-06T17:05:00.000Z',
+    },
+  }, { now });
 
   assert.equal(view.visible, true);
-  assert.equal(view.items.length, 2);
-  assert.equal(plain(view.total2wText), '3,3 ч');
-  assert.equal(plain(view.items[0].hours2wText), '2,5 ч');
-  assert.equal(plain(view.items[0].hoursTotalText), '96,5 ч');
-  assert.equal(view.items[0].lastPlayedText, '29 окт. 2026');
+  // Recent launches come first; CK II (2023) only fills the tail because the
+  // strip has fewer than 15 recent cards.
+  assert.deepEqual(view.items.map((item) => item.name), [
+    'Cyberpunk 2077', 'Dying Light: The Beast', 'Moonlighter', 'Crusader Kings II',
+  ]);
+  assert.equal(plain(view.items[0].caption), '1,8 ч за 2 недели');
+  assert.equal(plain(view.items[0].hoursTotalText), '108,0 ч');
+  assert.equal(view.items[0].lastPlayedText, '29 окт.');
   assert.match(view.items[0].lastPlayedTitle, /не игровая сессия/);
+  // No 2-week hours → the card says when it was last launched instead.
+  assert.equal(view.items[2].caption, 'последний раз: 6 сент.');
+  assert.equal(view.items[2].iconUrl, '');
+  assert.equal(plain(view.note), '4 игры · 3,3 ч за 2 недели');
+  assert.equal(plain(view.total2wText), '3,3 ч');
+
+  // A never-launched game (rtime = 0) has nothing to show; an old launch is
+  // only a filler and keeps its honest «последний раз» caption.
+  const stale = recentStripView([], {
+    203770: { appid: 203770, name: 'Crusader Kings II', hours2w: 0, rtime: 1703784534 },
+    70: { appid: 70, name: 'Half-Life', hours2w: 0, rtime: 0 },
+  }, { now });
+  assert.equal(stale.visible, true);
+  assert.deepEqual(stale.items.map((item) => item.name), ['Crusader Kings II']);
+  assert.equal(stale.items[0].caption, 'последний раз: 28 дек.');
 
   // rtime_last_played = 0 means «never launched», not 1970-01-01.
   const never = lastPlayedInfo(0);
@@ -437,16 +470,38 @@ test('«За 2 недели»: hours and the launch-stamp tooltip', async () => 
   assert.equal(lastPlayedInfo(1793295251).text, '29 окт. 2026');
 });
 
-test('hours histogram is a long-tail bar list', async () => {
-  const { histogramView } = await import('../public/js/games-view.js');
-  const view = histogramView(statsPayload().hoursHistogram);
-  assert.equal(view.rows.length, 8);
-  assert.equal(view.total, 340);
-  assert.equal(view.rows[0].bucket, '0');
-  assert.equal(view.rows[0].countText, '124');
-  assert.equal(view.rows[0].widthPercent, 100);
-  assert.equal(view.rows[7].bucket, '500+');
-  assert.equal(histogramView([]), null);
+test('«Недавно играл»: 15-card limit, payload wins over the index', async () => {
+  const { recentStripView } = await import('../public/js/games-view.js');
+  const now = Date.UTC(2026, 10, 1);
+  const recent = Array.from({ length: 20 }, (_, index) => ({
+    appid: 1000 + index,
+    name: `Game ${index}`,
+    hours2w: 1,
+    lastPlayed: new Date(now - index * 86400000).toISOString(),
+  }));
+  const view = recentStripView(recent, {}, { now, limit: 15 });
+  assert.equal(view.items.length, 15);
+  assert.equal(view.items[0].name, 'Game 0');
+  assert.equal(view.items[14].name, 'Game 14');
+
+  // The index knows a newer launch than the trimmed payload entry.
+  const newer = recentStripView(
+    [{ appid: 7, name: 'A', hours2w: 0, lastPlayed: '2026-01-01T00:00:00.000Z' }],
+    { 7: { appid: 7, name: 'A', hours2w: 0, rtime: 1793295251, iconUrl: 'https://cdn.example/a.jpg' } },
+    { now },
+  );
+  assert.equal(newer.items.length, 1);
+  assert.equal(newer.items[0].lastPlayedText, '29 окт.');
+  assert.equal(newer.items[0].iconUrl, 'https://cdn.example/a.jpg');
+
+  // A newer index launch must not drop the payload's 2-week hours.
+  const merged = recentStripView(
+    [{ appid: 8, name: 'B', hours2w: 2, lastPlayed: null }],
+    { 8: { appid: 8, name: 'B', hours2w: 0, rtime: 1793295251 } },
+    { now },
+  );
+  assert.equal(merged.items[0].caption, '2,0 ч за 2 недели');
+  assert.equal(merged.items[0].lastPlayedText, '29 окт.');
 });
 
 /* =========================================================
@@ -455,7 +510,7 @@ test('hours histogram is a long-tail bar list', async () => {
 
 test('a payload without a library hides blocks instead of rendering zeroes', async () => {
   const {
-    normalizeGamesPayload, summaryMetrics, paretoView, topHoursRows, backlogView, profileCardView,
+    normalizeGamesPayload, summaryMetrics, paretoView, topHoursRows, recentStripView, profileCardView,
   } = await import('../public/js/games-view.js');
 
   const data = normalizeGamesPayload({
@@ -480,7 +535,7 @@ test('a payload without a library hides blocks instead of rendering zeroes', asy
   assert.equal(data.has.topGames, true, 'запись есть — но с неизвестными часами');
   assert.equal(topHoursRows(data.topGames, { limit: 10 }).length, 0, 'строка без часов не рисуется');
   assert.equal(paretoView(data.summary), null);
-  assert.equal(backlogView(data.backlog, data.summary), null);
+  assert.equal(recentStripView(data.recentlyPlayed, data.gamesIndex).visible, false);
   assert.equal(data.has.histogram, false);
 
   const metrics = summaryMetrics(data.summary).map((m) => m.key);
@@ -490,8 +545,8 @@ test('a payload without a library hides blocks instead of rendering zeroes', asy
 
 test('malformed payloads never throw and never invent numbers', async () => {
   const {
-    normalizeGamesPayload, summaryMetrics, paretoView, topHoursRows, backlogView,
-    recentlyView, histogramView, profileCardView, normalizeProfilesList,
+    normalizeGamesPayload, summaryMetrics, paretoView, topHoursRows, recentStripView,
+    profileCardView, normalizeProfilesList,
   } = await import('../public/js/games-view.js');
 
   for (const raw of [null, undefined, {}, [], 'nonsense', { summary: 'no' }, { topGames: 'no' }]) {
@@ -502,9 +557,8 @@ test('malformed payloads never throw and never invent numbers', async () => {
     assert.deepEqual(summaryMetrics(data.summary), []);
     assert.equal(paretoView(data.summary), null);
     assert.deepEqual(topHoursRows(data.topGames), []);
-    assert.equal(backlogView(null, null), null);
-    assert.equal(recentlyView(null).visible, false);
-    assert.equal(histogramView(null), null);
+    assert.equal(recentStripView(null, null).visible, false);
+    assert.equal(recentStripView(undefined, {}).visible, false);
     assert.equal(profileCardView(null), null);
   }
   assert.deepEqual(normalizeProfilesList(null), []);
@@ -655,13 +709,13 @@ test('partial mock (no Steam key) hides the library widgets', async (t) => {
     t.skip(`нет файла ${MOCK_PARTIAL_PATH}`);
     return;
   }
-  const { normalizeGamesPayload, paretoView, backlogView, summaryMetrics } = await import('../public/js/games-view.js');
+  const { normalizeGamesPayload, paretoView, recentStripView, summaryMetrics } = await import('../public/js/games-view.js');
   const data = normalizeGamesPayload(JSON.parse(fs.readFileSync(MOCK_PARTIAL_PATH, 'utf8')));
 
   assert.equal(data.summary.libraryPartial, true);
   assert.equal(data.summary.steamKeyConfigured, false);
   assert.equal(data.summary.totalHours, null);
   assert.equal(paretoView(data.summary), null);
-  assert.equal(backlogView(data.backlog, data.summary), null);
+  assert.equal(recentStripView(data.recentlyPlayed, data.gamesIndex).visible, false);
   assert.deepEqual(summaryMetrics(data.summary).map((m) => m.key), [], 'без библиотеки сводка не выдумывает нули');
 });

@@ -271,6 +271,9 @@ function normalizeRecent(raw) {
     hours2w: normalizeHours2w(item),
     hoursTotal: normalizeHours(item),
     lastPlayed: item.lastPlayed ?? item.rtime_last_played ?? null,
+    // The top strip paints the Steam capsule icon; the index may not have it
+    // for entries the payload already carries.
+    iconUrl: firstString(item.iconUrl, item.icon) || '',
   };
 }
 
@@ -1254,70 +1257,9 @@ export function gamesByGenre(gamesIndex, name) {
     arr(row.genres).some((genre) => text(genre).toLowerCase() === target));
 }
 
-/** Mirrors `MODE_TESTS` in server/games/stats.js — counts must match. */
-export const GAME_MODE_TESTS = {
-  single: /^single-player$/i,
-  multi: /multi-player/i,
-  coop: /co-op/i,
-  onlineCoop: /online co-op/i,
-  localCoop: /local co-op|shared\/split screen/i,
-  onlinePvp: /online pvp|^pvp$/i,
-  mmo: /^mmo$/i,
-  cloud: /steam cloud/i,
-  controller: /full controller support/i,
-};
-
-export function gameMatchesMode(game, key) {
-  const test = GAME_MODE_TESTS[key];
-  if (!test) return false;
-  return arr(game && game.categories).some((category) => test.test(text(category)));
-}
-
-export function gamesByMode(gamesIndex, key) {
-  if (!GAME_MODE_TESTS[key]) return [];
-  return gameRowsFromIndex(gamesIndex, (row) => gameMatchesMode(row, key));
-}
-
-export function gamesByAccess(gamesIndex, key) {
-  if (key === 'earlyAccess') return gameRowsFromIndex(gamesIndex, (row) => row.earlyAccess === true);
-  if (key === 'freeToPlay') return gameRowsFromIndex(gamesIndex, (row) => row.isFree === true);
-  return [];
-}
-
-/** Same buckets as `HISTOGRAM_BUCKETS` in server/games/stats.js. */
-export const HOURS_BUCKETS = [
-  { bucket: '0', test: (hours) => hours === 0 },
-  { bucket: '<1', test: (hours) => hours > 0 && hours < 1 },
-  { bucket: '1-5', test: (hours) => hours >= 1 && hours < 5 },
-  { bucket: '5-20', test: (hours) => hours >= 5 && hours < 20 },
-  { bucket: '20-50', test: (hours) => hours >= 20 && hours < 50 },
-  { bucket: '50-100', test: (hours) => hours >= 50 && hours < 100 },
-  { bucket: '100-500', test: (hours) => hours >= 100 && hours < 500 },
-  { bucket: '500+', test: (hours) => hours >= 500 },
-];
-
-export function hoursBucketOf(hours) {
-  const value = numOrNull(hours);
-  if (value == null || value < 0) return null;
-  const found = HOURS_BUCKETS.find((entry) => entry.test(value));
-  return found ? found.bucket : null;
-}
-
-export function gamesInHoursBucket(gamesIndex, bucket) {
-  const target = text(bucket);
-  const def = HOURS_BUCKETS.find((entry) => entry.bucket === target);
-  if (!def) return [];
-  return gameRowsFromIndex(gamesIndex, (row) => row.hours != null && def.test(row.hours));
-}
-
 /** Games with `playtime_2weeks > 0` — the «за 2 недели» tile drilldown. */
 export function gamesWithRecentHours(gamesIndex) {
   return gameRowsFromIndex(gamesIndex, (row) => row.hours2w != null && row.hours2w > 0);
-}
-
-/** Backlog = playtime_forever = 0 (the server's definition). */
-export function backlogGames(gamesIndex) {
-  return gameRowsFromIndex(gamesIndex, (row) => row.hours === 0);
 }
 
 /** `years[]` limited to one decade, ascending (the years card is gated). */
@@ -1781,93 +1723,136 @@ export function topHoursRows(topGames, { limit = 10, totalHours = null } = {}) {
   });
 }
 
-/**
- * Backlog: counter + share + a few known items. The list may be empty (the
- * payload only promises the counter) — the caller then shows the honest note
- * instead of an empty widget.
- */
-export function backlogView(backlog, summary) {
-  const block = backlog && typeof backlog === 'object' ? backlog : {};
-  const s = summary && typeof summary === 'object' ? summary : {};
-  const count = block.present || block.count != null
-    ? toCount(block.count)
-    : toCount(s.unplayedCount);
-  const games = toCount(s.gameCount) || toCount(s.ownedCount);
-  const share = numOrNull(block.share) ?? (games > 0 ? count / games : null);
-  const items = arr(block.items)
-    .map((item) => (item && item.name ? item : null))
-    .filter(Boolean)
-    .map((item) => ({
-      appid: item.appid,
-      name: item.name,
-      yearText: item.releaseYear ? String(item.releaseYear) : 'год неизвестен',
-      genresText: item.genres && item.genres.length ? item.genres.join(', ') : '',
-    }));
-  if (count <= 0 && !items.length) return null;
-  return {
-    count,
-    countText: fmtInt(count),
-    shareText: share != null ? percentText(share) : '',
-    items,
-    hasItems: items.length > 0,
-    note: items.length
-      ? `${fmtInt(items.length)} ${plural(items.length, GAME_PLURAL)} с известной метадатой`
-      : 'состав сервер не передал',
-  };
+/** Unix seconds from an ISO stamp, a unix-seconds number or a Date. */
+function epochSeconds(value) {
+  if (value == null || value === '') return 0;
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? Math.floor(value.getTime() / 1000) : 0;
+  }
+  if (typeof value === 'number' || /^\d+$/.test(text(value))) {
+    const seconds = Number(value);
+    return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+  }
+  const date = parseDate(value);
+  return date ? Math.floor(date.getTime() / 1000) : 0;
 }
 
+function shortDayText(seconds) {
+  if (!seconds) return '';
+  const date = new Date(seconds * 1000);
+  if (!Number.isFinite(date.getTime())) return '';
+  return `${date.getUTCDate()} ${MONTHS_SHORT_RU[date.getUTCMonth()]}`;
+}
+
+export const RECENT_STRIP_LIMIT = 15;
+/** A launch without 2-week hours still counts as «recently played» this long. */
+export const RECENT_STRIP_WINDOW_DAYS = 30;
+
 /**
- * «За 2 недели»: recent plays with `playtime_2weeks` and the last-played stamp.
- * The stamp is a launch time, not a session — the tooltip says so.
+ * «Недавно играл» top strip (the films/books «Недавно смотрел» pattern).
+ *
+ * Cards are the first `limit` games by `rtime_last_played` desc. Recent ones
+ * (2-week hours > 0 OR last launch inside `RECENT_STRIP_WINDOW_DAYS`) come
+ * first; older launches fill the remaining slots in the same rtime order, so
+ * the strip is never half-empty. The payload's `recentlyPlayed` is the primary
+ * source; `gamesIndex` is the tolerant fallback (and fills the icon/date for
+ * entries the payload trimmed), so an older server that only sends the index
+ * still paints an honest strip. `now` is injectable for tests.
  */
-export function recentlyView(recentlyPlayed) {
-  const items = arr(recentlyPlayed)
-    .map((item) => (item && item.name ? item : null))
-    .filter(Boolean)
-    .map((item) => {
-      const last = lastPlayedInfo(item.lastPlayed);
-      return {
-        appid: item.appid,
-        name: item.name,
-        hours2w: item.hours2w,
-        hours2wText: item.hours2w != null ? hoursText(item.hours2w) : '',
-        hoursTotalText: item.hoursTotal != null ? hoursText(item.hoursTotal) : '',
-        lastPlayedText: last.text,
-        lastPlayedTitle: last.title,
-        hint: item.hours2w != null
-          ? `${hoursText(item.hours2w)} за две недели${item.hoursTotal != null ? ` · ${hoursText(item.hoursTotal)} всего` : ''}`
-          : 'часы за две недели Steam не передал',
-      };
-    });
+export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STRIP_LIMIT, now = Date.now() } = {}) {
+  const index = gamesIndex && typeof gamesIndex === 'object' ? gamesIndex : {};
+  const max = Math.max(1, toCount(limit) || RECENT_STRIP_LIMIT);
+  const cutoff = Math.floor(toNum(now, Date.now()) / 1000) - RECENT_STRIP_WINDOW_DAYS * 86400;
+  const rows = new Map();
+
+  const push = (raw, fallbackEntry) => {
+    const item = raw && typeof raw === 'object' ? raw : {};
+    const entry = fallbackEntry && typeof fallbackEntry === 'object' ? fallbackEntry : {};
+    const name = firstString(item.name, item.title, entry.name);
+    if (!name) return;
+    const appid = numOrNull(item.appid ?? entry.appid);
+    const key = appid != null ? String(appid) : `name:${name}`;
+    const hours2w = numOrNull(item.hours2w ?? item.playtime_2weeks ?? entry.hours2w);
+    const hoursTotal = numOrNull(item.hoursTotal ?? item.hours ?? entry.hours);
+    const lastPlayed = item.lastPlayed ?? item.rtime_last_played
+      ?? entry.lastPlayed ?? entry.rtime ?? null;
+    const rtime = epochSeconds(lastPlayed);
+    const fresh = hours2w != null && hours2w > 0;
+    const recent = rtime > 0 && rtime >= cutoff;
+    // A never-launched game with no 2-week hours has nothing to say here.
+    if (!fresh && rtime <= 0) return;
+    const row = {
+      appid,
+      name,
+      hours2w: fresh ? hours2w : 0,
+      hours2wText: fresh ? hoursText(hours2w) : '',
+      hoursTotalText: hoursTotal != null ? hoursText(hoursTotal) : '',
+      rtime,
+      lastPlayedText: shortDayText(rtime),
+      lastPlayedTitle: lastPlayedInfo(lastPlayed).title,
+      iconUrl: firstString(item.iconUrl, item.icon, entry.iconUrl) || '',
+      fresh,
+      // «Недавно» = 2-week hours or a launch inside the window. Older launches
+      // still fill the strip after them (the limit is what keeps it short).
+      recent: fresh || recent,
+    };
+    const previous = rows.get(key);
+    // The payload entry wins over the index fallback unless the index knows a
+    // newer launch (a re-import may have moved rtime). The index entry must
+    // not lose the payload's 2-week hours while doing so.
+    if (previous && !row.fresh && previous.fresh) {
+      row.fresh = true;
+      row.hours2w = previous.hours2w;
+      row.hours2wText = previous.hours2wText;
+      row.recent = true;
+    }
+    if (!previous || (row.rtime > previous.rtime) || (row.rtime === previous.rtime && row.fresh && !previous.fresh)) {
+      rows.set(key, row);
+    }
+  };
+
+  for (const item of arr(recentlyPlayed)) push(item, null);
+  for (const entry of Object.values(index)) push(entry, entry);
+
+  const byRecent = (left, right) =>
+    (right.rtime - left.rtime)
+    || ((right.hours2w || 0) - (left.hours2w || 0))
+    || left.name.localeCompare(right.name);
+  const all = [...rows.values()].sort(byRecent);
+  // Recent launches first; when there are fewer than `limit`, the older ones
+  // fill the strip in the same rtime order instead of leaving it half-empty.
+  const ordered = [
+    ...all.filter((row) => row.recent),
+    ...all.filter((row) => !row.recent),
+  ].slice(0, max);
+  const items = ordered
+    .map((row) => ({
+      ...row,
+      caption: row.fresh
+        ? `${row.hours2wText} за 2 недели`
+        : row.lastPlayedText
+        ? `последний раз: ${row.lastPlayedText}`
+        : 'недавняя активность',
+      hint: [
+        row.fresh ? `${row.hours2wText} за 2 недели` : 'за 2 недели часов нет',
+        row.hoursTotalText ? `${row.hoursTotalText} всего` : '',
+        row.lastPlayedText ? `последний запуск ${row.lastPlayedText}` : '',
+      ].filter(Boolean).join(' · '),
+    }));
+
   const total2w = items.reduce((sum, item) => sum + (item.hours2w || 0), 0);
   return {
     items,
     visible: items.length > 0,
-    total2wText: items.length ? hoursText(total2w) : '',
-  };
-}
-
-/** Hours histogram rows (long tail). `null` when the payload has no buckets. */
-export function histogramView(hoursHistogram) {
-  const rows = normalizeHistogram(hoursHistogram);
-  if (!rows.length) return null;
-  const max = Math.max(...rows.map((row) => row.count));
-  const total = rows.reduce((sum, row) => sum + row.count, 0);
-  return {
-    rows: rows.map((row) => ({
-      bucket: row.bucket,
-      count: row.count,
-      countText: fmtInt(row.count),
-      widthPercent: max > 0 ? Math.max(2, (row.count / max) * 100) : 2,
-      title: `${row.bucket} ч — ${fmtInt(row.count)} ${plural(row.count, GAME_PLURAL)}`,
-    })),
-    total,
-    totalText: fmtInt(total),
+    total2wText: total2w > 0 ? hoursText(total2w) : '',
+    note: items.length
+      ? `${fmtInt(items.length)} ${plural(items.length, GAME_PLURAL)}${total2w > 0 ? ` · ${hoursText(total2w)} за 2 недели` : ''}`
+      : '',
   };
 }
 
 /* =========================================================
-   M2: decades / years / genres / modes / access / enrichment
+   M2: decades / years / genres / enrichment
    ========================================================= */
 
 const YEAR_NOTE = 'Год релиза игры (release_date из Steam Store / Wikidata), а не год, когда вы в неё играли.';
@@ -2370,70 +2355,6 @@ export function dlcView(dlc) {
 /** Response of `/api/games/franchises` (array or `{ franchises: [] }`). */
 export function normalizeFranchisesResponse(raw) {
   return normalizeFranchises(raw);
-}
-
-/** `summary.modes` → rows with honest Steam-category labels. */
-export function modesView(modes) {
-  const block = modes && typeof modes === 'object' ? normalizeModes(modes) : null;
-  if (!block) return null;
-  const rows = [];
-  for (const def of MODE_DEFS) {
-    const entry = block[def.key];
-    if (!entry || entry.count <= 0) continue;
-    rows.push({
-      key: def.key,
-      label: def.label,
-      count: entry.count,
-      countText: fmtInt(entry.count),
-      hours: entry.hours,
-      hoursText: entry.hours != null ? hoursText(entry.hours) : '',
-      title: def.title,
-      hint: entry.hours != null
-        ? `${fmtInt(entry.count)} ${plural(entry.count, GAME_PLURAL)} · ${hoursText(entry.hours)}`
-        : `${fmtInt(entry.count)} ${plural(entry.count, GAME_PLURAL)} с этой категорией`,
-    });
-  }
-  if (!rows.length) return null;
-  const max = Math.max(...rows.map((row) => row.count));
-  const total = rows.reduce((sum, row) => sum + row.count, 0);
-  return {
-    rows: rows.map((row) => ({
-      ...row,
-      shareText: total > 0 ? percentText(row.count / total) : '',
-      widthPercent: Math.max(2, (row.count / max) * 100),
-    })),
-    note: `${fmtInt(rows.length)} ${plural(rows.length, ['режим', 'режима', 'режимов'])}`,
-    hint: 'Категории Steam Store (categories[]): одна игра может быть и одиночной, и кооперативной.',
-  };
-}
-
-/** Early Access / F2P share. Each item exists only when the server sent it. */
-export function accessView(summary) {
-  const s = summary && typeof summary === 'object' ? summary : {};
-  const items = [];
-  const push = (key, label, block, hint) => {
-    if (!block || block.count == null) return;
-    items.push({
-      key,
-      label,
-      count: block.count,
-      countText: fmtInt(block.count),
-      hours: block.hours,
-      hoursText: block.hours != null ? hoursText(block.hours) : '',
-      shareText: block.share != null ? percentText(block.share) : '',
-      hint,
-    });
-  };
-  push('earlyAccess', 'Early Access', s.earlyAccess,
-    'Игры в раннем доступе: доля библиотеки и часов. Признак из Steam Store (genres/release_date).');
-  push('freeToPlay', 'Бесплатные (F2P)', s.freeToPlay,
-    'Игры с is_free = true. Без фильтра includeFree они входят в часы и backlog; с фильтром — исключаются.');
-  if (!items.length) return null;
-  return {
-    items,
-    note: items.map((item) => `${item.label}: ${item.countText}`).join(' · '),
-    hint: 'Доли считаются от числа игр библиотеки (type=game), а не от всех записей Steam.',
-  };
 }
 
 function progressPart(label, resolved, total, percent) {
