@@ -539,11 +539,20 @@ function buildGamesStats(input = {}) {
   const gogOwnedValue = gogSnapshots.length ? union.summary.gogProducts : null;
   const gogAccountView = gogAccounts[0] || null;
   const gogSnapshotView = gogSnapshots[0] || null;
+  // Auth state, not the ~1 h access-token lifetime, decides «подключите GOG
+  // заново» (01.11.2026 auth-loop): a token with a working refresh token is
+  // refreshed silently by the importer and must never be reported as expired.
+  const gogAuthState = gogAccountView && gogAccountView.authState
+    ? gogAccountView.authState
+    : gogAccountView && gogAccountView.expired === true
+      ? { needsReconnect: true, status: 'refresh_failed', refreshable: false }
+      : null;
+  const gogNeedsReconnect = Boolean(gogAuthState && gogAuthState.needsReconnect === true);
   const gogStatus = !gogConnected
     ? gogSnapshots.length
       ? 'snapshot_only'
       : 'not_connected'
-    : gogAccountView && gogAccountView.expired === true
+    : gogNeedsReconnect
       ? 'auth_expired'
       : gogSnapshotView && gogSnapshotView.library
         ? gogCache.isFresh(gogSnapshotView.library, gogCache.libraryTtlMs())
@@ -558,6 +567,24 @@ function buildGamesStats(input = {}) {
     key: gogAccountView ? gogAccountView.key : null,
     username: gogAccountView ? gogAccountView.username : null,
     ownerProfile: gogAccountView ? gogAccountView.ownerProfile : null,
+    // Additive diagnostic block: presence booleans and dates only, never a
+    // token value (the UI ignores unknown fields).
+    auth: gogAuthState
+      ? {
+          status: gogAuthState.status || null,
+          hasRefreshToken: Boolean(gogAuthState.hasRefreshToken),
+          expiresAt: gogAuthState.expiresAt || null,
+          expiresInMs: gogAuthState.expiresInMs == null ? null : gogAuthState.expiresInMs,
+          expired: gogAuthState.expired === true,
+          refreshable: gogAuthState.refreshable === true,
+          needsReconnect: gogNeedsReconnect,
+          refreshedAt: gogAuthState.refreshedAt || null,
+          lastRefreshError: gogAuthState.lastRefreshError || null,
+          lastError: gogAuthState.lastError || null,
+          binding: gogAuthState.binding || null,
+        }
+      : null,
+    binding: gogAccountView ? gogAccountView.binding || (gogAccountView.ownerProfile ? 'bound' : 'unbound') : null,
     lastImportAt:
       gogSnapshotView && gogSnapshotView.library
         ? gogSnapshotView.library.fetchedAt || null
@@ -2016,6 +2043,20 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
   // A disconnected account keeps its dated snapshot: the UI says «данные от
   // <дата>, требуется переподключение» instead of showing zeroes (§14.4 п. 7).
   const gogTokenAccounts = gogCache.accountsForOwner(profileKey);
+  if (!gogTokenAccounts.length) {
+    // A token written before the «one owner» rule (or restored from a backup)
+    // has no `ownerProfile`; the library snapshot it wrote does. Adopting it
+    // here is read-only and safe (an unbound token claims no other owner) and
+    // stops the false «снимок от <дата> — подключите GOG заново» after a
+    // successful import. The next import persists the binding for good.
+    for (const library of gogCache.listLibraries()) {
+      if (!library || library.ownerProfile !== profileKey) continue;
+      const view = gogCache.publicTokenView(gogCache.getToken(library.userKey));
+      if (view && !view.ownerProfile) {
+        gogTokenAccounts.push({ ...view, binding: 'unbound' });
+      }
+    }
+  }
   const gogAccounts = [...gogTokenAccounts];
   const gogSnapshots = [];
   for (const account of gogTokenAccounts) {

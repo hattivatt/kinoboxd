@@ -22,7 +22,11 @@
  *      grant_type=authorization_code...&redirect_uri=<exact>` (the same
  *      `redirect_uri` is mandatory in the exchange) → `access_token` (≈1 h),
  *      `refresh_token`, `user_id`;
- *   3. `refresh(refreshToken)` — same endpoint with `grant_type=refresh_token`;
+ *   3. `refresh(refreshToken)` — same endpoint with `grant_type=refresh_token`.
+ *      A **silent** refresh is performed by `gog-auth.js` before every
+ *      token-needing call (5-minute buffer, one retry after a 401/302); the
+ *      access token lives ≈1 h, the refresh token much longer, so an expired
+ *      access token is never a reason to ask the user to reconnect.
  *   4. `getUserData(token)` — `embed.gog.com/userData.json` (identity);
  *   5. `getFilteredProducts(token, page)` — `embed.gog.com/account/
  *      getFilteredProducts?mediaType=1&page=N`, **100 products/page**;
@@ -33,6 +37,9 @@
  *      `api/gog/sessions.rs`. The `{uid}` is the **Galaxy** user id — the OAuth
  *      `user_id` (Heroic) or `userData.json.galaxyUserId` (comet/unifideck),
  *      never `userData.json.userId` (the 01.11.2026 zero-hours bug).
+ *
+ * Time units: `expires_in` (seconds, OAuth2) is converted to milliseconds by
+ * `gogCache.expiresInMs` **once**; `expiresAt` is always an ISO string in ms.
  *
  * Secrets:
  *   - user tokens never appear in an error message, log line or job status;
@@ -99,6 +106,9 @@ class GogError extends Error {
     if (details.status != null) this.status = details.status;
     if (details.retryAt != null) this.retryAt = details.retryAt;
     if (details.host != null) this.host = details.host;
+    // GOG's own `error_description` (already masked): kept for the
+    // auth-lifecycle dump, never concatenated into a message here.
+    if (details.description != null) this.description = String(details.description);
   }
 }
 
@@ -717,12 +727,15 @@ function createClient(options = {}) {
         'gog_invalid_code'
       );
     }
-    const expiresIn = Number(json.expires_in);
-    const ttlMs = Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn * 1000 : 3600 * 1000;
+    // ONE unit inside the module: `expires_in` (seconds, OAuth2) → ms, and a
+    // value that cannot be seconds is already ms. `gogCache.expiresInMs` is
+    // the only converter; a default of 1 h is used when GOG omits the field.
+    const ttlMs = gogCache.expiresInMs(json.expires_in) || 3600 * 1000;
     return {
       accessToken: String(json.access_token),
       refreshToken: json.refresh_token ? String(json.refresh_token) : fallbackRefresh || null,
       expiresAt: new Date(now() + ttlMs).toISOString(),
+      expiresInMs: ttlMs,
       tokenType: json.token_type || 'Bearer',
       scope: json.scope || null,
       userId: json.user_id != null ? String(json.user_id) : null,
@@ -766,7 +779,7 @@ function createClient(options = {}) {
       throw new GogError(
         `${failure.message}${source ? ` (источник пары: ${source})` : ''}`,
         failure.code,
-        { status: failure.status }
+        { status: failure.status, description: detail }
       );
     }
     return normalizeTokenResponse(parseJsonBody(response, url), null);
@@ -782,23 +795,34 @@ function createClient(options = {}) {
     if (response.status < 200 || response.status >= 300) {
       const parsed = safeJson(response.body);
       const rawError = parsed && parsed.error ? String(parsed.error) : '';
+      // GOG's own text («Invalid refresh token, client_id:…») is the only
+      // evidence of *which* half broke; it never contains the token value and
+      // is masked anyway, so it is kept on the error for the lifecycle dump.
+      const description = parsed && parsed.error_description
+        ? maskSecrets(String(parsed.error_description))
+        : '';
       if (rawError === 'invalid_client' || rawError === 'unauthorized_client') {
         // The app credentials broke, not the user's session: reconnect would
         // fail the same way, so say so instead of «подключите GOG заново».
         const failure = oauthFailure(response, { rawError });
-        throw new GogError(failure.message, failure.code, { status: failure.status });
+        throw new GogError(failure.message, failure.code, {
+          status: failure.status,
+          description,
+        });
       }
       if (response.status === 400 || response.status === 401) {
         throw new GogError(
-          'GOG refresh_token больше не действителен: подключите GOG заново.',
+          'GOG refresh_token больше не действителен' +
+            `${rawError ? ` (${rawError})` : ''}${description ? `: «${description}»` : ''}: ` +
+            'подключите GOG заново.',
           'gog_auth_expired',
-          { status: response.status }
+          { status: response.status, description }
         );
       }
       throw new GogError(
         `GOG не обновил токен (${response.status}).`,
         response.status === 429 ? 'gog_rate_limited' : 'gog_http_error',
-        { status: response.status }
+        { status: response.status, description }
       );
     }
     return normalizeTokenResponse(parseJsonBody(response, url), value);

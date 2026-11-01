@@ -12,10 +12,15 @@
  * A GOG account can be attached to one owner only; a second GOG account for the
  * same owner is a 400 (`gog_already_connected`), never a silent sum.
  *
- * Import stages: queued → auth (refresh if needed) → user (identity) →
- * library (getFilteredProducts, 100/page) → playtime (gameplay sessions,
+ * Import stages: queued → auth (silent refresh, 5-min buffer) → user (identity)
+ * → library (getFilteredProducts, 100/page) → playtime (gameplay sessions,
  * `time_sum` minutes, one request per game, budget `GAMES_GOG_BUDGET`) →
  * identity (one Wikidata batch, P2725 → P1733) → done.
+ *
+ * Every token-needing call goes through `gog-auth.wrapClient`: the access token
+ * is refreshed silently when it is inside the buffer and the call is retried
+ * **once** after a 401/302. A refresh failure changes the token's auth state
+ * only — the library snapshot is never overwritten or deleted.
  *
  * Playtime is diagnosable (§M6c): every run reports
  * `playtime {requests, ok, notFound, zero, unparsed, fields, uidSource,
@@ -39,6 +44,7 @@ const crypto = require('crypto');
 const gameCache = require('./game-cache');
 const gogCache = require('./gog-cache');
 const gog = require('./gog');
+const gogAuth = require('./gog-auth');
 const secondaryIdentity = require('./secondary-identity');
 
 const jobs = new Map();
@@ -190,12 +196,39 @@ function assertOwnerFree(ownerProfile, userKey) {
  */
 async function connect({ code, ownerProfile, profile, client }) {
   const api = client || gog.createClient();
-  const tokens = await api.exchangeCode(code);
+  let tokens;
+  try {
+    tokens = await api.exchangeCode(code);
+  } catch (err) {
+    gogAuth.recordEvent('connect', {
+      ok: false,
+      reason: 'code_exchange',
+      httpStatus: err && err.status,
+      error: (err && err.code) || 'gog_error',
+      errorDescription: gogAuth.descriptionOf(err),
+    });
+    throw err;
+  }
   const provisional = {
     accessToken: tokens.accessToken,
     userKey: tokens.userId || '',
   };
-  const user = await api.getUserData(provisional);
+  let user;
+  try {
+    user = await api.getUserData(provisional);
+  } catch (err) {
+    gogAuth.recordEvent('user_data', {
+      ok: false,
+      reason: 'connect',
+      httpStatus: err && err.status,
+      error: (err && err.code) || 'gog_error',
+      errorDescription: gogAuth.descriptionOf(err),
+      doc: provisional,
+      userKey: provisional.userKey || null,
+      sessionId: tokens.sessionId,
+    });
+    throw err;
+  }
   const userKey = user.userKey;
 
   const existing = gogCache.getToken(userKey);
@@ -231,8 +264,23 @@ async function connect({ code, ownerProfile, profile, client }) {
     connectedAt: (existing && existing.connectedAt) || nowIso,
     obtainedAt: nowIso,
     refreshedAt: (existing && existing.refreshedAt) || null,
+    // A fresh connect is a clean slate: a stale refresh error from the previous
+    // token must not keep the account in «подключите GOG заново».
+    lastRefreshError: null,
+    lastError: null,
+    sessionId: tokens.sessionId || null,
   };
   gogCache.saveToken(userKey, tokenDoc);
+  gogAuth.recordEvent('connect', {
+    ok: true,
+    reason: 'code_exchange',
+    httpStatus: 200,
+    doc: tokenDoc,
+    userKey,
+    galaxyUserId: user.galaxyUserId,
+    sessionId: tokens.sessionId || null,
+    now: Date.parse(nowIso),
+  });
   gogCache.saveProfile({
     userKey,
     username: user.username,
@@ -254,55 +302,18 @@ async function connect({ code, ownerProfile, profile, client }) {
 /* token refresh                                                       */
 /* ------------------------------------------------------------------ */
 
-const REFRESH_MARGIN_MS = 60 * 1000;
-
 /**
- * Return a token document with a usable access token. Refreshes when the
- * access token expires within a minute; a failed refresh is `auth_expired`
- * (the snapshot stays, the UI asks to reconnect).
+ * Return a token document with a usable access token. Delegates to
+ * `gog-auth.ensureFreshToken`: a 5-minute buffer (not one minute) and a single
+ * silent-refresh implementation shared with every API call. A failed refresh is
+ * `auth_expired` — the library snapshot stays, only the auth state changes.
  */
-async function ensureAccessToken(userKey, api) {
-  const doc = gogCache.getToken(userKey);
-  if (!doc) {
-    throw new gog.GogError(
-      'GOG не подключён: нет токена. Нажмите «Войти через GOG».',
-      'gog_auth_required'
-    );
-  }
-  const expiresMs = doc.expiresAt ? Date.parse(doc.expiresAt) : NaN;
-  if (Number.isFinite(expiresMs) && expiresMs > Date.now() + REFRESH_MARGIN_MS) {
-    return doc;
-  }
-  if (!doc.refreshToken) {
-    throw new gog.GogError(
-      'Срок действия токена GOG истёк, refresh_token отсутствует: подключите GOG заново.',
-      'gog_auth_expired'
-    );
-  }
-  let fresh;
-  try {
-    fresh = await api.refresh(doc.refreshToken);
-  } catch (err) {
-    if (err && (err.code === 'gog_auth_expired' || err.code === 'gog_invalid_code')) {
-      throw new gog.GogError(
-        'GOG refresh_token больше не действителен: подключите GOG заново.',
-        'gog_auth_expired'
-      );
-    }
-    throw err;
-  }
-  const merged = {
-    ...doc,
-    accessToken: fresh.accessToken,
-    refreshToken: fresh.refreshToken || doc.refreshToken,
-    expiresAt: fresh.expiresAt,
-    // The refresh response carries `user_id` too: an account connected before
-    // the fix has no `userId` yet and gets it on the first refresh.
-    userId: fresh.userId || doc.userId || null,
-    refreshedAt: new Date().toISOString(),
-  };
-  gogCache.saveToken(userKey, merged);
-  return merged;
+async function ensureAccessToken(userKey, api, options = {}) {
+  const { doc } = await gogAuth.ensureFreshToken(userKey, api, {
+    ...options,
+    reason: options.reason || 'import',
+  });
+  return doc;
 }
 
 /* ------------------------------------------------------------------ */
@@ -370,6 +381,9 @@ function playtimeTargets(products) {
 
 async function runImport(job, api, options) {
   const userKey = job.userKey;
+  // Every token-needing call goes through the silent-refresh wrapper: a 5-min
+  // buffer check before the call and exactly one retry after a 401/302.
+  const tokenApi = gogAuth.wrapClient(api, userKey, options.authOptions || {});
   try {
     job.stage = 'auth';
     job.percent = 5;
@@ -377,7 +391,7 @@ async function runImport(job, api, options) {
 
     job.stage = 'user';
     job.percent = 10;
-    const user = await api.getUserData(tokenDoc);
+    const user = await tokenApi.getUserData(tokenDoc);
     // Persist the Galaxy id (and the OAuth id when the token carried it): the
     // playtime phase needs it as `{uid}`, and an account connected before the
     // 01.11.2026 fix has neither field yet.
@@ -389,6 +403,30 @@ async function runImport(job, api, options) {
         /* a read-only cache must not break the import */
       }
     }
+    // Self-heal the owner binding: a token written before the «one owner»
+    // rule (or restored from a backup) has no `ownerProfile`, and `/stats`
+    // then shows «подключите GOG заново» although the account is connected.
+    const libraryOwner =
+      (gogCache.getLibrary(userKey) && gogCache.getLibrary(userKey).ownerProfile) || null;
+    const boundOwner = tokenDoc.ownerProfile || libraryOwner || job.ownerProfile || null;
+    if (boundOwner && tokenDoc.ownerProfile !== boundOwner) {
+      tokenDoc = { ...tokenDoc, ownerProfile: boundOwner };
+      try {
+        gogCache.saveToken(userKey, tokenDoc);
+      } catch (err) {
+        /* a read-only cache must not break the import */
+      }
+    }
+    job.ownerProfile = tokenDoc.ownerProfile || null;
+    gogAuth.recordEvent('user_data', {
+      ok: true,
+      reason: 'import',
+      httpStatus: 200,
+      doc: tokenDoc,
+      userKey,
+      galaxyUserId: user.galaxyUserId,
+      sessionId: tokenDoc.sessionId || null,
+    });
     const profile = gogCache.getProfile(userKey);
     gogCache.saveProfile({
       ...(profile || {}),
@@ -411,7 +449,7 @@ async function runImport(job, api, options) {
       job.pages = Array.isArray(previous.pages) ? previous.pages : null;
       job.warning = job.warning || 'library_fresh';
     } else {
-      const fetched = await api.fetchAllProducts(tokenDoc);
+      const fetched = await tokenApi.fetchAllProducts(tokenDoc);
       job.percent = 45;
       const nowIso = new Date().toISOString();
       const doc = {
@@ -503,7 +541,7 @@ async function runImport(job, api, options) {
       }
       const captureRaw = stats.dump.length < DEBUG_DUMP_LIMIT;
       try {
-        const session = await api.getSessions(tokenDoc, product.gogGameId, {
+        const session = await tokenApi.getSessions(tokenDoc, product.gogGameId, {
           raw: captureRaw,
         });
         requests++;
@@ -654,8 +692,12 @@ function startImport({ account, profile, force = false, client, budget } = {}) {
   const job = {
     id: newJobId(userKey),
     userKey,
+    // The owner binding is the token's, or — for a token written before the
+    // «one owner» rule — the one its library snapshot already claims.
     ownerProfile:
-      (gogCache.getToken(userKey) && gogCache.getToken(userKey).ownerProfile) || null,
+      (gogCache.getToken(userKey) && gogCache.getToken(userKey).ownerProfile) ||
+      (gogCache.getLibrary(userKey) && gogCache.getLibrary(userKey).ownerProfile) ||
+      null,
     status: 'running',
     stage: 'queued',
     done: false,

@@ -16,6 +16,14 @@
  *     state/gog-breaker.json          host breaker (30 min), never a token
  *     debug/gog/<gogGameId>.json      first raw `sessions` responses of a run
  *     debug/gog/_summary.json         per-run playtime diagnostics (no tokens)
+ *     debug/gog/auth-lifecycle.json   rolling masked auth trail (connect/refresh/
+ *                                     user_data: presence booleans + expiry only)
+ *
+ * Auth state is derived, not stored as a verdict: `authStateOf()` turns
+ * `expiresAt` (milliseconds, one unit) + `lastRefreshError` into a status. An
+ * access token past its ~1 h lifetime with a working refresh token is
+ * `expired`/`refreshable`, **not** «подключите GOG заново» — that conflation was
+ * the 01.11.2026 auth-loop.
  *
  * Rules:
  *   - tokens are never returned by the public view (`publicTokenView`), never
@@ -43,6 +51,19 @@ const DEBUG_DIR = path.join(CACHE_DIR, 'debug', 'gog');
 const LIBRARY_TTL_MS = 24 * 60 * 60 * 1000;
 const PLAYTIME_TTL_MS = 24 * 60 * 60 * 1000;
 const PROFILE_TTL_MS = 6 * 60 * 60 * 1000;
+
+/** Silent refresh starts this long before `expiresAt` (5 min, brief §2). */
+const DEFAULT_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+/**
+ * An `expires_in` larger than this cannot be seconds (≈11.5 days) — such a
+ * value is already milliseconds. Keeps ONE unit (ms) inside the module.
+ */
+const EXPIRES_IN_SECONDS_MAX = 1000000;
+/** Refresh failures that mean «the user must reconnect», not «retry later». */
+const TERMINAL_REFRESH_CODES = new Set(['gog_auth_expired', 'gog_invalid_code']);
+/** Rolling window of the auth lifecycle dump (`debug/gog/auth-lifecycle.json`). */
+const AUTH_LIFECYCLE_NAME = 'auth-lifecycle';
+const AUTH_LIFECYCLE_MAX_EVENTS = 200;
 
 // The token directory must not be group/world readable. `recursive: true`
 // applies the mode only to directories it creates, so an explicit chmod keeps
@@ -122,6 +143,125 @@ function profileTtlMs() {
 function isFresh(doc, ttlMs) {
   return gameCache.isFresh(doc, ttlMs, 'fetchedAt');
 }
+
+/* ------------------------------------------------------------------ */
+/* auth state — ONE time unit inside this module: milliseconds         */
+/* ------------------------------------------------------------------ */
+
+function refreshMarginMs() {
+  return envMs('GAMES_GOG_REFRESH_MARGIN_MS', DEFAULT_REFRESH_MARGIN_MS);
+}
+
+/**
+ * `expiresAt` as **milliseconds since epoch**, or `NaN`.
+ *
+ * GOG's `/token` answers `expires_in` in **seconds** (OAuth2). A stored
+ * `expiresAt` is normally an ISO string, but a numeric field from an older
+ * build (or a hand-written fixture) may be seconds — silently treating
+ * `1750000000` as ms would put the expiry in 1970 and make every token look
+ * dead forever. This is the single place where the unit is decided:
+ *   - ISO / date string → `Date.parse`;
+ *   - number `< 1e11`   → seconds (1e11 s is year 5138, 1e11 ms is 1973);
+ *   - larger number     → already milliseconds.
+ */
+function parseExpiresAt(value) {
+  if (value == null || value === '') return NaN;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 1e11 ? Math.round(value * 1000) : Math.round(value);
+  }
+  const text = String(value).trim();
+  if (/^\d+(?:\.\d+)?$/.test(text)) return parseExpiresAt(Number(text));
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+/** `expires_in` → milliseconds. Seconds unless the value cannot be seconds. */
+function expiresInMs(raw) {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value > EXPIRES_IN_SECONDS_MAX ? Math.round(value) : Math.round(value * 1000);
+}
+
+/** Presence booleans + expiry of a token document. Never a token value. */
+function tokenShape(doc, options = {}) {
+  const now = options.now == null ? Date.now() : options.now;
+  if (!doc) {
+    return { hasAccess: false, hasRefresh: false, expiresAt: null, expiresIn: null };
+  }
+  const expiresMs = parseExpiresAt(doc.expiresAt);
+  return {
+    hasAccess: Boolean(doc.accessToken),
+    hasRefresh: Boolean(doc.refreshToken),
+    expiresAt: doc.expiresAt || null,
+    // Seconds remaining (negative when past) — the diagnostic-friendly form.
+    expiresIn: Number.isFinite(expiresMs) ? Math.round((expiresMs - now) / 1000) : null,
+  };
+}
+
+function errorShape(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    code: value.code ? String(value.code) : null,
+    description: value.description == null ? null : String(value.description),
+    at: value.at || null,
+  };
+}
+
+/**
+ * Detailed auth state of a token document. This is what the status endpoints
+ * and `/stats` read, so «connected» is decided by **reconnectability**, not by
+ * the ~1 h access-token lifetime (the 01.11.2026 auth-loop: a valid refresh
+ * token was reported as «подключите GOG заново» every hour).
+ *
+ * `status` reasons (stable vocabulary, used by tests):
+ *   - `valid`           — access token outside the refresh buffer;
+ *   - `expiring`        — inside the buffer: silent refresh is due, not an error;
+ *   - `expired`         — access token past, refresh token present → the next
+ *                         API call refreshes silently (never a reconnect);
+ *   - `no_refresh_token`— expired with nothing to refresh with → reconnect;
+ *   - `refresh_failed`  — the last refresh failed terminally → reconnect.
+ */
+function authStateOf(doc, options = {}) {
+  if (!doc) return null;
+  const now = options.now == null ? Date.now() : options.now;
+  const marginMs = options.marginMs == null ? refreshMarginMs() : options.marginMs;
+  const expiresMs = parseExpiresAt(doc.expiresAt);
+  const hasAccess = Boolean(doc.accessToken);
+  const hasRefresh = Boolean(doc.refreshToken);
+  const remainingMs = Number.isFinite(expiresMs) ? expiresMs - now : null;
+  const accessExpired = remainingMs == null ? !hasAccess : remainingMs <= 0;
+  const expiring = remainingMs != null && remainingMs > 0 && remainingMs <= marginMs;
+  const lastRefreshError = errorShape(doc.lastRefreshError);
+  const lastError = errorShape(doc.lastError);
+  const terminal = Boolean(lastRefreshError && TERMINAL_REFRESH_CODES.has(lastRefreshError.code));
+  const needsReconnect = terminal || ((!hasAccess || accessExpired) && !hasRefresh);
+  const status = needsReconnect
+    ? terminal && hasRefresh
+      ? 'refresh_failed'
+      : 'no_refresh_token'
+    : accessExpired
+      ? 'expired'
+      : expiring
+        ? 'expiring'
+        : 'valid';
+  return {
+    status,
+    hasAccessToken: hasAccess,
+    hasRefreshToken: hasRefresh,
+    expiresAt: doc.expiresAt || null,
+    expiresAtMs: Number.isFinite(expiresMs) ? new Date(expiresMs).toISOString() : null,
+    expiresInMs: remainingMs,
+    expired: accessExpired,
+    expiring,
+    refreshable: hasRefresh && !terminal,
+    needsReconnect,
+    refreshedAt: doc.refreshedAt || null,
+    lastRefreshError,
+    lastError,
+    binding: doc.ownerProfile ? 'bound' : 'unbound',
+  };
+}
+
 
 /* ------------------------------------------------------------------ */
 /* tokens (0600)                                                       */
@@ -205,13 +345,17 @@ function listTokens() {
 
 /**
  * Public (API/UI-safe) view of a token document. It intentionally drops
- * `accessToken`, `refreshToken` and any other credential: only identity,
- * ownership and expiry are exposed.
+ * `accessToken`, `refreshToken`, `sessionId` and any other credential: only
+ * identity, ownership, expiry and the derived auth state are exposed.
+ *
+ * `expired` is the **UI-facing** answer to «нужно ли переподключаться», not the
+ * access-token fact (that is `accessExpired` / `authState.expired`): a token
+ * past its 1 h lifetime with a working refresh token is refreshed silently and
+ * must never be shown as «подключите GOG заново» (01.11.2026 auth-loop).
  */
 function publicTokenView(doc) {
   if (!doc) return null;
-  const expiresAt = doc.expiresAt || null;
-  const expiresMs = expiresAt ? Date.parse(expiresAt) : NaN;
+  const auth = authStateOf(doc);
   return {
     source: 'gog',
     userKey: String(doc.userKey),
@@ -224,8 +368,11 @@ function publicTokenView(doc) {
     connectedAt: doc.connectedAt || doc.obtainedAt || null,
     obtainedAt: doc.obtainedAt || null,
     refreshedAt: doc.refreshedAt || null,
-    expiresAt,
-    expired: Number.isFinite(expiresMs) ? expiresMs <= Date.now() : null,
+    expiresAt: doc.expiresAt || null,
+    expired: auth ? auth.needsReconnect : null,
+    accessExpired: auth ? auth.expired : null,
+    refreshable: auth ? auth.refreshable : null,
+    authState: auth,
   };
 }
 
@@ -396,6 +543,51 @@ function listDebugDumps() {
 }
 
 /* ------------------------------------------------------------------ */
+/* auth lifecycle dump (no tokens, no personal values)                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Append one auth-lifecycle event to `debug/gog/auth-lifecycle.json`.
+ *
+ * The 01.11.2026 auth-loop («после импорта — подключите GOG заново») can only
+ * be closed with the real sequence of token events, so every connect, refresh,
+ * `user_data` call and silent-refresh retry records one masked row:
+ * `{at, step, ok, httpStatus, error, error_description, tokenShape
+ * {hasAccess, hasRefresh, expiresAt, expiresIn}, accountId, galaxyUserId,
+ * sessionId, reason}`. Token **values** are never passed in; the caller builds
+ * the event from `tokenShape()`.
+ *
+ * A rolling window (`AUTH_LIFECYCLE_MAX_EVENTS`) keeps the file small, and a
+ * read-only cache (worktree) silently keeps it in memory only.
+ */
+function appendAuthEvent(event) {
+  try {
+    const previous = getDebugDump(AUTH_LIFECYCLE_NAME);
+    const events = previous && Array.isArray(previous.events) ? previous.events.slice() : [];
+    events.push({ ...(event || {}), at: (event && event.at) || new Date().toISOString() });
+    while (events.length > AUTH_LIFECYCLE_MAX_EVENTS) events.shift();
+    const doc = {
+      schemaVersion: 1,
+      source: 'gog',
+      kind: 'gog-auth-lifecycle',
+      updatedAt: new Date().toISOString(),
+      events,
+    };
+    writeDebugDump(AUTH_LIFECYCLE_NAME, doc);
+    return doc;
+  } catch (err) {
+    return null;
+  }
+}
+
+/** The recorded events (newest last). `[]` when nothing was recorded yet. */
+function readAuthLifecycle() {
+  const doc = getDebugDump(AUTH_LIFECYCLE_NAME);
+  return doc && Array.isArray(doc.events) ? doc.events : [];
+}
+
+
+/* ------------------------------------------------------------------ */
 /* breaker state (no tokens, no user data)                             */
 /* ------------------------------------------------------------------ */
 
@@ -420,9 +612,19 @@ module.exports = {
   LIBRARY_TTL_MS,
   PLAYTIME_TTL_MS,
   PROFILE_TTL_MS,
+  DEFAULT_REFRESH_MARGIN_MS,
+  EXPIRES_IN_SECONDS_MAX,
+  TERMINAL_REFRESH_CODES,
+  AUTH_LIFECYCLE_NAME,
+  AUTH_LIFECYCLE_MAX_EVENTS,
   libraryTtlMs,
   playtimeTtlMs,
   profileTtlMs,
+  refreshMarginMs,
+  parseExpiresAt,
+  expiresInMs,
+  tokenShape,
+  authStateOf,
   isFresh,
   isValidUserKey,
   userKeyOf,
@@ -452,6 +654,8 @@ module.exports = {
   writeDebugDump,
   getDebugDump,
   listDebugDumps,
+  appendAuthEvent,
+  readAuthLifecycle,
   readBreaker,
   writeBreaker,
 };

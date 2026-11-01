@@ -194,7 +194,11 @@ test('GOG playtime: uid, response shapes, diagnostics', async (t) => {
   });
 
   await t.test('the first three raw answers are dumped (no token inside)', async () => {
-    const dumps = gogCache.listDebugDumps();
+    // `auth-lifecycle.json` lives in the same directory (silent-refresh trail)
+    // and is not a `sessions` dump.
+    const dumps = gogCache
+      .listDebugDumps()
+      .filter((name) => name !== `${gogCache.AUTH_LIFECYCLE_NAME}.json`);
     assert.equal(dumps.length, 3);
     const doc = gogCache.getDebugDump('1207658924');
     assert.equal(doc.kind, 'sessions-raw');

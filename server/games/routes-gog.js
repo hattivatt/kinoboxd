@@ -141,6 +141,10 @@ function createRouter(deps = {}) {
         const playtime = gogCache.getPlaytime(account.userKey);
         return {
           ...account,
+          // `authState` (from the sanitized token view) explains *why* a
+          // reconnect would be needed: access-token expiry with a working
+          // refresh token is `expired`, not `needsReconnect`.
+          binding: account.authState ? account.authState.binding : null,
           libraryCount:
             library && Array.isArray(library.products) ? library.products.length : null,
           libraryFetchedAt: library ? library.fetchedAt || null : null,
@@ -163,6 +167,12 @@ function createRouter(deps = {}) {
         budget: Number(process.env.GAMES_GOG_BUDGET) > 0 ? Number(process.env.GAMES_GOG_BUDGET) : 200,
         libraryTtlHours: Math.round(gogCache.libraryTtlMs() / 3600000),
         playtimeTtlHours: Math.round(gogCache.playtimeTtlMs() / 3600000),
+        // Where the masked auth trail lives: the file to attach to a bug
+        // report when «подключите GOG заново» appears again. No token values.
+        debug: {
+          authLifecycle: gogCache.debugPath(gogCache.AUTH_LIFECYCLE_NAME),
+          dir: gogCache.DEBUG_DIR,
+        },
       });
     } catch (err) {
       next(mapError(err));
