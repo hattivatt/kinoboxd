@@ -131,6 +131,9 @@ function writeTabUrl(tab, { push = true } = {}) {
     const url = new URL(window.location.href);
     if (next === 'films') url.searchParams.delete('tab');
     else url.searchParams.set('tab', next);
+    // `view` is the games sub-screen (`?tab=games&view=personnel`). It must not
+    // leak into films/books, and games.js owns it while the tab is active.
+    if (next !== 'games') url.searchParams.delete('view');
     const href = `${url.pathname}${url.search}${url.hash}`;
     if (push) window.history.pushState({ tab: next }, '', href);
     else window.history.replaceState({ tab: next }, '', href);
@@ -1644,6 +1647,12 @@ function bindUi() {
 
   window.addEventListener('popstate', () => {
     const tab = readTabFromUrl() || (window.history.state && window.history.state.tab) || 'films';
+    // Games owns a sub-screen: dashboard ↔ personnel changes only the `view`
+    // parameter, so `switchTab` would early-return and never repaint.
+    if (tab === 'games' && activeTab === 'games') {
+      showGames();
+      return;
+    }
     switchTab(tab, { push: false });
   });
 

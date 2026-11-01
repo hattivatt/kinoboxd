@@ -1080,10 +1080,30 @@
             <div class="kicker dash-kicker" id="games-kicker">библиотека Steam · сводка</div>
             <h1>Твоя статистика по играм</h1>
             <p class="dash-sub" id="games-sub">Статистика одного профиля Steam.</p>
+            <div class="games-hero-actions">
+              <button type="button" class="btn btn-ghost" id="games-personnel-open" title="Студии, композиторы, дизайнеры, сценаристы и художники">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c0-3.1 2.5-5.2 5.5-5.2s5.5 2.1 5.5 5.2"/><path d="M16.5 5.2a3 3 0 0 1 0 5.6"/><path d="M18 14.8c2 .5 3.5 2.3 3.5 5.2"/></svg>
+                <span>Персоналии</span>
+              </button>
+            </div>
           </div>
 
           <div class="summary-strip" id="games-summary"></div>
           <div id="games-partial-note" hidden></div>
+
+          <!-- filters: requested vs applied is shown honestly, never silently -->
+          <section class="games-filter-bar" id="games-filters" aria-label="Фильтры статистики" hidden>
+            <span class="games-filter-title">Фильтры</span>
+            <label class="games-filter" for="games-filter-free">
+              <input type="checkbox" id="games-filter-free" checked>
+              <span>без бесплатных игр</span>
+            </label>
+            <label class="games-filter" for="games-filter-dlc">
+              <input type="checkbox" id="games-filter-dlc">
+              <span>включить DLC</span>
+            </label>
+            <span class="games-filter-note" id="games-filter-note"></span>
+          </section>
 
           <div class="widgets" id="games-widgets">
             <section class="widget w-games-profile" id="games-profile-widget" aria-labelledby="games-profile-title" hidden>
@@ -1156,12 +1176,160 @@
                 <span class="chart-foot-hint">«последний раз» — дата запуска, а не игровая сессия</span>
               </div>
             </section>
+
+            <section class="widget w-games-decades" id="games-decades-widget" aria-labelledby="games-decades-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-decades-title"><span class="w-dot blue"></span>Десятилетия</h2>
+                <span class="widget-note" id="games-decades-note"></span>
+              </div>
+              <div class="genre-list" id="games-decades-list"></div>
+              <div class="chart-foot">
+                <span><i class="swatch blue"></i>по году релиза игры</span>
+                <span class="chart-foot-hint">не год, когда вы играли</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-genres" id="games-genres-widget" aria-labelledby="games-genres-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-genres-title"><span class="w-dot green"></span>Жанры</h2>
+                <span class="widget-note" id="games-genres-note"></span>
+              </div>
+              <div class="games-cloud-toolbar">
+                <div class="games-weight-toggle" role="group" aria-label="Вес жанров">
+                  <button type="button" class="games-weight-btn is-active" data-games-cloud-weight="hours">по часам</button>
+                  <button type="button" class="games-weight-btn" data-games-cloud-weight="count">по числу игр</button>
+                </div>
+                <span class="games-cloud-hint">размер — вес, наведи — числа</span>
+              </div>
+              <div class="games-cloud" id="games-genres-cloud"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>жанры Steam Store</span>
+                <span class="chart-foot-hint">одна игра может быть в нескольких жанрах</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-modes" id="games-modes-widget" aria-labelledby="games-modes-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-modes-title"><span class="w-dot orange"></span>Режимы</h2>
+                <span class="widget-note" id="games-modes-note"></span>
+              </div>
+              <div class="genre-list" id="games-modes-list"></div>
+              <div class="chart-foot">
+                <span><i class="swatch orange"></i>single / multi / co-op</span>
+                <span class="chart-foot-hint">категории Steam Store</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-access" id="games-access-widget" aria-labelledby="games-access-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-access-title"><span class="w-dot blue"></span>Доступ</h2>
+                <span class="widget-note" id="games-access-note"></span>
+              </div>
+              <div class="games-access" id="games-access-body"></div>
+              <div class="chart-foot">
+                <span><i class="swatch blue"></i>Early Access и бесплатные</span>
+                <span class="chart-foot-hint">доля от числа игр библиотеки</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-meta" id="games-meta-widget" aria-labelledby="games-meta-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-meta-title"><span class="w-dot violet"></span>Обогащение</h2>
+                <span class="widget-note" id="games-meta-note"></span>
+              </div>
+              <div class="games-meta" id="games-meta-body"></div>
+              <div class="chart-foot">
+                <span><i class="swatch violet"></i>детали и кредиты</span>
+                <span class="chart-foot-hint">пока не 100% — жанры и годы описывают только известные игры</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-years" id="games-years-widget" aria-labelledby="games-years-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-years-title"><span class="w-dot orange"></span>Годы релиза</h2>
+                <span class="widget-note" id="games-years-note"></span>
+              </div>
+              <div class="chart-scroll">
+                <div id="games-years-chart"></div>
+              </div>
+              <div class="chart-foot">
+                <span><i class="swatch orange"></i>игры по году релиза</span>
+                <span class="chart-foot-hint">releaseYear из Steam Store / Wikidata</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-achievements" id="games-achievements-widget" aria-labelledby="games-achievements-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-achievements-title"><span class="w-dot green"></span>Достижения</h2>
+                <span class="widget-note" id="games-achievements-note"></span>
+              </div>
+              <div class="games-achievements" id="games-achievements-body"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>completion и редкие</span>
+                <span class="chart-foot-hint">по достижениям, не по игровому времени</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-calendar" id="games-calendar-widget" aria-labelledby="games-calendar-title" hidden>
+              <div class="widget-head calendar-head">
+                <h2 class="widget-title" id="games-calendar-title"><span class="w-dot green"></span>Календарь достижений</h2>
+                <span class="widget-note" id="games-calendar-note"></span>
+                <div class="streak-card" id="games-streak-card"></div>
+              </div>
+              <div class="calendar-host" id="games-calendar-host"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>дни с разблокировкой достижений</span>
+                <span class="chart-foot-hint">по датам разблокировок, а не игровое время</span>
+              </div>
+            </section>
           </div>
 
           <footer class="dash-footer">
             <p class="dash-footer-line">
               Данные — Steam Web API (библиотека, часы) и Steam Community (профиль, достижения).
               Часы считает Steam: это время с запущенным клиентом, а не хронометраж.
+            </p>
+          </footer>
+        </section>
+
+        <!-- personnel: the second screen of the games tab (?tab=games&view=personnel) -->
+        <section id="games-personnel" class="games-personnel" hidden>
+          <div class="dash-hero games-personnel-hero">
+            <div class="kicker dash-kicker" id="games-personnel-kicker">персоналии · игры</div>
+            <h1>Персоналии</h1>
+            <p class="dash-sub" id="games-personnel-sub">
+              Студии первыми, затем композиторы, геймдизайнеры, сценаристы и художники.
+              Кредиты — MobyGames и Wikidata, веса — по часам или по числу игр.
+            </p>
+            <div class="games-hero-actions">
+              <button type="button" class="btn btn-ghost" id="games-personnel-back">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+                <span>Назад к обзору</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="games-personnel-toolbar">
+            <span class="games-coverage-badge" id="games-personnel-coverage" hidden></span>
+            <div class="games-weight-toggle" role="group" aria-label="Вес персоналий">
+              <button type="button" class="games-weight-btn is-active" data-games-weight="hours">по часам</button>
+              <button type="button" class="games-weight-btn" data-games-weight="count">по числу игр</button>
+            </div>
+            <span class="games-personnel-note" id="games-personnel-note"></span>
+          </div>
+
+          <div class="games-role-chips" id="games-role-chips" role="tablist" aria-label="Роли"></div>
+          <div id="games-personnel-error" hidden></div>
+          <div class="games-personnel-loading" id="games-personnel-loading" hidden>
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Собираем кредиты…</span>
+          </div>
+          <div class="games-personnel-list" id="games-personnel-body"></div>
+
+          <footer class="dash-footer">
+            <p class="dash-footer-line">
+              Студии — Steam Store (developers/publishers). Люди — MobyGames (если ключ настроен) и Wikidata.
+              Одно имя из разных источников склеивается по QID; «не знаем» — честное состояние, а не ноль.
             </p>
           </footer>
         </section>

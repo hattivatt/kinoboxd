@@ -1,0 +1,289 @@
+{
+  "sources": {
+    "connected": ["steam-76561198038369983"],
+    "selected": ["steam-76561198038369983"],
+    "profile": {
+      "key": "steam-76561198038369983",
+      "source": "steam",
+      "userKey": "76561198038369983",
+      "personaName": "whitefiercewolf",
+      "privacy": "public",
+      "importedAt": "2026-11-01T19:12:04.000Z",
+      "memberSince": "February 19, 2011",
+      "gameCount": 340,
+      "libraryPartial": false
+    },
+    "steamKeyConfigured": true
+  },
+  "libraryPartial": false,
+  "summary": {
+    "gameCount": 340,
+    "ownedCount": 340,
+    "playedCount": 216,
+    "unplayedCount": 124,
+    "totalHours": 5862.6,
+    "meanHours": 17.24,
+    "medianHours": 2.8,
+    "top10HoursShare": 0.746,
+    "recent2wHours": 3.3,
+    "lastPlayedAt": "2026-10-29T17:34:11.000Z",
+    "libraryPartial": false,
+    "steamKeyConfigured": true,
+    "completion": {
+      "avgPercent": 34.2,
+      "medianPercent": 22,
+      "perfectCount": 7,
+      "gamesWithStats": 180,
+      "gamesTotal": 340
+    },
+    "achievements": {
+      "unlocked": 1420,
+      "total": 4200,
+      "rareUnlocked": 37,
+      "rareThresholdPercent": 5,
+      "coverage": { "gamesWithStats": 180, "gamesTotal": 340 }
+    },
+    "modes": {
+      "single": 300,
+      "multi": 90,
+      "coop": 70,
+      "onlinePvp": 55,
+      "localCoop": 20,
+      "mmo": 6
+    },
+    "earlyAccess": { "count": 18, "hours": 120.5, "share": 0.053 },
+    "freeToPlay": { "count": 60, "hours": 210, "share": 0.176 },
+    "metadata": {
+      "detailsResolved": 312,
+      "detailsTotal": 340,
+      "detailsPercent": 91.8,
+      "creditsResolved": 187,
+      "creditsTotal": 340,
+      "creditsPercent": 55,
+      "running": true,
+      "budgetRemaining": 42
+    }
+  },
+  "hoursHistogram": [
+    { "bucket": "0", "count": 124 },
+    { "bucket": "<1", "count": 38 },
+    { "bucket": "1-5", "count": 62 },
+    { "bucket": "5-20", "count": 55 },
+    { "bucket": "20-50", "count": 33 },
+    { "bucket": "50-100", "count": 16 },
+    { "bucket": "100-500", "count": 10 },
+    { "bucket": "500+", "count": 2 }
+  ],
+  "topGames": [
+    { "appid": 203770, "name": "Crusader Kings II", "hours": 1054.4, "lastPlayed": "2025-11-14T20:02:00.000Z", "releaseYear": 2012, "genres": ["Strategy", "Simulation"], "completion": 32.9 },
+    { "appid": 570940, "name": "DARK SOULS: Prepare To Die Edition", "hours": 342.6, "lastPlayed": "2024-03-02T18:41:00.000Z", "releaseYear": 2012, "genres": ["Action", "RPG"], "completion": 41.5 },
+    { "appid": 22380, "name": "Fallout: New Vegas", "hours": 286.6, "lastPlayed": "2023-08-19T21:15:00.000Z", "releaseYear": 2010, "genres": ["RPG"], "completion": 38.2 },
+    { "appid": 570, "name": "Dota 2", "hours": 213.3, "lastPlayed": "2026-10-27T15:08:00.000Z", "releaseYear": 2013, "genres": ["Action", "Strategy"], "completion": 0 },
+    { "appid": 39510, "name": "Gothic II: Gold Edition", "hours": 198.3, "lastPlayed": "2022-12-28T12:30:00.000Z", "releaseYear": 2005, "genres": ["RPG"], "completion": 61.1 },
+    { "appid": 292030, "name": "The Witcher 3: Wild Hunt", "hours": 107, "lastPlayed": "2024-09-01T19:00:00.000Z", "releaseYear": 2015, "genres": ["RPG", "Adventure"], "completion": 62 },
+    { "appid": 1091500, "name": "Cyberpunk 2077", "hours": 96.5, "lastPlayed": "2026-10-29T17:34:11.000Z", "releaseYear": 2020, "genres": ["RPG", "Shooter"], "completion": 44.8 },
+    { "appid": 236850, "name": "Europa Universalis IV", "hours": 92.1, "releaseYear": 2013, "genres": ["Strategy", "Simulation"], "completion": 28.4 },
+    { "appid": 48700, "name": "Mount & Blade: Warband", "hours": 88.4, "releaseYear": 2010, "genres": ["RPG", "Action"], "completion": 12.3 },
+    { "appid": 105600, "name": "Terraria", "hours": 74.2, "releaseYear": 2011, "genres": ["Adventure", "Indie"], "completion": 51.7 },
+    { "appid": 400, "name": "Portal", "hours": 6.4, "releaseYear": 2007, "genres": ["Puzzle"], "completion": 100 }
+  ],
+  "recentlyPlayed": [
+    { "appid": 1091500, "name": "Cyberpunk 2077", "hours2w": 2.5, "hoursTotal": 96.5, "lastPlayed": "2026-10-29T17:34:11.000Z" },
+    { "appid": 570, "name": "Dota 2", "hours2w": 0.8, "hoursTotal": 213.3, "lastPlayed": "2026-10-27T15:08:00.000Z" }
+  ],
+  "backlog": {
+    "count": 124,
+    "share": 0.3647,
+    "items": [
+      { "appid": 1151640, "name": "Horizon Zero Dawn", "releaseYear": 2017, "genres": ["Action", "Adventure"] },
+      { "appid": 379720, "name": "DOOM", "releaseYear": 2016, "genres": ["Action"] },
+      { "appid": 289070, "name": "Sid Meier's Civilization VI", "releaseYear": 2016, "genres": ["Strategy"] }
+    ]
+  },
+  "genres": [
+    { "name": "Action", "count": 96, "hours": 1200, "share": 0.283 },
+    { "name": "RPG", "count": 80, "hours": 900, "share": 0.235 },
+    { "name": "Indie", "count": 74, "hours": 380, "share": 0.218 },
+    { "name": "Adventure", "count": 52, "hours": 410, "share": 0.153 },
+    { "name": "Strategy", "count": 45, "hours": 820, "share": 0.132 },
+    { "name": "Shooter", "count": 40, "hours": 960, "share": 0.118 },
+    { "name": "Simulation", "count": 28, "hours": 250, "share": 0.082 },
+    { "name": "Puzzle", "count": 22, "hours": 90, "share": 0.065 }
+  ],
+  "tags": [
+    { "name": "Open World", "count": 40, "hours": 600, "weight": 12801 },
+    { "name": "Story Rich", "count": 35, "hours": 500, "weight": 10011 },
+    { "name": "Sandbox", "count": 20, "hours": 300, "weight": 9010 }
+  ],
+  "decades": [
+    { "decade": 1990, "count": 6, "hours": 60 },
+    { "decade": 2000, "count": 44, "hours": 620 },
+    { "decade": 2010, "count": 180, "hours": 3100 },
+    { "decade": 2020, "count": 110, "hours": 2082.6 },
+    { "decade": null, "key": "unknown", "label": "год неизвестен", "count": 0, "hours": 0 }
+  ],
+  "years": [
+    { "year": 2004, "count": 10, "hours": 90 },
+    { "year": 2005, "count": 12, "hours": 260 },
+    { "year": 2007, "count": 8, "hours": 40 },
+    { "year": 2010, "count": 20, "hours": 420 },
+    { "year": 2011, "count": 18, "hours": 180 },
+    { "year": 2012, "count": 26, "hours": 1500 },
+    { "year": 2013, "count": 24, "hours": 460 },
+    { "year": 2015, "count": 30, "hours": 420 },
+    { "year": 2016, "count": 28, "hours": 380 },
+    { "year": 2017, "count": 22, "hours": 260 },
+    { "year": 2020, "count": 34, "hours": 610 },
+    { "year": 2021, "count": 26, "hours": 320 },
+    { "year": 2022, "count": 30, "hours": 420 },
+    { "year": 2023, "count": 24, "hours": 300 },
+    { "year": 2024, "count": 18, "hours": 170 },
+    { "year": 2025, "count": 10, "hours": 132.6 }
+  ],
+  "timeline": [
+    { "month": "2011-02", "unlocked": 1, "games": 1 },
+    { "month": "2023-08", "unlocked": 6, "games": 1 },
+    { "month": "2024-03", "unlocked": 5, "games": 1 },
+    { "month": "2024-09", "unlocked": 3, "games": 1 },
+    { "month": "2026-09", "unlocked": 7, "games": 2 },
+    { "month": "2026-10", "unlocked": 10, "games": 2 }
+  ],
+  "achievementDays": [
+    { "date": "2011-02-19", "count": 1, "appids": [70] },
+    { "date": "2012-05-12", "count": 2, "appids": [203770] },
+    { "date": "2013-11-03", "count": 5, "appids": [203770] },
+    { "date": "2015-06-21", "count": 4, "appids": [292030] },
+    { "date": "2016-01-09", "count": 4, "appids": [203770] },
+    { "date": "2017-08-14", "count": 5, "appids": [292030] },
+    { "date": "2018-12-25", "count": 3, "appids": [1313140] },
+    { "date": "2020-04-06", "count": 5, "appids": [1091500] },
+    { "date": "2021-07-18", "count": 5, "appids": [1313140] },
+    { "date": "2022-10-30", "count": 7, "appids": [203770] },
+    { "date": "2023-08-19", "count": 6, "appids": [22380] },
+    { "date": "2024-03-02", "count": 5, "appids": [570940] },
+    { "date": "2024-09-01", "count": 3, "appids": [292030] },
+    { "date": "2026-09-28", "count": 5, "appids": [203770, 1313140] },
+    { "date": "2026-10-02", "count": 3, "appids": [1313140] },
+    { "date": "2026-10-03", "count": 5, "appids": [203770] },
+    { "date": "2026-10-04", "count": 2, "appids": [1313140, 203770] }
+  ],
+  "streaks": {
+    "current": 0,
+    "best": 3,
+    "lastUnlockDate": "2026-10-04",
+    "bestDates": ["2026-10-02", "2026-10-04"]
+  },
+  "studios": [
+    {
+      "id": "wd:Q1151645",
+      "name": "CD PROJEKT RED",
+      "roles": ["developer", "publisher"],
+      "count": 3,
+      "hours": 203.5,
+      "avgCompletion": 55,
+      "games": [292030, 20900, 20920],
+      "sources": ["steam-store", "wikidata"]
+    },
+    {
+      "id": "wd:Q193559",
+      "name": "Valve",
+      "roles": ["developer", "publisher"],
+      "count": 12,
+      "hours": 420.2,
+      "avgCompletion": 41,
+      "games": [570, 400, 620],
+      "sources": ["steam-store"]
+    },
+    {
+      "id": "wd:Q739764",
+      "name": "Blizzard Entertainment",
+      "roles": ["developer", "publisher"],
+      "count": 5,
+      "hours": 380.4,
+      "avgCompletion": 33,
+      "games": [2357570],
+      "sources": ["steam-store", "wikidata"]
+    }
+  ],
+  "personnelTop": {
+    "composer": [
+      { "id": "wd:Q18223638", "name": "Marcin Przybyłowicz", "count": 3, "hours": 203.5 },
+      { "id": "wd:Q11781148", "name": "Mikolai Stroinski", "count": 1, "hours": 107 }
+    ],
+    "designer": [],
+    "writer": [],
+    "artist": [],
+    "programmer": [],
+    "producer": []
+  },
+  "gamesIndex": {
+    "203770": {
+      "appid": 203770,
+      "name": "Crusader Kings II",
+      "hours": 1054.4,
+      "lastPlayed": "2025-11-14T20:02:00.000Z",
+      "releaseYear": 2012,
+      "genres": ["Strategy", "Simulation"],
+      "completion": 32.9,
+      "type": "game",
+      "isFree": false,
+      "earlyAccess": false,
+      "achievements": { "unlocked": 53, "total": 161, "percent": 32.9, "rareUnlocked": 33 },
+      "metadataSources": ["steam-store", "wikidata"]
+    },
+    "1313140": {
+      "appid": 1313140,
+      "name": "Cult of the Lamb",
+      "hours": 13.8,
+      "lastPlayed": "2026-10-04T12:00:00.000Z",
+      "releaseYear": 2022,
+      "genres": ["Action", "Adventure", "Indie"],
+      "completion": 29.8,
+      "type": "game",
+      "isFree": false,
+      "earlyAccess": false,
+      "achievements": { "unlocked": 17, "total": 57, "percent": 29.8, "rareUnlocked": 4 },
+      "metadataSources": ["steam-store", "wikidata"]
+    },
+    "292030": {
+      "appid": 292030,
+      "name": "The Witcher 3: Wild Hunt",
+      "hours": 107,
+      "lastPlayed": "2024-09-01T19:00:00.000Z",
+      "releaseYear": 2015,
+      "genres": ["RPG", "Adventure"],
+      "completion": 62,
+      "type": "game",
+      "isFree": false,
+      "earlyAccess": false,
+      "achievements": { "unlocked": 48, "total": 78, "percent": 61.5, "rareUnlocked": 5 },
+      "metadataSources": ["steam-store", "wikidata"]
+    },
+    "570": {
+      "appid": 570,
+      "name": "Dota 2",
+      "hours": 213.3,
+      "lastPlayed": "2026-10-27T15:08:00.000Z",
+      "releaseYear": 2013,
+      "genres": ["Action", "Strategy"],
+      "completion": 0,
+      "type": "game",
+      "isFree": true,
+      "earlyAccess": false,
+      "metadataSources": ["steam-store"]
+    }
+  },
+  "unmatchedCount": 12,
+  "meta": {
+    "buildMs": 41.2,
+    "keyConfigured": true,
+    "keySource": "file",
+    "achievementsCachedGames": 180,
+    "calendarAvailable": true,
+    "filters": {
+      "includeFree": { "requested": true, "applied": true, "reason": null },
+      "includeDlc": { "requested": false, "applied": true, "reason": null }
+    },
+    "pending": ["franchises", "platforms"]
+  }
+}

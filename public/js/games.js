@@ -21,28 +21,41 @@
 
 import {
   getGamesStats, getGamesProfiles, startGamesImportSteam, getGamesImportStatus, startGamesRefresh,
+  getGamesPersonnel,
 } from './api.js';
 import {
   $, el, clear, fmtInt, plural, icon, toast, errorBox, showTooltip, moveTooltip, hideTooltip,
   shortErrorMessage,
 } from './ui.js';
 import { withPreservedScroll } from './books-refresh.js';
+import { renderYearBars } from './charts.js';
+import { openModal } from './modal.js';
 import {
   normalizeGamesPayload, normalizeProfilesList, accountFromInput, profileCardView, summaryMetrics,
   paretoView, topHoursRows, backlogView, recentlyView, histogramView, lastPlayedInfo,
   importErrorText, jobStageText, jobProgress, gamesJobId, hoursText, HOURS_HINT,
+  decadesView, yearsView, genreCloudView, modesView, accessView, metadataProgressView, filtersView,
+  calendarView, achievementStreaksView, achievementsOverviewView, normalizePersonnel, personnelRows,
+  studiosView, coverageBadge, PERSONNEL_ROLES, formatDateRu,
 } from './games-view.js';
+import { renderAchievementCalendar, renderAchievementStreaks } from './games-charts.js';
 
 const PROFILE_KEY = 'kinoboxd.games.profile.v1';
 const JOB_KEY = 'kinoboxd.games.job.v1';
+const FILTERS_KEY = 'kinoboxd.games.filters.v1';
+const WEIGHT_KEY = 'kinoboxd.games.weight.v1';
+const ROLE_KEY = 'kinoboxd.games.role.v1';
+const CLOUD_KEY = 'kinoboxd.games.cloudweight.v1';
 const POLL_INTERVAL = 1400;
+const ENRICH_POLL_INTERVAL = 3500;
+const ENRICH_POLL_LIMIT = 120;
 const GAME_PLURAL = ['игра', 'игры', 'игр'];
 const TOP_LIMIT = 10;
 const BACKLOG_LIMIT = 24;
 
 const state = {
   active: false,
-  view: 'import', // import | progress | dashboard
+  view: 'import', // import | progress | dashboard | personnel
   loading: false,
   loaded: false,
   loadedAt: 0,
@@ -57,6 +70,17 @@ const state = {
   pollSeq: 0,
   importBusy: false,
   onActivate: null,
+  // M2: includeFree/includeDlc are sent only when they differ from the server
+  // defaults (free included, DLC excluded) — a default request stays clean.
+  filters: { includeFree: true, includeDlc: false },
+  cloudWeight: 'hours',
+  // M3: personnel weights + per-role cache (one owner, no cross-profile mix).
+  weight: 'hours',
+  role: 'studio',
+  personnel: { role: '', data: null, loading: false, error: null, cache: {}, openId: '' },
+  enrichTimer: 0,
+  enrichSeq: 0,
+  enrichTicks: 0,
 };
 
 let inflightLoad = null;
@@ -131,6 +155,7 @@ function showScreen(name) {
     import: $('games-import'),
     progress: $('games-progress'),
     dashboard: $('games-dash'),
+    personnel: $('games-personnel'),
   };
   for (const [key, node] of Object.entries(screens)) {
     if (node) node.hidden = key !== name;
@@ -269,8 +294,14 @@ async function switchProfile(key) {
   state.loaded = false;
   state.data = null;
   state.seq += 1;
+  // One owner = one profile: the personnel cache of the previous steamid64
+  // must never be shown for the new one (AGENTS §6, ИГРЫ §2.0).
+  state.personnel = {
+    role: state.role, data: null, loading: false, error: null, cache: {}, openId: '',
+  };
   renderProfiles();
   await loadStats({ force: true });
+  if (state.view === 'personnel') await ensurePersonnel(state.role, { force: true });
 }
 
 async function ensureProfiles({ reload = false } = {}) {
@@ -340,10 +371,16 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
   const seq = ++state.seq;
   state.loading = true;
   if (!silent) showError(null);
-  if (!silent && state.view !== 'dashboard') showLoading(true);
+  if (!silent && state.view !== 'dashboard' && state.view !== 'personnel') showLoading(true);
   updateActions();
   try {
-    const raw = await getGamesStats({ profile: state.profileKey });
+    // Filters are sent only when they differ from the server defaults
+    // (`includeFree=1`, `includeDlc=0`): a default dashboard request stays
+    // exactly `?profile=…`, and `meta.filters` tells us what was applied.
+    const query = { profile: state.profileKey };
+    if (state.filters.includeFree === false) query.includeFree = false;
+    if (state.filters.includeDlc === true) query.includeDlc = true;
+    const raw = await getGamesStats(query);
     if (seq !== state.seq) return;
     const data = normalizeGamesPayload(raw);
     state.data = data;
@@ -357,7 +394,7 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
       renderProfiles();
       return;
     }
-    showScreen('dashboard');
+    showScreen(state.view === 'personnel' ? 'personnel' : 'dashboard');
     if (silent) {
       withPreservedScroll(
         () => (typeof window !== 'undefined' ? window.scrollY || 0 : 0),
@@ -387,7 +424,10 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
       return;
     }
     if (state.data) {
-      toast(shortErrorMessage(error), 'error', { duration: 7000 });
+      // A background enrichment poll must not spam a toast every 3.5 s: it
+      // just stops the poller and keeps the last good dashboard.
+      if (!silent) toast(shortErrorMessage(error), 'error', { duration: 7000 });
+      stopEnrichPoll();
       return;
     }
     showScreen('import');
@@ -643,11 +683,23 @@ function renderDashboard(data) {
   renderProfileCard(data);
   renderSummary(data);
   renderPartialNote(data);
+  renderFilters(data);
   renderTopHours(data);
   renderPareto(data);
   renderBacklog(data);
   renderRecently(data);
   renderHistogram(data);
+  // M2/M3 widgets: every one of them hides itself when its payload block is
+  // missing, so an M1 server keeps a clean dashboard.
+  renderDecades(data);
+  renderYears(data);
+  renderGenreCloud(data);
+  renderModes(data);
+  renderAccess(data);
+  renderMetadataProgress(data);
+  renderAchievements(data);
+  renderCalendar(data);
+  scheduleEnrichPoll();
 }
 
 function renderHead(data) {
@@ -973,12 +1025,650 @@ function renderHistogram(data) {
 }
 
 /* =========================================================
+   M2: filters, decades, years, genres, modes, access, enrichment
+   ========================================================= */
+
+/** Requested-vs-applied is printed as-is: a silent filter would be a lie. */
+function renderFilters(data) {
+  const section = $('games-filters');
+  const note = $('games-filter-note');
+  const free = $('games-filter-free');
+  const dlc = $('games-filter-dlc');
+  if (!section) return;
+  const view = filtersView(data.filters, {
+    includeFree: state.filters.includeFree,
+    includeDlc: state.filters.includeDlc,
+  });
+  // Keep the checkboxes in sync with what the server understood.
+  if (free && free.checked !== (view.state.includeFree === false)) {
+    free.checked = view.state.includeFree === false;
+  }
+  if (dlc && dlc.checked !== (view.state.includeDlc === true)) {
+    dlc.checked = view.state.includeDlc === true;
+  }
+  if (note) {
+    const texts = view.items
+      .filter((item) => item.status === 'pending' || item.status === 'applied' || item.status === 'unknown')
+      .map((item) => item.text);
+    note.textContent = view.honest ? view.note : texts.join(' · ');
+    note.classList.toggle('is-honest', view.honest);
+  }
+  section.hidden = false;
+}
+
+function applyFilters(next) {
+  state.filters = {
+    includeFree: next.includeFree !== false,
+    includeDlc: next.includeDlc === true,
+  };
+  safeStorageSet(FILTERS_KEY, JSON.stringify(state.filters));
+  state.loaded = false;
+  loadStats({ force: true });
+}
+
+function renderDecades(data) {
+  const widget = $('games-decades-widget');
+  const host = $('games-decades-list');
+  const note = $('games-decades-note');
+  if (!widget || !host) return;
+  clear(host);
+  const view = decadesView(data.decades);
+  if (!view) {
+    widget.hidden = true;
+    return;
+  }
+  widget.hidden = false;
+  if (note) note.textContent = view.note;
+  view.rows.forEach((row, index) => {
+    const node = el('div', {
+      class: `genre-row is-ranked${row.unknown ? ' is-unknown' : ''}`,
+      title: row.hint,
+    });
+    node.append(el('span', { class: 'rank-num', text: String(index + 1) }));
+    const name = el('div', { class: 'genre-name' });
+    name.append(el('span', { class: 'genre-label', text: row.label }));
+    name.append(el('span', { class: 'genre-count', text: row.countText }));
+    node.append(name);
+    const track = el('div', { class: 'genre-track' });
+    const fill = el('div', { class: 'genre-fill' });
+    track.append(fill);
+    node.append(track);
+    node.append(el('div', { class: 'genre-avg', text: row.hoursText || '—' }));
+    host.append(node);
+    requestAnimationFrame(() => {
+      fill.style.width = `${row.widthPercent}%`;
+    });
+    node.addEventListener('pointerenter', (event) => {
+      showTooltip(row.title, row.hint);
+      moveTooltip(event);
+    });
+    node.addEventListener('pointermove', moveTooltip);
+    node.addEventListener('pointerleave', hideTooltip);
+  });
+}
+
+function renderYears(data) {
+  const widget = $('games-years-widget');
+  const host = $('games-years-chart');
+  const note = $('games-years-note');
+  if (!widget || !host) return;
+  const view = yearsView(data.years);
+  if (!view) {
+    widget.hidden = true;
+    clear(host);
+    return;
+  }
+  widget.hidden = false;
+  if (note) note.textContent = view.note;
+  renderYearBars(host, view.years, {
+    unitForms: GAME_PLURAL,
+    shareLabel: 'всех игр',
+    emptyText: 'Нет данных по годам релиза',
+    ariaLabel: `Игры по годам релиза: ${view.minYear} — ${view.maxYear}`,
+    yearNote: () => view.hint,
+  });
+}
+
+function renderGenreCloud(data) {
+  const widget = $('games-genres-widget');
+  const host = $('games-genres-cloud');
+  const note = $('games-genres-note');
+  if (!widget || !host) return;
+  clear(host);
+  const view = genreCloudView(data.genres, { weight: state.cloudWeight, limit: 24 });
+  if (!view) {
+    widget.hidden = true;
+    return;
+  }
+  widget.hidden = false;
+  if (note) note.textContent = view.note;
+  for (const chip of view.chips) {
+    const node = el('span', {
+      class: `games-cloud-chip cloud-${chip.size}`,
+      title: `${chip.title}${chip.hint ? ` · ${chip.hint}` : ''}`,
+    });
+    node.append(el('span', { class: 'games-cloud-name', text: chip.name }));
+    node.append(el('span', { class: 'games-cloud-count', text: chip.countText }));
+    host.append(node);
+    node.addEventListener('pointerenter', (event) => {
+      showTooltip(chip.title, chip.hint);
+      moveTooltip(event);
+    });
+    node.addEventListener('pointermove', moveTooltip);
+    node.addEventListener('pointerleave', hideTooltip);
+  }
+  for (const button of document.querySelectorAll('[data-games-cloud-weight]')) {
+    const active = button.dataset.gamesCloudWeight === view.weight;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+}
+
+function renderModes(data) {
+  const widget = $('games-modes-widget');
+  const host = $('games-modes-list');
+  const note = $('games-modes-note');
+  if (!widget || !host) return;
+  clear(host);
+  const view = modesView(data.summary.modes);
+  if (!view) {
+    widget.hidden = true;
+    return;
+  }
+  widget.hidden = false;
+  if (note) note.textContent = view.note;
+  for (const row of view.rows) {
+    const node = el('div', { class: 'genre-row', title: row.title });
+    const name = el('div', { class: 'genre-name' });
+    name.append(el('span', { class: 'genre-label', text: row.label }));
+    name.append(el('span', { class: 'genre-count', text: row.countText }));
+    node.append(name);
+    const track = el('div', { class: 'genre-track' });
+    const fill = el('div', { class: 'genre-fill' });
+    track.append(fill);
+    node.append(track);
+    node.append(el('div', { class: 'genre-avg', text: row.hoursText || row.shareText || '—' }));
+    host.append(node);
+    requestAnimationFrame(() => {
+      fill.style.width = `${row.widthPercent}%`;
+    });
+    node.addEventListener('pointerenter', (event) => {
+      showTooltip(row.title, row.hint);
+      moveTooltip(event);
+    });
+    node.addEventListener('pointermove', moveTooltip);
+    node.addEventListener('pointerleave', hideTooltip);
+  }
+}
+
+function renderAccess(data) {
+  const widget = $('games-access-widget');
+  const host = $('games-access-body');
+  const note = $('games-access-note');
+  if (!widget || !host) return;
+  clear(host);
+  const view = accessView(data.summary);
+  if (!view) {
+    widget.hidden = true;
+    return;
+  }
+  widget.hidden = false;
+  if (note) note.textContent = view.note;
+  for (const item of view.items) {
+    const node = el('div', { class: 'games-access-item', title: item.hint });
+    node.append(el('span', { class: 'games-access-label', text: item.label }));
+    node.append(el('span', { class: 'games-access-value', text: item.countText }));
+    const sub = [
+      item.hoursText ? `${item.hoursText}` : '',
+      item.shareText ? `${item.shareText} библиотеки` : '',
+    ].filter(Boolean).join(' · ');
+    if (sub) node.append(el('span', { class: 'games-access-sub', text: sub }));
+    host.append(node);
+  }
+}
+
+function renderMetadataProgress(data) {
+  const widget = $('games-meta-widget');
+  const host = $('games-meta-body');
+  const note = $('games-meta-note');
+  if (!widget || !host) return;
+  clear(host);
+  const view = metadataProgressView(data.summary.metadata);
+  if (!view) {
+    widget.hidden = true;
+    return;
+  }
+  widget.hidden = false;
+  if (note) {
+    note.textContent = view.running ? 'обогащение идёт…' : '';
+    note.classList.toggle('is-running', view.running === true);
+  }
+  const rows = [
+    { part: view.details, className: 'is-details' },
+    { part: view.credits, className: 'is-credits' },
+  ];
+  for (const { part, className } of rows) {
+    if (!part || !part.visible) continue;
+    const row = el('div', { class: `games-meta-row ${className}`, title: view.hint });
+    const top = el('div', { class: 'games-meta-top' });
+    top.append(el('span', { class: 'games-meta-label', text: part.text }));
+    top.append(el('span', { class: 'games-meta-percent', text: part.percentText }));
+    row.append(top);
+    const track = el('div', { class: 'games-meta-track' });
+    const fill = el('div', { class: 'games-meta-fill' });
+    track.append(fill);
+    row.append(track);
+    host.append(row);
+    requestAnimationFrame(() => {
+      fill.style.width = `${Math.max(2, part.percent == null ? 2 : part.percent)}%`;
+    });
+  }
+}
+
+function renderAchievements(data) {
+  const widget = $('games-achievements-widget');
+  const host = $('games-achievements-body');
+  const note = $('games-achievements-note');
+  if (!widget || !host) return;
+  clear(host);
+  const view = achievementsOverviewView(data.summary);
+  if (!view) {
+    widget.hidden = true;
+    return;
+  }
+  widget.hidden = false;
+  if (note) note.textContent = view.totalText ? `${view.note} · ${view.totalText}` : view.note;
+  for (const metric of view.metrics) {
+    const node = el('div', { class: 'games-achievement-metric', title: metric.hint });
+    node.append(el('div', { class: 'games-achievement-value', text: metric.value }));
+    node.append(el('div', { class: 'games-achievement-label', text: metric.label }));
+    host.append(node);
+  }
+}
+
+function gameNameOf(appid) {
+  const index = state.data && state.data.gamesIndex ? state.data.gamesIndex : {};
+  const entry = index[appid] || index[String(appid)];
+  return entry && entry.name ? entry.name : '';
+}
+
+function openAchievementDayModal(day) {
+  const list = el('div', { class: 'games-personnel-games' });
+  const names = (day.appids || []).map((appid) => gameNameOf(appid) || `appid ${appid}`);
+  if (!names.length) {
+    list.append(el('span', { text: 'состав игр сервер не передал' }));
+  } else {
+    for (const name of names) list.append(el('span', { text: name }));
+  }
+  const body = el('div', { class: 'modal-body' });
+  body.append(el('p', {
+    class: 'games-pareto-hint',
+    text: `${fmtInt(day.count)} ${plural(day.count, ['достижение', 'достижения', 'достижений'])} за ${formatDateRu(day.date)}. `
+      + 'Календарь построен по датам разблокировок, а не по игровому времени.',
+  }));
+  body.append(list);
+  openModal({
+    head: el('div', { class: 'modal-head' }, el('h3', { text: `Достижения за ${formatDateRu(day.date)}` })),
+    body,
+    className: 'modal-wide',
+  });
+}
+
+function renderCalendar(data) {
+  const widget = $('games-calendar-widget');
+  const host = $('games-calendar-host');
+  const note = $('games-calendar-note');
+  const streakHost = $('games-streak-card');
+  if (!widget || !host) return;
+  const view = calendarView(data.achievementDays, data.timeline);
+  const streaks = achievementStreaksView(data.streaks, data.achievementDays);
+  if (!view) {
+    widget.hidden = true;
+    clear(host);
+    if (streakHost) clear(streakHost);
+    return;
+  }
+  widget.hidden = false;
+  if (note) note.textContent = view.note;
+  renderAchievementStreaks(streakHost, streaks);
+  renderAchievementCalendar(host, view.days, {
+    nameOf: gameNameOf,
+    onDayClick: openAchievementDayModal,
+  });
+}
+
+/* =========================================================
+   enrichment poll (progress bar stays honest while backfill runs)
+   ========================================================= */
+
+function stopEnrichPoll() {
+  if (state.enrichTimer) window.clearTimeout(state.enrichTimer);
+  state.enrichTimer = 0;
+  state.enrichSeq += 1;
+}
+
+function scheduleEnrichPoll() {
+  const metadata = state.data && state.data.summary && state.data.summary.metadata;
+  const running = Boolean(metadata && metadata.running === true);
+  if (!running || !state.active) {
+    stopEnrichPoll();
+    state.enrichTicks = 0;
+    return;
+  }
+  if (state.enrichTimer) return;
+  if (state.enrichTicks >= ENRICH_POLL_LIMIT) {
+    stopEnrichPoll();
+    return;
+  }
+  const seq = state.enrichSeq;
+  state.enrichTimer = window.setTimeout(async () => {
+    state.enrichTimer = 0;
+    if (seq !== state.enrichSeq || !state.active) return;
+    state.enrichTicks += 1;
+    await loadStats({ force: true, silent: true });
+  }, ENRICH_POLL_INTERVAL);
+}
+
+/* =========================================================
+   M3: personnel screen
+   ========================================================= */
+
+function readViewParam() {
+  try {
+    const value = new URLSearchParams(window.location.search).get('view');
+    return value === 'personnel' ? 'personnel' : '';
+  } catch {
+    return '';
+  }
+}
+
+/** `?tab=games&view=personnel` — the sub-screen is addressable (like books). */
+function writeViewParam(view, { push = true } = {}) {
+  try {
+    const url = new URL(window.location.href);
+    if (view) url.searchParams.set('view', view);
+    else url.searchParams.delete('view');
+    const href = `${url.pathname}${url.search}${url.hash}`;
+    const data = { tab: 'games', view: view || null };
+    if (push) window.history.pushState(data, '', href);
+    else window.history.replaceState(data, '', href);
+  } catch {
+    /* history can be unavailable in exotic embeds */
+  }
+}
+
+function personnelCacheKey(role) {
+  return `${state.profileKey}:${role}`;
+}
+
+async function ensurePersonnel(role, { force = false } = {}) {
+  const nextRole = PERSONNEL_ROLES.some((entry) => entry.key === role) ? role : 'studio';
+  if (!state.profileKey) return;
+  state.role = nextRole;
+  safeStorageSet(ROLE_KEY, nextRole);
+  const key = personnelCacheKey(nextRole);
+  const cached = state.personnel.cache[key];
+  if (cached && !force) {
+    state.personnel.role = nextRole;
+    state.personnel.data = cached;
+    state.personnel.error = null;
+    state.personnel.loading = false;
+    renderPersonnel();
+    return;
+  }
+  state.personnel.role = nextRole;
+  state.personnel.data = cached || null;
+  state.personnel.loading = true;
+  state.personnel.error = null;
+  state.personnel.openId = '';
+  renderPersonnel();
+  try {
+    const raw = await getGamesPersonnel({ profile: state.profileKey, role: nextRole });
+    const data = normalizePersonnel(raw, nextRole);
+    state.personnel.cache[key] = data;
+    if (state.personnel.role === nextRole) {
+      state.personnel.data = data;
+      state.personnel.error = null;
+    }
+  } catch (error) {
+    if (error && error.status === 401) return;
+    const missing = error && (error.status === 404 || error.status === 400);
+    state.personnel.cache[key] = normalizePersonnel({ items: [], role: nextRole }, nextRole);
+    if (state.personnel.role === nextRole) {
+      state.personnel.data = state.personnel.cache[key];
+      state.personnel.error = missing
+        ? {
+          code: 'personnel_unavailable',
+          message: 'Сервер ещё не отдаёт кредиты персоналий: раздел появится после обогащения (MobyGames/Wikidata).',
+        }
+        : { code: (error && error.code) || 'network', message: shortErrorMessage(error) };
+    }
+  } finally {
+    state.personnel.loading = false;
+    if (state.personnel.role === nextRole) renderPersonnel();
+  }
+}
+
+function renderRoleChips() {
+  const host = $('games-role-chips');
+  if (!host) return;
+  clear(host);
+  for (const role of PERSONNEL_ROLES) {
+    const cached = state.personnel.cache[personnelCacheKey(role.key)];
+    const active = state.role === role.key;
+    const button = el('button', {
+      type: 'button',
+      class: `games-role-chip${active ? ' is-active' : ''}${cached && !cached.hasItems ? ' is-empty' : ''}`,
+      role: 'tab',
+      'aria-selected': active ? 'true' : 'false',
+      title: role.hint,
+    });
+    button.append(el('span', { text: role.label }));
+    if (cached) {
+      button.append(el('span', {
+        class: 'games-role-count',
+        text: cached.hasItems ? fmtInt(cached.items.length) : '0',
+      }));
+    }
+    button.addEventListener('click', () => {
+      if (state.role === role.key) return;
+      ensurePersonnel(role.key);
+    });
+    host.append(button);
+  }
+}
+
+function renderPersonnelToolbar() {
+  const badge = $('games-personnel-coverage');
+  const note = $('games-personnel-note');
+  const data = state.personnel.data;
+  const percent = data && data.coverage && data.coverage.percent != null
+    ? data.coverage.percent
+    : state.data && state.data.summary.metadata
+    ? state.data.summary.metadata.creditsPercent
+    : null;
+  const view = coverageBadge(percent);
+  if (badge) {
+    if (view && view.visible) {
+      badge.hidden = false;
+      badge.textContent = view.text;
+      badge.title = view.title;
+    } else {
+      badge.hidden = true;
+    }
+  }
+  if (note) {
+    const role = PERSONNEL_ROLES.find((entry) => entry.key === state.role);
+    const parts = [];
+    if (role) parts.push(role.hint);
+    if (data && data.coverage && data.coverage.gamesWithCredits != null && data.coverage.gamesTotal) {
+      parts.push(`кредиты у ${fmtInt(data.coverage.gamesWithCredits)} из ${fmtInt(data.coverage.gamesTotal)} игр`);
+    }
+    note.textContent = parts.join(' · ');
+  }
+  for (const button of document.querySelectorAll('[data-games-weight]')) {
+    const active = button.dataset.gamesWeight === state.weight;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+}
+
+function personnelRowsFromStats() {
+  // Tolerant fallback: an M2 server already sends `studios` in the stats
+  // payload but may not mount `/api/games/personnel` yet.
+  if (state.role !== 'studio' || !state.data) return null;
+  const view = studiosView(state.data.studios, { weight: state.weight, limit: 0 });
+  if (!view) return null;
+  return { rows: view.rows, note: 'студии из Steam Store (stats)', source: 'stats' };
+}
+
+function renderPersonnel() {
+  renderRoleChips();
+  renderPersonnelToolbar();
+  const host = $('games-personnel-body');
+  const loading = $('games-personnel-loading');
+  const errorHost = $('games-personnel-error');
+  if (!host) return;
+  clear(host);
+  if (errorHost) {
+    clear(errorHost);
+    errorHost.hidden = true;
+    if (state.personnel.error) {
+      errorHost.append(errorBox({
+        title: state.personnel.error.code === 'personnel_unavailable' ? 'Кредиты ещё не собраны' : 'Не удалось получить персоналии',
+        message: state.personnel.error.message,
+        actions: [{ label: 'Повторить', primary: true, onClick: () => ensurePersonnel(state.role, { force: true }) }],
+      }));
+      errorHost.hidden = false;
+    }
+  }
+  if (loading) loading.hidden = !state.personnel.loading;
+  if (state.personnel.loading && !state.personnel.data) return;
+
+  const payload = state.personnel.data;
+  let rows = payload ? personnelRows(payload, { weight: state.weight }) : [];
+  let sourceNote = '';
+  if (!rows.length) {
+    const fallback = personnelRowsFromStats();
+    if (fallback) {
+      rows = fallback.rows;
+      sourceNote = fallback.note;
+    }
+  }
+  if (rows.length && errorHost) {
+    // The route may be missing while `stats.studios` still answers: showing an
+    // error next to real rows would be contradictory.
+    clear(errorHost);
+    errorHost.hidden = true;
+  }
+  if (!rows.length) {
+    host.append(el('div', {
+      class: 'games-personnel-empty',
+      text: payload ? payload.emptyText : 'Кредиты не собраны: раздел появится после обогащения библиотеки.',
+    }));
+    return;
+  }
+  if (sourceNote) {
+    host.append(el('p', { class: 'games-personnel-note', text: sourceNote }));
+  }
+  for (const row of rows) {
+    const rowKey = row.id || row.name;
+    const node = el('div', {
+      class: 'games-personnel-row',
+      role: 'button',
+      tabIndex: 0,
+      'aria-expanded': state.personnel.openId === rowKey ? 'true' : 'false',
+      title: row.hint,
+    });
+    node.append(el('span', { class: 'rank-num', text: String(row.rank) }));
+    const name = el('div', { class: 'games-personnel-name' });
+    name.append(el('span', { text: row.name }));
+    const sub = [row.rolesText, row.aliasesText ? `также: ${row.aliasesText}` : '']
+      .filter(Boolean).join(' · ');
+    if (sub) name.append(el('span', { class: 'games-personnel-alias', text: sub }));
+    node.append(name);
+    const track = el('div', { class: 'games-personnel-track' });
+    const fill = el('div', { class: 'games-personnel-fill' });
+    track.append(fill);
+    node.append(track);
+    const value = el('div', { class: 'games-personnel-value' });
+    value.append(el('span', {
+      text: state.weight === 'count' ? `${row.countText} ${plural(row.count, GAME_PLURAL)}` : (row.hoursText || '—'),
+    }));
+    if (state.weight === 'count') {
+      if (row.hoursText) value.append(el('small', { text: row.hoursText }));
+    } else {
+      value.append(el('small', { text: `${row.countText} ${plural(row.count, GAME_PLURAL)}` }));
+    }
+    node.append(value);
+
+    if (state.personnel.openId === rowKey && row.games.length) {
+      const games = el('div', { class: 'games-personnel-games' });
+      for (const game of row.games.slice(0, 24)) {
+        games.append(el('span', {
+          text: `${game.name || `appid ${game.appid}`}${game.hoursText ? ` — ${game.hoursText}` : ''}`,
+        }));
+      }
+      node.append(games);
+    }
+    host.append(node);
+    requestAnimationFrame(() => {
+      fill.style.width = `${row.widthPercent}%`;
+    });
+    const toggle = () => {
+      state.personnel.openId = state.personnel.openId === rowKey ? '' : rowKey;
+      renderPersonnel();
+    };
+    node.addEventListener('click', toggle);
+    node.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toggle();
+    });
+    node.addEventListener('pointerenter', (event) => {
+      showTooltip(row.title, row.gamesHint || row.hint);
+      moveTooltip(event);
+    });
+    node.addEventListener('pointermove', moveTooltip);
+    node.addEventListener('pointerleave', hideTooltip);
+  }
+}
+
+async function openPersonnel({ push = true } = {}) {
+  if (!state.profileKey) return;
+  if (state.view !== 'personnel') {
+    showScreen('personnel');
+    state.personnel.openId = '';
+  }
+  if (push) writeViewParam('personnel');
+  renderPersonnel();
+  if (!state.loaded) await loadStats({ force: false });
+  await ensurePersonnel(state.role);
+}
+
+function closePersonnel({ push = true } = {}) {
+  if (state.view !== 'personnel') return;
+  state.personnel.openId = '';
+  showScreen('dashboard');
+  if (push) writeViewParam('');
+  if (state.data) renderDashboard(state.data);
+}
+
+/* =========================================================
    wiring
    ========================================================= */
 
 export function initGames({ onActivate } = {}) {
   state.onActivate = typeof onActivate === 'function' ? onActivate : null;
   state.profileKey = text(safeStorageGet(PROFILE_KEY));
+  state.filters = readStoredFilters();
+  const storedCloud = text(safeStorageGet(CLOUD_KEY));
+  state.cloudWeight = storedCloud === 'count' ? 'count' : 'hours';
+  const storedWeight = text(safeStorageGet(WEIGHT_KEY));
+  state.weight = storedWeight === 'count' ? 'count' : 'hours';
+  const storedRole = text(safeStorageGet(ROLE_KEY));
+  state.role = PERSONNEL_ROLES.some((entry) => entry.key === storedRole) ? storedRole : 'studio';
+  syncFilterInputs();
 
   const form = $('games-import-form');
   if (form) {
@@ -1012,6 +1702,75 @@ export function initGames({ onActivate } = {}) {
   if (refresh) {
     refresh.addEventListener('click', () => refreshProfile());
   }
+
+  /* M2: filters — requested-vs-applied is printed, never silently dropped. */
+  const free = $('games-filter-free');
+  if (free) {
+    free.addEventListener('change', () => applyFilters({
+      includeFree: !free.checked,
+      includeDlc: Boolean($('games-filter-dlc') && $('games-filter-dlc').checked),
+    }));
+  }
+  const dlc = $('games-filter-dlc');
+  if (dlc) {
+    dlc.addEventListener('change', () => applyFilters({
+      includeFree: !($('games-filter-free') && $('games-filter-free').checked),
+      includeDlc: dlc.checked,
+    }));
+  }
+
+  /* M2: genre-cloud weight (local re-sort, no request). */
+  for (const button of document.querySelectorAll('[data-games-cloud-weight]')) {
+    button.addEventListener('click', () => {
+      const next = button.dataset.gamesCloudWeight === 'count' ? 'count' : 'hours';
+      if (state.cloudWeight === next) return;
+      state.cloudWeight = next;
+      safeStorageSet(CLOUD_KEY, next);
+      if (state.data) renderGenreCloud(state.data);
+    });
+  }
+
+  /* M3: personnel weights + navigation. */
+  for (const button of document.querySelectorAll('[data-games-weight]')) {
+    button.addEventListener('click', () => {
+      const next = button.dataset.gamesWeight === 'count' ? 'count' : 'hours';
+      if (state.weight === next) return;
+      state.weight = next;
+      safeStorageSet(WEIGHT_KEY, next);
+      if (state.view === 'personnel') renderPersonnel();
+      if (state.data && state.view !== 'personnel') renderDashboard(state.data);
+    });
+  }
+  const openPersonnelButton = $('games-personnel-open');
+  if (openPersonnelButton) {
+    openPersonnelButton.addEventListener('click', () => openPersonnel({ push: true }));
+  }
+  const closePersonnelButton = $('games-personnel-back');
+  if (closePersonnelButton) {
+    closePersonnelButton.addEventListener('click', () => closePersonnel({ push: true }));
+  }
+}
+
+function readStoredFilters() {
+  try {
+    const raw = JSON.parse(safeStorageGet(FILTERS_KEY) || 'null');
+    if (raw && typeof raw === 'object') {
+      return {
+        includeFree: raw.includeFree !== false,
+        includeDlc: raw.includeDlc === true,
+      };
+    }
+  } catch {
+    /* corrupted storage — fall back to the server defaults */
+  }
+  return { includeFree: true, includeDlc: false };
+}
+
+function syncFilterInputs() {
+  const free = $('games-filter-free');
+  const dlc = $('games-filter-dlc');
+  if (free) free.checked = state.filters.includeFree === false;
+  if (dlc) dlc.checked = state.filters.includeDlc === true;
 }
 
 async function refreshProfile() {
@@ -1062,6 +1821,15 @@ export async function showGames() {
     renderProfiles();
     return;
   }
+  // `?tab=games&view=personnel` is addressable: a reload or a shared link
+  // restores the sub-screen instead of silently dropping it.
+  if (readViewParam() === 'personnel') {
+    await openPersonnel({ push: false });
+    return;
+  }
+  if (state.view === 'personnel') {
+    showScreen('dashboard');
+  }
   if (state.view === 'dashboard' && state.data) {
     renderProfiles();
     // A silent background refresh keeps a long-lived tab honest (the library
@@ -1087,12 +1855,14 @@ function hydrateJob() {
 export function hideGames() {
   state.active = false;
   stopPolling();
+  stopEnrichPoll();
   hideTooltip();
 }
 
 /** Drop every in-memory games artefact (logout / different session). */
 export function resetGames() {
   stopPolling();
+  stopEnrichPoll();
   state.data = null;
   state.loaded = false;
   state.loading = false;
@@ -1103,8 +1873,12 @@ export function resetGames() {
   state.profileKey = '';
   state.view = 'import';
   state.seq += 1;
+  state.personnel = { role: '', data: null, loading: false, error: null, cache: {}, openId: '' };
+  state.enrichTicks = 0;
   saveJob();
   showScreen('import');
   renderProfiles();
   setKeyIndicator(null);
+  // A new session must not open on a stale personnel URL.
+  if (readViewParam()) writeViewParam('', { push: false });
 }
