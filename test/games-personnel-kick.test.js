@@ -97,6 +97,22 @@ function createMobyMock() {
   };
 }
 
+/**
+ * M4: the automatic enrich is `details`+`spy`. This file drives the import
+ * kick, so it must inject the spy client — otherwise the phase would reach the
+ * live steamspy.com (AGENTS §1: no live scraping in tests).
+ */
+function createSpyMock() {
+  const calls = [];
+  return {
+    calls,
+    async getAppTags(appid) {
+      calls.push(appid);
+      return { appid, success: true, tags: [{ name: 'Action', weight: 10 }], metadataSource: 'steamspy' };
+    },
+  };
+}
+
 function createWdMock(options = {}) {
   const skip = new Set((options.skip || []).map(Number));
   const calls = { appids: [], qids: 0 };
@@ -190,6 +206,7 @@ test('import kicks enrich, then personnel: the composer role is filled', async (
     autoEnrich: true,
     autoPersonnel: true,
     personnelOptions: { wikidata: wd, moby },
+    spyClient: createSpyMock(),
   });
   assert.equal(job.reused, true, 'a fresh cached library is reused');
   await importJobs.whenIdle();

@@ -249,3 +249,71 @@ test('payload size: tags carry no appid lists (the card has them), scores only c
     assert.deepEqual(Object.keys(bucket).sort(), ['bucket', 'count', 'hours', 'score']);
   }
 });
+
+/* ------------------------------------------------------------------ */
+/* M4-B integration: Wikidata links in the games index                 */
+/* ------------------------------------------------------------------ */
+
+const LINKS = {
+  1: {
+    qid: 'Q1',
+    franchise: { qid: 'Q18935909', labelEn: 'The Witcher', labelRu: 'Ведьмак' },
+    releaseYear: 2015,
+    releasePrecision: 'day',
+    franchiseKey: 'wd:Q18935909',
+    resolved: true,
+    fetchedAt: '2026-11-01T00:00:00.000Z',
+  },
+  2: { qid: 'Q2', franchise: null, releaseYear: null, franchiseKey: null, resolved: true },
+};
+
+test('gamesIndex: franchise + P577 year are additive, null when WD has not answered', () => {
+  const payload = build({ library: LIBRARY, details: DETAILS, links: LINKS });
+  const witcher = payload.gamesIndex[1];
+  assert.deepEqual(witcher.franchise, {
+    key: 'wd:Q18935909',
+    label: 'The Witcher',
+    labelRu: 'Ведьмак',
+  });
+  assert.equal(witcher.releaseYearWikidata, 2015);
+  assert.deepEqual(witcher.metadataSources, ['steam-store', 'wikidata']);
+
+  // WD answered «no series / no year»: still null, never invented.
+  const answered = payload.gamesIndex[2];
+  assert.equal(answered.franchise, null);
+  assert.equal(answered.releaseYearWikidata, null);
+  assert.deepEqual(answered.metadataSources, ['steam-store', 'wikidata']);
+
+  // No links document at all: nulls and no `wikidata` in the sources.
+  const missing = payload.gamesIndex[3];
+  assert.equal(missing.franchise, null);
+  assert.equal(missing.releaseYearWikidata, null);
+  assert.deepEqual(missing.metadataSources, ['steam-store']);
+});
+
+test('meta.franchises: Wikidata-only math, heuristic lives in /franchises', () => {
+  const payload = build({ library: LIBRARY, details: DETAILS, links: LINKS });
+  assert.deepEqual(payload.meta.franchises, {
+    source: 'wikidata',
+    includesHeuristic: false,
+    gamesWithFranchise: 1,
+    gamesAnswered: 2,
+    gamesTotal: 4,
+    percent: 25,
+  });
+  // Two documents answered → the WD pass is no longer «pending».
+  assert.ok(!payload.meta.pending.includes('franchises'));
+});
+
+test('meta.pending keeps "franchises" until the WD pass has written links', () => {
+  const payload = build({ library: LIBRARY, details: DETAILS });
+  assert.ok(payload.meta.pending.includes('franchises'));
+  assert.deepEqual(payload.meta.franchises, {
+    source: 'wikidata',
+    includesHeuristic: false,
+    gamesWithFranchise: 0,
+    gamesAnswered: 0,
+    gamesTotal: 4,
+    percent: 0,
+  });
+});

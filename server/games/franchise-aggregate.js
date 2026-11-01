@@ -151,7 +151,11 @@ function buildFranchises(profileKey, options = {}) {
   const readDetails = options.readDetails || gameCache.getDetails;
   const readLinks = options.readLinks || franchise.readLinks;
   const nowMs = typeof options.now === 'function' ? options.now() : Date.now();
-  const ttlMs = Number.isFinite(Number(options.ttlMs)) ? Number(options.ttlMs) : null;
+  // The 90-day links TTL is the same knob the writer uses (`franchise.js`);
+  // without it `links.fresh` and `pending.wikidata` would always say «fresh».
+  const ttlMs = options.ttlMs != null && Number.isFinite(Number(options.ttlMs))
+    ? Number(options.ttlMs)
+    : franchise.ttlMsFromEnv();
 
   const profile = getProfile(parsed.userKey);
   const library = getLibrary(parsed.userKey);

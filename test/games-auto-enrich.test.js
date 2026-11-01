@@ -85,10 +85,47 @@ function createFakeStoreClient() {
   };
 }
 
+/**
+ * M4: the automatic enrich is `details`+`spy`, so every test that lets the
+ * import kick an enrich must inject a spy client too — otherwise the spy phase
+ * would reach the live steamspy.com (AGENTS §1: no live scraping in tests).
+ */
+function createFakeSpyClient() {
+  const calls = [];
+  return {
+    calls,
+    async getAppTags(appid) {
+      calls.push(appid);
+      return {
+        appid,
+        success: true,
+        unavailable: false,
+        tags: [
+          { name: 'Action', weight: 1200 },
+          { name: 'Indie', weight: 400 },
+        ],
+        owners: '1,000,000 .. 2,000,000',
+        ccu: 12,
+        positive: 100,
+        negative: 10,
+        metadataSource: 'steamspy',
+      };
+    },
+  };
+}
+
 function buildApp(steamClient, storeClient, options = {}) {
   const app = express();
   app.use(express.json());
-  app.use('/api/games', createRouter({ client: steamClient, storeClient, ...options }));
+  app.use(
+    '/api/games',
+    createRouter({
+      client: steamClient,
+      storeClient,
+      ...options,
+      spyClient: options.spyClient || createFakeSpyClient(),
+    })
+  );
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
     if (err && err.status) {
@@ -125,7 +162,8 @@ async function post(base, pathName, body) {
 
 test('import starts the store enrich job by itself', async (t) => {
   const storeClient = createFakeStoreClient();
-  const server = buildApp(createFakeClient(), storeClient).listen(PORT);
+  const spyClient = createFakeSpyClient();
+  const server = buildApp(createFakeClient(), storeClient, { spyClient }).listen(PORT);
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${PORT}`;
 
@@ -139,6 +177,8 @@ test('import starts the store enrich job by itself', async (t) => {
   assert.ok(imported.enrichJobId, 'import payload must carry enrichJobId');
   assert.match(imported.enrichJobId, /^games-enrich-/);
   assert.equal(imported.enrichSkipped, null);
+  // M4 policy: the automatic pass is details+spy, `reviews` stays manual.
+  assert.deepEqual(imported.enrichPhases, ['details', 'spy']);
 
   // Wait for the enrich chain the import started — no extra POST from the test.
   await enrichJobs.whenIdle();
@@ -148,12 +188,18 @@ test('import starts the store enrich job by itself', async (t) => {
   assert.equal(enrichStatus.ok, 10);
   assert.equal(enrichStatus.detailsResolved, 10);
   assert.equal(storeClient.calls.length, 10);
+  assert.equal(spyClient.calls.length, 10, 'the spy phase ran once per appid');
 
   const stats = await (await fetch(`${base}/api/games/stats?profile=${PROFILE_KEY}`)).json();
   assert.equal(stats.summary.metadata.detailsResolved, 10);
   assert.equal(stats.summary.metadata.detailsPercent, 100);
   assert.equal(stats.meta.filters.includeDlc.applied, true);
   assert.ok(stats.genres.length > 0);
+  // The spy phase ran automatically: the tag wall has data, reviews do not.
+  assert.ok(stats.tags.length > 0, 'spy tags must land with the automatic pass');
+  assert.deepEqual(stats.scores, [], 'reviews stay manual — no score buckets');
+  assert.equal(stats.meta.pending.includes('reviews'), true);
+  assert.equal(stats.meta.pending.includes('tags'), false);
 
   /* --- a cached import still kicks enrich, but refetches nothing --- */
   const again = await post(base, '/api/games/import', { vanityOrId64: 'test-player' });

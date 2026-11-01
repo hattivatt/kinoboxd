@@ -709,12 +709,18 @@ function normalizeFranchises(raw) {
       const appids = arr(item.appids)
         .map((value) => numOrNull(value))
         .filter((value) => value != null);
+      // `yearsSpread` is `{min, max, span}` from `/api/games/franchises`
+      // (M4-B) and a plain number in older payloads/tests — accept both.
+      const spreadRaw = item.yearsSpread ?? item.years;
+      const yearsSpread = spreadRaw && typeof spreadRaw === 'object'
+        ? numOrNull(spreadRaw.span)
+        : numOrNull(spreadRaw);
       return {
         key: text(item.key) || label,
         label,
         gamesCount: toCount(item.gamesCount ?? item.count ?? item.games),
         hoursSum: numOrNull(item.hoursSum ?? item.hours ?? item.totalHours),
-        yearsSpread: numOrNull(item.yearsSpread ?? item.years),
+        yearsSpread,
         appids,
       };
     })

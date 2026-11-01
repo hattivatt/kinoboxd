@@ -120,6 +120,23 @@ function readLinks(appid) {
   };
 }
 
+/**
+ * Bulk variant for the stats payload: `{ "<appid>": readLinks(appid) }` for
+ * the appids that actually have a links document. One `stat`+`read` per appid
+ * (the same primitive `readLinks` uses), no network.
+ */
+function readLinksMap(appids) {
+  const out = {};
+  if (!Array.isArray(appids)) return out;
+  for (const raw of appids) {
+    const appid = Number(raw);
+    if (!Number.isInteger(appid) || appid <= 0) continue;
+    if (!readLinksDoc(appid)) continue;
+    out[String(appid)] = readLinks(appid);
+  }
+  return out;
+}
+
 function validYear(raw) {
   const year = Number(raw);
   return Number.isInteger(year) && year >= YEAR_MIN && year <= YEAR_MAX ? year : null;
@@ -548,6 +565,7 @@ module.exports = {
   linksPath,
   readLinksDoc,
   readLinks,
+  readLinksMap,
   writeLinksDoc,
   readFranchiseState,
   saveFranchiseState,
@@ -556,5 +574,7 @@ module.exports = {
   parseWbDate,
   parseFranchiseResponse,
   isLinksFresh,
+  budgetFromEnv,
+  ttlMsFromEnv,
   enrichFranchises,
 };

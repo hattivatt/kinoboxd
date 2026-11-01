@@ -247,6 +247,10 @@ test('gamesIndex carries the full details entry; top/backlog are enriched', () =
     tags: [],
     reviewScore: null,
     reviewDesc: null,
+    // M4-B (additive): no Wikidata links document in this fixture either —
+    // `null` means «WD has not answered», not «no franchise».
+    franchise: null,
+    releaseYearWikidata: null,
     completion: null,
     achievements: null,
   });

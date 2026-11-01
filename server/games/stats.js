@@ -39,6 +39,7 @@
  */
 
 const gameCache = require('./game-cache');
+const franchise = require('./franchise');
 const config = require('../config');
 
 const RECENT_LIMIT = 10;
@@ -99,6 +100,16 @@ function reviewsOf(reviewDocs, appid) {
   if (!reviewDocs || typeof reviewDocs !== 'object') return null;
   const doc = reviewDocs[String(appid)];
   return doc && doc.success ? doc : null;
+}
+
+/**
+ * Wikidata links view of one appid (`franchise.readLinks`), or null when the
+ * WD pass has not written `cache-games/links/<appid>.json` yet.
+ */
+function linksOf(linkDocs, appid) {
+  if (!linkDocs || typeof linkDocs !== 'object') return null;
+  const doc = linkDocs[String(appid)];
+  return doc && typeof doc === 'object' ? doc : null;
 }
 
 function genreNamesOf(doc) {
@@ -292,6 +303,9 @@ function buildGamesStats(input = {}) {
   const details = input.details && typeof input.details === 'object' ? input.details : {};
   const spyDocs = input.spy && typeof input.spy === 'object' ? input.spy : {};
   const reviewDocs = input.reviews && typeof input.reviews === 'object' ? input.reviews : {};
+  // M4-B: `franchise.readLinks` views keyed by appid (optional input, so the
+  // builder stays pure and every M1..M4 unit test keeps working unchanged).
+  const linkDocs = input.links && typeof input.links === 'object' ? input.links : {};
   const includeFree = input.includeFree !== false;
   const includeDlc = Boolean(input.includeDlc);
   const detailsCount = games.filter((game) => detailOf(details, game.appid)).length;
@@ -401,6 +415,7 @@ function buildGamesStats(input = {}) {
     const year = releaseYearOf(doc);
     const spyDoc = spyOf(spyDocs, appid);
     const reviewDoc = reviewsOf(reviewDocs, appid);
+    const linkDoc = linksOf(linkDocs, appid);
     gamesIndex[appid] = {
       appid,
       name: game.name || null,
@@ -429,6 +444,7 @@ function buildGamesStats(input = {}) {
         ...(doc ? ['steam-store'] : []),
         ...(spyDoc ? ['steamspy'] : []),
         ...(reviewDoc ? ['steam-reviews'] : []),
+        ...(linkDoc && linkDoc.qid ? ['wikidata'] : []),
       ],
       // M4: the five heaviest SteamSpy tags of this game (the full list stays
       // in `cache-games/spy/<appid>.json`; the index is already the biggest
@@ -442,6 +458,21 @@ function buildGamesStats(input = {}) {
         : [],
       reviewScore: reviewDoc && reviewDoc.score != null ? Number(reviewDoc.score) : null,
       reviewDesc: reviewDoc && reviewDoc.desc != null ? String(reviewDoc.desc) : null,
+      // M4-B (additive): the Wikidata series this game belongs to and the P577
+      // year. `null` means «Wikidata has not answered yet», not «no franchise»
+      // — the dedicated `/api/games/franchises` route owns coverage/grouping.
+      franchise: linkDoc && linkDoc.franchiseKey
+        ? {
+            key: linkDoc.franchiseKey,
+            label:
+              (linkDoc.franchise && (linkDoc.franchise.labelEn || linkDoc.franchise.labelRu)) || null,
+            labelRu: (linkDoc.franchise && linkDoc.franchise.labelRu) || null,
+          }
+        : null,
+      releaseYearWikidata:
+        linkDoc && Number.isInteger(Number(linkDoc.releaseYear)) && Number(linkDoc.releaseYear) > 0
+          ? Number(linkDoc.releaseYear)
+          : null,
       completion: completion ? completion.percent : null,
       achievements: completion,
     };
@@ -714,6 +745,28 @@ function buildGamesStats(input = {}) {
     };
   }
 
+  /* ---------------- M4-B: Wikidata links (franchise / P577 year) ---------------- */
+  // Per-game assignment lives in `gamesIndex`; this block only counts what the
+  // WD pass answered so `summary` and `meta.pending` stay honest. The grouping
+  // (and the low-confidence title heuristic) belongs to `/api/games/franchises`
+  // — `summary.coverage.franchises` is therefore Wikidata-only on purpose.
+  let gamesWithFranchiseLinks = 0;
+  let linksResolved = 0;
+  for (const game of keptGames) {
+    const links = linksOf(linkDocs, game.appid);
+    if (!links) continue;
+    if (links.resolved) linksResolved++;
+    if (links.franchiseKey) gamesWithFranchiseLinks++;
+  }
+  const franchiseCoverage = {
+    source: 'wikidata',
+    includesHeuristic: false,
+    gamesWithFranchise: gamesWithFranchiseLinks,
+    gamesAnswered: linksResolved,
+    gamesTotal: gameCount,
+    percent: gameCount ? round1((gamesWithFranchiseLinks / gameCount) * 100) : 0,
+  };
+
   const modes = hasDetails
     ? {
         single: 0,
@@ -942,6 +995,10 @@ function buildGamesStats(input = {}) {
         gamesTotal: gameCount,
         percent: gameCount ? round1((gamesWithReviews / gameCount) * 100) : 0,
       },
+      // M4-B coverage of the Wikidata links pass. Wikidata-only by design: the
+      // low-confidence title heuristic and the grouping live in
+      // `/api/games/franchises` (`coverage.bySource`), never in this payload.
+      franchises: franchiseCoverage,
       excluded,
       filters: {
         includeFree: {
@@ -968,7 +1025,7 @@ function buildGamesStats(input = {}) {
         ...(gamesWithTags ? [] : ['tags']),
         ...(gamesWithReviews ? [] : ['reviews']),
         ...(dlcSummary ? [] : ['dlc']),
-        'franchises',
+        ...(linksResolved ? [] : ['franchises']),
         'studios',
         'personnelTop',
       ],
@@ -1004,6 +1061,8 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     // M4 metadata: global per appid, no owner dimension.
     spy: gameCache.listSpy(appids),
     reviews: gameCache.listReviews(appids),
+    // M4-B: Wikidata links (franchise key + P577 year) for the games index.
+    links: franchise.readLinksMap(appids),
     includeFree: options.includeFree !== false,
     includeDlc: Boolean(options.includeDlc),
     // Set by the route from the enrich job registry (no live request).
@@ -1046,6 +1105,7 @@ module.exports = {
   detailOf,
   spyOf,
   reviewsOf,
+  linksOf,
   genreNamesOf,
   categoryNamesOf,
   modeFlagsOf,

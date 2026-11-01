@@ -398,6 +398,24 @@ test('franchises: ranked by hours, games/hours in the row, year-sorted drilldown
   assert.equal(gamesInFranchise(miniIndex(), null).length, 0);
 });
 
+test('franchises: the live `{min,max,span}` spread renders the same as a number', async () => {
+  const { franchisesView } = await view();
+  const viewModel = franchisesView([
+    {
+      key: 'wd:Q18935909',
+      label: 'The Witcher',
+      labelRu: 'Ведьмак',
+      gamesCount: 2,
+      hoursSum: 167,
+      yearsSpread: { min: 2007, max: 2015, span: 8 },
+      appids: [292030, 20900],
+    },
+  ]);
+  assert.ok(viewModel);
+  assert.equal(viewModel.rows[0].yearsText, '8');
+  assert.match(plain(viewModel.rows[0].secondaryText), /2 игры · 8 лет/);
+});
+
 /* =========================================================
    DLC
    ========================================================= */

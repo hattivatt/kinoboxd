@@ -106,6 +106,9 @@ function publicStatus(job) {
     // was disabled, skipped (partial library) or failed.
     enrichJobId: job.enrichJobId || null,
     enrichSkipped: job.enrichSkipped || null,
+    // M4: which phases the automatic kick started (`details`+`spy`; `reviews`
+    // stays manual, so the UI never waits for it).
+    enrichPhases: job.enrichPhases ? [...job.enrichPhases] : [],
     // M3: the Wikidata/Moby pass started right after the store enrich, so the
     // personnel widget has people credits by the time the dashboard opens.
     personnelJobId: job.personnelJobId || null,
@@ -157,7 +160,20 @@ function enqueue(job, task) {
 }
 
 /**
- * Store enrichment is a follow-up job, not part of the import contract: the
+ * Phases an *automatic* enrich runs after an import/refresh (M4 policy).
+ *
+ * `details` is what the whole tab needs (genres, years, modes, DLC facts) and
+ * `spy` is what the tag wall needs (SteamSpy tags are also copied into
+ * `gamesIndex`). The third phase, `reviews`, is deliberately NOT here: it is
+ * another ~340 requests × 1.7 s ≈ 10 minutes of background traffic that no
+ * dashboard block depends on (the review grade is reference-only, ИГРЫ §1.2).
+ * The user asks for it explicitly: `POST /api/games/enrich { phases: "reviews" }`
+ * (or the «Обогатить» button with that phase). See ИГРЫ-АРХИТЕКТУРА §9 M4.
+ */
+const AUTO_ENRICH_PHASES = ['details', 'spy'];
+
+/**
+ * Metadata enrichment is a follow-up job, not part of the import contract: the
  * library is the primary artifact (same policy as the books resolve chain).
  * Called from the route layer right after a successful import/refresh so the
  * UI does not have to POST /api/games/enrich itself. `enrichJobs` coalesces
@@ -175,10 +191,17 @@ function kickEnrichQuietly(job, options = {}) {
     job.enrichSkipped = 'library_partial';
     return null;
   }
+  // M4: the automatic pass is details+spy, never `all` (reviews is manual).
+  const phases = Array.isArray(options.enrichPhases) && options.enrichPhases.length
+    ? options.enrichPhases
+    : AUTO_ENRICH_PHASES;
   try {
     const enrichJob = enrichJobs.startEnrich(job.profile, {
       client: options.enrichClient || undefined,
+      spyClient: options.spyClient || undefined,
+      phases,
     });
+    job.enrichPhases = phases;
     job.enrichJobId = enrichJob.id;
     console.log(
       `[games-import ${job.id}] store enrich kicked: ${enrichJob.id} ` +
@@ -589,5 +612,6 @@ module.exports = {
   publicStatus,
   whenIdle,
   partialLibraryFromProfile,
+  AUTO_ENRICH_PHASES,
   MAX_JOBS,
 };

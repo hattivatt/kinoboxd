@@ -233,6 +233,9 @@ function createRouter(deps = {}) {
       personnelOptions: deps.personnelOptions,
       franchiseOptions: deps.franchiseOptions,
       enrichClient: storeClient || undefined,
+      // M4: the automatic pass is details+spy; `reviews` stays manual.
+      enrichPhases: deps.enrichPhases,
+      spyClient: deps.spyClient || undefined,
     });
     const created = job.status === 'running' && !job.reused && job.stage === 'queued';
     res.status(created ? 201 : 200).json(job);
@@ -274,6 +277,8 @@ function createRouter(deps = {}) {
         personnelOptions: deps.personnelOptions,
         franchiseOptions: deps.franchiseOptions,
         enrichClient: storeClient || undefined,
+        enrichPhases: deps.enrichPhases,
+        spyClient: deps.spyClient || undefined,
       });
       const created = job.status === 'running' && !job.reused && job.stage === 'queued';
       res.status(created ? 201 : 200).json(job);
