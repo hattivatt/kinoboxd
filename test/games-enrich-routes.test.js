@@ -130,7 +130,7 @@ test('import → enrich → stats with applied filters and details on the card',
   const enrichResponse = await fetch(`${base}/api/games/enrich`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ profile: PROFILE_KEY }),
+    body: JSON.stringify({ profile: PROFILE_KEY, phases: 'details' }),
   });
   assert.equal(enrichResponse.status, 202);
   const enrichJob = await enrichResponse.json();
@@ -200,7 +200,7 @@ test('import → enrich → stats with applied filters and details on the card',
   const second = await fetch(`${base}/api/games/enrich`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ profile: PROFILE_KEY }),
+    body: JSON.stringify({ profile: PROFILE_KEY, phases: 'details' }),
   });
   assert.equal(second.status, 202);
   const secondJob = await second.json();

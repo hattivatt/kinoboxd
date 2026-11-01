@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Steam Store `appdetails` client (M2).
+ * Steam Store client (M2 `appdetails` + M4 review summary).
  *
  * `store.steampowered.com/api/appdetails` is the only cheap source of
  * `developers`/`publishers`/`genres`/`categories`/`release_date`/`dlc`/
@@ -34,9 +34,22 @@ const gameCache = require('./game-cache');
 
 const STORE_HOST = 'store.steampowered.com';
 const DETAILS_URL = `https://${STORE_HOST}/api/appdetails`;
+// Reviews moved off the store domain on 22.10.2026: the old
+// `store.steampowered.com/appreviews/<appid>?json=1` feed now answers
+// `302 -> https://store.steampowered.com/` (verified live 01.11.2026, every
+// variant: json=1, num_per_page=0, cookie jar, browser headers). The
+// replacement is a Web API method that needs no key and returns the same
+// `query_summary` (review_score 1..9, desc, positive/negative/total).
+const REVIEWS_HOST = 'api.steampowered.com';
+// The breaker key is distinct from the Web API host key used by steam.js:
+// a reviews 429 must not freeze GetOwnedGames/achievements for 30 minutes.
+const REVIEWS_BREAKER_KEY = `${REVIEWS_HOST}/IUserReviewsService`;
+const REVIEWS_URL = `https://${REVIEWS_HOST}/IUserReviewsService/GetAppReviews/v1/`;
 const DEFAULT_PAUSE_MS = 1700;
+const DEFAULT_REVIEWS_PAUSE_MS = 1700;
 const DEFAULT_BREAKER_MS = 30 * 60 * 1000;
 const DEFAULT_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+const DEFAULT_REVIEWS_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_SCREENSHOTS = 10;
 const YEAR_MIN = 1970;
 const YEAR_MAX = 2100;
@@ -325,6 +338,83 @@ function detailsFresh(doc, ttlMs) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Reviews (query_summary only)                                        */
+/* ------------------------------------------------------------------ */
+
+function reviewsTtlMs() {
+  // Single source of truth lives in game-cache (it also owns the file TTLs).
+  return gameCache.reviewsTtlMs();
+}
+
+function reviewsUrl(appid) {
+  // The new method takes its arguments as one JSON blob. `num_per_page: 1` is
+  // the cheapest form that still returns the full `query_summary` (verified
+  // live: 765 B; `num_per_page: 0` is ignored and returns 20 review bodies,
+  // ~26 KB). No key: anonymous calls share a lower limit, 429 on overflow.
+  const input = {
+    appid: Number(appid),
+    filter: 1, // most helpful first (only the summary is read)
+    languages: ['all'],
+    purchase_type: 1, // all purchase types
+    num_per_page: 1,
+    cursor: '*',
+    filter_offtopic_activity: false,
+  };
+  return `${REVIEWS_URL}?input_json=${encodeURIComponent(JSON.stringify(input))}`;
+}
+
+/**
+ * Clean the `IUserReviewsService/GetAppReviews` envelope into the cache doc.
+ *
+ * The response is `{ response: { query_summary: {...}, reviews: [...] } }`.
+ * Only the summary is stored: review bodies are neither needed by the tab nor
+ * allowed to bloat `cache-games/`. A missing `query_summary` is an honest
+ * "no reviews" answer (`success:false, unavailable:true`), not an error.
+ */
+function parseAppReviews(json, appid) {
+  const body = json && typeof json === 'object' ? json.response || json : null;
+  const summary = body && typeof body === 'object' ? body.query_summary : null;
+  if (!summary || typeof summary !== 'object') {
+    return {
+      appid: Number(appid),
+      success: false,
+      unavailable: true,
+      reason: 'no_summary',
+      score: null,
+      desc: null,
+      positive: 0,
+      negative: 0,
+      total: 0,
+      metadataSource: 'steam-reviews',
+    };
+  }
+  const score = Number(summary.review_score);
+  const positive = Number(summary.total_positive);
+  const negative = Number(summary.total_negative);
+  const total = Number(summary.total_reviews);
+  return {
+    appid: Number(appid),
+    success: true,
+    unavailable: false,
+    score: Number.isFinite(score) && score >= 1 && score <= 9 ? Math.round(score) : null,
+    desc: summary.review_score_desc == null ? null : String(summary.review_score_desc),
+    positive: Number.isFinite(positive) && positive >= 0 ? positive : 0,
+    negative: Number.isFinite(negative) && negative >= 0 ? negative : 0,
+    total: Number.isFinite(total) && total >= 0 ? total : 0,
+    metadataSource: 'steam-reviews',
+  };
+}
+
+/** Is a cached review summary younger than the TTL? */
+function reviewsFresh(doc, ttlMs) {
+  if (!doc || typeof doc !== 'object') return false;
+  const ts = Date.parse(String(doc.fetchedAt || ''));
+  if (!Number.isFinite(ts)) return false;
+  const age = Date.now() - ts;
+  return age >= 0 && age < (ttlMs == null ? reviewsTtlMs() : ttlMs);
+}
+
+/* ------------------------------------------------------------------ */
 /* Client                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -356,20 +446,33 @@ function createClient(options = {}) {
     options.pauseMs != null ? options.pauseMs : envInt('GAMES_STORE_PAUSE_MS', DEFAULT_PAUSE_MS);
   const breakerMs =
     options.breakerMs != null ? options.breakerMs : envInt('GAMES_STORE_BREAKER_MS', DEFAULT_BREAKER_MS);
+  const reviewsPauseMs =
+    options.reviewsPauseMs != null
+      ? options.reviewsPauseMs
+      : envInt('GAMES_REVIEWS_PAUSE_MS', DEFAULT_REVIEWS_PAUSE_MS);
+  const reviewsBreakerMs =
+    options.reviewsBreakerMs != null
+      ? options.reviewsBreakerMs
+      : envInt('GAMES_REVIEWS_BREAKER_MS', DEFAULT_BREAKER_MS);
 
   let lastRequestAt = null;
+  let lastReviewsAt = null;
 
-  function breakerEntry() {
+  function breakerEntryFor(host) {
     const state = gameCache.readBreaker();
-    const entry = state && state[STORE_HOST];
+    const entry = state && state[host];
     if (!entry || !entry.until) return null;
     if (entry.until <= now()) return null;
     return entry;
   }
 
-  function tripBreaker(reason) {
+  function tripBreakerFor(host, reason, windowMs) {
     const state = gameCache.readBreaker();
-    state[STORE_HOST] = { until: now() + breakerMs, reason: String(reason || 'blocked'), at: now() };
+    state[host] = {
+      until: now() + (windowMs == null ? breakerMs : windowMs),
+      reason: String(reason || 'blocked'),
+      at: now(),
+    };
     try {
       gameCache.writeBreaker(state);
     } catch (err) {
@@ -377,20 +480,38 @@ function createClient(options = {}) {
     }
   }
 
-  function assertNotBlocked() {
-    const entry = breakerEntry();
+  function breakerEntry() {
+    return breakerEntryFor(STORE_HOST);
+  }
+
+  function tripBreaker(reason) {
+    tripBreakerFor(STORE_HOST, reason, breakerMs);
+  }
+
+  function assertNotBlockedFor(host, code) {
+    const entry = breakerEntryFor(host);
     if (!entry) return;
     throw new StoreError(
-      `Steam Store (${STORE_HOST}) временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
+      `${host} временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
         `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
-      'store_rate_limited',
-      { host: STORE_HOST, retryAt: new Date(entry.until).toISOString() }
+      code,
+      { host, retryAt: new Date(entry.until).toISOString() }
     );
+  }
+
+  function assertNotBlocked() {
+    assertNotBlockedFor(STORE_HOST, 'store_rate_limited');
   }
 
   async function pause() {
     if (pauseMs <= 0 || lastRequestAt == null) return;
     const wait = pauseMs - (now() - lastRequestAt);
+    if (wait > 0) await sleep(wait);
+  }
+
+  async function pauseReviews() {
+    if (reviewsPauseMs <= 0 || lastReviewsAt == null) return;
+    const wait = reviewsPauseMs - (now() - lastReviewsAt);
     if (wait > 0) await sleep(wait);
   }
 
@@ -461,13 +582,90 @@ function createClient(options = {}) {
     return parsed.doc;
   }
 
+  function reviewsBreakerEntry() {
+    return breakerEntryFor(REVIEWS_BREAKER_KEY);
+  }
+
+  function tripReviewsBreaker(reason) {
+    tripBreakerFor(REVIEWS_BREAKER_KEY, reason, reviewsBreakerMs);
+  }
+
+  function assertReviewsNotBlocked() {
+    assertNotBlockedFor(REVIEWS_BREAKER_KEY, 'reviews_rate_limited');
+  }
+
+  /**
+   * Fetch the review summary of one app. Throws `StoreError` for
+   * network/5xx/429; returns `{ success:false, unavailable:true }` when the API
+   * answers without a `query_summary` (no reviews / not a store app).
+   */
+  async function getAppReviews(rawAppid) {
+    const appid = Number(rawAppid);
+    if (!Number.isInteger(appid) || appid <= 0) {
+      throw new StoreError(`Некорректный appid: ${rawAppid}`, 'reviews_invalid_appid');
+    }
+    assertReviewsNotBlocked();
+    await pauseReviews();
+    lastReviewsAt = now();
+    let response;
+    try {
+      response = await request(reviewsUrl(appid), {
+        timeoutMs: envInt('GAMES_REVIEWS_TIMEOUT_MS', 20000),
+      });
+    } catch (err) {
+      if (err instanceof StoreError) throw err;
+      if (err && err.code === 'steam_unreachable') {
+        throw new StoreError(err.message, 'reviews_unreachable', { host: REVIEWS_HOST });
+      }
+      throw new StoreError(
+        `Steam reviews недоступны (${REVIEWS_HOST}, ${(err && err.code) || 'ENETWORK'}). ` +
+          'Это сеть/DNS/TLS, не повод считать игру «без отзывов» — повторите позже.',
+        'reviews_unreachable',
+        { host: REVIEWS_HOST }
+      );
+    }
+    const status = Number(response && response.status) || 0;
+    if (status === 403 || status === 429) {
+      tripReviewsBreaker(status === 429 ? '429 Too Many Requests' : 'HTTP 403');
+      throw new StoreError(
+        `Steam reviews ответили ${status}: запросы приостановлены на ` +
+          `${Math.round(reviewsBreakerMs / 60000)} мин (breaker).`,
+        'reviews_rate_limited',
+        { host: REVIEWS_HOST, status, retryAt: new Date(now() + reviewsBreakerMs).toISOString() }
+      );
+    }
+    if (status < 200 || status >= 300) {
+      throw new StoreError(
+        `Steam reviews ответили ${status} для appid ${appid} — ответ не закэширован (deferred).`,
+        'reviews_http_error',
+        { host: REVIEWS_HOST, status }
+      );
+    }
+    let json;
+    try {
+      json = JSON.parse(String((response && response.body) || ''));
+    } catch (err) {
+      throw new StoreError(
+        `Steam reviews вернули не JSON для appid ${appid} — ответ не закэширован (deferred).`,
+        'reviews_http_error',
+        { host: REVIEWS_HOST, status }
+      );
+    }
+    return parseAppReviews(json, appid);
+  }
+
   return {
-    options: { pauseMs, breakerMs },
+    options: { pauseMs, breakerMs, reviewsPauseMs, reviewsBreakerMs },
     getAppDetails,
+    getAppReviews,
     assertNotBlocked,
+    assertReviewsNotBlocked,
     tripBreaker,
+    tripReviewsBreaker,
     breakerEntry,
+    reviewsBreakerEntry,
     detailsTtlMs,
+    reviewsTtlMs,
   };
 }
 
@@ -475,17 +673,26 @@ module.exports = {
   StoreError,
   STORE_HOST,
   DETAILS_URL,
+  REVIEWS_HOST,
+  REVIEWS_BREAKER_KEY,
+  REVIEWS_URL,
   DEFAULT_PAUSE_MS,
+  DEFAULT_REVIEWS_PAUSE_MS,
   DEFAULT_BREAKER_MS,
   DEFAULT_TTL_MS,
+  DEFAULT_REVIEWS_TTL_MS,
   YEAR_MIN,
   YEAR_MAX,
   createClient,
   storeUrl,
+  reviewsUrl,
   parseReleaseDate,
   parseAppDetails,
   parseAppDetailsResponse,
+  parseAppReviews,
   detailsFresh,
   detailsTtlMs,
+  reviewsFresh,
+  reviewsTtlMs,
   saneYear,
 };

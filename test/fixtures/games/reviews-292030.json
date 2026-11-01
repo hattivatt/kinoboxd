@@ -1,0 +1,15 @@
+{
+  "response": {
+    "query_summary": {
+      "num_reviews": 1,
+      "review_score": 9,
+      "review_score_desc": "Overwhelmingly Positive",
+      "total_positive": 880016,
+      "total_negative": 38472,
+      "total_reviews": 918488
+    },
+    "reviews": [],
+    "cursor": "*",
+    "total_matching": 918488
+  }
+}

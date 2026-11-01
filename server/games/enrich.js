@@ -1,33 +1,43 @@
 'use strict';
 
 /**
- * Library metadata enrichment (M2): Steam Store `appdetails` for every appid
- * of one owned library.
+ * Library metadata enrichment (M2 details + M4 tags/reviews): a resumable,
+ * budgeted pass over the appids of one owned library, split into phases.
  *
- *   POST /api/games/enrich { profile, force?, recheckDays? } -> job
+ *   POST /api/games/enrich { profile, force?, phases?, recheckDays? } -> job
  *   GET  /api/games/enrich/:jobId | /api/games/enrich/status?id=…
+ *
+ * Phases (`phases`: `details` | `spy` | `reviews` | `all`, comma-separated or
+ * an array; the HTTP route defaults to `all`, a programmatic call to
+ * `details` so import-time enrichment keeps its M2 footprint):
+ *
+ *   details — Steam Store `appdetails` (`details/<appid>.json`)
+ *   spy     — SteamSpy tags/owners/ccu (`spy/<appid>.json`)
+ *   reviews — Steam review summary (`reviews/<appid>.json`)
  *
  * Invariants:
  *   - **one owner.** The run reads the library of exactly one cached
- *     `steam-<steamid64>` profile; details are global per appid (metadata is
- *     not owner-scoped, events/hours are — AGENTS.md §6);
- *   - **resumable.** A candidate is an appid whose `details/<appid>.json` is
- *     missing or older than the re-check window (`GAMES_STORE_RECHECK_DAYS`,
- *     default 180). Re-running the job therefore continues where the previous
- *     run stopped (the cache is the progress), and `force: true` re-fetches
+ *     `steam-<steamid64>` profile; metadata is global per appid (tags, review
+ *     scores are not owner-scoped), events/hours are (AGENTS.md §6);
+ *   - **resumable.** A candidate is an appid whose document for that phase is
+ *     missing or older than the phase re-check window (details 180 days,
+ *     spy/reviews 30 days). Re-running the job continues where the previous
+ *     run stopped (the cache is the progress); `force: true` re-fetches
  *     everything regardless of freshness;
- *   - **budgeted.** `GAMES_STORE_BUDGET` (default 340) appids per run, one unit
- *     per appid; the remaining count is reported and the next run picks it up;
+ *   - **budgeted per phase.** `GAMES_STORE_BUDGET` / `GAMES_SPY_BUDGET` /
+ *     `GAMES_REVIEWS_BUDGET` (default 340 each) appids per run, one unit per
+ *     appid; the remaining count is reported and the next run picks it up;
  *   - **deferred, not negative.** A network/5xx/breaker failure is counted as
- *     deferred and NOT written; a `success:false` store answer (region-locked
- *     / delisted) is written as an honest `unavailable` document so the next
- *     run does not ask again inside the TTL;
+ *     deferred and NOT written; a real "no data" answer (store `success:false`,
+ *     SteamSpy skeleton, review summary without `query_summary`) is written as
+ *     an honest `unavailable` document so the next run does not ask again
+ *     inside the TTL;
  *   - only library appids are enriched (cache `profiles/` + `library/`), never
  *     the whole Steam catalogue.
  *
- * The run journal is one line per job plus the persisted `enrich-state.json`
- * (`state/enrich-state.json`): last run per profile, attempted/deferred appids
- * and a ring of the last 10 run summaries.
+ * Journals: one persisted state file per phase (`state/enrich-state.json`,
+ * `state/spy-state.json`, `state/reviews-state.json`), each with the last run
+ * per profile, attempted/deferred appids and a ring of the last 10 summaries.
  */
 
 const crypto = require('crypto');
@@ -35,11 +45,78 @@ const crypto = require('crypto');
 const gameCache = require('./game-cache');
 const steam = require('./steam');
 const store = require('./store');
+const spy = require('./spy');
 
+const PHASES = ['details', 'spy', 'reviews'];
 const DEFAULT_BUDGET = 340;
 const DEFAULT_RECHECK_DAYS = 180;
+const DEFAULT_PHASE_RECHECK_DAYS = 30;
 const MAX_JOBS = 20;
 const MAX_RUNS = 10;
+
+/** Everything that differs between phases, in one place. */
+const PHASE_SPECS = {
+  details: {
+    name: 'details',
+    source: 'steam-store',
+    clientOption: 'client',
+    clientFactory: () => store.createClient(),
+    method: 'getAppDetails',
+    list: (appids) => gameCache.listDetails(appids),
+    fresh: (doc, ttlMs) => store.detailsFresh(doc, ttlMs),
+    save: (appid, doc) => gameCache.saveDetails(appid, doc),
+    ttlMs: () => gameCache.detailsTtlMs(),
+    budgetEnv: 'GAMES_STORE_BUDGET',
+    recheckEnv: 'GAMES_STORE_RECHECK_DAYS',
+    defaultRecheckDays: DEFAULT_RECHECK_DAYS,
+    readState: () => gameCache.readEnrichState(),
+    saveState: (state) => gameCache.saveEnrichState(state),
+    systemicCodes: ['store_rate_limited', 'store_unreachable'],
+  },
+  spy: {
+    name: 'spy',
+    source: 'steamspy',
+    clientOption: 'spyClient',
+    clientFactory: () => spy.createClient(),
+    method: 'getAppTags',
+    list: (appids) => gameCache.listSpy(appids),
+    fresh: (doc, ttlMs) => spy.spyFresh(doc, ttlMs),
+    save: (appid, doc) => gameCache.saveSpy(appid, doc),
+    ttlMs: () => gameCache.spyTtlMs(),
+    budgetEnv: 'GAMES_SPY_BUDGET',
+    recheckEnv: 'GAMES_SPY_RECHECK_DAYS',
+    defaultRecheckDays: DEFAULT_PHASE_RECHECK_DAYS,
+    readState: () => gameCache.readSpyState(),
+    saveState: (state) => gameCache.saveSpyState(state),
+    systemicCodes: ['spy_rate_limited', 'spy_unreachable'],
+  },
+  reviews: {
+    name: 'reviews',
+    source: 'steam-reviews',
+    clientOption: 'reviewsClient',
+    clientFactory: () => store.createClient(),
+    method: 'getAppReviews',
+    list: (appids) => gameCache.listReviews(appids),
+    fresh: (doc, ttlMs) => store.reviewsFresh(doc, ttlMs),
+    save: (appid, doc) => gameCache.saveReviews(appid, doc),
+    ttlMs: () => gameCache.reviewsTtlMs(),
+    budgetEnv: 'GAMES_REVIEWS_BUDGET',
+    recheckEnv: 'GAMES_REVIEWS_RECHECK_DAYS',
+    defaultRecheckDays: DEFAULT_PHASE_RECHECK_DAYS,
+    readState: () => gameCache.readReviewsState(),
+    saveState: (state) => gameCache.saveReviewsState(state),
+    systemicCodes: ['reviews_rate_limited', 'reviews_unreachable'],
+  },
+};
+
+const PHASE_ALIASES = {
+  all: PHASES,
+  auto: PHASES,
+  store: ['details'],
+  steamspy: ['spy'],
+  tags: ['spy'],
+  appreviews: ['reviews'],
+};
 
 const jobs = new Map();
 const jobOrder = [];
@@ -67,14 +144,16 @@ function findRunningJob(profileKey) {
   return null;
 }
 
-function budgetLimitFromEnv() {
-  const raw = Number(process.env.GAMES_STORE_BUDGET);
+function budgetLimitFromEnv(phaseName) {
+  const spec = PHASE_SPECS[phaseName] || PHASE_SPECS.details;
+  const raw = Number(process.env[spec.budgetEnv]);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : DEFAULT_BUDGET;
 }
 
-function recheckDaysFromEnv() {
-  const raw = Number(process.env.GAMES_STORE_RECHECK_DAYS);
-  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_RECHECK_DAYS;
+function recheckDaysFromEnv(phaseName) {
+  const spec = PHASE_SPECS[phaseName] || PHASE_SPECS.details;
+  const raw = Number(process.env[spec.recheckEnv]);
+  return Number.isFinite(raw) && raw >= 0 ? raw : spec.defaultRecheckDays;
 }
 
 function createBudget(limit) {
@@ -94,6 +173,119 @@ function createBudget(limit) {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase selection                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Normalise `phases` (`"all"`, `"spy"`, `"details,reviews"` or an array) into
+ * an ordered, de-duplicated list. Unknown names are a 400, never a silent
+ * no-op — the same rule the query contract follows everywhere else.
+ */
+function parsePhases(raw, fallback) {
+  const fallbackList = Array.isArray(fallback)
+    ? fallback
+    : typeof fallback === 'string' && fallback.trim()
+      ? fallback.split(',')
+      : ['details'];
+  let list;
+  if (raw == null || (typeof raw === 'string' && raw.trim() === '')) {
+    list = fallbackList;
+  } else if (Array.isArray(raw)) {
+    list = raw;
+  } else {
+    list = String(raw).split(',');
+  }
+  const out = [];
+  const unknown = [];
+  for (const entry of list) {
+    const key = String(entry == null ? '' : entry).trim().toLowerCase();
+    if (!key) continue;
+    const expanded = PHASE_ALIASES[key] || (PHASE_SPECS[key] ? [key] : null);
+    if (!expanded) {
+      unknown.push(key);
+      continue;
+    }
+    for (const name of expanded) {
+      if (!out.includes(name)) out.push(name);
+    }
+  }
+  if (unknown.length) {
+    const err = new Error(
+      `Unknown enrich phase(s): ${unknown.map((name) => `"${name}"`).join(', ')}. ` +
+        `Accepted: ${[...PHASES, 'all'].map((name) => `"${name}"`).join(', ')}.`
+    );
+    err.code = 'invalid_phases';
+    err.status = 400;
+    throw err;
+  }
+  if (!out.length) {
+    const err = new Error(`"phases" must name at least one of: ${[...PHASES, 'all'].join(', ')}.`);
+    err.code = 'invalid_phases';
+    err.status = 400;
+    throw err;
+  }
+  // Keep the canonical order (details → spy → reviews) regardless of input
+  // order: details first means the personnel pass sees the finished library.
+  return PHASES.filter((name) => out.includes(name));
+}
+
+function emptyPhase(name) {
+  return {
+    phase: name,
+    source: PHASE_SPECS[name] ? PHASE_SPECS[name].source : null,
+    status: 'pending',
+    stage: 'queued',
+    total: null,
+    selected: null,
+    skippedFresh: null,
+    ok: 0,
+    unavailable: 0,
+    deferred: 0,
+    requests: 0,
+    processed: 0,
+    remaining: null,
+    budgetLimit: null,
+    budgetRemaining: null,
+    recheckDays: null,
+    resolved: null,
+    percent: null,
+    lastAppid: null,
+    stoppedBy: null,
+    errors: [],
+    elapsedMs: null,
+  };
+}
+
+/** Public phase view: no key/secret ever passes through this module. */
+function publicPhase(phase) {
+  if (!phase) return null;
+  return {
+    phase: phase.phase,
+    source: phase.source,
+    status: phase.status,
+    stage: phase.stage,
+    total: phase.total,
+    selected: phase.selected,
+    skippedFresh: phase.skippedFresh,
+    ok: phase.ok,
+    unavailable: phase.unavailable,
+    deferred: phase.deferred,
+    requests: phase.requests,
+    processed: phase.processed,
+    remaining: phase.remaining,
+    budgetLimit: phase.budgetLimit,
+    budgetRemaining: phase.budgetRemaining,
+    recheckDays: phase.recheckDays,
+    resolved: phase.resolved,
+    percent: phase.percent,
+    lastAppid: phase.lastAppid,
+    stoppedBy: phase.stoppedBy,
+    errors: phase.errors ? [...phase.errors] : [],
+    elapsedMs: phase.elapsedMs,
+  };
+}
+
 /** Public job view: no key/secret ever passes through this module. */
 function publicStatus(job) {
   if (!job) return null;
@@ -109,7 +301,14 @@ function publicStatus(job) {
     percent: job.percent,
     reused: job.reused,
     force: job.force,
+    phasesRequested: job.phasesRequested ? [...job.phasesRequested] : [],
+    phase: job.phase,
+    phases: job.phases
+      ? Object.fromEntries(Object.entries(job.phases).map(([name, phase]) => [name, publicPhase(phase)]))
+      : {},
     recheckDays: job.recheckDays,
+    // Legacy (M2) top-level fields mirror the details phase so the existing UI
+    // and the M2 tests keep reading one stable shape.
     total: job.total,
     selected: job.selected,
     skippedFresh: job.skippedFresh,
@@ -162,12 +361,18 @@ function enqueue(job, task) {
         job.percent = 100;
         job.done = true;
       }
+      const phaseText = Object.values(job.phases || {})
+        .map(
+          (phase) =>
+            `${phase.phase}={selected:${phase.selected},ok:${phase.ok},` +
+            `unavailable:${phase.unavailable},deferred:${phase.deferred},` +
+            `requests:${phase.requests},resolved:${phase.resolved}}`
+        )
+        .join(' ');
       console.log(
         `[games-enrich ${job.id}] ${job.status} after ${job.finishedAt - job.startedAt}ms ` +
-          `(total=${job.total}, selected=${job.selected}, ok=${job.ok}, ` +
-          `unavailable=${job.unavailable}, deferred=${job.deferred}, ` +
-          `requests=${job.requests}, budget=${job.budgetLimit}/${job.budgetLimit}, ` +
-          `remaining=${job.remaining}${job.code ? `, code=${job.code}` : ''})`
+          `(phases=${(job.phasesRequested || []).join('+')}, total=${job.total}, ` +
+          `${phaseText}${job.code ? `, code=${job.code}` : ''})`
       );
     });
 }
@@ -190,59 +395,101 @@ function progressSnapshot(state, profileKey) {
 }
 
 /**
- * Run one enrich pass. Pure-ish: all I/O goes through gameCache / the injected
- * store client, so tests never touch the network.
+ * Mean of the requested phases' progress (0..99). A phase that has not started
+ * contributes 0; a finished one 100. The enqueue wrapper sets the final 100.
  */
-async function runEnrich(job, scope, options) {
+function overallPercent(job) {
+  const phases = job.phasesRequested && job.phasesRequested.length ? job.phasesRequested : ['details'];
+  let sum = 0;
+  for (const name of phases) {
+    const phase = job.phases[name];
+    sum += phase ? Math.min(100, Number(phase.percent) || 0) : 0;
+  }
+  return Math.min(99, Math.round(sum / phases.length));
+}
+
+/** Coverage of one phase over the whole library (successful documents only). */
+function phaseCoverage(spec, appids) {
+  const all = spec.list(appids);
+  const resolved = appids.filter((appid) => all[String(appid)] && all[String(appid)].success).length;
+  return {
+    resolved,
+    total: appids.length,
+    percent: appids.length ? Math.round((resolved / appids.length) * 1000) / 10 : 0,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* One phase                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Run one phase. Pure-ish: all I/O goes through gameCache / the injected
+ * client, so tests never touch the network.
+ */
+async function runPhase(job, phaseName, scope, options) {
+  const spec = PHASE_SPECS[phaseName];
+  const phase = job.phases[phaseName];
   const { userKey, library } = scope;
   const profileKey = gameCache.profileKeyOf(userKey);
   const nowIso = () => new Date().toISOString();
-  const client = options.client || store.createClient();
+  const startedAt = Date.now();
+  const client = options[spec.clientOption] || spec.clientFactory();
+  const recheckOverride =
+    phaseName === 'details'
+      ? options.recheckDays
+      : options[`${phaseName}RecheckDays`];
   const recheckDays =
-    Number.isFinite(Number(options.recheckDays)) && Number(options.recheckDays) >= 0
-      ? Number(options.recheckDays)
-      : recheckDaysFromEnv();
+    Number.isFinite(Number(recheckOverride)) && Number(recheckOverride) >= 0
+      ? Number(recheckOverride)
+      : recheckDaysFromEnv(phaseName);
   const ttlMs = recheckDays * 24 * 60 * 60 * 1000;
+  const budgetOverride =
+    phaseName === 'details' ? options.budget : options[`${phaseName}Budget`];
   const budget = createBudget(
-    options.budget != null ? options.budget : budgetLimitFromEnv()
+    budgetOverride != null ? budgetOverride : budgetLimitFromEnv(phaseName)
   );
 
+  phase.status = 'running';
+  phase.stage = 'selecting';
+  phase.recheckDays = recheckDays;
   job.stage = 'selecting';
+  job.phase = phaseName;
+
   const appids = uniqueAppids(library);
-  const cached = gameCache.listDetails(appids);
+  const cached = spec.list(appids);
   const stale = [];
   for (const appid of appids) {
     const doc = cached[String(appid)];
-    if (job.force || !doc || !store.detailsFresh(doc, ttlMs)) stale.push(appid);
+    if (job.force || !doc || !spec.fresh(doc, ttlMs)) stale.push(appid);
   }
-  job.total = appids.length;
-  job.recheckDays = recheckDays;
-  job.budgetLimit = budget.limit;
-  job.skippedFresh = appids.length - stale.length;
+  phase.total = appids.length;
+  phase.budgetLimit = budget.limit;
+  phase.skippedFresh = appids.length - stale.length;
 
   // Select at most one budget window, but spend a unit per *attempt* below:
   // an interrupted run must report the budget it did not use.
   const selected = budget.limit > 0 ? stale.slice(0, budget.limit) : [];
-  job.selected = selected.length;
-  job.remaining = stale.length - selected.length;
-  job.budgetRemaining = budget.remaining;
-  job.percent = selected.length ? 0 : 100;
+  phase.selected = selected.length;
+  phase.remaining = stale.length - selected.length;
+  phase.budgetRemaining = budget.remaining;
+  phase.percent = selected.length ? 0 : 100;
 
   if (!selected.length) {
-    job.stage = 'done';
-    job.remaining = stale.length;
-    job.budgetRemaining = budget.remaining;
-    job.detailsTotal = appids.length;
-    const all = gameCache.listDetails(appids);
-    job.detailsResolved = appids.filter((appid) => all[String(appid)] && all[String(appid)].success).length;
-    job.detailsPercent = appids.length
-      ? Math.round((job.detailsResolved / appids.length) * 1000) / 10
-      : 0;
-    return;
+    phase.stage = 'done';
+    phase.status = 'done';
+    phase.remaining = stale.length;
+    phase.budgetRemaining = budget.remaining;
+    const coverage = phaseCoverage(spec, appids);
+    phase.resolved = coverage.resolved;
+    phase.percent = coverage.percent;
+    phase.elapsedMs = Date.now() - startedAt;
+    return phase;
   }
 
+  phase.stage = 'fetching';
   job.stage = 'fetching';
-  const state = gameCache.readEnrichState();
+  const state = spec.readState();
   const previous = progressSnapshot(state, profileKey);
   const attempted = [];
   const deferredAppids = [];
@@ -250,124 +497,182 @@ async function runEnrich(job, scope, options) {
 
   for (const appid of selected) {
     if (!budget.take()) break;
-    job.requests++;
+    phase.requests++;
     try {
-      const doc = await client.getAppDetails(appid);
+      const doc = await client[spec.method](appid);
       doc.fetchedAt = nowIso();
-      await gameCache.saveDetails(appid, doc);
+      await spec.save(appid, doc);
       attempted.push(appid);
+      phase.lastAppid = appid;
       job.lastAppid = appid;
       if (doc.success) {
-        job.ok++;
+        phase.ok++;
       } else {
-        job.unavailable++;
+        phase.unavailable++;
         unavailableAppids.push(appid);
       }
     } catch (err) {
-      const code = (err && err.code) || 'store_error';
-      job.deferred++;
+      const code = (err && err.code) || `${phaseName}_error`;
+      phase.deferred++;
       deferredAppids.push(appid);
+      if (!phase.errors.includes(code)) phase.errors.push(code);
       if (!job.errors.includes(code)) job.errors.push(code);
       // Breaker/unreachable is systemic: stop instead of hammering the host.
-      if (code === 'store_rate_limited' || code === 'store_unreachable') {
-        job.stoppedBy = code;
+      if (spec.systemicCodes.includes(code)) {
+        phase.stoppedBy = code;
         break;
       }
     }
-    job.percent = selected.length
-      ? Math.min(99, Math.round((attempted.length + job.deferred) / selected.length * 100))
+    phase.processed = attempted.length + phase.deferred;
+    phase.percent = selected.length
+      ? Math.min(99, Math.round((phase.processed / selected.length) * 100))
       : 0;
+    // Overall progress = the mean of the requested phases' progress, so a long
+    // spy pass does not sit at 0% while the details phase is already done.
+    job.percent = overallPercent(job);
     // Persist progress after every appid: a crash mid-run resumes from the
     // cache, but the journal still shows where the pass stopped.
     state.profiles[profileKey] = {
       ...previous,
+      phase: phaseName,
       lastRunAt: nowIso(),
-      lastAppid: job.lastAppid,
-      total: job.total,
-      selected: job.selected,
-      ok: job.ok,
-      unavailable: job.unavailable,
-      deferred: job.deferred,
-      skippedFresh: job.skippedFresh,
+      lastAppid: phase.lastAppid,
+      total: phase.total,
+      selected: phase.selected,
+      ok: phase.ok,
+      unavailable: phase.unavailable,
+      deferred: phase.deferred,
+      skippedFresh: phase.skippedFresh,
       budgetRemaining: budget.remaining,
       attempted: [...attempted],
       deferredAppids: [...deferredAppids],
       unavailableAppids: [...unavailableAppids],
     };
     try {
-      await gameCache.saveEnrichState(state);
+      await spec.saveState(state);
     } catch (err) {
-      console.warn(`[games-enrich ${job.id}] state save failed: ${err.message}`);
+      console.warn(`[games-enrich ${job.id}/${phaseName}] state save failed: ${err.message}`);
     }
   }
 
-  job.remaining = stale.length - selected.length + job.deferred;
-  job.budgetRemaining = budget.remaining;
-  job.stage = 'done';
-  job.percent = 100;
+  phase.remaining = stale.length - selected.length + phase.deferred;
+  phase.budgetRemaining = budget.remaining;
+  phase.stage = 'done';
+  phase.status = 'done';
+  phase.percent = 100;
 
-  const all = gameCache.listDetails(appids);
-  job.detailsTotal = appids.length;
-  job.detailsResolved = appids.filter((appid) => all[String(appid)] && all[String(appid)].success).length;
-  job.detailsPercent = appids.length
-    ? Math.round((job.detailsResolved / appids.length) * 1000) / 10
-    : 0;
+  const coverage = phaseCoverage(spec, appids);
+  phase.resolved = coverage.resolved;
+  phase.elapsedMs = Date.now() - startedAt;
 
   const run = {
     id: job.id,
+    phase: phaseName,
+    source: spec.source,
     profile: profileKey,
     startedAt: new Date(job.startedAt).toISOString(),
     finishedAt: nowIso(),
     force: job.force,
     recheckDays,
     budgetLimit: budget.limit,
-    total: job.total,
-    selected: job.selected,
-    skippedFresh: job.skippedFresh,
-    ok: job.ok,
-    unavailable: job.unavailable,
-    deferred: job.deferred,
-    requests: job.requests,
-    remaining: job.remaining,
-    stoppedBy: job.stoppedBy,
-    errors: [...job.errors],
-    detailsResolved: job.detailsResolved,
-    detailsTotal: job.detailsTotal,
+    total: phase.total,
+    selected: phase.selected,
+    skippedFresh: phase.skippedFresh,
+    ok: phase.ok,
+    unavailable: phase.unavailable,
+    deferred: phase.deferred,
+    requests: phase.requests,
+    remaining: phase.remaining,
+    stoppedBy: phase.stoppedBy,
+    errors: [...phase.errors],
+    resolved: coverage.resolved,
+    resolvedTotal: coverage.total,
+    resolvedPercent: coverage.percent,
+    // Legacy details keys (M2 tests read the run ring).
+    ...(phaseName === 'details'
+      ? { detailsResolved: coverage.resolved, detailsTotal: coverage.total }
+      : {}),
   };
   state.profiles[profileKey] = {
     ...(state.profiles[profileKey] || {}),
+    phase: phaseName,
     lastRunAt: nowIso(),
     lastRunId: job.id,
-    lastAppid: job.lastAppid,
-    total: job.total,
-    selected: job.selected,
-    ok: job.ok,
-    unavailable: job.unavailable,
-    deferred: job.deferred,
-    skippedFresh: job.skippedFresh,
+    lastAppid: phase.lastAppid,
+    total: phase.total,
+    selected: phase.selected,
+    ok: phase.ok,
+    unavailable: phase.unavailable,
+    deferred: phase.deferred,
+    skippedFresh: phase.skippedFresh,
     budgetRemaining: budget.remaining,
     attempted: [...attempted],
     deferredAppids: [...deferredAppids],
     unavailableAppids: [...unavailableAppids],
-    detailsResolved: job.detailsResolved,
-    detailsTotal: job.detailsTotal,
+    resolved: coverage.resolved,
+    resolvedTotal: coverage.total,
+    // Legacy details key names (M2 tests and the state reader rely on them).
+    ...(phaseName === 'details'
+      ? { detailsResolved: coverage.resolved, detailsTotal: coverage.total }
+      : {}),
   };
   state.runs = [...state.runs, run].slice(-MAX_RUNS);
   try {
-    await gameCache.saveEnrichState(state);
+    await spec.saveState(state);
   } catch (err) {
-    console.warn(`[games-enrich ${job.id}] state save failed: ${err.message}`);
+    console.warn(`[games-enrich ${job.id}/${phaseName}] state save failed: ${err.message}`);
   }
+  return phase;
+}
+
+/**
+ * Run the requested phases sequentially and keep the legacy top-level fields
+ * (M2 details) in sync.
+ */
+async function runEnrich(job, scope, options) {
+  const phases = options.phases && options.phases.length ? options.phases : ['details'];
+  const appids = uniqueAppids(scope.library);
+  job.total = appids.length;
+
+  for (const phaseName of phases) {
+    job.phase = phaseName;
+    await runPhase(job, phaseName, scope, options);
+    job.percent = overallPercent(job);
+  }
+
+  const details = job.phases.details;
+  if (details) {
+    job.recheckDays = details.recheckDays;
+    job.selected = details.selected;
+    job.skippedFresh = details.skippedFresh;
+    job.ok = details.ok;
+    job.unavailable = details.unavailable;
+    job.deferred = details.deferred;
+    job.requests = details.requests;
+    job.remaining = details.remaining;
+    job.budgetLimit = details.budgetLimit;
+    job.budgetRemaining = details.budgetRemaining;
+    job.detailsResolved = details.resolved;
+    job.detailsTotal = details.total;
+    job.detailsPercent = details.percent;
+    job.lastAppid = details.lastAppid;
+    job.stoppedBy = details.stoppedBy;
+  }
+  job.stage = 'done';
+  job.percent = 100;
 }
 
 /**
  * Start (or coalesce into) an enrich job for one cached profile.
  *
  * `profileToken` — `steam-<steamid64>`.
- * `options.force` — re-fetch every appid, ignore the TTL.
- * `options.recheckDays` — override the re-check window.
- * `options.budget` — override `GAMES_STORE_BUDGET` (tests).
- * `options.client` — injected store client (tests: fixtures, no network).
+ * `options.force` — re-fetch every appid, ignore the TTLs.
+ * `options.phases` — `details`/`spy`/`reviews`/`all` (default `details` here;
+ *   the HTTP route passes `all`).
+ * `options.recheckDays` — override the details re-check window.
+ * `options.spyRecheckDays` / `reviewsRecheckDays` — per-phase overrides.
+ * `options.budget` / `spyBudget` / `reviewsBudget` — per-phase budget (tests).
+ * `options.client` / `spyClient` / `reviewsClient` — injected clients (tests).
  */
 function startEnrich(profileToken, options = {}) {
   const parsed = gameCache.parseProfileToken(profileToken);
@@ -390,9 +695,12 @@ function startEnrich(profileToken, options = {}) {
     throw err;
   }
 
+  const phases = parsePhases(options.phases, options.defaultPhases || 'details');
   const profileKey = parsed.key;
   const running = findRunningJob(profileKey);
-  if (running) return publicStatus(running);
+  if (running) {
+    return { ...publicStatus(running), reused: true };
+  }
 
   const job = {
     id: newJobId(parsed.userKey),
@@ -403,6 +711,9 @@ function startEnrich(profileToken, options = {}) {
     percent: 0,
     reused: false,
     force: Boolean(options.force),
+    phasesRequested: phases,
+    phases: Object.fromEntries(phases.map((name) => [name, emptyPhase(name)])),
+    phase: null,
     recheckDays: null,
     total: null,
     selected: null,
@@ -425,7 +736,7 @@ function startEnrich(profileToken, options = {}) {
     startedAt: Date.now(),
   };
   rememberJob(job);
-  enqueue(job, () => runEnrich(job, { userKey: parsed.userKey, library }, options));
+  enqueue(job, () => runEnrich(job, { userKey: parsed.userKey, library }, { ...options, phases }));
   return publicStatus(job);
 }
 
@@ -435,14 +746,18 @@ function whenIdle() {
 }
 
 module.exports = {
+  PHASES,
   DEFAULT_BUDGET,
   DEFAULT_RECHECK_DAYS,
+  DEFAULT_PHASE_RECHECK_DAYS,
   MAX_RUNS,
   createBudget,
+  parsePhases,
   startEnrich,
   getStatus,
   isRunning,
   publicStatus,
+  publicPhase,
   whenIdle,
   uniqueAppids,
 };
