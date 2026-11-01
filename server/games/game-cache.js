@@ -16,6 +16,9 @@
  *     profiles/steam-<steamid64>.json     persona/avatar/privacy/importedAt
  *     library/steam-<steamid64>.json      raw GetOwnedGames snapshot + fingerprint
  *     details/<appid>.json                store appdetails (global, not per owner)
+ *     details-base/<appid>.json           appdetails of the *base* version of a
+ *                                         regional SKU (B6; the owner does not
+ *                                         own it, so it never enters details/)
  *     spy/<appid>.json                    SteamSpy tags/owners/ccu (M4, global)
  *     reviews/<appid>.json                appreviews summary (M4, global)
  *     achievements/<steamid64>/<appid>.json  player achievements (unlockTimestamp)
@@ -53,6 +56,11 @@ const STATE_DIR = process.env.KINOBOXD_STATE_DIR
 const PROFILES_DIR = path.join(GAMES_CACHE_DIR, 'profiles');
 const LIBRARY_DIR = path.join(GAMES_CACHE_DIR, 'library');
 const DETAILS_DIR = path.join(GAMES_CACHE_DIR, 'details');
+// B6: appdetails of the **base** version of a regional SKU (`Dishonored RHCP`
+// → `Dishonored`). A separate directory on purpose: the owner does not own the
+// base card, so it must never enter `details/` (that directory is the library
+// enrichment progress and its TTL drives the enrich job).
+const DETAILS_BASE_DIR = path.join(GAMES_CACHE_DIR, 'details-base');
 const SPY_DIR = path.join(GAMES_CACHE_DIR, 'spy');
 const REVIEWS_DIR = path.join(GAMES_CACHE_DIR, 'reviews');
 const ACHIEVEMENTS_DIR = path.join(GAMES_CACHE_DIR, 'achievements');
@@ -78,6 +86,7 @@ for (const dir of [
   PROFILES_DIR,
   LIBRARY_DIR,
   DETAILS_DIR,
+  DETAILS_BASE_DIR,
   SPY_DIR,
   REVIEWS_DIR,
   ACHIEVEMENTS_DIR,
@@ -166,6 +175,11 @@ function libraryPath(steamId64) {
 
 function detailsPath(appid) {
   return path.join(DETAILS_DIR, `${safeKey(appid)}.json`);
+}
+
+/** `details-base/<appid>.json` — appdetails of a base version the owner does not own. */
+function detailsBasePath(appid) {
+  return path.join(DETAILS_BASE_DIR, `${safeKey(appid)}.json`);
 }
 
 function spyPath(appid) {
@@ -373,6 +387,47 @@ function listDetails(appids) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Base-version details (B6: canonical metadata of a regional SKU)      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Store appdetails of the **base** card (`Dishonored` for `Dishonored RHCP`).
+ * Same document shape as `details/`, same 180-day TTL, but a separate
+ * directory: `details/` stays «what the owner owns» and its file count is the
+ * enrich job's progress counter. Nothing here is owner-scoped.
+ */
+async function saveDetailsBase(appid, doc) {
+  const payload = {
+    schemaVersion: 1,
+    source: 'steam-store',
+    ...doc,
+    appid: Number(appid),
+    baseVersion: true,
+  };
+  const fingerprint = await writeJsonAtomic(detailsBasePath(appid), payload);
+  return { data: payload, fingerprint };
+}
+
+function getDetailsBase(appid) {
+  const hit = readJsonWithFingerprint(detailsBasePath(appid));
+  return hit ? hit.data : null;
+}
+
+/** `{ [appid]: doc }`; missing/corrupt files are simply absent. */
+function listDetailsBase(appids) {
+  const result = {};
+  if (!Array.isArray(appids)) return result;
+  for (const appid of appids) {
+    if (appid == null) continue;
+    const key = String(appid);
+    if (result[key]) continue;
+    const doc = getDetailsBase(appid);
+    if (doc) result[key] = doc;
+  }
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
 /* SteamSpy tags (global per appid — metadata, not owner events)        */
 /* ------------------------------------------------------------------ */
 
@@ -564,6 +619,7 @@ module.exports = {
   PROFILES_DIR,
   LIBRARY_DIR,
   DETAILS_DIR,
+  DETAILS_BASE_DIR,
   SPY_DIR,
   REVIEWS_DIR,
   ACHIEVEMENTS_DIR,
@@ -595,6 +651,7 @@ module.exports = {
   profilePath,
   libraryPath,
   detailsPath,
+  detailsBasePath,
   spyPath,
   reviewsPath,
   achievementPath,
@@ -610,6 +667,9 @@ module.exports = {
   saveDetails,
   getDetails,
   listDetails,
+  saveDetailsBase,
+  getDetailsBase,
+  listDetailsBase,
   saveSpy,
   getSpy,
   listSpy,

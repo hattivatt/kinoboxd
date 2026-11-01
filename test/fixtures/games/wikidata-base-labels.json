@@ -1,0 +1,63 @@
+{
+  "head": { "vars": ["label", "item", "appid", "franchise", "franchiseEn", "franchiseRu", "date", "precision"] },
+  "results": {
+    "bindings": [
+      {
+        "label": { "type": "literal", "value": "Dishonored", "xml:lang": "en" },
+        "item": { "type": "uri", "value": "http://www.wikidata.org/entity/Q323264" },
+        "appid": { "type": "literal", "value": "205100" },
+        "franchise": { "type": "uri", "value": "http://www.wikidata.org/entity/Q1346301" },
+        "franchiseEn": { "type": "literal", "value": "Dishonored", "xml:lang": "en" },
+        "franchiseRu": { "type": "literal", "value": "Dishonored", "xml:lang": "ru" },
+        "date": { "type": "literal", "value": "+2012-10-09T00:00:00Z" },
+        "precision": { "type": "literal", "value": "11" }
+      },
+      {
+        "label": { "type": "literal", "value": "Max Payne", "xml:lang": "en" },
+        "item": { "type": "uri", "value": "http://www.wikidata.org/entity/Q1175156" },
+        "appid": { "type": "literal", "value": "12140" },
+        "date": { "type": "literal", "value": "+2001-07-25T00:00:00Z" },
+        "precision": { "type": "literal", "value": "11" }
+      },
+      {
+        "label": { "type": "literal", "value": "Max Payne 2: The Fall of Max Payne", "xml:lang": "en" },
+        "item": { "type": "uri", "value": "http://www.wikidata.org/entity/Q999001" },
+        "appid": { "type": "literal", "value": "12150" },
+        "date": { "type": "literal", "value": "+2003-10-14T00:00:00Z" },
+        "precision": { "type": "literal", "value": "11" }
+      },
+      {
+        "label": { "type": "literal", "value": "Fallout: New Vegas", "xml:lang": "en" },
+        "item": { "type": "uri", "value": "http://www.wikidata.org/entity/Q753749" },
+        "appid": { "type": "literal", "value": "22380" },
+        "franchise": { "type": "uri", "value": "http://www.wikidata.org/entity/Q1048511" },
+        "franchiseEn": { "type": "literal", "value": "Fallout", "xml:lang": "en" },
+        "date": { "type": "literal", "value": "+2010-10-19T00:00:00Z" },
+        "precision": { "type": "literal", "value": "11" }
+      },
+      {
+        "label": { "type": "literal", "value": "Dishonored 2", "xml:lang": "en" },
+        "item": { "type": "uri", "value": "http://www.wikidata.org/entity/Q999002" },
+        "appid": { "type": "literal", "value": "403640" },
+        "date": { "type": "literal", "value": "+2016-11-11T00:00:00Z" },
+        "precision": { "type": "literal", "value": "11" }
+      },
+      {
+        "label": { "type": "literal", "value": "Метро 2033", "xml:lang": "ru" },
+        "item": { "type": "uri", "value": "http://www.wikidata.org/entity/Q648617" },
+        "appid": { "type": "literal", "value": "43130" },
+        "date": { "type": "literal", "value": "+2010-03-16T00:00:00Z" },
+        "precision": { "type": "literal", "value": "11" }
+      },
+      {
+        "label": { "type": "literal", "value": "Fallout", "xml:lang": "en" },
+        "item": { "type": "uri", "value": "http://www.wikidata.org/entity/Q1078436" },
+        "appid": { "type": "literal", "value": "38410" },
+        "franchise": { "type": "uri", "value": "http://www.wikidata.org/entity/Q1048511" },
+        "franchiseEn": { "type": "literal", "value": "Fallout", "xml:lang": "en" },
+        "date": { "type": "literal", "value": "+1997-09-30T00:00:00Z" },
+        "precision": { "type": "literal", "value": "11" }
+      }
+    ]
+  }
+}

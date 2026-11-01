@@ -45,14 +45,54 @@
  * The existing document is merged, never replaced: `mobyId`, `igdbId` and a
  * legacy string `wikidata: "Q…"` survive a franchise refresh.
  *
+ * B6 — **base-version bridge** (ИГРЫ §8.2.2 «издания», audit §4.5-A). A
+ * regional SKU (`Dishonored RHCP` 217980, `Max Payne (RU)` 210350,
+ * `Fallout: New Vegas PCR` 22490) has no `P1733` in Wikidata at all, so the
+ * first pass honestly answers `qid: null` — and the store answers
+ * `success:false` for it. The work therefore has no identity, no year, no
+ * genres. The bridge adds a **second batch in the same pass** (same dispatcher,
+ * same budget/breaker/lock): it looks up items by the exact label of the
+ * stripped core title (`Dishonored`, `Max Payne`, `Fallout: New Vegas`),
+ * requires `P1733` on the item and — the actual decision — an **exact
+ * normalized title + numeric-signature match** against the SKU name, then
+ * writes the base identity **next to** the SKU's own (absent) identity:
+ *
+ *   wikidata: {
+ *     qid: null,                  // unchanged: the SKU is NOT the base game
+ *     baseQid: "Q323264", baseAppid: 205100, baseName: "Dishonored",
+ *     baseReleaseYear: 2012, baseReleasePrecision: "day",
+ *     baseFranchise: { qid, labelEn, labelRu } | null,
+ *     baseMatch: "label",         // provenance; never "qid"
+ *     baseCheckedAt: "…",         // negative marker: «bridge ran, no base»
+ *     resolved: true
+ *   }
+ *
+ * `baseQid`/`baseAppid` are consumed by `editions.js` (merge the regional card
+ * into the base work) and by `stats.js` (`workYear` fallback, canonical
+ * name/genres/studios from `details-base/`). They never leak into
+ * `wikidata.qid`, so the SKU card cannot pretend to be the base game.
+ *
+ * The bridge re-asks a `qid: null` document that has no `baseCheckedAt`
+ * (i.e. every negative cache written before B6), which is how a deploy heals
+ * the ~20 stale regionals without a `force` over the whole library.
+ *
  * Kill switch: `KINOBOXD_GAMES_WD=off` (shared with the personnel provider).
  * Budget: `GAMES_FRANCHISE_BUDGET` appids per pass (default 450 = one batch).
  * TTL: `GAMES_FRANCHISE_TTL_DAYS` (default 90).
+ *
+ * `enrichBaseDetails()` is the companion store step (separate function, no WD
+ * lock): for every `baseAppid` written by the bridge it fetches `appdetails`
+ * **once** into `details-base/<baseAppid>.json` (budget
+ * `GAMES_BASE_DETAILS_BUDGET`, default 20, the store client's own 1.7 s pause
+ * and 30-minute breaker). The owner does not own that card, so it must not go
+ * into `details/`.
  */
 
 const path = require('path');
 
+const editions = require('./editions');
 const gameCache = require('./game-cache');
+const store = require('./store');
 const wd = require('./personnel/wikidata');
 
 const LINKS_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'links');
@@ -60,6 +100,7 @@ const STATE_PATH = path.join(gameCache.STATE_DIR, 'franchise-state.json');
 
 const DEFAULT_BUDGET = 450;
 const DEFAULT_TTL_DAYS = 90;
+const DEFAULT_BASE_DETAILS_BUDGET = 20;
 const MAX_RUNS = 10;
 const YEAR_MIN = 1970;
 const YEAR_MAX = 2100;
@@ -100,6 +141,15 @@ function readLinks(appid) {
     qidRaw && /^Q\d+$/i.test(String(qidRaw).trim()) ? String(qidRaw).trim().toUpperCase() : null;
   const franchise =
     wdRaw && wdRaw.franchise && typeof wdRaw.franchise === 'object' ? wdRaw.franchise : null;
+  const baseFranchise =
+    wdRaw && wdRaw.baseFranchise && typeof wdRaw.baseFranchise === 'object' ? wdRaw.baseFranchise : null;
+  const baseQidRaw = wdRaw ? wdRaw.baseQid : doc.baseQid;
+  const baseQid =
+    baseQidRaw && /^Q\d+$/i.test(String(baseQidRaw).trim())
+      ? String(baseQidRaw).trim().toUpperCase()
+      : null;
+  const baseAppidRaw = wdRaw && wdRaw.baseAppid != null ? wdRaw.baseAppid : doc.baseAppid;
+  const baseAppid = Number(baseAppidRaw);
   const releaseYear = validYear(wdRaw && wdRaw.releaseYear);
   return {
     qid,
@@ -117,6 +167,22 @@ function readLinks(appid) {
     resolved: Boolean(wdRaw && wdRaw.resolved === true),
     fetchedAt: (wdRaw && wdRaw.fetchedAt) || doc.fetchedAt || null,
     sources: Array.isArray(doc.sources) ? doc.sources : [],
+    // B6: base-version bridge (see the module header). `baseQid` is the
+    // identity of the *work*, `qid` above stays the identity of this SKU.
+    baseQid,
+    baseAppid: Number.isInteger(baseAppid) && baseAppid > 0 ? baseAppid : null,
+    baseName: (wdRaw && wdRaw.baseName) || null,
+    baseReleaseYear: validYear(wdRaw && wdRaw.baseReleaseYear),
+    baseReleasePrecision: (wdRaw && wdRaw.baseReleasePrecision) || null,
+    baseFranchise: baseFranchise
+      ? {
+          qid: baseFranchise.qid || null,
+          labelEn: baseFranchise.labelEn || null,
+          labelRu: baseFranchise.labelRu || null,
+        }
+      : null,
+    baseMatch: (wdRaw && wdRaw.baseMatch) || null,
+    baseCheckedAt: (wdRaw && wdRaw.baseCheckedAt) || null,
   };
 }
 
@@ -224,6 +290,11 @@ function recordRun(profileKey, report) {
     wdSkipped: report.wdSkipped || null,
     wdDisabledUntil: report.wdDisabledUntil || null,
     releaseYearsFilled: report.releaseYearsFilled || 0,
+    // B6: the base-version bridge (second batch) and its store step.
+    bridgeCandidates: report.bridgeCandidates || 0,
+    bridgeQueries: report.bridgeQueries || 0,
+    bridged: report.bridged || 0,
+    bridgeMisses: report.bridgeMisses || 0,
     force: Boolean(report.force),
     errors: (report.errors || []).slice(0, 5),
   };
@@ -372,19 +443,9 @@ function parseFranchiseResponse(data) {
       return qidNumber(a.qid) - qidNumber(b.qid);
     })[0];
 
-    const series = [...chosen.franchises.values()].sort((a, b) => {
-      const labeledA = a.labelEn || a.labelRu || a.labelMul ? 1 : 0;
-      const labeledB = b.labelEn || b.labelRu || b.labelMul ? 1 : 0;
-      if (labeledA !== labeledB) return labeledB - labeledA;
-      return qidNumber(a.qid) - qidNumber(b.qid);
-    })[0];
+    const series = pickSeries(chosen.franchises);
 
-    const date = chosen.dates.slice().sort((a, b) => {
-      if (a.year !== b.year) return a.year - b.year;
-      const rank = (PRECISION_RANK[b.precision] || 0) - (PRECISION_RANK[a.precision] || 0);
-      if (rank) return rank;
-      return a.time - b.time;
-    })[0];
+    const date = pickDate(chosen.dates);
 
     result.set(appid, {
       appid: Number(appid),
@@ -402,6 +463,353 @@ function parseFranchiseResponse(data) {
     });
   }
   return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* B6: base-version bridge (second WDQS batch by label)                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Words that are an edition wrapper **only when they are the last token**
+ * (`East India Company Gold`, `Stronghold Crusader Extreme HD`). They are not
+ * in `editions.EDITION_WORDS` on purpose: `Gold`/`Platinum` in the middle of a
+ * title is a real word, and a merge heuristic must not eat it.
+ */
+const TRAILING_EDITION_WORDS = new Set([
+  ...editions.EDITION_WORDS,
+  'gold',
+  'platinum',
+  'silver',
+  'cut',
+  'legacy',
+]);
+
+function normalizeSpaces(value) {
+  return String(value == null ? '' : value)
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** `"Dishonored"` → `"Dishonored"` (SPARQL literal, no language tag). */
+function escapeSparqlLiteral(value) {
+  return String(value == null ? '' : value)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/[\r\n\t]+/g, ' ');
+}
+
+/** Drop `(RU)`, `(Special Edition)` — parenthesized region/edition wrappers. */
+function stripParenWrappers(raw) {
+  return normalizeSpaces(
+    raw.replace(/\s*\(([^)]*)\)/g, (match, inner) => {
+      const words = editions.cleanName(inner).split(' ').filter(Boolean);
+      if (!words.length) return match;
+      if (words.length === 1 && editions.REGION_WORDS.has(words[0])) return '';
+      if (words.every((word) => editions.EDITION_WORDS.has(word))) return '';
+      return match;
+    })
+  );
+}
+
+/** Drop multi-word wrappers (`Game of the Year`, `Director's Cut`) anywhere. */
+function stripEditionPhrases(raw) {
+  let value = normalizeSpaces(raw);
+  for (const phrase of editions.EDITION_PHRASES) {
+    const pattern = phrase.map(escapeRegex).join('[^\\p{L}\\p{N}]+');
+    const re = new RegExp(`(?:^|[\\s-])${pattern}(?=$|[\\s-])`, 'giu');
+    value = normalizeSpaces(value.replace(re, ' '));
+  }
+  return normalizeSpaces(value.replace(/[\s\-–—:,]+$/g, ''));
+}
+
+/** Drop trailing region/edition tokens, preserving the original casing. */
+function stripTrailingWrappers(raw) {
+  const tokens = normalizeSpaces(raw).split(' ').filter(Boolean);
+  const out = [...tokens];
+  while (out.length > 1) {
+    const last = out[out.length - 1];
+    const bare = last.replace(/[^\p{L}\p{N}]/gu, '');
+    const lower = bare.toLowerCase();
+    if (!lower) {
+      out.pop();
+      continue;
+    }
+    const capsRegion =
+      editions.REGION_WORDS.has(lower) &&
+      /^[A-Za-z]{2,5}$/.test(bare) &&
+      bare === bare.toUpperCase();
+    if (capsRegion || TRAILING_EDITION_WORDS.has(lower)) {
+      out.pop();
+      continue;
+    }
+    break;
+  }
+  return normalizeSpaces(out.join(' '));
+}
+
+/**
+ * Candidate WD labels for one Steam title, case preserved (the lookup is an
+ * exact `rdfs:label` match — a regex scan over labels would time out).
+ *
+ *   "Dishonored RHCP"                    → ["Dishonored RHCP", "Dishonored"]
+ *   "Max Payne (RU)"                     → ["Max Payne (RU)", "Max Payne"]
+ *   "Fallout: New Vegas PCR"             → [..., "Fallout: New Vegas"]
+ *   "Metro: Last Light Complete Edition" → [..., "Metro: Last Light"]
+ *
+ * Over-generating is harmless: the *decision* is `coreTitle` equality in
+ * `matchBaseFor`, so a wrong variant only costs one VALUES entry.
+ */
+function labelVariants(name) {
+  const raw = normalizeSpaces(String(name == null ? '' : name).replace(/[™®©]/g, ' '));
+  if (!raw) return [];
+  const out = [];
+  const push = (value) => {
+    const text = normalizeSpaces(String(value == null ? '' : value).replace(/[\s\-–—:,]+$/g, ''));
+    if (text.length >= 2 && !out.includes(text)) out.push(text);
+  };
+  push(raw);
+  const noParens = stripParenWrappers(raw);
+  push(noParens);
+  const noPhrases = stripEditionPhrases(noParens);
+  push(noPhrases);
+  push(stripTrailingWrappers(noPhrases));
+  return out;
+}
+
+/**
+ * Language tags to try for one candidate label. English is the default for
+ * video-game items; a Cyrillic title is looked up in `ru` as well.
+ */
+function labelLanguages(text) {
+  return /[А-Яа-яЁё]/.test(text) ? ['ru', 'en'] : ['en'];
+}
+
+function baseLabelValues(entries) {
+  const values = [];
+  const seen = new Set();
+  for (const entry of entries) {
+    for (const label of entry.labels) {
+      const value = `"${escapeSparqlLiteral(label.text)}"@${label.lang}`;
+      if (seen.has(value)) continue;
+      seen.add(value);
+      values.push(value);
+    }
+  }
+  return values;
+}
+
+/**
+ * Second batch: exact-label lookup among items that carry `P1733`.
+ *
+ * `VALUES ?label { "Dishonored"@en … }` + `?item rdfs:label ?label` is an
+ * index lookup (unlike a `FILTER(REGEX(…))` scan, which times out on WDQS).
+ * `skos:altLabel` is a UNION branch: some regional items only exist there.
+ * Series (P179) and date (P577) are fetched for the *base* item, because that
+ * is the metadata the regional SKU is missing.
+ */
+function baseLabelQuery(entries) {
+  const values = baseLabelValues(entries);
+  return `SELECT ?label ?item ?appid ?franchise ?franchiseEn ?franchiseRu ?franchiseMul ?date ?precision WHERE {
+  VALUES ?label { ${values.join(' ')} }
+  { ?item rdfs:label ?label } UNION { ?item skos:altLabel ?label }
+  ?item wdt:P1733 ?appid .
+  OPTIONAL {
+    ?item wdt:P179 ?franchise .
+    OPTIONAL { ?franchise rdfs:label ?franchiseEn . FILTER(LANG(?franchiseEn) = "en") }
+    OPTIONAL { ?franchise rdfs:label ?franchiseRu . FILTER(LANG(?franchiseRu) = "ru") }
+    OPTIONAL { ?franchise rdfs:label ?franchiseMul . FILTER(LANG(?franchiseMul) = "mul") }
+  }
+  OPTIONAL {
+    ?item p:P577 ?st .
+    ?st psv:P577 ?val .
+    ?val wikibase:timeValue ?date .
+    ?val wikibase:timePrecision ?precision .
+  }
+}`;
+}
+
+/** Lowest QID that has a label; `mul` is a label too (Q752241 «Half-Life»). */
+function pickSeries(franchises) {
+  return (
+    [...franchises.values()].sort((a, b) => {
+      const labeledA = a.labelEn || a.labelRu || a.labelMul ? 1 : 0;
+      const labeledB = b.labelEn || b.labelRu || b.labelMul ? 1 : 0;
+      if (labeledA !== labeledB) return labeledB - labeledA;
+      return qidNumber(a.qid) - qidNumber(b.qid);
+    })[0] || null
+  );
+}
+
+/** Earliest year; inside a year the most precise statement, then the earliest. */
+function pickDate(dates) {
+  return (
+    dates
+      .slice()
+      .sort((a, b) => {
+        if (a.year !== b.year) return a.year - b.year;
+        const rank = (PRECISION_RANK[b.precision] || 0) - (PRECISION_RANK[a.precision] || 0);
+        if (rank) return rank;
+        return a.time - b.time;
+      })[0] || null
+  );
+}
+
+/**
+ * WDQS answer of `baseLabelQuery` → `Map<QID, {qid, labels[], appids[],
+ * franchise, date}>`. Keyed by the **base item**, not by appid: one item can
+ * carry several P1733 values (regional re-releases), and one label can match
+ * several items (that is what the guards in `matchBaseFor` are for).
+ */
+function parseBaseLabelResponse(data) {
+  const rows =
+    data && data.results && Array.isArray(data.results.bindings) ? data.results.bindings : [];
+  const byQid = new Map();
+  for (const row of rows) {
+    const itemQid = row.item ? lastSegment(row.item.value) : null;
+    if (!itemQid || !/^Q\d+$/.test(itemQid)) continue;
+    if (!byQid.has(itemQid)) {
+      byQid.set(itemQid, {
+        qid: itemQid,
+        labels: [],
+        appids: [],
+        franchises: new Map(),
+        dates: [],
+      });
+    }
+    const item = byQid.get(itemQid);
+    const label = row.label && row.label.value ? String(row.label.value) : null;
+    if (label && !item.labels.includes(label)) item.labels.push(label);
+    const appid =
+      row.appid && /^\d+$/.test(String(row.appid.value)) ? Number(row.appid.value) : null;
+    if (appid && !item.appids.includes(appid)) item.appids.push(appid);
+
+    const franchiseQid = row.franchise ? lastSegment(row.franchise.value) : null;
+    if (franchiseQid && /^Q\d+$/.test(franchiseQid)) {
+      if (!item.franchises.has(franchiseQid)) {
+        item.franchises.set(franchiseQid, {
+          qid: franchiseQid,
+          labelEn: null,
+          labelRu: null,
+          labelMul: null,
+        });
+      }
+      const franchise = item.franchises.get(franchiseQid);
+      if (row.franchiseEn && row.franchiseEn.value && !franchise.labelEn) {
+        franchise.labelEn = String(row.franchiseEn.value);
+      }
+      if (row.franchiseRu && row.franchiseRu.value && !franchise.labelRu) {
+        franchise.labelRu = String(row.franchiseRu.value);
+      }
+      if (row.franchiseMul && row.franchiseMul.value && !franchise.labelMul) {
+        franchise.labelMul = String(row.franchiseMul.value);
+      }
+    }
+
+    if (row.date && row.date.value) {
+      const date = parseWbDate(row.date.value, row.precision && row.precision.value);
+      if (
+        date &&
+        !item.dates.some((known) => known.iso === date.iso && known.precision === date.precision)
+      ) {
+        item.dates.push(date);
+      }
+    }
+  }
+
+  const result = new Map();
+  for (const [qid, item] of byQid) {
+    const series = pickSeries(item.franchises);
+    const date = pickDate(item.dates);
+    result.set(qid, {
+      qid,
+      labels: item.labels,
+      appids: item.appids,
+      franchise: series
+        ? {
+            qid: series.qid,
+            labelEn: series.labelEn || series.labelMul || null,
+            labelRu: series.labelRu,
+          }
+        : null,
+      date,
+      releaseYear: date ? date.year : null,
+      releasePrecision: date ? date.precision : null,
+    });
+  }
+  return result;
+}
+
+/**
+ * The actual bridge decision for one SKU.
+ *
+ * Guards, in order (a merge is a data change, so all of them are hard):
+ *   1. **exact normalized title** — `coreTitle(wdLabel) === coreTitle(steamName)`
+ *      (`Dishonored` ↔ `Dishonored RHCP`, but not `Dishonored 2`, not
+ *      `Fallout` vs `Fallout: New Vegas`);
+ *   2. **numeric signature** — `Gothic 1` never bridges to `Gothic 2`;
+ *   3. the item must carry `P1733` (it is a Steam game, not a novel/film);
+ *   4. if the SKU already knows its series (another provider), the base item
+ *      must agree — a different franchise means a different work.
+ *
+ * @returns {{qid,appid,label,franchise,date}|null}
+ */
+function matchBaseFor(name, items, options = {}) {
+  const key = editions.coreTitle(name);
+  if (!key) return null;
+  const signature = editions.numericSignature(editions.coreTokens(name));
+  const franchiseKey = options.franchiseKey || null;
+  let best = null;
+  for (const item of items.values()) {
+    if (!item.appids.length) continue;
+    const label = item.labels.find(
+      (candidate) =>
+        editions.coreTitle(candidate) === key &&
+        editions.numericSignature(editions.coreTokens(candidate)) === signature
+    );
+    if (!label) continue;
+    if (
+      franchiseKey &&
+      item.franchise &&
+      item.franchise.qid &&
+      `wd:${item.franchise.qid}` !== franchiseKey
+    ) {
+      continue;
+    }
+    const appid = Math.min(...item.appids);
+    const score = (item.franchise ? 2 : 0) + (item.releaseYear ? 1 : 0);
+    if (
+      !best ||
+      score > best.score ||
+      (score === best.score && qidNumber(item.qid) < qidNumber(best.qid))
+    ) {
+      best = {
+        qid: item.qid,
+        appid,
+        label,
+        franchise: item.franchise,
+        date: item.date,
+        score,
+      };
+    }
+  }
+  return best;
+}
+
+/** Does this links document need the bridge (no P1733 answer, no base yet)? */
+function needsBaseBridge(doc, ttlMs, nowMs) {
+  if (!doc) return false;
+  const wdDoc = doc.wikidata && typeof doc.wikidata === 'object' ? doc.wikidata : null;
+  if (!wdDoc || wdDoc.resolved !== true) return false;
+  if (wdDoc.qid) return false;
+  if (wdDoc.baseQid) return false;
+  const at = Date.parse(String(wdDoc.baseCheckedAt || ''));
+  if (Number.isFinite(at) && nowMs - at >= 0 && nowMs - at < ttlMs) return false;
+  return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -429,13 +837,116 @@ function isLinksFresh(doc, ttlMs, nowMs) {
 }
 
 /**
+ * B6 second batch: for every considered appid whose links document has no
+ * `P1733` answer and no base identity yet, look the base version up by exact
+ * label and write `baseQid`/`baseAppid` next to the SKU's own (absent) QID.
+ *
+ * Politeness is inherited: the same `runBatched` dispatcher (≤450 values per
+ * query, pause, persisted breaker, shared lock in `franchise-jobs.js`), one
+ * extra query for the whole library.
+ */
+async function runBaseBridge(context) {
+  const { considered, provider, options, now, ttlMs, budget } = context;
+  const report = {
+    candidates: 0,
+    asked: 0,
+    queries: 0,
+    answered: 0,
+    bridged: 0,
+    misses: 0,
+    skipped: null,
+    errors: [],
+  };
+
+  const pending = considered.filter((game) =>
+    needsBaseBridge(readLinksDoc(game.appid), ttlMs, now())
+  );
+  report.candidates = pending.length;
+  if (!pending.length) {
+    report.skipped = 'nothing_to_bridge';
+    return report;
+  }
+
+  const selected = pending.slice(0, budget);
+  const labelsByAppid = new Map();
+  for (const game of selected) {
+    const labels = [];
+    for (const text of labelVariants(game.name)) {
+      for (const lang of labelLanguages(text)) labels.push({ text, lang });
+    }
+    if (labels.length) labelsByAppid.set(String(game.appid), labels);
+  }
+  const appids = [...labelsByAppid.keys()];
+  if (!appids.length) {
+    report.skipped = 'no_label';
+    return report;
+  }
+  report.asked = appids.length;
+
+  const result = await provider.runBatched(
+    appids,
+    (batch) =>
+      baseLabelQuery(
+        batch.map((appid) => ({ labels: labelsByAppid.get(appid) || [] }))
+      ),
+    'appid',
+    { ...options, parse: parseBaseLabelResponse }
+  );
+  report.queries = result.queries;
+  report.answered = result.credits.size;
+  report.skipped = result.skipped || null;
+  report.errors = [...(result.errors || [])];
+
+  // Same rule as the first pass: a positive hit is real data and is written
+  // even after a partial failure; a "nothing found" marker is written only
+  // when Wikidata actually answered everything.
+  const cleanAnswer = !result.skipped && !(result.errors || []).length;
+  const fetchedAt = new Date(now()).toISOString();
+  for (const appid of appids) {
+    const game = selected.find((entry) => String(entry.appid) === appid);
+    if (!game) continue;
+    const existing = readLinksDoc(game.appid) || {};
+    const best = matchBaseFor(game.name, result.credits, {
+      franchiseKey: existing.franchiseKey || null,
+    });
+    if (!best && !cleanAnswer) continue;
+    const patch = best
+      ? {
+          baseQid: best.qid,
+          baseAppid: best.appid,
+          baseName: best.label,
+          baseReleaseYear: best.date ? best.date.year : null,
+          baseReleasePrecision: best.date ? best.date.precision : null,
+          baseFranchise: best.franchise,
+          baseMatch: 'label',
+          baseCheckedAt: fetchedAt,
+        }
+      : {
+          baseQid: null,
+          baseAppid: null,
+          baseName: null,
+          baseReleaseYear: null,
+          baseReleasePrecision: null,
+          baseFranchise: null,
+          baseMatch: null,
+          baseCheckedAt: fetchedAt,
+        };
+    writeLinksDoc(game.appid, { fetchedAt, sources: ['wikidata'], wikidata: patch });
+    if (best) report.bridged++;
+    else report.misses++;
+  }
+  return report;
+}
+
+/**
  * Ask Wikidata about the library of one cached profile and write
  * `links/<appid>.json`. Resumable: `links/` is the progress, `force` re-asks
  * everything. The caller (`franchise-jobs.js`) owns the cross-process lock.
  *
  * @param {{profileKey:string, limit?:number, force?:boolean,
  *          fetchImpl?:Function, stateStore?:object, now?:Function,
- *          sleep?:Function, pauseMs?:number, ttlMs?:number}} options
+ *          sleep?:Function, pauseMs?:number, ttlMs?:number,
+ *          bridge?:boolean}} options
  */
 async function enrichFranchises(options = {}) {
   const parsed = gameCache.parseProfileToken(options.profileKey);
@@ -502,56 +1013,172 @@ async function enrichFranchises(options = {}) {
   const selected = candidates.slice(0, budget);
   report.candidates = selected.length;
 
-  if (!selected.length) {
-    report.skipped = 'nothing_to_ask';
-    recordRun(parsed.key, report);
-    return report;
-  }
-
   // The dispatcher (personnel/wikidata.js) owns the batches/pause/breaker.
   const provider = options.wikidata && typeof options.wikidata.runBatched === 'function'
     ? options.wikidata
     : wd;
-  const result = await provider.runBatched(
-    selected.map((game) => game.appid),
-    franchiseQuery,
-    'appid',
-    { ...options, parse: parseFranchiseResponse }
-  );
-  report.wdQueries = result.queries;
-  report.wdAnswered = result.credits.size;
-  report.wdSkipped = result.skipped || null;
-  report.wdDisabledUntil = result.disabledUntil || null;
-  report.errors = [...(result.errors || [])];
-  if (result.skipped) report.skipped = result.skipped;
 
-  // A skipped/erroring answer is not an answer: positive hits may still be
-  // written (they are real data), misses are not cached.
-  const cleanAnswer = !result.skipped && !(result.errors || []).length;
-  const fetchedAt = new Date(now()).toISOString();
-  for (const game of selected) {
-    const hit = result.credits.get(String(game.appid)) || null;
-    if (!hit && !cleanAnswer) continue;
-    const franchise = hit && hit.franchise ? hit.franchise : null;
-    writeLinksDoc(game.appid, {
-      fetchedAt,
-      franchiseKey: franchise && franchise.qid ? `wd:${franchise.qid}` : null,
-      sources: ['wikidata'],
-      wikidata: {
-        qid: hit ? hit.qid : null,
-        franchise,
-        releaseYear: hit ? hit.releaseYear : null,
-        releasePrecision: hit ? hit.releasePrecision : null,
-        releaseDate: hit ? hit.releaseDate : null,
-        resolved: true,
+  if (selected.length) {
+    const result = await provider.runBatched(
+      selected.map((game) => game.appid),
+      franchiseQuery,
+      'appid',
+      { ...options, parse: parseFranchiseResponse }
+    );
+    report.wdQueries = result.queries;
+    report.wdAnswered = result.credits.size;
+    report.wdSkipped = result.skipped || null;
+    report.wdDisabledUntil = result.disabledUntil || null;
+    report.errors = [...(result.errors || [])];
+    if (result.skipped) report.skipped = result.skipped;
+
+    // A skipped/erroring answer is not an answer: positive hits may still be
+    // written (they are real data), misses are not cached.
+    const cleanAnswer = !result.skipped && !(result.errors || []).length;
+    const fetchedAt = new Date(now()).toISOString();
+    for (const game of selected) {
+      const hit = result.credits.get(String(game.appid)) || null;
+      if (!hit && !cleanAnswer) continue;
+      const franchise = hit && hit.franchise ? hit.franchise : null;
+      writeLinksDoc(game.appid, {
         fetchedAt,
-      },
-    });
-    report.updated++;
-    if (hit && hit.releaseYear) report.releaseYearsFilled++;
+        franchiseKey: franchise && franchise.qid ? `wd:${franchise.qid}` : null,
+        sources: ['wikidata'],
+        wikidata: {
+          qid: hit ? hit.qid : null,
+          franchise,
+          releaseYear: hit ? hit.releaseYear : null,
+          releasePrecision: hit ? hit.releasePrecision : null,
+          releaseDate: hit ? hit.releaseDate : null,
+          resolved: true,
+          fetchedAt,
+          // A fresh P1733 miss invalidates the previous bridge answer: the
+          // base version must be re-checked against this new answer.
+          ...(hit && hit.qid ? {} : { baseCheckedAt: null }),
+        },
+      });
+      report.updated++;
+      if (hit && hit.releaseYear) report.releaseYearsFilled++;
+    }
+  } else {
+    report.skipped = 'nothing_to_ask';
+  }
+
+  // B6: the base-version bridge runs in the same pass (same budget/lock).
+  if (options.bridge === false) {
+    report.bridge = { skipped: 'disabled_by_option' };
+  } else {
+    const bridge = await runBaseBridge({ considered, provider, options, now, ttlMs, budget });
+    report.bridge = bridge;
+    report.bridgeCandidates = bridge.candidates;
+    report.bridgeQueries = bridge.queries;
+    report.bridgeAnswered = bridge.answered;
+    report.bridged = bridge.bridged;
+    report.bridgeMisses = bridge.misses;
+    if (bridge.errors && bridge.errors.length) {
+      report.errors = [...report.errors, ...bridge.errors];
+    }
+    if (!selected.length && bridge.asked) report.skipped = null;
   }
 
   recordRun(parsed.key, report);
+  return report;
+}
+
+/* ------------------------------------------------------------------ */
+/* B6: canonical metadata of the base version (store appdetails)       */
+/* ------------------------------------------------------------------ */
+
+function baseDetailsBudgetFromEnv() {
+  const raw = Number(process.env.GAMES_BASE_DETAILS_BUDGET);
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : DEFAULT_BASE_DETAILS_BUDGET;
+}
+
+/**
+ * Fetch `appdetails` for the base versions the bridge discovered, into
+ * `details-base/<baseAppid>.json`.
+ *
+ * Why a separate pass (and not part of the WD batch):
+ *   - it is a *store* request (1.7 s pause, 30-minute store breaker), not a
+ *     WDQS one — mixing them would hold the WD lock for a minute;
+ *   - it is deliberately tiny: `GAMES_BASE_DETAILS_BUDGET` (default **20**)
+ *     appids per run, because only the `qid: null` regionals need it;
+ *   - `details/` is untouched: the owner does not own the base card, and that
+ *     directory's file count is the enrich job's progress counter.
+ *
+ * A `success:false` answer is an honest "no store page" and is cached (the
+ * store client owns that decision); a network/429 failure is NOT written.
+ *
+ * @param {{profileKey:string, limit?:number, storeClient?:object,
+ *          now?:Function}} options
+ */
+async function enrichBaseDetails(options = {}) {
+  const parsed = gameCache.parseProfileToken(options.profileKey);
+  if (!parsed) {
+    throw new FranchiseError(
+      `"profile": expected "steam-<steamid64>", got: ${options.profileKey}.`,
+      'invalid_profile'
+    );
+  }
+  const library = gameCache.getLibrary(parsed.userKey);
+  if (!library) {
+    throw new FranchiseError(
+      `"profile": not a cached games profile: ${parsed.key}. Run the import first.`,
+      'unknown_profile'
+    );
+  }
+  const budget = Math.max(1, Number(options.limit) || baseDetailsBudgetFromEnv());
+  const report = {
+    profile: parsed.key,
+    budget,
+    candidates: 0,
+    fetched: 0,
+    unavailable: 0,
+    skippedFresh: 0,
+    remaining: 0,
+    skipped: null,
+    errors: [],
+  };
+
+  const needed = [];
+  for (const game of library.games || []) {
+    const appid = Number(game.appid);
+    if (!Number.isInteger(appid) || appid <= 0) continue;
+    const link = readLinks(appid);
+    if (!link || !link.baseAppid) continue;
+    if (needed.includes(link.baseAppid)) continue;
+    const existing = gameCache.getDetailsBase(link.baseAppid);
+    if (existing && store.detailsFresh(existing)) {
+      report.skippedFresh++;
+      continue;
+    }
+    needed.push(link.baseAppid);
+  }
+  report.candidates = needed.length;
+  const selected = needed.slice(0, budget);
+  report.remaining = Math.max(0, needed.length - selected.length);
+  if (!selected.length) {
+    report.skipped = 'nothing_to_fetch';
+    return report;
+  }
+
+  const client = options.storeClient || store.createClient(options.storeOptions || {});
+  const now = typeof options.now === 'function' ? options.now : () => Date.now();
+  for (const baseAppid of selected) {
+    try {
+      const doc = await client.getAppDetails(baseAppid);
+      // `fetchedAt` drives `store.detailsFresh()` on the next run — the store
+      // parser does not stamp the clock (the caller owns it, same as enrich.js).
+      const payload = { ...doc, fetchedAt: new Date(now()).toISOString() };
+      await gameCache.saveDetailsBase(baseAppid, payload);
+      if (payload.success === false) report.unavailable++;
+      else report.fetched++;
+    } catch (err) {
+      // A breaker/network answer is deferred: nothing is written, the next
+      // run retries (AGENTS §1: no negative cache for an outage).
+      report.errors.push((err && err.code) || 'store_error');
+    }
+  }
   return report;
 }
 
@@ -560,6 +1187,7 @@ module.exports = {
   STATE_PATH,
   DEFAULT_BUDGET,
   DEFAULT_TTL_DAYS,
+  DEFAULT_BASE_DETAILS_BUDGET,
   PRECISION_BY_WD,
   FranchiseError,
   linksPath,
@@ -571,10 +1199,17 @@ module.exports = {
   saveFranchiseState,
   appidValues,
   franchiseQuery,
+  baseLabelQuery,
+  labelVariants,
+  labelLanguages,
+  parseBaseLabelResponse,
+  matchBaseFor,
+  needsBaseBridge,
   parseWbDate,
   parseFranchiseResponse,
   isLinksFresh,
   budgetFromEnv,
   ttlMsFromEnv,
   enrichFranchises,
+  enrichBaseDetails,
 };

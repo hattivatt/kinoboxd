@@ -358,6 +358,12 @@ function buildGamesStats(input = {}) {
   // at all the payload must stay exactly M1: every game is kept, every M2
   // bucket stays empty and `meta.pending` says why.
   const details = input.details && typeof input.details === 'object' ? input.details : {};
+  // B6: appdetails of the **base** version of a regional SKU
+  // (`details-base/<baseAppid>.json`). Used only as a metadata fallback
+  // (name/year/genres/studios) — never for DLC lists, ownership flags or
+  // completion, which belong to the owned edition.
+  const detailsBase =
+    input.detailsBase && typeof input.detailsBase === 'object' ? input.detailsBase : {};
   const spyDocs = input.spy && typeof input.spy === 'object' ? input.spy : {};
   const reviewDocs = input.reviews && typeof input.reviews === 'object' ? input.reviews : {};
   // M4-B: `franchise.readLinks` views keyed by appid (optional input, so the
@@ -503,14 +509,80 @@ function buildGamesStats(input = {}) {
   const hoursOf = (work) => work.minutes / 60;
 
   /* ---------------- per-work metadata helpers ---------------- */
+  /**
+   * B6: the base-version document of an owned row, or null. `links` carries
+   * `baseAppid` (written by the Wikidata label bridge); the document itself
+   * lives in `details-base/` because the owner does not own that card.
+   */
+  const baseDetailOfAppid = (appid) => {
+    const link = linksOf(linkDocs, appid);
+    if (!link || !link.baseAppid) return null;
+    const doc = detailsBase[String(link.baseAppid)];
+    return doc && doc.success ? doc : null;
+  };
+  const baseDetailOfWork = (work) => {
+    for (const game of work.games) {
+      const doc = baseDetailOfAppid(game.appid);
+      if (doc) return doc;
+    }
+    return null;
+  };
+  /**
+   * The year of one owned row from **its own** metadata, strongest first:
+   *   1. store `appdetails.releaseYear` (the edition's own date);
+   *   2. Wikidata `P577` of the SKU (`links.releaseYear`, M4-B).
+   * Nothing else: a base-version year is not this row's year.
+   */
+  const ownYearOfAppid = (appid) => {
+    const detailYear = releaseYearOf(detailOf(details, appid));
+    if (detailYear != null) return detailYear;
+    const link = linksOf(linkDocs, appid);
+    if (link) {
+      const linkYear = releaseYearOf({ releaseYear: link.releaseYear });
+      if (linkYear != null) return linkYear;
+    }
+    return null;
+  };
+  /**
+   * B6 last resort: the year of the **base version** — a regional SKU has no
+   * item of its own, its work does (`links.baseReleaseYear`, then the base
+   * card's `appdetails` in `details-base/`). Used only when nothing else knows
+   * the year, so a re-release never moves a work that already has a year
+   * (`Grand Theft Auto III` stays 2008, not the 2001 original).
+   */
+  const baseYearOfAppid = (appid) => {
+    const link = linksOf(linkDocs, appid);
+    if (link) {
+      const baseYear = releaseYearOf({ releaseYear: link.baseReleaseYear });
+      if (baseYear != null) return baseYear;
+    }
+    return releaseYearOf(baseDetailOfAppid(appid));
+  };
   const workYear = (work) => {
     let year = null;
     for (const game of work.games) {
-      const value = releaseYearOf(detailOf(details, game.appid));
+      const value = ownYearOfAppid(game.appid);
+      if (value == null) continue;
+      year = year == null ? value : Math.min(year, value);
+    }
+    if (year != null) return year;
+    for (const game of work.games) {
+      const value = baseYearOfAppid(game.appid);
       if (value == null) continue;
       year = year == null ? value : Math.min(year, value);
     }
     return year;
+  };
+  /**
+   * Per-appid year for `gamesIndex`. A row with no year of its own inherits
+   * the work year, so the frontend's canonical recount (`min` over editions)
+   * lands on exactly the same number as `years[]`.
+   */
+  const yearOfAppid = (appid) => {
+    const own = ownYearOfAppid(appid);
+    if (own != null) return own;
+    const work = workByAppid.get(appid);
+    return work ? workYear(work) : baseYearOfAppid(appid);
   };
   const workGenres = (work) => {
     const out = [];
@@ -519,7 +591,39 @@ function buildGamesStats(input = {}) {
         if (!out.includes(name)) out.push(name);
       }
     }
+    if (!out.length) {
+      // B6: a regional SKU has no store page — the work still has genres.
+      for (const name of genreNamesOf(baseDetailOfWork(work))) {
+        if (!out.includes(name)) out.push(name);
+      }
+    }
     return out;
+  };
+  /** B6: canonical (base-version) name of a work, when it differs. */
+  const workCanonicalName = (work) => {
+    const base = baseDetailOfWork(work);
+    if (base && base.name) return String(base.name);
+    for (const game of work.games) {
+      const link = linksOf(linkDocs, game.appid);
+      if (link && link.baseName) return String(link.baseName);
+    }
+    return null;
+  };
+  const workDevelopers = (work) => {
+    for (const game of work.games) {
+      const doc = detailOf(details, game.appid);
+      if (doc && Array.isArray(doc.developers) && doc.developers.length) return [...doc.developers];
+    }
+    const base = baseDetailOfWork(work);
+    return base && Array.isArray(base.developers) ? [...base.developers] : [];
+  };
+  const workPublishers = (work) => {
+    for (const game of work.games) {
+      const doc = detailOf(details, game.appid);
+      if (doc && Array.isArray(doc.publishers) && doc.publishers.length) return [...doc.publishers];
+    }
+    const base = baseDetailOfWork(work);
+    return base && Array.isArray(base.publishers) ? [...base.publishers] : [];
   };
   const workSpy = (work) => {
     for (const game of work.games) {
@@ -642,11 +746,17 @@ function buildGamesStats(input = {}) {
     if (appid == null) continue;
     const completion = completionByAppid.get(appid) || null;
     const doc = detailOf(details, game.appid);
-    const year = releaseYearOf(doc);
+    const baseDoc = baseDetailOfAppid(appid);
+    // B6: the same year chain `workYear` uses, so the frontend's canonical
+    // recount (min year over a work's editions) matches `years[]` exactly.
+    const year = yearOfAppid(appid);
     const spyDoc = spyOf(spyDocs, appid);
     const reviewDoc = reviewsOf(reviewDocs, appid);
     const linkDoc = linksOf(linkDocs, appid);
     const work = workByAppid.get(appid) || null;
+    const genres = genreNamesOf(doc);
+    const developers = doc && Array.isArray(doc.developers) ? [...doc.developers] : [];
+    const publishers = doc && Array.isArray(doc.publishers) ? [...doc.publishers] : [];
     gamesIndex[appid] = {
       appid,
       name: game.name || null,
@@ -666,9 +776,17 @@ function buildGamesStats(input = {}) {
       type: doc ? doc.type : null,
       year,
       releaseYear: year,
-      genres: genreNamesOf(doc),
-      developers: doc && Array.isArray(doc.developers) ? [...doc.developers] : [],
-      publishers: doc && Array.isArray(doc.publishers) ? [...doc.publishers] : [],
+      genres: genres.length ? genres : genreNamesOf(baseDoc),
+      developers: developers.length
+        ? developers
+        : baseDoc && Array.isArray(baseDoc.developers)
+          ? [...baseDoc.developers]
+          : [],
+      publishers: publishers.length
+        ? publishers
+        : baseDoc && Array.isArray(baseDoc.publishers)
+          ? [...baseDoc.publishers]
+          : [],
       categories: categoryNamesOf(doc),
       dlcCount:
         doc && Number.isFinite(Number(doc.dlcCount)) ? Number(doc.dlcCount) : null,
@@ -680,9 +798,10 @@ function buildGamesStats(input = {}) {
       earlyAccess: doc ? Boolean(doc.earlyAccess) : null,
       metadataSources: [
         ...(doc ? ['steam-store'] : []),
+        ...(!doc && baseDoc ? ['steam-store:base'] : []),
         ...(spyDoc ? ['steamspy'] : []),
         ...(reviewDoc ? ['steam-reviews'] : []),
-        ...(linkDoc && linkDoc.qid ? ['wikidata'] : []),
+        ...(linkDoc && (linkDoc.qid || linkDoc.baseQid) ? ['wikidata'] : []),
       ],
       // M4: the five heaviest SteamSpy tags of this game (the full list stays
       // in `cache-games/spy/<appid>.json`; the index is already the biggest
@@ -711,6 +830,14 @@ function buildGamesStats(input = {}) {
         linkDoc && Number.isInteger(Number(linkDoc.releaseYear)) && Number(linkDoc.releaseYear) > 0
           ? Number(linkDoc.releaseYear)
           : null,
+      // B6 (additive): the base version of a regional SKU. `canonicalName` is
+      // the work's own title (`Dishonored` for `Dishonored RHCP`); `name`
+      // above stays the owned edition. Absent keys mean «no bridge», never
+      // «unknown».
+      ...(linkDoc && linkDoc.baseAppid
+        ? { baseAppid: linkDoc.baseAppid, baseQid: linkDoc.baseQid || null }
+        : {}),
+      ...(baseDoc && baseDoc.name ? { canonicalName: String(baseDoc.name) } : {}),
       completion: completion ? completion.percent : null,
       achievements: completion,
     };
@@ -741,6 +868,16 @@ function buildGamesStats(input = {}) {
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
     };
+    // B6: the work's own metadata (base version) when the owned row is a
+    // regional SKU without a store page. Additive: `name` stays the edition.
+    const canonicalName = workCanonicalName(work);
+    if (canonicalName) entry.canonicalName = canonicalName;
+    if (work.games.length > 1 || canonicalName) {
+      const developers = workDevelopers(work);
+      const publishers = workPublishers(work);
+      if (developers.length) entry.developers = developers;
+      if (publishers.length) entry.publishers = publishers;
+    }
     if (work.games.length > 1) {
       entry.editions = work.games.map((edition) => ({
         appid: edition.appid,
@@ -790,7 +927,7 @@ function buildGamesStats(input = {}) {
     .map((work) => {
       const game = work.primary;
       const year = workYear(work);
-      return {
+      const entry = {
         appid: game.appid,
         name: game.name || null,
         iconUrl: iconUrlOf(game.appid, game.img_icon_url),
@@ -800,6 +937,9 @@ function buildGamesStats(input = {}) {
         canonicalWorkKey: work.workKey,
         editionCount: work.games.length,
       };
+      const canonicalName = workCanonicalName(work);
+      if (canonicalName) entry.canonicalName = canonicalName;
+      return entry;
     });
 
   // Platform hours are in the library snapshot (playtime_*_forever). Deck hours
@@ -1338,6 +1478,15 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
   const details = gameCache.listDetails(appids);
   // M4-B: Wikidata links (franchise key + P577 year) for the games index.
   const links = franchise.readLinksMap(appids);
+  // B6: appdetails of the base versions the label bridge resolved (the owner
+  // does not own those cards — they live in `details-base/`).
+  const baseAppids = [];
+  for (const link of Object.values(links)) {
+    if (link && link.baseAppid && !baseAppids.includes(link.baseAppid)) {
+      baseAppids.push(link.baseAppid);
+    }
+  }
+  const detailsBase = gameCache.listDetailsBase(baseAppids);
   // M5-B: canonical edition index. Persisted in `cache-games/editions.json`
   // (manual overrides survive); a read-only cache (worktree) still works —
   // the index is then rebuilt in memory for this request.
@@ -1370,6 +1519,8 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     spy: gameCache.listSpy(appids),
     reviews: gameCache.listReviews(appids),
     links,
+    // B6: base-version metadata for regional SKUs (year/genres/studios/name).
+    detailsBase,
     // M5-B: canonical works (one game per owner-visible title).
     editions: editionDoc,
     includeFree: options.includeFree !== false,
