@@ -1,0 +1,17 @@
+[
+  {
+    "accountId": "epic-account-1",
+    "artifactId": "9d2d0eb64d5c44529cece33fe2a46482",
+    "totalTime": 36000
+  },
+  {
+    "accountId": "epic-account-1",
+    "artifactId": "5c0e4c8b3a9f4c7e8d1b2a3c4d5e6f70",
+    "totalTime": 1800
+  },
+  {
+    "accountId": "epic-account-1",
+    "artifactId": "4fe75bbc5a674f4f9b356b5c90567da5",
+    "totalTime": 0
+  }
+]

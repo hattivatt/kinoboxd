@@ -1,0 +1,51 @@
+{
+  "records": [
+    {
+      "appName": "Fortnite",
+      "namespace": "fn",
+      "catalogItemId": "4fe75bbc5a674f4f9b356b5c90567da5",
+      "productId": "prod-fortnite",
+      "sandboxType": "PUBLIC",
+      "country": "US",
+      "platform": ["Windows"],
+      "acquisitionDate": "2019-01-01T00:00:00.000Z"
+    },
+    {
+      "appName": "UnrealEngine",
+      "namespace": "ue",
+      "catalogItemId": "ue-item-000000000000000000000000",
+      "sandboxType": "PUBLIC",
+      "platform": ["Windows"],
+      "acquisitionDate": "2019-02-01T00:00:00.000Z"
+    },
+    {
+      "appName": "PrivateGame",
+      "namespace": "ns-private",
+      "catalogItemId": "priv-item-00000000000000000000000",
+      "sandboxType": "PRIVATE",
+      "platform": ["Windows"],
+      "acquisitionDate": "2019-03-01T00:00:00.000Z"
+    },
+    {
+      "appName": "AndroidOnlyGame",
+      "namespace": "ns-android",
+      "catalogItemId": "android-item-00000000000000000000",
+      "sandboxType": "PUBLIC",
+      "platform": ["Android"],
+      "acquisitionDate": "2019-04-01T00:00:00.000Z"
+    },
+    {
+      "appName": "TheWitcher3",
+      "namespace": "ns-witcher",
+      "catalogItemId": "9d2d0eb64d5c44529cece33fe2a46482",
+      "productId": "prod-witcher",
+      "sandboxType": "PUBLIC",
+      "country": "US",
+      "platform": ["Windows", "Mac"],
+      "acquisitionDate": "2020-05-05T00:00:00.000Z"
+    }
+  ],
+  "responseMetadata": {
+    "nextCursor": "cursor-page-2"
+  }
+}
