@@ -5136,3 +5136,68 @@ img { display: block; }
 }
 
 .modal.modal-wide { width: min(560px, 100%); }
+
+/* ── M6a: GOG secondary library (connect card + «Источники» widget) ── */
+.book-source-card[data-source="gog"] {
+  grid-column: 1 / -1;
+  border-top: 2px solid rgba(177, 140, 255, 0.55);
+}
+.book-source-logo.is-gog {
+  background: rgba(177, 140, 255, 0.13);
+  border: 1px solid rgba(177, 140, 255, 0.3);
+  color: #d9c9ff;
+  font-size: 10px;
+}
+.games-gog-status {
+  margin: 10px 0 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.games-gog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.games-sources-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.games-source-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.8fr) minmax(0, 1fr) minmax(0, 1.1fr);
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.games-source-row:last-child { border-bottom: 0; }
+.games-source-name { font-weight: 700; color: var(--text); }
+.games-source-numbers { font-variant-numeric: tabular-nums; color: var(--muted); }
+.games-source-state { font-size: 10.5px; color: var(--muted-2); text-align: right; }
+.games-source-row.is-journal .games-source-name { color: #a9e2ff; }
+.games-source-row.is-gog .games-source-name { color: #d9c9ff; }
+.games-source-row.is-soon { opacity: 0.65; }
+.games-sources-secondary {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+.games-sources-secondary-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.games-sources-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--muted);
+}

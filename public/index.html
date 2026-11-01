@@ -948,6 +948,12 @@
             </nav>
           </div>
           <div class="topbar-actions">
+            <button type="button" class="btn btn-ghost" id="games-connections" hidden title="Подключения: GOG и другие библиотеки" aria-label="Подключения">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 7H7a5 5 0 0 0 0 10h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><path d="M8 12h8"/>
+              </svg>
+              <span>Подключения</span>
+            </button>
             <button type="button" class="btn btn-ghost games-refresh" id="games-refresh" hidden title="Перечитать библиотеку и достижения этого профиля Steam">
               <span class="spinner spinner-sm" id="games-refresh-spinner" hidden aria-hidden="true"></span>
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1046,6 +1052,43 @@
                 переключение — через список профилей сверху.
               </p>
             </article>
+
+            <article class="book-source-card" data-source="gog" id="games-gog-card">
+              <div class="book-source-head">
+                <span class="book-source-logo is-gog" aria-hidden="true">GOG</span>
+                <span class="book-source-copy">
+                  <span class="book-source-title">GOG</span>
+                  <span class="book-source-hint">вторая библиотека того же владельца · часы отдельно от Steam</span>
+                </span>
+              </div>
+
+              <p class="games-gog-status" id="games-gog-status">GOG: не подключён</p>
+
+              <div class="books-source-form" id="games-gog-form">
+                <button type="button" class="btn btn-primary books-source-submit" id="games-gog-login">
+                  <span class="spinner spinner-sm" id="games-gog-login-spinner" hidden aria-hidden="true"></span>
+                  <span id="games-gog-login-label">Войти через GOG</span>
+                </button>
+                <label class="books-field" for="games-gog-code">
+                  <span class="books-field-label">code из адресной строки <span>после входа на GOG</span></span>
+                  <input class="books-input" id="games-gog-code" name="gog-code" type="text" autocomplete="off" spellcheck="false" placeholder="вставьте code">
+                </label>
+                <div class="books-source-error" id="games-gog-error" role="alert" hidden></div>
+                <div class="games-gog-actions">
+                  <button type="button" class="btn btn-primary books-source-submit" id="games-gog-connect">Подключить</button>
+                  <button type="button" class="btn btn-ghost" id="games-gog-import" hidden>Импортировать библиотеку</button>
+                  <button type="button" class="btn btn-link" id="games-gog-logout" hidden>Отключить</button>
+                </div>
+              </div>
+
+              <p class="book-source-note">
+                GOG не отдаёт чужую библиотеку публично. Кнопка «Войти через GOG» открывает страницу входа GOG;
+                после входа браузер попадёт на <code>embed.gog.com/on_login_success</code> — скопируйте
+                значение <code>code</code> из адресной строки и вставьте сюда. Код одноразовый. Часы GOG
+                показываются отдельной строкой и никогда не складываются с часами Steam: игра могла
+                запускаться в обеих библиотеках.
+              </p>
+            </article>
           </div>
         </section>
 
@@ -1109,6 +1152,19 @@
           </section>
 
           <div class="widgets" id="games-widgets">
+            <section class="widget w-games-sources" id="games-sources-widget" aria-labelledby="games-sources-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-sources-title"><span class="w-dot blue"></span>Источники</h2>
+                <span class="widget-note" id="games-sources-note"></span>
+              </div>
+              <div class="games-sources-body" id="games-sources-body"></div>
+              <div class="games-sources-secondary" id="games-sources-secondary" hidden></div>
+              <div class="chart-foot">
+                <span><i class="swatch blue"></i>Steam — журнал, GOG — вторая библиотека</span>
+                <span class="chart-foot-hint">часы по источникам не суммируются: одна игра могла запускаться в обеих</span>
+              </div>
+            </section>
+
             <section class="widget w-games-recent" id="games-recent-widget" aria-labelledby="games-recent-title" hidden>
               <div class="widget-head recent-head">
                 <h2 class="widget-title" id="games-recent-title"><span class="w-dot green"></span>Недавно играл</h2>
