@@ -334,7 +334,13 @@ test('U5×M5-B: the strip shows one card per canonical work, not per edition', a
     { now },
   );
   assert.equal(merged.items.length, 1);
-  assert.equal(merged.items[0].appid, 462780);
+  // U6: the server's canonical row owns the card face (primary edition 937) —
+  // it already carries the aggregated hours and the primary appid, so a newer
+  // launch of a secondary edition must not repaint the card with an edition
+  // name. The index still fills the icon/date the payload may have trimmed.
+  assert.equal(merged.items[0].appid, 937);
+  assert.equal(merged.items[0].name, 'Darksiders');
+  assert.equal(merged.items[0].primaryAppid, 937);
   assert.equal(merged.items[0].hours2w, 1.2);
   assert.equal(merged.items[0].hoursTotalText, '21,0 ч');
 });

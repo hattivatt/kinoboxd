@@ -55,8 +55,8 @@ async function view() {
 test('index.html carries the M2 widgets', () => {
   const html = readPublic('index.html');
   for (const id of [
-    'games-decades-widget', 'games-decades-list',
-    'games-years-widget', 'games-years-chart',
+    'games-decades-widget', 'games-decades-donut', 'games-decades-legend',
+    'games-years-widget', 'games-years-donut', 'games-years-legend',
     'games-genres-widget', 'games-genres-chart', 'games-genres-more',
     'games-meta-widget', 'games-meta-body',
     'games-achievements-widget', 'games-achievements-body',

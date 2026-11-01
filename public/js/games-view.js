@@ -1547,6 +1547,9 @@ export function normalizeGameCard(raw) {
   };
   return {
     appid,
+    // Canonical edition of the work (M5-B payload); the cover prefers it so
+    // both editions of one game show the same header.
+    primaryAppid: numOrNull(source.primaryAppid ?? source.primary_appid),
     name: firstString(source.name, details && details.name, appid != null ? `appid ${appid}` : ''),
     iconUrl: /^https?:\/\//i.test(text(source.iconUrl)) ? text(source.iconUrl) : '',
     hours: normalizeHours(source),
@@ -1842,8 +1845,12 @@ export const RECENT_STRIP_WINDOW_DAYS = 30;
  * M5-B editions: two store editions of one game (GTA III vs GTA III
  * re-release, BioShock vs Remastered) are **one canonical work** in every
  * other widget, so they are one card here too. `canonicalWorkKey` from the
- * payload/index is the merge key (fallback: appid); 2-week hours add up across
- * editions, the newest launch wins the card face (its appid/icon).
+ * payload/index is the merge key (fallback: appid, then the index's
+ * appid→work map so a payload row without the key still merges); 2-week hours
+ * add up across editions. The server's `recentlyPlayed` row is the canonical
+ * one (primary edition, aggregated hours) and keeps the card face when both
+ * sources describe the same work; the index fills the gaps (icon/date) and
+ * wins the face only among its own rows.
  */
 export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STRIP_LIMIT, now = Date.now() } = {}) {
   const index = gamesIndex && typeof gamesIndex === 'object' ? gamesIndex : {};
@@ -1852,16 +1859,30 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
   /** merge key → { face fields, hours2wByAppid, hoursTotal, fresh, recent } */
   const rows = new Map();
 
-  const push = (raw, fallbackEntry) => {
+  // appid → canonical work key, taken from the index once. A payload row that
+  // predates `canonicalWorkKey` (or a test fixture without it) then lands in
+  // the same card as its editions instead of painting the work twice.
+  const workByAppid = new Map();
+  for (const entry of Object.values(index)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const key = firstString(entry.canonicalWorkKey);
+    const appid = numOrNull(entry.appid);
+    if (key && appid != null) workByAppid.set(`appid:${appid}`, key);
+  }
+
+  const push = (raw, fallbackEntry, { server = false } = {}) => {
     const item = raw && typeof raw === 'object' ? raw : {};
     const entry = fallbackEntry && typeof fallbackEntry === 'object' ? fallbackEntry : {};
     const name = firstString(item.name, item.title, entry.name);
     if (!name) return;
     const appid = numOrNull(item.appid ?? entry.appid);
-    const workKey = firstString(item.canonicalWorkKey, entry.canonicalWorkKey);
     const appidKey = appid != null ? `appid:${appid}` : `name:${name}`;
+    const workKey = firstString(item.canonicalWorkKey, entry.canonicalWorkKey)
+      || workByAppid.get(appidKey)
+      || '';
     // Canonical work first: editions of one game share a card (M5-B).
     const key = workKey ? `work:${workKey}` : appidKey;
+    const primaryAppid = numOrNull(item.primaryAppid ?? entry.primaryAppid) ?? appid;
     const hours2w = numOrNull(item.hours2w ?? item.playtime_2weeks ?? entry.hours2w);
     const hoursTotal = numOrNull(
       item.hoursTotal ?? item.canonicalHours ?? item.hours ?? entry.canonicalHours ?? entry.hours
@@ -1880,6 +1901,7 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
       if (fresh) hours2wByAppid.set(appidKey, hours2w);
       rows.set(key, {
         appid,
+        primaryAppid,
         name,
         rtime,
         lastPlayed,
@@ -1890,6 +1912,10 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
         // «Недавно» = 2-week hours or a launch inside the window. Older launches
         // still fill the strip after them (the limit is what keeps it short).
         recent: fresh || recent,
+        // Card-face provenance: `true` for the payload's canonical row.
+        fromServer: server,
+        faceRtime: rtime,
+        faceFresh: fresh,
       });
       return;
     }
@@ -1902,18 +1928,33 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     }
     previous.fresh = previous.fresh || fresh;
     previous.recent = previous.recent || (fresh || recent);
-    // The newest launch wins the card face; an older edition keeps its hours
-    // in the merged row (the payload entry must not lose 2-week hours either).
-    if (rtime > previous.rtime || (rtime === previous.rtime && fresh && !previous.fresh)) {
-      previous.appid = appid;
-      previous.name = name;
+    // The launch stamp is the work's newest one, whatever the source: the
+    // index knows a launch the trimmed payload row may have missed.
+    if (rtime > previous.rtime) {
       previous.rtime = rtime;
       previous.lastPlayed = lastPlayed;
+    }
+    // The face (name/appid that opens the card) follows the canonical rule:
+    // server row over index row; inside one source, the newest launch wins.
+    const winsFace = previous.fromServer === server
+      ? rtime > previous.faceRtime || (rtime === previous.faceRtime && fresh && !previous.faceFresh)
+      : server;
+    if (winsFace) {
+      previous.appid = appid;
+      previous.primaryAppid = primaryAppid ?? previous.primaryAppid;
+      previous.name = name;
+      previous.fromServer = server;
+      previous.faceRtime = rtime;
+      previous.faceFresh = fresh;
       if (iconUrl) previous.iconUrl = iconUrl;
+    } else if (!previous.iconUrl && iconUrl) {
+      // The server row may arrive without an icon (trimmed payload): the
+      // index is allowed to fill it without touching the face.
+      previous.iconUrl = iconUrl;
     }
   };
 
-  for (const item of arr(recentlyPlayed)) push(item, null);
+  for (const item of arr(recentlyPlayed)) push(item, null, { server: true });
   for (const entry of Object.values(index)) push(entry, entry);
 
   const byRecent = (left, right) =>
@@ -1935,6 +1976,9 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
       const hoursTotalText = row.hoursTotal != null ? hoursText(row.hoursTotal) : '';
       return {
         appid: row.appid,
+        // The cover is built from the canonical primary edition's appid; the
+        // card still opens on the face appid.
+        primaryAppid: row.primaryAppid ?? row.appid,
         name: row.name,
         hours2w,
         hours2wText,
