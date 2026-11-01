@@ -57,6 +57,10 @@ const GENRE_WEIGHT_KEY = 'kinoboxd.games.cloudweight.v1';
 const POLL_INTERVAL = 1400;
 const ENRICH_POLL_INTERVAL = 3500;
 const ENRICH_POLL_LIMIT = 120;
+// The profile catalogue is server state (another browser may import a profile).
+// Re-reading it on every tab activation keeps the switcher honest; the throttle
+// keeps a quick tab flip-flop from spamming `/api/games/profiles`.
+const PROFILES_RELOAD_MS = 30_000;
 const GAME_PLURAL = ['игра', 'игры', 'игр'];
 const TOP_LIMIT = 10;
 const BACKLOG_LIMIT = 24;
@@ -74,6 +78,7 @@ const state = {
   seq: 0,
   profiles: [],
   profilesLoaded: false,
+  profilesLoadedAt: 0,
   profileKey: '',
   job: null, // { id, profile, status, failed, startedAt }
   pollTimer: 0,
@@ -213,6 +218,17 @@ function showLoading(visible) {
   if (node) node.hidden = !visible;
 }
 
+/**
+ * A profile switch empties `state.data` but leaves the previous owner's numbers
+ * in the DOM until the new payload lands. Hide the dashboard and show the
+ * loader instead: a stale summary under a new chip is a lie (§2.0).
+ */
+function markDashboardLoading(visible) {
+  const dash = $('games-dash');
+  if (dash && visible) dash.hidden = true;
+  if (visible) showLoading(true);
+}
+
 function showError(error, mapped = null) {
   const host = $('games-error');
   if (!host) return;
@@ -293,14 +309,18 @@ function renderProfiles() {
 
   for (const profile of state.profiles) {
     const active = profile.key === state.profileKey;
+    // `label` is the owner-facing name typed at import; the persona is what
+    // Steam says. Two owners of one account are told apart by the label, so it
+    // wins in the chip and the persona stays as the tooltip.
+    const chipName = text(profile.label) || text(profile.personaName) || profile.key;
     const button = el('button', {
       type: 'button',
       class: `games-profile-chip${active ? ' is-active' : ''}`,
       'aria-pressed': active ? 'true' : 'false',
-      title: `${profile.personaName}${profile.gameCount != null ? ` · ${fmtInt(profile.gameCount)} ${plural(profile.gameCount, GAME_PLURAL)}` : ''}`,
+      title: `${chipName}${profile.personaName && profile.personaName !== chipName ? ` · ${profile.personaName}` : ''}${profile.gameCount != null ? ` · ${fmtInt(profile.gameCount)} ${plural(profile.gameCount, GAME_PLURAL)}` : ''}`,
     });
     button.append(el('span', { class: 'games-profile-dot', 'aria-hidden': 'true' }));
-    button.append(el('span', { class: 'games-profile-name', text: profile.personaName }));
+    button.append(el('span', { class: 'games-profile-name', text: chipName }));
     if (profile.gameCount != null) {
       button.append(el('span', { class: 'games-profile-count', text: fmtInt(profile.gameCount) }));
     }
@@ -323,18 +343,35 @@ async function switchProfile(key) {
     role: state.role, data: null, loading: false, error: null, cache: {}, openId: '',
     query: '', expanded: false, visible: PERSONS_INITIAL, rows: [],
   };
+  // Filters are per owner (§8.5: «сброс при смене профиля»): the new profile
+  // starts from ITS stored choice (or the server defaults), never from the
+  // previous owner's F2P/DLC switches.
+  state.filters = readStoredFilters(next);
   state.selectedDecade = null;
+  state.yearCountGenre = null;
+  state.genresExpanded = false;
+  syncFilterInputs();
+  // The old owner's numbers are already out of `state.data`; hide the DOM too,
+  // so the switch shows the loader instead of a stale dashboard.
+  markDashboardLoading(true);
   renderProfiles();
   await loadStats({ force: true });
   if (state.view === 'personnel') await ensurePersonnel(state.role, { force: true });
 }
 
-async function ensureProfiles({ reload = false } = {}) {
-  if (state.profilesLoaded && !reload) return state.profiles;
+async function ensureProfiles({ reload = false, maxAgeMs = 0 } = {}) {
+  if (state.profilesLoaded) {
+    const age = Date.now() - (state.profilesLoadedAt || 0);
+    // `reload` alone is a hard reload (finishImport needs the new chip); with
+    // `maxAgeMs` it is throttled (tab activation: a quick flip-flop is cheap).
+    const throttled = reload && maxAgeMs > 0 && age <= maxAgeMs;
+    if (!reload || throttled) return state.profiles;
+  }
   try {
     const raw = await getGamesProfiles();
     state.profiles = normalizeProfilesList(raw);
     state.profilesLoaded = true;
+    state.profilesLoadedAt = Date.now();
     // `/profiles` reports `steamKey: { configured, source }` (a boolean and a
     // source label, never the value); an older draft used a bare boolean.
     const flag = raw && typeof raw === 'object'
@@ -396,7 +433,10 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
   const seq = ++state.seq;
   state.loading = true;
   if (!silent) showError(null);
-  if (!silent && state.view !== 'dashboard' && state.view !== 'personnel') showLoading(true);
+  // Without a payload for the selected profile there is nothing honest to
+  // show: hide the (previous owner's) dashboard and paint the loader.
+  if (!silent && !state.data) markDashboardLoading(true);
+  else if (!silent && state.view !== 'dashboard' && state.view !== 'personnel') showLoading(true);
   updateActions();
   try {
     // Filters are sent only when they differ from the server defaults
@@ -505,7 +545,11 @@ async function submitImport(event) {
     }
     state.job = {
       id: jobId,
-      profile: profile || state.profileKey,
+      // A vanity import resolves the owner on the server: `profile` is null
+      // until then. Never seed the job with the previously selected key — that
+      // is how the tab kept activating the OLD profile after a second person's
+      // import (P0). The job's owner arrives with the first status poll.
+      profile: profile || '',
       status: response && typeof response === 'object' ? response : null,
       failed: null,
       startedAt: Date.now(),
@@ -562,6 +606,14 @@ async function pollOnce() {
   try {
     const status = await getGamesImportStatus(job.id, { profile: job.profile });
     job.status = status && typeof status === 'object' ? status : job.status;
+    // P0: a vanity import names its owner only after the profile XML resolves.
+    // The status carries that key — adopt it, so `finishImport`/resume stop
+    // reading the profile that was selected before the import started.
+    const resolved = text(status && status.profile);
+    if (resolved && resolved !== job.profile) {
+      job.profile = resolved;
+      saveJob();
+    }
     if (isJobDone(job.status)) {
       await finishImport(job.status);
       return;
@@ -580,7 +632,7 @@ async function pollOnce() {
       // The status route may not be mounted (or the job already left the
       // server's memory). Ask the stats endpoint directly: a payload means the
       // import finished.
-      const done = await tryStatsAfterJob();
+      const done = await tryStatsAfterJob(job.status);
       if (done) return;
       job.failed = 'задача импорта не найдена на сервере (он мог перезапускаться)';
       saveJob();
@@ -592,8 +644,13 @@ async function pollOnce() {
   }
 }
 
-async function tryStatsAfterJob() {
-  const key = (state.job && state.job.profile) || state.profileKey;
+/** The profile a finished job activates: its own resolved key first (P0). */
+function jobProfileKey(status) {
+  return text(status && status.profile) || text(state.job && state.job.profile) || state.profileKey;
+}
+
+async function tryStatsAfterJob(status) {
+  const key = jobProfileKey(status);
   if (!key) return false;
   try {
     const raw = await getGamesStats({ profile: key });
@@ -643,7 +700,9 @@ function jobFailure(status) {
 }
 
 async function finishImport(status) {
-  const key = (state.job && state.job.profile) || state.profileKey;
+  // P0: the job's own resolved profile wins over whatever was selected before
+  // the import (a vanity import has no key at submit time at all).
+  const key = jobProfileKey(status);
   stopPolling();
   state.job = null;
   saveJob();
@@ -1296,7 +1355,7 @@ function applyFilters(next) {
     includeFree: next.includeFree !== false,
     includeDlc: next.includeDlc === true,
   };
-  safeStorageSet(FILTERS_KEY, JSON.stringify(state.filters));
+  safeStorageSet(filtersStorageKey(), JSON.stringify(state.filters));
   state.loaded = false;
   loadStats({ force: true });
 }
@@ -2221,14 +2280,14 @@ function personnelCacheKey(role) {
 }
 
 /** One personnel request; an older server that only knows `studio` is retried. */
-async function fetchPersonnel(role) {
+async function fetchPersonnel(role, profileKey = state.profileKey) {
   try {
-    return await getGamesPersonnel({ profile: state.profileKey, role });
+    return await getGamesPersonnel({ profile: profileKey, role });
   } catch (error) {
     // `studio` is the pre-split key (developers + publishers mixed). A server
     // that rejects `developer` still answers it, so the UI never goes empty.
     if (role === 'developer' && error && error.code === 'invalid_role') {
-      return getGamesPersonnel({ profile: state.profileKey, role: 'studio' });
+      return getGamesPersonnel({ profile: profileKey, role: 'studio' });
     }
     throw error;
   }
@@ -2237,6 +2296,13 @@ async function fetchPersonnel(role) {
 async function ensurePersonnel(role, { force = false } = {}) {
   const nextRole = normalizePersonnelRole(role) || PERSONNEL_ROLES[0].key;
   if (!state.profileKey) return;
+  // P2: a request started for one owner must never paint another owner's
+  // credits. Capture the profile at request start; every write below is gated
+  // on it still being the selected one (the cache key already names it, but
+  // `state.personnel` is replaced wholesale on a switch, so the role check
+  // alone used to let an in-flight old answer through).
+  const requestProfile = state.profileKey;
+  const sameOwner = () => state.profileKey === requestProfile;
   const changed = state.role !== nextRole;
   state.role = nextRole;
   safeStorageSet(ROLE_KEY, nextRole);
@@ -2249,7 +2315,7 @@ async function ensurePersonnel(role, { force = false } = {}) {
     const searchWrap = $('games-persons-search-wrap');
     if (searchWrap) searchWrap.hidden = true;
   }
-  const key = personnelCacheKey(nextRole);
+  const key = `${requestProfile}:${nextRole}`;
   const cached = state.personnel.cache[key];
   if (cached && !force) {
     state.personnel.role = nextRole;
@@ -2268,8 +2334,9 @@ async function ensurePersonnel(role, { force = false } = {}) {
   renderPersonnel();
   renderPersonsWidget(state.data);
   try {
-    const raw = await fetchPersonnel(nextRole);
+    const raw = await fetchPersonnel(nextRole, requestProfile);
     const data = normalizePersonnel(raw, nextRole);
+    if (!sameOwner()) return; // the tab switched owners while this was in flight
     state.personnel.cache[key] = data;
     if (state.personnel.role === nextRole) {
       state.personnel.data = data;
@@ -2277,6 +2344,7 @@ async function ensurePersonnel(role, { force = false } = {}) {
     }
   } catch (error) {
     if (error && error.status === 401) return;
+    if (!sameOwner()) return;
     const missing = error && (error.status === 404 || error.status === 400);
     state.personnel.cache[key] = normalizePersonnel({ items: [], role: nextRole }, nextRole);
     if (state.personnel.role === nextRole) {
@@ -2289,10 +2357,12 @@ async function ensurePersonnel(role, { force = false } = {}) {
         : { code: (error && error.code) || 'network', message: shortErrorMessage(error) };
     }
   } finally {
-    state.personnel.loading = false;
-    if (state.personnel.role === nextRole) {
-      renderPersonnel();
-      renderPersonsWidget(state.data);
+    if (sameOwner()) {
+      state.personnel.loading = false;
+      if (state.personnel.role === nextRole) {
+        renderPersonnel();
+        renderPersonsWidget(state.data);
+      }
     }
   }
 }
@@ -2615,13 +2685,24 @@ export function initGames({ onActivate } = {}) {
   }
 }
 
-function readStoredFilters() {
+/**
+ * Filter state is per owner (§8.5): the F2P/DLC switches of one profile must
+ * not leak into another's dashboard. The legacy shared key is still read as a
+ * fallback so an existing choice survives the migration.
+ */
+function filtersStorageKey(profileKey = state.profileKey) {
+  const key = text(profileKey);
+  return key ? `kinoboxd.games.filters.${key}.v1` : FILTERS_KEY;
+}
+
+function readStoredFilters(profileKey = state.profileKey) {
+  const raw = safeStorageGet(filtersStorageKey(profileKey)) ?? safeStorageGet(FILTERS_KEY);
   try {
-    const raw = JSON.parse(safeStorageGet(FILTERS_KEY) || 'null');
-    if (raw && typeof raw === 'object') {
+    const parsed = JSON.parse(raw || 'null');
+    if (parsed && typeof parsed === 'object') {
       return {
-        includeFree: raw.includeFree !== false,
-        includeDlc: raw.includeDlc === true,
+        includeFree: parsed.includeFree !== false,
+        includeDlc: parsed.includeDlc === true,
       };
     }
   } catch {
@@ -2673,13 +2754,24 @@ export async function showGames() {
   if (state.onActivate) state.onActivate();
   hydrateJob();
   if (state.job) {
-    showScreen('progress');
-    renderProgress();
-    startPolling();
-    return;
+    // Progress is only honest while the job is the selected profile's job (or
+    // has not resolved its owner yet). Otherwise the tab would open on an old
+    // import instead of the profile the user is looking at.
+    const owner = text(state.job.profile);
+    if (owner && state.profileKey && owner !== state.profileKey) {
+      state.job = null;
+      saveJob();
+    } else {
+      showScreen('progress');
+      renderProgress();
+      startPolling();
+      return;
+    }
   }
   if (state.loading) return;
-  await ensureProfiles();
+  // The catalogue is server state (another browser can import a profile):
+  // re-read it on activation, throttled so a tab flip-flop is cheap (P1a).
+  await ensureProfiles({ reload: true, maxAgeMs: PROFILES_RELOAD_MS });
   if (!state.profileKey) {
     showScreen('import');
     renderProfiles();
@@ -2712,8 +2804,21 @@ function hydrateJob() {
   if (state.job) return;
   const stored = readJob();
   if (!stored) return;
+  // A resumed job may only speak for the owner it names. A stored job whose
+  // profile is not the selected one is stale (the user switched, or another
+  // profile was imported meanwhile): drop it instead of letting it drag the
+  // tab onto an old import and overwrite `kinoboxd.games.profile.v1`.
+  // An unresolved job (vanity import, `profile: ''`) belongs to the flow that
+  // started it, so it is kept.
+  if (stored.profile && state.profileKey && stored.profile !== state.profileKey) {
+    safeStorageRemove(JOB_KEY);
+    return;
+  }
   state.job = stored;
-  if (stored.profile) state.profileKey = stored.profile;
+  if (stored.profile && !state.profileKey) {
+    state.profileKey = stored.profile;
+    safeStorageSet(PROFILE_KEY, stored.profile);
+  }
 }
 
 /** Called by main.js when another tab takes over. */
