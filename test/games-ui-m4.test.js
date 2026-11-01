@@ -132,9 +132,9 @@ test('layout: four new cards sit in 6+6 pairs and keep the M1–M3 order', () =>
   const at = (id) => html.indexOf(`id="${id}"`);
   const order = [
     'games-yearcount-widget', 'games-tags-widget', 'games-scores-widget',
-    'games-genres-widget', 'games-modes-widget', 'games-franchises-widget',
-    'games-dlc-widget', 'games-access-widget', 'games-meta-widget',
-    'games-achievements-widget', 'games-calendar-widget', 'games-persons-widget',
+    'games-franchises-widget', 'games-dlc-widget',
+    'games-meta-widget', 'games-achievements-widget',
+    'games-calendar-widget', 'games-persons-widget',
   ];
   for (let index = 1; index < order.length; index += 1) {
     assert.ok(at(order[index - 1]) < at(order[index]),
@@ -151,12 +151,13 @@ test('layout: four new cards sit in 6+6 pairs and keep the M1–M3 order', () =>
   assert.equal(span('.w-games-scores'), 6);
   assert.equal(span('.w-games-franchises'), 6);
   assert.equal(span('.w-games-dlc'), 6);
-  // The existing pairs stay untouched.
-  assert.equal(span('.w-games-genres'), 8);
-  assert.equal(span('.w-games-modes'), 4);
-  assert.equal(span('.w-games-access'), 4);
-  assert.equal(span('.w-games-meta'), 4);
-  assert.equal(span('.w-games-achievements'), 4);
+  // U5: the modes/access pair is gone, so genres pairs with Pareto (6+6) and
+  // enrichment pairs with achievements (6+6) — the grid still has no holes.
+  assert.equal(span('.w-games-genres'), 6);
+  assert.equal(span('.w-games-pareto'), 6);
+  assert.equal(span('.w-games-meta'), 6);
+  assert.equal(span('.w-games-achievements'), 6);
+  assert.equal(span('.w-games-recent'), 12);
   // Mobile: every new card spans the full row.
   assert.match(css, /\.w-games-tags,[\s\S]{0,400}\.w-games-scores,[\s\S]{0,400}\.w-games-dlc[\s\S]{0,400}grid-column: span 12/);
 });
