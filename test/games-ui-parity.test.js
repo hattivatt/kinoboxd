@@ -242,13 +242,20 @@ test('games.js wires the new modals and no extra network calls', () => {
   assert.match(games, /renderYears\(data\)/);
   assert.match(games, /state\.selectedDecade/);
   // The years card is permanent: no decade gate, the full range renders by
-  // default and a bar click opens that year's games. The empty state is a
+  // default and a year slice opens that year's games. The empty state is a
   // placeholder inside the widget, never a hidden card.
   assert.doesNotMatch(games, /Выберите десятилетие слева/);
   assert.match(games, /function renderYears\(data\)[\s\S]{0,900}widget\.hidden = false;/);
-  assert.match(games, /function renderYears\(data\)[\s\S]{0,2600}onYearClick: \(year\) => openYearModal\(data, year\)/);
+  // U6: both cards are donuts (films/books parity), a year slice opens the
+  // year list and a decade slice is a selection, not a list.
+  assert.match(games, /function renderDecades\(data\)[\s\S]{0,2200}renderDonut\(donutHost/);
+  assert.match(games, /function renderYears\(data\)[\s\S]{0,3000}renderDonut\(donutHost/);
+  assert.match(games, /function renderYears\(data\)[\s\S]{0,3600}openYearModal\(data, year\)/);
+  assert.doesNotMatch(games, /games-decades-list/);
   assert.match(games, /Нет данных по годам релиза/);
-  assert.match(games, /onYearClick/);
+  // `onYearClick` now belongs to the full-width count chart only: the years
+  // donut uses the donut `onSelect`.
+  assert.match(games, /function renderYearCount\(data\)[\s\S]{0,4200}onYearClick/);
   assert.doesNotMatch(games, /fetch\(/);
   assert.doesNotMatch(games, /https?:\/\/api\.steampowered\.com/);
 

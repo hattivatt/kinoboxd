@@ -1,15 +1,18 @@
 'use strict';
 
 /**
- * Games: the decade-narrowed «Годы релиза» chart stays clickable.
+ * Games: the decade → years donut pair stays clickable (films/books parity).
  *
- * `renderYears()` paints every release year by default and narrows to ten
- * columns after a decade click (the films-parity drilldown pair). A bar click
- * must open the year modal in *both* states — the user requirement is
- * «десятилетие → годы → год → список игр», not just the full-range chart.
+ * U6 replaced the ranked decade list + year bar chart with two donuts:
+ *   - «Десятилетия» is a donut whose slice is a *selection* (click narrows the
+ *     years donut, a second click restores the full range);
+ *   - «Годы релиза» is a donut that paints every release year by default and
+ *     only the ten years of the selected decade after a decade click.
  *
- * The smoke drives the real `games.js` in the headless DOM shim: click the
- * 2010-е row, then the 2012 bar, and read the modal.
+ * A year slice must open the year modal in *both* states — the user
+ * requirement is «десятилетие → годы → год → список игр», not just the
+ * full-range chart. The smoke drives the real `games.js` in the headless DOM
+ * shim: click the 2010-е slice, then the 2012 slice, and read the modal.
  */
 
 const test = require('node:test');
@@ -135,16 +138,24 @@ function walk(node, visit) {
   visit(node);
   for (const child of node.children || []) walk(child, visit);
 }
-function yearHits() {
+
+/** Donut slices of `host` as `{ key, node }` (SVG paths carry `data-key`). */
+function slices(hostId) {
   const hits = [];
-  walk(nodeFor('games-years-chart'), (node) => {
-    if (node.attributes && node.attributes['data-year']) hits.push(node);
+  walk(nodeFor(hostId), (node) => {
+    const key = node.attributes && node.attributes['data-key'];
+    if (key) hits.push({ key, node });
   });
   return hits;
 }
-function decadeRows() {
-  return nodeFor('games-decades-list').children
-    .filter((node) => node.classList && node.classList.contains('genre-row'));
+function yearKeys() {
+  return slices('games-years-donut').map((slice) => slice.key);
+}
+function yearSlice(year) {
+  return slices('games-years-donut').find((slice) => slice.key === `year-${year}`).node;
+}
+function decadeSlice(start) {
+  return slices('games-decades-donut').find((slice) => slice.key === `decade-${start}`).node;
 }
 function lastModalText() {
   const root = nodeFor('modal-root');
@@ -154,46 +165,61 @@ function lastModalText() {
 function resetModals() { nodeFor('modal-root').children = []; }
 async function wait(ms = 0) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
-test('games years: a bar click opens the year modal in narrowed and full-range states', async () => {
+test('games donut pair: decade selects, year slice opens the year modal in both states', async () => {
   const games = await import('../public/js/games.js');
   games.initGames({ onActivate() {} });
   await games.showGames();
   await wait(40);
 
-  // Full range first: every release year is a click target.
+  // Full range first: every release year is a clickable slice (newest first).
   assert.equal(nodeFor('games-years-widget').hidden, false);
-  assert.deepEqual(
-    yearHits().map((node) => node.attributes['data-year']),
-    ['2010', '2011', '2012', '2013', '2014', '2015', '2016', '2017', '2018', '2019', '2020'],
-  );
-  yearHits().find((node) => node.attributes['data-year'] === '2012').click();
+  assert.deepEqual(yearKeys(), [
+    'year-2020', 'year-2019', 'year-2018', 'year-2017', 'year-2016',
+    'year-2015', 'year-2014', 'year-2013', 'year-2012', 'year-2011', 'year-2010',
+  ]);
+  const firstSlice = yearSlice(2012);
+  assert.equal(firstSlice.attributes.role, 'button');
+  firstSlice.click();
   await wait(20);
   assert.match(lastModalText(), /2 игры 2012 года/);
   resetModals();
 
-  // Decade click narrows the pair to ten columns; 2012 must stay clickable.
-  const row2010 = decadeRows().find((row) => textOf(row).includes('2010-е'));
-  assert.ok(row2010, 'the 2010-е decade row exists');
-  row2010.click();
+  // The decade donut is a selection: 2010-е narrows the years donut to ten
+  // slices, and the slice itself is highlighted (`is-selected`).
+  const decade2010 = decadeSlice(2010);
+  assert.ok(decade2010, 'the 2010-е decade slice exists');
+  assert.equal(decade2010.attributes['aria-pressed'], 'false');
+  decade2010.click();
   await wait(20);
   assert.match(textOf(nodeFor('games-years-note')).replace(/\s+/g, ' '), /2010–2019/);
-  assert.deepEqual(
-    yearHits().map((node) => node.attributes['data-year']),
-    ['2010', '2011', '2012', '2013', '2014', '2015', '2016', '2017', '2018', '2019'],
-  );
-  const hit2012 = yearHits().find((node) => node.attributes['data-year'] === '2012');
-  assert.equal(hit2012.classList.contains('is-clickable'), true);
-  assert.equal(hit2012.attributes.role, 'button');
-  hit2012.click();
+  assert.equal(decadeSlice(2010).attributes['aria-pressed'], 'true');
+  assert.deepEqual(yearKeys(), [
+    'year-2019', 'year-2018', 'year-2017', 'year-2016', 'year-2015',
+    'year-2014', 'year-2013', 'year-2012', 'year-2011', 'year-2010',
+  ]);
+  yearSlice(2012).click();
   await wait(20);
   assert.match(lastModalText(), /2 игры 2012 года/);
   resetModals();
 
-  // Second decade click restores the full range and clicks still work.
-  row2010.click();
+  // A second click on the same slice clears the selection (full range back).
+  decadeSlice(2010).click();
   await wait(20);
-  assert.equal(yearHits().length, 11);
-  yearHits().find((node) => node.attributes['data-year'] === '2012').click();
+  assert.equal(yearKeys().length, 11);
+  assert.equal(decadeSlice(2010).attributes['aria-pressed'], 'false');
+  yearSlice(2012).click();
   await wait(20);
   assert.match(lastModalText(), /2 игры 2012 года/);
+});
+
+test('games decades donut: the unknown-year bucket is a note, not a slice', async () => {
+  const games = await import('../public/js/games.js');
+  games.initGames({ onActivate() {} });
+  await games.showGames();
+  await wait(40);
+
+  // The fixture has no year-less games: the note carries no unknown button.
+  assert.doesNotMatch(textOf(nodeFor('games-decades-note')), /без года/);
+  // And no slice pretends to be a decade for them.
+  assert.equal(slices('games-decades-donut').length, 2);
 });

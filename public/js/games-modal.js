@@ -100,6 +100,11 @@ function initialOf(name) {
   return chars.length ? chars[0].toUpperCase() : '?';
 }
 
+function positiveId(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
 function fallbackStyle(name) {
   let hash = 0;
   for (const char of String(name || '?')) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
@@ -136,6 +141,70 @@ export function gameIconEl(game, { className = 'game-icon' } = {}) {
       'aria-hidden': 'true',
       text: initialOf(name),
     }));
+  });
+  return img;
+}
+
+const STEAM_CDN = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+
+/**
+ * Cover URLs for one game, best first. No network probe happens here: the
+ * browser walks the chain through `error` listeners in `gameCoverEl`.
+ *
+ *   header.jpg (460×215)     — the store header of the SKU, the real artwork;
+ *   capsule_231x87.jpg       — the older capsule, same CDN;
+ *   the 32×32 community icon — last Steam-side step;
+ *   initials                 — client-side fallback (no request at all).
+ *
+ * The canonical `primaryAppid` wins over the edition's own appid so two
+ * editions of one work paint the same cover. `library_hero.jpg` is *not* in
+ * the chain: it is missing for a lot of regional/older SKUs, and a 404 there
+ * would burn a request on every card.
+ */
+export function gameCoverUrls(game) {
+  const appid = positiveId(game && (game.primaryAppid ?? game.appid));
+  const urls = [];
+  if (appid) {
+    urls.push(`${STEAM_CDN}/${appid}/header.jpg`);
+    urls.push(`${STEAM_CDN}/${appid}/capsule_231x87.jpg`);
+  }
+  const icon = game && /^https?:\/\//i.test(String(game.iconUrl || '')) ? String(game.iconUrl) : '';
+  if (icon) urls.push(icon);
+  return urls;
+}
+
+/**
+ * Wide cover (116×116 strip art, 88×88 card head) with the fallback chain.
+ * Returns an <img> that swaps its own `src` down the chain, or the initials
+ * block when every URL failed / none exists. Small 34×34 rows keep
+ * `gameIconEl`: a 32×32 icon is the right size there, not a cropped header.
+ */
+export function gameCoverEl(game, { className = 'game-cover' } = {}) {
+  const name = game && game.name ? game.name : '';
+  const urls = gameCoverUrls(game);
+  const fallback = () => el('div', {
+    class: `${className} game-icon-fallback`,
+    style: fallbackStyle(name),
+    'aria-hidden': 'true',
+    text: initialOf(name),
+  });
+  if (!urls.length) return fallback();
+  const img = el('img', {
+    class: className,
+    src: urls[0],
+    alt: '',
+    loading: 'lazy',
+    decoding: 'async',
+    referrerpolicy: 'no-referrer',
+  });
+  let step = 0;
+  img.addEventListener('error', () => {
+    step += 1;
+    if (step < urls.length) {
+      img.setAttribute('src', urls[step]);
+      return;
+    }
+    img.replaceWith(fallback());
   });
   return img;
 }
@@ -683,7 +752,7 @@ function renderCardPersonnel(game) {
 function fillGameCard({ head, copy, body, game }) {
   clear(copy);
   clear(body);
-  head.insertBefore(gameIconEl(game, { className: 'modal-game-icon' }), copy);
+  head.insertBefore(gameCoverEl(game, { className: 'modal-game-icon' }), copy);
   copy.append(el('div', {
     class: 'modal-role',
     text: game.type && game.type !== 'game' ? `Steam · ${game.typeLabel}` : 'Игра · Steam',

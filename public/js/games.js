@@ -24,7 +24,7 @@ import {
   getGamesPersonnel, getGamesFranchises,
 } from './api.js';
 import {
-  $, el, clear, fmtInt, plural, icon, toast, errorBox, showTooltip, moveTooltip, hideTooltip,
+  $, el, clear, fmtInt, fmtPercent, plural, icon, toast, errorBox, showTooltip, moveTooltip, hideTooltip,
   shortErrorMessage, debounce,
 } from './ui.js';
 import { withPreservedScroll } from './books-refresh.js';
@@ -45,7 +45,7 @@ import {
 } from './games-view.js';
 import {
   configureGamesModals, openGameCardModal, openGameListModal, openPersonModal, personAvatarEl,
-  openFranchiseModal, gameIconEl,
+  openFranchiseModal, gameCoverEl,
 } from './games-modal.js';
 import { renderAchievementCalendar, renderAchievementStreaks } from './games-charts.js';
 
@@ -67,6 +67,15 @@ const ENRICH_POLL_LIMIT = 120;
 // keeps a quick tab flip-flop from spamming `/api/games/profiles`.
 const PROFILES_RELOAD_MS = 30_000;
 const GAME_PLURAL = ['игра', 'игры', 'игр'];
+// Donut palettes: the same two arrays films/books use (DECADE_COLORS /
+// YEAR_COLORS in widgets.js / books.js), so «Десятилетия» and «Годы» read as
+// the same charts across tabs. Kept local: the games tab must not import a
+// films/books module just for six hex strings.
+const DECADE_COLORS = ['#00e054', '#40bcf4', '#ff8000', '#e8253f', '#b18cff', '#ffd166'];
+const YEAR_COLORS = [
+  '#00e054', '#40bcf4', '#ff8000', '#e8253f', '#b18cff', '#ffd166',
+  '#00c9a7', '#f472b6', '#8ddb3f', '#7189ff', '#ff9e64', '#5eead4',
+];
 const TOP_LIMIT = 10;
 const PERSONS_INITIAL = 15;
 const PERSONS_BATCH = 50;
@@ -1176,7 +1185,10 @@ function renderRecentStrip(data) {
       title: `${item.name}${item.lastPlayedText ? ` · последний раз ${item.lastPlayedText}` : ''}`,
       'aria-label': `${item.name}: открыть карточку игры`,
     });
-    art.append(gameIconEl({ name: item.name, iconUrl: item.iconUrl }, { className: 'games-recent-icon' }));
+    art.append(gameCoverEl(
+      { name: item.name, appid: item.appid, primaryAppid: item.primaryAppid, iconUrl: item.iconUrl },
+      { className: 'games-recent-icon' },
+    ));
     card.append(art);
     card.append(el('span', { class: 'games-recent-name', text: item.name, title: item.name }));
     card.append(el('span', {
@@ -1264,15 +1276,27 @@ function applyFilters(next) {
   loadStats({ force: true });
 }
 
-function selectDecade(data, row) {
-  if (row.unknown) {
-    openUnknownDecadeModal(data);
-    return;
-  }
-  const same = state.selectedDecade && state.selectedDecade.start === row.decade;
-  state.selectedDecade = same ? null : { start: row.decade, label: row.label };
+function selectDecade(data, decade) {
+  // Selection, not navigation: a click narrows the years donut to the decade,
+  // a second click on the same slice brings the full range back (films/books
+  // semantics, widgets.js `selectDecade`). The list itself opens from the
+  // «N игр без года» note, not from a slice.
+  const same = state.selectedDecade && state.selectedDecade.start === decade.start;
+  state.selectedDecade = same ? null : { start: decade.start, label: decade.label };
   renderDecades(data);
   renderYears(data);
+}
+
+/** «N игр без года» — the honest note line under the decade donut. */
+function unknownYearsButton(count, data) {
+  const btn = el('button', {
+    type: 'button',
+    class: 'note-link',
+    text: `${fmtInt(count)} ${plural(count, GAME_PLURAL)} без года`,
+  });
+  btn.title = 'Показать игры без года релиза';
+  btn.addEventListener('click', () => openUnknownDecadeModal(data));
+  return btn;
 }
 
 function openUnknownDecadeModal(data) {
@@ -1293,63 +1317,74 @@ function openUnknownDecadeModal(data) {
 
 function renderDecades(data) {
   const widget = $('games-decades-widget');
-  const host = $('games-decades-list');
+  const donutHost = $('games-decades-donut');
+  const legendHost = $('games-decades-legend');
   const note = $('games-decades-note');
-  if (!widget || !host) return;
-  clear(host);
+  if (!widget || !donutHost || !legendHost) return;
+
   const view = decadesView(data.decades);
+  clear(donutHost);
+  clear(legendHost);
   if (!view) {
     widget.hidden = true;
+    if (note) note.textContent = '';
     return;
   }
   widget.hidden = false;
+
+  // «Год неизвестен» is a bucket, not a decade: it never becomes a slice
+  // (books parity). It is reported as a clickable note line instead, so the
+  // 29 year-less games are visible without inventing a decade for them.
+  const rows = view.rows.filter((row) => !row.unknown);
+  const unknown = view.rows.find((row) => row.unknown) || null;
+  const total = rows.reduce((sum, row) => sum + row.count, 0);
+  const selected = state.selectedDecade;
+
   if (note) {
-    const selected = state.selectedDecade ? ` · выбрано: ${state.selectedDecade.label}` : '';
-    note.textContent = `${view.note}${selected}`;
+    const parts = [];
+    if (rows.length) {
+      parts.push(`${fmtInt(rows.length)} ${plural(rows.length, ['десятилетие', 'десятилетия', 'десятилетий'])}`);
+    }
+    if (selected) parts.push(`выбрано: ${selected.label}`);
+    note.textContent = parts.join(' · ');
+    if (unknown && unknown.count > 0) {
+      if (note.textContent) note.append(document.createTextNode(' · '));
+      note.append(unknownYearsButton(unknown.count, data));
+    }
   }
-  view.rows.forEach((row, index) => {
-    const selected = Boolean(state.selectedDecade && !row.unknown
-      && state.selectedDecade.start === row.decade);
-    const node = el('div', {
-      class: `genre-row is-ranked is-clickable${row.unknown ? ' is-unknown' : ''}${selected ? ' is-selected' : ''}`,
-      title: row.hint,
-      role: 'button',
-      tabIndex: 0,
-      'aria-pressed': selected ? 'true' : 'false',
-      'aria-label': row.unknown
-        ? `${row.label}: ${row.countText} игр без года. Открыть список`
-        : `${row.label}: ${row.countText} игр. ${selected ? 'Снять выбор' : 'Показать годы десятилетия'}`,
-    });
-    node.append(el('span', { class: 'rank-num', text: String(index + 1) }));
-    const name = el('div', { class: 'genre-name' });
-    name.append(el('span', { class: 'genre-label', text: row.label }));
-    name.append(el('span', { class: 'genre-count', text: row.countText }));
-    node.append(name);
-    const track = el('div', { class: 'genre-track' });
-    const fill = el('div', { class: 'genre-fill' });
-    track.append(fill);
-    node.append(track);
-    node.append(el('div', { class: 'genre-avg', text: row.hoursText || '—' }));
-    host.append(node);
-    requestAnimationFrame(() => {
-      fill.style.width = `${row.widthPercent}%`;
-    });
-    node.addEventListener('pointerenter', (event) => {
-      showTooltip(row.title, `${row.hint}${row.unknown ? ' · нажмите, чтобы открыть список' : ' · нажмите, чтобы показать годы'}`);
-      moveTooltip(event);
-    });
-    node.addEventListener('pointermove', moveTooltip);
-    node.addEventListener('pointerleave', hideTooltip);
-    const activate = () => {
+
+  if (!total) {
+    donutHost.append(decadeHint('Нет данных по десятилетиям'));
+    return;
+  }
+
+  const segments = rows.map((row, index) => ({
+    key: `decade-${row.decade}`,
+    label: row.label,
+    value: row.count,
+    hours: row.hours,
+    color: DECADE_COLORS[index % DECADE_COLORS.length],
+    decadeStart: row.decade,
+  }));
+
+  renderDonut(donutHost, {
+    segments,
+    legendHost,
+    selectedKey: selected ? `decade-${selected.start}` : null,
+    centerValue: fmtInt(total),
+    centerLabel: 'игр с годом',
+    ariaLabel: 'Распределение игр по десятилетиям релиза. Выберите десятилетие, чтобы увидеть годы',
+    primary: (seg) => `${seg.label} · ${fmtInt(seg.value)} ${plural(seg.value, GAME_PLURAL)}`,
+    secondary: (seg) => [
+      fmtPercent(seg.value, total),
+      seg.hours != null ? `${hoursText(seg.hours)} по данным Steam` : '',
+    ].filter(Boolean).join(' · '),
+    onSelect: (seg) => {
       hideTooltip();
-      selectDecade(data, row);
-    };
-    node.addEventListener('click', activate);
-    node.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      activate();
-    });
+      const start = Number(seg.decadeStart);
+      if (!Number.isFinite(start) || start <= 0) return;
+      selectDecade(data, { start, label: seg.label });
+    },
   });
 }
 
@@ -1391,28 +1426,33 @@ function openYearModal(data, year, { genre = null } = {}) {
 
 function renderYears(data) {
   const widget = $('games-years-widget');
-  const host = $('games-years-chart');
+  const donutHost = $('games-years-donut');
+  const legendHost = $('games-years-legend');
   const note = $('games-years-note');
-  if (!widget || !host) return;
+  const titleText = $('games-years-title-text');
+  if (!widget || !donutHost || !legendHost) return;
   // The years card is a permanent block: it is never hidden. A hidden card
   // looked like a lost feature (the 01.11 regression), so the widget stays and
   // an empty payload gets an honest placeholder instead.
   widget.hidden = false;
-  clear(host);
+  clear(donutHost);
+  clear(legendHost);
 
   const view = yearsView(data.years);
+  const decade = state.selectedDecade;
+  if (titleText) titleText.textContent = decade ? `Годы релиза · ${decade.label}` : 'Годы релиза';
   if (!view) {
     if (note) note.textContent = '';
-    host.append(decadeHint('Нет данных по годам релиза'));
+    donutHost.append(decadeHint('Нет данных по годам релиза'));
     return;
   }
 
-  // Default: every release year in one chart (no decade click required).
-  // A selected decade narrows the chart to its ten years; clicking the same
-  // decade again clears the selection and brings the full range back.
-  const decade = state.selectedDecade;
-  const start = decade ? Number(decade.start) : null;
-  const years = decade ? yearsInDecade(data.years, start) : view.years;
+  // Default: every release year in one donut (no decade click required — the
+  // «график всегда есть» requirement). A selected decade narrows the chart to
+  // its ten years; clicking the same decade again restores the full range.
+  const years = (decade ? yearsInDecade(data.years, decade.start) : view.years)
+    .slice()
+    .sort((a, b) => b.year - a.year);
   const total = years.reduce((sum, item) => sum + item.count, 0);
   // The normalised payload keeps the unknown-year bucket aside (`unknownYear`),
   // so the note stays honest: 303 known + 29 without a year.
@@ -1420,7 +1460,7 @@ function renderYears(data) {
   if (note) {
     if (decade) {
       note.textContent = total
-        ? `${start}–${start + 9} · ${fmtInt(years.length)} ${plural(years.length, ['год', 'года', 'лет'])} · ${fmtInt(total)} ${plural(total, GAME_PLURAL)}`
+        ? `${decade.start}–${Number(decade.start) + 9} · ${fmtInt(years.length)} ${plural(years.length, ['год', 'года', 'лет'])} · ${fmtInt(total)} ${plural(total, GAME_PLURAL)}`
         : `${decade.label} · нет игр`;
     } else {
       note.textContent = unknownCount > 0
@@ -1429,21 +1469,40 @@ function renderYears(data) {
     }
   }
   if (!years.length) {
-    host.append(decadeHint(decade
+    donutHost.append(decadeHint(decade
       ? `В ${decade.label} нет игр с известным годом`
       : `Годы релиза неизвестны — ${fmtInt(unknownCount)} ${plural(unknownCount, GAME_PLURAL)}`));
     return;
   }
 
-  renderYearBars(host, years, {
-    unitForms: GAME_PLURAL,
-    shareLabel: decade ? 'игр десятилетия' : 'игр с известным годом',
-    emptyText: 'Нет данных по годам релиза',
+  const segments = years.map((item, index) => ({
+    key: `year-${item.year}`,
+    label: String(item.year),
+    value: item.count,
+    hours: item.hours,
+    year: item.year,
+    color: YEAR_COLORS[index % YEAR_COLORS.length],
+  }));
+
+  renderDonut(donutHost, {
+    segments,
+    legendHost,
+    centerValue: fmtInt(total),
+    centerLabel: decade ? 'игр десятилетия' : 'игр с годом',
     ariaLabel: decade
-      ? `Игры по годам релиза: ${start} — ${start + 9}`
+      ? `Игры по годам релиза: ${decade.start} — ${Number(decade.start) + 9}`
       : `Игры по годам релиза: ${view.minYear} — ${view.maxYear}`,
-    yearNote: () => 'год релиза из Steam Store / Wikidata',
-    onYearClick: (year) => openYearModal(data, year),
+    primary: (seg) => `${seg.label} · ${fmtInt(seg.value)} ${plural(seg.value, GAME_PLURAL)}`,
+    secondary: (seg) => [
+      seg.hours != null ? hoursText(seg.hours) : '',
+      `${fmtPercent(seg.value, total)} ${decade ? 'игр десятилетия' : 'игр с годом'}`,
+    ].filter(Boolean).join(' · '),
+    onSelect: (seg) => {
+      hideTooltip();
+      const year = Number(seg.year);
+      if (!Number.isFinite(year) || year <= 0) return;
+      openYearModal(data, year);
+    },
   });
 }
 

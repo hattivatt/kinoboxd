@@ -51,6 +51,8 @@ function ringSlice(cx, cy, outer, inner, from, to) {
  * @param {string} [opts.centerLabel]
  * @param {HTMLElement} [opts.legendHost]
  * @param {string} [opts.ariaLabel]
+ * @param {(seg:object,total:number)=>string} [opts.primary] tooltip first line
+ *   (default `«label — value»`); the games charts add the unit there
  * @param {(seg:object,total:number)=>string} [opts.secondary]
  * @param {string|null} [opts.selectedKey] persistently highlighted segment
  * @param {(seg:object)=>void} [opts.onSelect] controlled selection handler
@@ -100,7 +102,9 @@ export function renderDonut(host, opts = {}) {
   const activeKey = () => (controlled ? selectedKey : (pinned || selectedKey));
 
   const describe = (seg) => {
-    const primary = `${seg.label} — ${fmtInt(seg.value)}`;
+    const primary = typeof opts.primary === 'function'
+      ? String(opts.primary(seg, total))
+      : `${seg.label} — ${fmtInt(seg.value)}`;
     const secondary = opts.secondary
       ? opts.secondary(seg, total)
       : `${fmtPercent(seg.value, total)} от всех`;
@@ -176,7 +180,7 @@ export function renderDonut(host, opts = {}) {
       cx: 110, cy: 110, r: 78, fill: 'none',
       stroke: seg.color, 'stroke-width': 32, class: 'donut-seg',
     });
-    circle.dataset.key = seg.key;
+    circle.setAttribute('data-key', seg.key);
     svg.append(circle);
     map.set(seg.key, circle);
     bindSegment(circle, seg);
@@ -193,7 +197,7 @@ export function renderDonut(host, opts = {}) {
           fill: seg.color,
           class: 'donut-seg',
         });
-        path.dataset.key = seg.key;
+        path.setAttribute('data-key', seg.key);
         svg.append(path);
         map.set(seg.key, path);
         bindSegment(path, seg);
