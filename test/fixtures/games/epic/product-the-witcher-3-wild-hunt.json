@@ -1,0 +1,85 @@
+{
+  "productName": "The Witcher 3: Wild Hunt - Game of the Year Edition",
+  "_slug": "the-witcher-3-wild-hunt",
+  "_images_": [
+    "https://cdn2.unrealengine.com/Diesel%2Fproduct%2Fratings%2FUSK_18-400x400-7ac38d8b4b29de7c5f10a52ebf17f124e361279e.png",
+    "https://cdn2.unrealengine.com/Diesel%2Fproduct%2Fratings%2FPEGI_18_Rating-208x254-f12521f5a5231d533ff539144709543cdf68f031.jpg",
+    "https://cdn2.unrealengine.com/Diesel%2Fproductv2%2Fthe-witcher-3-wild-hunt%2FR18-front-label-521x179-c27c5ed1931b8a7e8488a82881f3ee0a7ae3da80.png",
+    "https://cdn2.unrealengine.com/Diesel%2Fproduct%2Fratings%2FDEJUS_Rating_Symbol_16-500x500-bf09d216fc01ea01bb99704bf60773df669c3a45.png",
+    "https://cdn2.unrealengine.com/Diesel%2Fproductv2%2Fthe-witcher-3-wild-hunt%2F18_S_V_L_D-540x117-e30be92020f882174220e7dbaaa30b455e81e553.png",
+    "https://cdn2.unrealengine.com/Diesel%2Fproduct%2Fratings%2FRussia_18-98x107-4474139e28a4664ac06c88e0fb7b204ea6775ba4.png",
+    "https://cdn2.unrealengine.com/Diesel%2Fproductv2%2Fthe-witcher-3-wild-hunt%2FESRB_M_TheWitcher3.jpg-398x190-de35b57c84ba0664a714545847744221e7186323.png"
+  ],
+  "pages": [
+    {
+      "type": "productHome",
+      "productName": "The Witcher 3: Wild Hunt - Game of the Year Edition",
+      "data": {
+        "meta": {
+          "releaseDate": "2015-05-12T19:00:00.000Z",
+          "_type": "Epic Store Meta",
+          "publisher": [
+            "CD PROJEKT RED S.A."
+          ],
+          "logo": {
+            "_type": "Epic Store Image"
+          },
+          "developer": [
+            "CD PROJEKT RED S.A."
+          ],
+          "platform": [
+            "Windows"
+          ],
+          "tags": [
+            "RPG",
+            "OPEN_WORLD",
+            "ADVENTURE"
+          ]
+        },
+        "hero": {
+          "portraitBackgroundImageUrl": "https://cdn2.unrealengine.com/egs-thewitcher3wildhuntcompleteedition-cdprojektred-s2-1200x1600-d45f5f108554.jpg",
+          "backgroundImageUrl": "https://cdn2.unrealengine.com/egs-thewitcher3wildhuntcompleteedition-cdprojektred-s1-2560x1440-cfc1c384744d.jpg",
+          "logoImage": {
+            "src": "https://cdn2.unrealengine.com/egs-thewitcher3wildhuntcompleteedition-cdprojektred-ic1-400x400-39ecddf1cc77.png",
+            "_type": "Diesel Image"
+          }
+        },
+        "about": {
+          "title": "The Witcher 3: Wild Hunt – Complete Edition"
+        }
+      }
+    },
+    {
+      "type": "offer",
+      "productName": "The Witcher 3: Wild Hunt - Game of the Year Edition",
+      "data": {
+        "meta": {
+          "releaseDate": "2015-05-12T19:00:00.000Z",
+          "_type": "Epic Store Meta",
+          "logo": {
+            "_type": "Epic Store Image"
+          },
+          "platform": [
+            "Windows"
+          ],
+          "tags": [
+            "RPG",
+            "OPEN_WORLD",
+            "ADVENTURE"
+          ]
+        },
+        "hero": {
+          "portraitBackgroundImageUrl": "https://cdn2.unrealengine.com/egs-thewitcher3redkit-cdprojektred-dlc-s2-1200x1600-124cf5cb2df1.jpg",
+          "backgroundImageUrl": "https://cdn2.unrealengine.com/egs-thewitcher3redkit-cdprojektred-dlc-s1-2560x1440-a65f0eb69f14.jpg",
+          "logoImage": {
+            "src": "https://cdn2.unrealengine.com/egs-thewitcher3redkit-cdprojektred-dlc-ic1-200x200-3f9c8e025455.png",
+            "_type": "Diesel Image"
+          }
+        },
+        "about": {
+          "title": "The Witcher 3 REDkit"
+        }
+      }
+    }
+  ]
+}
