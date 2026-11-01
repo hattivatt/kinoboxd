@@ -119,7 +119,10 @@ function annotatePending(payload, scope, deps = {}) {
     payload.pending.reason = 'waiting_details';
     return payload;
   }
-  if (!(payload.pending.credits > 0)) {
+  // `staleLabels` is the second reason to run a pass: the credits are complete
+  // but their names were built by an older label rule (§4.2), and only a
+  // re-fetch repairs a truncated one. Nothing to do means no kick at all.
+  if (!(payload.pending.credits > 0) && !(payload.pending.staleLabels > 0)) {
     payload.pending.reason = null;
     return payload;
   }

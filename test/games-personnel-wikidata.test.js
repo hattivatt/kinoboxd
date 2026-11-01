@@ -83,6 +83,56 @@ test('parses a real WDQS answer: composers/designers/director/programmer + studi
   assert.ok(pathologic.studios.some((studio) => studio.name === 'Ice-Pick Lodge'));
 });
 
+/**
+ * `mul` is Wikidata's language-neutral label. Q3539040 carries a truncated
+ * English label («Development Studio») next to the real `mul` one («Paradox
+ * Development Studio»), which is what made the same studio appear twice in the
+ * «Персоналии» widget (round 01.11.2026).
+ */
+function labelRow(qid, lang, value, game = 'Q677869') {
+  return {
+    game: { type: 'uri', value: `http://www.wikidata.org/entity/${game}` },
+    kind: { type: 'literal', value: 'studio' },
+    role: { type: 'literal', value: 'developer' },
+    entity: { type: 'uri', value: `http://www.wikidata.org/entity/${qid}` },
+    label: { type: 'literal', value, 'xml:lang': lang },
+  };
+}
+
+test('canonical label: the mul spelling wins over a truncated English one', () => {
+  const credits = wd.parseCreditsResponse({
+    results: {
+      bindings: [
+        labelRow('Q3539040', 'en', 'Development Studio'),
+        labelRow('Q3539040', 'mul', 'Paradox Development Studio'),
+      ],
+    },
+  });
+  const studio = credits.get('Q677869').studios[0];
+  assert.equal(studio.name, 'Paradox Development Studio');
+  assert.equal(studio.nameEn, 'Paradox Development Studio', 'the display spelling follows');
+  assert.equal(studio.qid, 'Q3539040');
+});
+
+test('canonical label: a shorter mul never degrades a more specific English name', () => {
+  assert.deepEqual(
+    wd.canonicalLabel({ nameEn: 'Warner Bros. Entertainment', nameMul: 'Warner Bros.' }),
+    { name: 'Warner Bros. Entertainment', nameEn: 'Warner Bros. Entertainment' }
+  );
+  // No English label at all: mul is the fallback (as before, but explicit).
+  assert.deepEqual(wd.canonicalLabel({ nameEn: null, nameMul: 'Sega' }), {
+    name: 'Sega',
+    nameEn: 'Sega',
+  });
+  // No mul label: English stays exactly as it was.
+  assert.deepEqual(wd.canonicalLabel({ nameEn: 'Valve', nameRu: 'Valve' }), {
+    name: 'Valve',
+    nameEn: 'Valve',
+  });
+  // Unrelated mul label (a known Wikidata defect) is not preferred.
+  assert.equal(wd.canonicalLabel({ nameEn: 'Aspyr', nameMul: 'Roger Cruz' }).name, 'Aspyr');
+});
+
 test('batch size is ≤450: 500 QIDs become two queries', async () => {
   const queries = [];
   const fetchImpl = async (url, init) => {

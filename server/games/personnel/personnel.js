@@ -59,6 +59,20 @@ const OVERRIDES_PATH = path.join(gameCache.GAMES_CACHE_DIR, 'personnel-overrides
 
 const PERSONNEL_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
+/**
+ * Version of the rule that turns Wikidata labels into a credit name (§4.2).
+ *
+ * v1 (no field in the document): the display name was the raw English
+ * `rdfs:label`. v2 (round 01.11.2026): the language-neutral `mul` label wins
+ * when the English one is only a word-fragment of it (`wikidata.canonicalLabel`
+ * — Q3539040 is «Development Studio» in English but «Paradox Development
+ * Studio» in `mul`). A document written under an older rule keeps the
+ * truncated name for its whole 90-day TTL, which is exactly the «две
+ * одинаковые студии» bug the user saw, so such a document is re-fetched once
+ * (`labelsStale` below) instead of waiting three months.
+ */
+const LABEL_RULE_VERSION = 2;
+
 /** Canonical roles accepted by `?role=` (§5.3). */
 const ROLES = [
   'developer',
@@ -514,6 +528,52 @@ function strongKey(entry) {
 }
 
 /**
+ * Legal-form tokens that are a company's *form*, not its name (§4.2 keeps
+ * «Studio»/«Games»/«Interactive» — those are part of the name; «Inc.»/«Ltd»/
+ * «GmbH» are not). Steam and Wikidata disagree exactly here: «Valve» vs
+ * «Valve Corporation», «FromSoftware» vs «FromSoftware, Inc.», «Epic Games»
+ * vs «Epic Games, Inc.» (round 01.11.2026: seven studios were shown twice).
+ */
+const LEGAL_FORM_TOKENS = new Set([
+  'inc',
+  'incorporated',
+  'ltd',
+  'limited',
+  'llc',
+  'gmbh',
+  'corp',
+  'corporation',
+  'co',
+  'company',
+  'plc',
+  'sa',
+  'sas',
+  'sarl',
+  'srl',
+  'spa',
+  'bv',
+  'nv',
+  'ab',
+  'oy',
+  'oyj',
+  'as',
+  'aps',
+  'kk',
+  'pte',
+  'kg',
+  'ug',
+  'sro',
+  'doo',
+]);
+
+/** Normalized name without trailing legal-form tokens (never empty). */
+function studioCoreKey(name) {
+  const tokens = normalizeName(name).split(' ').filter(Boolean);
+  while (tokens.length > 1 && LEGAL_FORM_TOKENS.has(tokens[tokens.length - 1])) tokens.pop();
+  return tokens.join(' ');
+}
+
+/**
  * Group raw credit entries into entities.
  *
  * @param {Array<object>} entries every (game, entity, role) occurrence
@@ -554,6 +614,29 @@ function groupEntries(entries, kind, overrides) {
       continue;
     }
     for (let i = 1; i < list.length; i++) union.union(list[0], list[i]);
+  }
+
+  // 2b. Studios: the same company reaches us twice — as a Wikidata entity with
+  //     a QID and as the Steam `developers[]` string — with spellings that
+  //     differ only by a legal form («Valve Corporation» vs «Valve»,
+  //     «FromSoftware, Inc.» vs «FromSoftware»). That pair is one company when
+  //     exactly ONE strong id claims the core name: two QIDs are never merged
+  //     (§4.3), and a core name that no id claims is left alone (no fuzzy
+  //     matching without a QID, §4.2).
+  if (kind === 'studio') {
+    const byCore = new Map();
+    for (const [nameKey, keySet] of byName) {
+      const core = studioCoreKey(nameKey);
+      if (!core) continue;
+      if (!byCore.has(core)) byCore.set(core, new Set());
+      for (const key of keySet) byCore.get(core).add(key);
+    }
+    for (const [core, keySet] of byCore) {
+      if (keySet.size < 2 || splitNames.has(core)) continue;
+      const strong = [...keySet].filter((key) => !key.startsWith('name:'));
+      if (strong.length !== 1) continue;
+      for (const key of keySet) union.union(strong[0], key);
+    }
   }
 
   // 3. Manual merges: `from` spelling joins the `to` entity (only when the
@@ -720,9 +803,15 @@ function buildPersonnel(profileKey, options = {}) {
   );
   const nowMs = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
   const overrides = options.overrides || readOverrides();
+  const wdEnabled = wikidataProvider.wikidataEnabled();
 
   const games = [];
   let excludedNonGame = 0;
+  // Credits written under an older label rule (§4.2): they are still inside
+  // their TTL, so only a re-fetch repairs a truncated name. Counted in this
+  // loop because it already reads every document; the route turns the number
+  // into the lazy kick (`pending.staleLabels`).
+  let staleLabels = 0;
   for (const game of library.games || []) {
     const appid = Number(game.appid);
     if (!Number.isInteger(appid) || appid <= 0) continue;
@@ -732,6 +821,9 @@ function buildPersonnel(profileKey, options = {}) {
       continue;
     }
     const doc = readPersonnelDoc(appid);
+    if (wdEnabled && doc && doc.wdAsked === true && doc.labelRule !== LABEL_RULE_VERSION) {
+      staleLabels++;
+    }
     const studios = studiosFromDetails(details);
     const wdStudios = doc ? doc.studios : [];
     for (const studio of wdStudios) {
@@ -889,7 +981,6 @@ function buildPersonnel(profileKey, options = {}) {
     ? Math.round((byStudioRole.publisher / gamesTotal) * 100)
     : 0;
 
-  const wdEnabled = wikidataProvider.wikidataEnabled();
   const wdState = wikidataProvider.defaultStateStore().read();
   const wdStatus = wikidataStatus(wdState, nowMs, wdEnabled);
   const mobyStatus = mobyProvider.createClient().status();
@@ -901,6 +992,8 @@ function buildPersonnel(profileKey, options = {}) {
     else if (wdStatus.state === 'never_run' && !mobyStatus.enabled) pendingReason = 'wikidata_not_run';
     else if (wdStatus.state === 'unavailable') pendingReason = 'wikidata_unavailable';
     else pendingReason = 'not_fetched';
+  } else if (staleLabels > 0) {
+    pendingReason = 'labels_stale';
   }
 
   return {
@@ -946,6 +1039,10 @@ function buildPersonnel(profileKey, options = {}) {
     pending: {
       details: gamesTotal - detailsResolved,
       credits: pendingCredits,
+      // Documents whose labels were written under an older rule (§4.2): the
+      // route re-fetches them once, so a truncated name («Development Studio»)
+      // does not survive the 90-day TTL.
+      staleLabels,
       // Filled by the route/job layer: is an enrichment pass in flight right
       // now, and why credits are still missing when it is not.
       running: Boolean(options.running),
@@ -1130,8 +1227,18 @@ async function enrichPersonnel(options = {}) {
     const needs = ['steam-store'];
     if (wdEnabled && !(existing && existing.wdAsked === true)) needs.push('wikidata');
     if (mobyEnabled && links.mobyId && links.mobyPlatformId) needs.push('mobygames');
+    // A document written under an older label rule is re-fetched once even
+    // while it is still «fresh»: its names may be truncated fragments of the
+    // real ones (§4.2, Q3539040 «Development Studio»).
+    const labelsStale =
+      wdEnabled &&
+      Boolean(existing) &&
+      existing.wdAsked === true &&
+      existing.labelRule !== LABEL_RULE_VERSION;
     const covered =
-      Boolean(existing) && needs.every((source) => (existing.sources || []).includes(source));
+      Boolean(existing) &&
+      !labelsStale &&
+      needs.every((source) => (existing.sources || []).includes(source));
     if (!force && covered && isPersonnelFresh(existing, now())) {
       report.skippedFresh++;
       continue;
@@ -1268,6 +1375,12 @@ async function enrichPersonnel(options = {}) {
       // answer). `isPersonnelFresh`/`covered` rely on it, so a transient WDQS
       // failure can never be mistaken for a complete run.
       wdAsked: wdAnswered,
+      // Which label rule produced these names (§4.2). Only a real Wikidata
+      // answer can raise it: a carried-over document keeps its old number and
+      // stays eligible for the one-off re-fetch.
+      labelRule: wdAnswered
+        ? LABEL_RULE_VERSION
+        : (target.existing && target.existing.labelRule) || null,
       studios: mergedStudios,
       people: mergedPeople,
       sources: [...sources].sort(),
@@ -1290,6 +1403,7 @@ module.exports = {
   PERSONNEL_DIR,
   OVERRIDES_PATH,
   PERSONNEL_TTL_MS,
+  LABEL_RULE_VERSION,
   ROLES,
   ROLE_ALIASES,
   DEFAULT_ROLE,

@@ -260,6 +260,52 @@ function emptyCredits(key) {
   return { qid: key, appid: null, people: [], studios: [] };
 }
 
+function cleanLabel(value) {
+  return String(value == null ? '' : value).replace(/\s+/g, ' ').trim() || null;
+}
+
+/** Folded comparison form; mirrors `personnel.normalizeName` (NFKC, lowercase, ё→е). */
+function foldLabel(value) {
+  return String(value == null ? '' : value)
+    .normalize('NFKC')
+    .replace(/[™®]/g, '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+/** `short` is a whole-word prefix/suffix of `long` (never the whole string). */
+function isWordFragment(short, long) {
+  const a = foldLabel(short);
+  const b = foldLabel(long);
+  if (!a || !b || a === b) return false;
+  return b.startsWith(`${a} `) || b.endsWith(` ${a}`);
+}
+
+/**
+ * Canonical name of a Wikidata entity (§4.2).
+ *
+ * `mul` is Wikidata's language-neutral label: by definition the spelling that
+ * is valid in every language, so it is the best identity anchor available.
+ * Some items carry a truncated English label next to a complete `mul` one —
+ * Q3539040 reads «Development Studio» in English while `mul`/ja/it all say
+ * «Paradox Development Studio» (round 01.11.2026: the fragment made the same
+ * studio appear twice, once as `wd:Q3539040` and once as the Steam
+ * `developers[]` string, because the Steam↔Wikidata unification compares
+ * normalized names). The `mul` spelling therefore wins when the English label
+ * is only a word-fragment (prefix/suffix) of it. A genuinely shorter `mul`
+ * («Warner Bros.» vs the English «Warner Bros. Entertainment») never degrades
+ * the name: there the English label is the more specific one and stays.
+ */
+function canonicalLabel(entry) {
+  const en = cleanLabel(entry.nameEn);
+  const mul = cleanLabel(entry.nameMul);
+  if (mul && (!en || isWordFragment(en, mul))) return { name: mul, nameEn: mul };
+  const name = en || mul || cleanLabel(entry.nameOther) || cleanLabel(entry.nameRu) || null;
+  return { name, nameEn: en };
+}
+
 /**
  * Turn a SPARQL results document into `Map<gameKey, credits>`.
  *
@@ -306,6 +352,7 @@ function parseCreditsResponse(data, options = {}) {
         roles: new Set(),
         nameEn: null,
         nameRu: null,
+        nameMul: null,
         nameOther: null,
         image: null,
         confidence: null,
@@ -316,6 +363,7 @@ function parseCreditsResponse(data, options = {}) {
     if (label) {
       if (lang === 'en') entry.nameEn = entry.nameEn || label;
       else if (lang === 'ru') entry.nameRu = entry.nameRu || label;
+      else if (lang === 'mul') entry.nameMul = entry.nameMul || label;
       else entry.nameOther = entry.nameOther || label;
     }
     if (image && !entry.image) entry.image = image;
@@ -328,11 +376,11 @@ function parseCreditsResponse(data, options = {}) {
   }
 
   const finalize = (entry, source) => {
-    const name = entry.nameEn || entry.nameOther || entry.nameRu || null;
-    if (!name) return null;
+    const canonical = canonicalLabel(entry);
+    if (!canonical.name) return null;
     return {
-      name,
-      nameEn: entry.nameEn || null,
+      name: canonical.name,
+      nameEn: canonical.nameEn,
       nameRu: entry.nameRu || null,
       qid: entry.qid,
       mobyId: null,
@@ -578,6 +626,7 @@ module.exports = {
   parseRetryAfter,
   creditsQuery,
   appidCreditsQuery,
+  canonicalLabel,
   parseCreditsResponse,
   fetchCredits,
   creditsForAppids,

@@ -402,6 +402,62 @@ test('a lock held by another pass makes the job skip instead of racing', async (
   assert.equal(wd.calls.appids.length, 1);
 });
 
+/**
+ * Credits complete but written under the old label rule (§4.2): the name in
+ * the document may be a truncated Wikidata label, which is what split
+ * «Development Studio» from «Paradox Development Studio». The lazy GET must
+ * re-fetch such documents once instead of serving the fragment for the whole
+ * 90-day TTL.
+ */
+test('stale label rule alone starts the pass and repairs the document', async (t) => {
+  const userKey = '76561198000001007';
+  const profileKey = await seedProfile(userKey, [8701, 8702]);
+  personnelJobs.resetCooldown();
+  const wd = createWdMock();
+  personnelJobs.kickQuietly(profileKey, { wikidata: wd, moby: createMobyMock() });
+  await personnelJobs.whenIdle();
+
+  const personnelDir = path.join(CACHE_DIR, 'personnel');
+  for (const appid of [8701, 8702]) {
+    const file = path.join(personnelDir, `${appid}.json`);
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(doc.labelRule, personnel.LABEL_RULE_VERSION);
+    delete doc.labelRule; // what the pre-fix code wrote
+    fs.writeFileSync(file, JSON.stringify(doc));
+  }
+
+  const app = express();
+  app.use(express.json());
+  app.use(
+    '/api/games',
+    createRouter({ personnelOptions: { wikidata: wd, moby: createMobyMock() } })
+  );
+  app.use((err, req, res, next) => {
+    if (err && err.status) return res.status(err.status).json({ error: err.message, code: err.code });
+    res.status(500).json({ error: 'internal' });
+  });
+  const server = app.listen(PORT);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${PORT}`;
+
+  personnelJobs.resetCooldown();
+  const first = await (await fetch(`${base}/api/games/personnel?profile=${profileKey}`)).json();
+  assert.equal(first.pending.credits, 0, 'credits are complete — only the labels are old');
+  assert.equal(first.pending.staleLabels, 2);
+  assert.equal(first.pending.reason, 'started');
+  assert.ok(first.pending.jobId);
+
+  await personnelJobs.whenIdle();
+  for (const appid of [8701, 8702]) {
+    const doc = JSON.parse(fs.readFileSync(path.join(personnelDir, `${appid}.json`), 'utf8'));
+    assert.equal(doc.labelRule, personnel.LABEL_RULE_VERSION);
+  }
+
+  const second = await (await fetch(`${base}/api/games/personnel?profile=${profileKey}`)).json();
+  assert.equal(second.pending.staleLabels, 0);
+  assert.equal(second.pending.reason, null);
+});
+
 test('an explicit import/enrich kick bypasses the lazy re-kick cooldown', async () => {
   const userKey = '76561198000001006';
   const profileKey = await seedProfile(userKey, [8601]);

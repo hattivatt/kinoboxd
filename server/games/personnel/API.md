@@ -127,6 +127,7 @@ app.use('/api/games', gamesPersonnelRouter);
   "pending": {
     "details": 0,                      // игры без details/<appid>.json
     "credits": 221,                    // игры без людей-кредитов
+    "staleLabels": 0,                  // документы, собранные по старому правилу имён (§4.2)
     "running": true,                   // пасс WD/импорт идёт прямо сейчас
     "jobId": "games-personnel-…",      // id пасса, если running/started
     "reason": "started"                // см. таблицу ниже; null — всё есть
@@ -157,7 +158,7 @@ app.use('/api/games', gamesPersonnelRouter);
 
 | Значение | Что значит | Что делать UI |
 |---|---|---|
-| `null` | всё есть (`credits: 0`) | ничего |
+| `null` | всё есть (`credits: 0`, `staleLabels: 0`) | ничего |
 | `running` | пасс персоналий уже идёт | показать «собираем…», повторить запрос |
 | `waiting_details` | идёт store-enrich, пасс ждёт `details` | показать «обогащаем детали…» |
 | `started` | роут только что запустил пасс (fire-and-forget) | показать «собираем…», повторить через несколько секунд |
@@ -168,6 +169,7 @@ app.use('/api/games', gamesPersonnelRouter);
 | `sources_disabled` | `KINOBOXD_GAMES_WD=off` и нет ключа Moby | «WD: выключено» |
 | `details_pending` | нет ни одного `details/<appid>.json` — WD по appid спрашивать нечего | кнопка «Обогатить» (M2) |
 | `auto_disabled` | сервер запущен с `autoPersonnel:false` (тесты/отладка) | — |
+| `labels_stale` | кредиты полны, но имена собраны по старому правилу меток (`labelRule`) — пасс перезапишет их один раз | ничего, повторить запрос через несколько секунд |
 | `lock_busy` | пасс идёт в другом процессе (`personnel.lock`) | повторить позже |
 | `kick_failed` | запуск пасса упал (см. лог сервера) | повторить позже |
 
@@ -286,6 +288,15 @@ app.use('/api/games', gamesPersonnelRouter);
 - **`creator` (P170) и `writer` (P58)** — `confidence: 'low'`.
 - **Компания в P162 (producer)** не становится человеком, если тот же QID уже
   студия этой игры (дедуп в `wikidata.js`).
+- **Имя студии = язык-нейтральная метка.** `mul`-метка Wikidata главнее
+  английской, когда английская — лишь обрывок (`Q3539040`: en «Development
+  Studio», `mul` «Paradox Development Studio»). Документ помнит правило, по
+  которому собран (`labelRule`), поэтому кэш старого правила перезапрашивается
+  один раз (`pending.staleLabels`), а не живёт с обрывком 90 дней.
+- **Юрформа — не часть имени.** Для склейки снимаются хвостовые `Inc./Ltd/
+  LLC/GmbH/Corp./Co./S.A./…` («Valve Corporation» ↔ «Valve»), но **не**
+  `Studio`/`Games`/`Interactive`. Склейка идёт только когда ядро имени
+  подтверждено ровно одним QID/Moby id; два QID не сливаются никогда.
 - **`links/<appid>.json`** пока не пишет никто (M2): live-прогон резолвит игру
   через `P1733` (Steam appid) в том же SPARQL. Когда M2 начнёт писать `links`,
   приоритет у `links.qid`.
