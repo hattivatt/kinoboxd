@@ -51,6 +51,8 @@
  */
 
 const gameCache = require('./game-cache');
+const gogCache = require('./gog-cache');
+const { buildGogUnion } = require('./gog-union');
 const franchise = require('./franchise');
 const editions = require('./editions');
 const config = require('../config');
@@ -482,6 +484,82 @@ function buildGamesStats(input = {}) {
   }
   const excludedByHours = excludedWorks.length;
 
+  /* ---------------- M6a: GOG same-owner secondary library ---------------- */
+  // GOG is a **library of the same owner**, never a second journal (§14.4).
+  // The union merges GOG products into the Steam works by `workKey`; GOG-only
+  // games become `secondaryWorks` and never enter the Steam aggregates. Hours
+  // stay separate (`hoursBySource`), they are never summed with Steam.
+  const gogAccounts = Array.isArray(input.gogAccounts) ? input.gogAccounts : [];
+  const gogSnapshots = Array.isArray(input.gogSnapshots) ? input.gogSnapshots : [];
+  let gogUnion = null;
+  if (gogSnapshots.length) {
+    const products = [];
+    const minutes = {};
+    for (const snapshot of gogSnapshots) {
+      const library = snapshot && snapshot.library ? snapshot.library : null;
+      const playtime = snapshot && snapshot.playtime ? snapshot.playtime : null;
+      if (library && Array.isArray(library.products)) products.push(...library.products);
+      if (playtime && playtime.minutes && typeof playtime.minutes === 'object') {
+        for (const [id, value] of Object.entries(playtime.minutes)) {
+          minutes[id] = (Number(minutes[id]) || 0) + (Number(value) || 0);
+        }
+      }
+    }
+    gogUnion = buildGogUnion({ products, minutes, works: allWorks, links: linkDocs });
+  }
+  const gogConnected = input.gogConnected === true;
+  const gogSummary = gogUnion ? gogUnion.summary : null;
+  const gogHoursValue = gogSummary ? gogSummary.gogHours : null;
+  const gogOwnedValue = gogSummary ? gogSummary.gogProducts : null;
+  const gogAccountView = gogAccounts[0] || null;
+  const gogSnapshotView = gogSnapshots[0] || null;
+  const gogStatus = !gogConnected
+    ? gogSnapshots.length
+      ? 'snapshot_only'
+      : 'not_connected'
+    : gogAccountView && gogAccountView.expired === true
+      ? 'auth_expired'
+      : gogSnapshotView && gogSnapshotView.library
+        ? gogCache.isFresh(gogSnapshotView.library, gogCache.libraryTtlMs())
+          ? 'ok'
+          : 'stale'
+        : 'connected_no_import';
+  const gogSource = {
+    configured: gogConnected,
+    connected: gogConnected,
+    status: gogStatus,
+    userKey: gogAccountView ? gogAccountView.userKey : null,
+    key: gogAccountView ? gogAccountView.key : null,
+    username: gogAccountView ? gogAccountView.username : null,
+    ownerProfile: gogAccountView ? gogAccountView.ownerProfile : null,
+    lastImportAt:
+      gogSnapshotView && gogSnapshotView.library
+        ? gogSnapshotView.library.fetchedAt || null
+        : null,
+    libraryFetchedAt:
+      gogSnapshotView && gogSnapshotView.library
+        ? gogSnapshotView.library.fetchedAt || null
+        : null,
+    playtimeFetchedAt:
+      gogSnapshotView && gogSnapshotView.playtime
+        ? gogSnapshotView.playtime.fetchedAt || null
+        : null,
+    productCount: gogOwnedValue,
+    hours: gogHoursValue,
+    playtimeGames:
+      gogSnapshotView && gogSnapshotView.playtime
+        ? gogSnapshotView.playtime.fetchedGames == null
+          ? null
+          : gogSnapshotView.playtime.fetchedGames
+        : null,
+    budgetExceeded: Boolean(
+      gogSnapshotView && gogSnapshotView.playtime && gogSnapshotView.playtime.budgetExceeded
+    ),
+    // A snapshot older than the TTL is still shown with its date, never as 0.
+    stale:
+      gogStatus === 'stale' || gogStatus === 'auth_expired' || gogStatus === 'connected_no_import',
+  };
+
   const minutesList = visibleGames.map((game) => Number(game.playtime_forever) || 0);
   const hoursList = minutesList.map((minutes) => minutes / 60);
   const ownedCount = games.length;
@@ -772,6 +850,18 @@ function buildGamesStats(input = {}) {
       isPrimary: Boolean(work && work.primary.appid === appid),
       editionCount: work ? work.games.length : 1,
       canonicalHours: work ? round1(work.hours) : minutesToHours(game.playtime_forever),
+      // M6a: cross-store identity — only when a GOG library is connected.
+      // `sources`/`storeIds`/`hoursBySource` (minutes) are additive; a Steam-
+      // only payload stays byte-identical (no empty cross-store fields).
+      ...(gogUnion && gogUnion.byAppid[String(appid)]
+        ? {
+            sources: gogUnion.byAppid[String(appid)].sources,
+            storeIds: gogUnion.byAppid[String(appid)].storeIds,
+            hoursBySource: gogUnion.byAppid[String(appid)].hoursBySource,
+            ownedOn: gogUnion.byAppid[String(appid)].ownedOn,
+            crossStoreMatchedBy: gogUnion.byAppid[String(appid)].matchedBy,
+          }
+        : {}),
       // M2 (appdetails) — null/[] while details are missing, never invented.
       type: doc ? doc.type : null,
       year,
@@ -1302,6 +1392,16 @@ function buildGamesStats(input = {}) {
         gameCount: library.game_count == null ? ownedCount : library.game_count,
       },
       profiles: { connected: allProfileKeys, selected: [profileKey] },
+      // M6a: per-source state. `steam` is the journal (the only source of
+      // achievements and `totalHours`); `gog` is a same-owner secondary
+      // library. A missing token is `not_connected`/`auth_expired`, never 0.
+      steam: {
+        configured: keyConfigured,
+        status: partial ? 'partial' : 'ok',
+        lastImportAt: library.fetchedAt || null,
+        gameCount: library.game_count == null ? ownedCount : library.game_count,
+      },
+      gog: gogSource,
     },
     // M1 has no `type` in GetOwnedGames: ownedCount is the honest number,
     // gameCount is an estimate until appdetails (M2) separates DLC/tools.
@@ -1317,6 +1417,14 @@ function buildGamesStats(input = {}) {
       unplayedCount,
       backlogShare: gameCount ? round3(unplayedCount / gameCount) : 0,
       totalHours,
+      // M6a: hours and ownership per source — **never summed** across sources
+      // (§14.4 п. 2). `steam` is the journal total above; `gog` is null when
+      // no GOG account is connected and 0 when connected but empty.
+      hoursBySource: { steam: totalHours, gog: gogHoursValue, epic: null },
+      ownedBySource: { steam: ownedCount, gog: gogOwnedValue, epic: null },
+      // Union over canonical works (`workKey`): Steam + GOG, one row per work.
+      worksTotal: gogSummary ? gogSummary.worksTotal : gameCount,
+      secondaryOnlyWorks: gogSummary ? gogSummary.secondaryOnlyWorks : 0,
       meanHours,
       medianHours,
       top10HoursShare,
@@ -1382,6 +1490,11 @@ function buildGamesStats(input = {}) {
     achievementDays: calendar.achievementDays,
     streaks: calendar.streaks,
     gamesIndex,
+    // M6a: works that exist only outside Steam (GOG today, Epic later). The
+    // list is capped for payload size; `summary.secondaryOnlyWorks` is the
+    // full count. Never merged into the Steam journal aggregates.
+    secondaryWorks: gogUnion ? gogUnion.secondaryWorks.slice(0, 200) : [],
+    gog: gogSummary ? { ...gogSummary, status: gogStatus } : null,
     // Works of the visible (filtered) set with no successful details.
     unmatchedCount: visibleWorks.filter((work) =>
       work.games.every((game) => !detailOf(details, game.appid))
@@ -1508,6 +1621,42 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
       libraryFingerprint: library.fingerprint,
     });
   }
+  // M6a: GOG is a same-owner secondary library. Only accounts explicitly
+  // attached to THIS Steam owner are read — never another owner's token.
+  // A disconnected account keeps its dated snapshot: the UI says «данные от
+  // <дата>, требуется переподключение» instead of showing zeroes (§14.4 п. 7).
+  const gogTokenAccounts = gogCache.accountsForOwner(profileKey);
+  const gogAccounts = [...gogTokenAccounts];
+  const gogSnapshots = [];
+  for (const account of gogTokenAccounts) {
+    const gogLibrary = gogCache.getLibrary(account.userKey);
+    if (!gogLibrary) continue;
+    gogSnapshots.push({
+      account,
+      library: gogLibrary,
+      playtime: gogCache.getPlaytime(account.userKey),
+    });
+  }
+  if (!gogTokenAccounts.length) {
+    for (const gogLibrary of gogCache.listLibraries()) {
+      if (!gogLibrary || gogLibrary.ownerProfile !== profileKey) continue;
+      const synthetic = {
+        source: 'gog',
+        userKey: String(gogLibrary.userKey),
+        key: gogCache.profileKeyOf(gogLibrary.userKey),
+        username: (gogLibrary.account && gogLibrary.account.username) || null,
+        ownerProfile: profileKey,
+        connected: false,
+        expired: null,
+      };
+      gogAccounts.push(synthetic);
+      gogSnapshots.push({
+        account: synthetic,
+        library: gogLibrary,
+        playtime: gogCache.getPlaytime(gogLibrary.userKey),
+      });
+    }
+  }
   return buildGamesStats({
     steamId64: parsed.userKey,
     profile,
@@ -1521,6 +1670,10 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     links,
     // B6: base-version metadata for regional SKUs (year/genres/studios/name).
     detailsBase,
+    // M6a: GOG secondary library (ownership + its own hours, never summed).
+    gogAccounts,
+    gogSnapshots,
+    gogConnected: gogTokenAccounts.length > 0,
     // M5-B: canonical works (one game per owner-visible title).
     editions: editionDoc,
     includeFree: options.includeFree !== false,

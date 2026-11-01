@@ -30,6 +30,8 @@ const steam = require('./steam');
 const store = require('./store');
 const spy = require('./spy');
 const gameCache = require('./game-cache');
+const gogCache = require('./gog-cache');
+const gog = require('./gog');
 const importJobs = require('./import');
 const enrichJobs = require('./enrich');
 const personnelJobs = require('./personnel/jobs');
@@ -205,20 +207,40 @@ function createRouter(deps = {}) {
   /* ------------------------- profiles ------------------------- */
 
   router.get('/profiles', (req, res) => {
+    const gogAccounts = gogCache.listAccounts();
     const profiles = gameCache.listProfiles().map((entry) => {
       const profile = gameCache.getProfile(entry.userKey);
       const library = gameCache.getLibrary(entry.userKey);
       return {
         ...entry,
         summary: profileSummary(profile, library),
+        // M6a: same-owner secondary libraries (GOG today, Epic later).
+        // A GOG account is never shown under two Steam owners.
+        libraries: gogAccounts
+          .filter((account) => account.ownerProfile === entry.key)
+          .map((account) => ({
+            source: 'gog',
+            userKey: account.userKey,
+            key: account.key,
+            username: account.username,
+            connectedAt: account.connectedAt,
+            expiresAt: account.expiresAt,
+            expired: account.expired,
+          })),
       };
     });
     res.status(200).json({
       profiles,
-      connected: ['steam'],
+      connected: ['steam', ...(gogAccounts.length ? ['gog'] : [])],
       availableProfileKeys: profiles.map((entry) => entry.key),
       // Boolean only: the key value is never exposed.
       steamKey: keyInfo(),
+      gog: {
+        configured: true,
+        accounts: gogAccounts.length,
+        // Source only (`env`/`file`/`default`), never the client value.
+        clientSource: gog.clientSource(),
+      },
       cacheDir: gameCache.GAMES_CACHE_DIR,
       libraryTtlHours: Math.round(gameCache.libraryTtlMs() / 3600000),
     });
