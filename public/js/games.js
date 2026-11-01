@@ -513,6 +513,9 @@ async function submitImport(event) {
     if (profile) {
       state.profileKey = profile;
       safeStorageSet(PROFILE_KEY, profile);
+      // The job owns this profile from now on: highlight its chip immediately
+      // (the progress screen hides the bar, but a reload/resume must agree).
+      renderProfiles();
     }
     saveJob();
     showScreen('progress');
@@ -601,6 +604,13 @@ async function tryStatsAfterJob() {
     state.job = null;
     saveJob();
     stopPolling();
+    // The status route may be missing while the payload already exists: the
+    // finished job still owns the profile switch, so repaint the chips here
+    // too (otherwise the new profile stays unhighlighted until a reload).
+    await ensureProfiles({ reload: true });
+    state.profileKey = key;
+    safeStorageSet(PROFILE_KEY, key);
+    renderProfiles();
     state.data = data;
     state.loaded = true;
     showScreen('dashboard');
@@ -642,6 +652,15 @@ async function finishImport(status) {
     safeStorageSet(PROFILE_KEY, key);
   }
   await ensureProfiles({ reload: true });
+  // `/api/games/profiles` can lag behind a finished job (or an older server
+  // may not list the profile yet). Never let that reload silently move the
+  // tab back to a previous profile: the job named the profile that just
+  // became active, so re-assert it and repaint the switcher chips.
+  if (key) {
+    state.profileKey = key;
+    safeStorageSet(PROFILE_KEY, key);
+  }
+  renderProfiles();
   state.loaded = false;
   await loadStats({ force: true });
   if (state.view === 'dashboard') {

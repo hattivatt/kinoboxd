@@ -1199,7 +1199,15 @@ async function ensureProfileForImport(source, account) {
   const entry = normalizeSource(source, account);
   if (!entry) return null;
   const key = entry.source === 'livelib' ? `livelib-${entry.username}` : `hardcover-${entry.userId}`;
-  if (state.profile && profileKey(state.profile) === key) return state.profile;
+  if (state.profile && profileKey(state.profile) === key) {
+    // Re-import of the already active profile: keep it active (idempotent) and
+    // repaint the switcher, so a cleared active id is restored instead of
+    // leaving the import attached to an unhighlighted profile.
+    setActiveBooksProfileId(state.profile.id);
+    applyProfileToForms();
+    renderProfileSwitcher();
+    return state.profile;
+  }
 
   // Reuse an existing local profile for the same account instead of
   // duplicating switcher entries.
