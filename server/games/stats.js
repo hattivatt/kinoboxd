@@ -48,12 +48,28 @@
  * Hours come only from `GetOwnedGames` (`playtime_forever`, minutes).
  * `<stats><hoursPlayed>` from the achievements XML is never aggregated: it is
  * "time under stats tracking", not full playtime (§2.1 п. 3).
+ *
+ * M6c (GOG/Epic as same-owner secondary libraries, 01.11.2026):
+ *   - the union (`secondary-union.js`) joins GOG/Epic products to Steam works
+ *     by `workKey` (Wikidata P2725/P6278 → P1733, then an exact title match);
+ *   - a work that exists **only** outside Steam is a real owned game: it is
+ *     counted in `gameCount`/`worksTotal`, its hours go into `totalHours`,
+ *     its release year into `years`/`decades`, its genres into `genres` (when
+ *     the store knows one), and it gets its own row in `topGames`/`backlog`/
+ *     `gamesIndex` (`appid: null`, `secondaryOnly: true`);
+ *   - `summary.hoursBySource` keeps one number per store (`steam` = the Steam
+ *     journal total) and `all` = the display sum (Steam + GOG + Epic of the
+ *     same works). Steam-only facts (achievements, `lastPlayed`, SteamSpy
+ *     tags, review scores, completion) stay Steam-only — no invented data;
+ *   - `minHours` never drops a secondary work whose hours the store never
+ *     answered for (`hoursUnknown`, `hoursStatus: pending|unknown`); a real
+ *     0-hour secondary work is filtered exactly like a Steam work.
  */
 
 const gameCache = require('./game-cache');
 const gogCache = require('./gog-cache');
-const { buildGogUnion } = require('./gog-union');
-const { buildEpicLayerSync, epicSourceBlock, epicSecondaryWorks } = require('./epic-layer');
+const { buildSecondaryUnion } = require('./secondary-union');
+const { buildEpicLayerSync, epicSourceBlock } = require('./epic-layer');
 const franchise = require('./franchise');
 const editions = require('./editions');
 const config = require('../config');
@@ -469,49 +485,36 @@ function buildGamesStats(input = {}) {
     work.hours = work.minutes / 60;
   }
 
-  const visibleWorks = [];
-  const excludedWorks = [];
-  for (const work of allWorks) {
-    if (hoursFilterPass(work.minutes, minHours)) visibleWorks.push(work);
-    else excludedWorks.push(work);
-  }
-  const visibleGames = [];
-  const workByAppid = new Map();
-  for (const work of visibleWorks) {
-    for (const game of work.games) {
-      visibleGames.push(game);
-      workByAppid.set(game.appid, work);
-    }
-  }
-  const excludedByHours = excludedWorks.length;
-
-  /* ---------------- M6a: GOG same-owner secondary library ---------------- */
-  // GOG is a **library of the same owner**, never a second journal (§14.4).
-  // The union merges GOG products into the Steam works by `workKey`; GOG-only
-  // games become `secondaryWorks` and never enter the Steam aggregates. Hours
-  // stay separate (`hoursBySource`), they are never summed with Steam.
+  /* ---------------- M6a/M6c: same-owner secondary libraries ---------------- */
+  // GOG and Epic are **libraries of the same owner**, never a second journal
+  // (§14.4). The union merges their products into the Steam works by
+  // `workKey` (Wikidata P2725/P6278 → P1733, then title); a game that exists
+  // only outside Steam becomes a secondary-only work. Hours are reported per
+  // source (`hoursBySource`) **and** as a display sum (`displayMinutes`), the
+  // 01.11.2026 product decision: an owned work shows Steam + GOG + Epic hours,
+  // the breakdown stays visible.
   const gogAccounts = Array.isArray(input.gogAccounts) ? input.gogAccounts : [];
   const gogSnapshots = Array.isArray(input.gogSnapshots) ? input.gogSnapshots : [];
-  let gogUnion = null;
-  if (gogSnapshots.length) {
-    const products = [];
-    const minutes = {};
-    for (const snapshot of gogSnapshots) {
-      const library = snapshot && snapshot.library ? snapshot.library : null;
-      const playtime = snapshot && snapshot.playtime ? snapshot.playtime : null;
-      if (library && Array.isArray(library.products)) products.push(...library.products);
-      if (playtime && playtime.minutes && typeof playtime.minutes === 'object') {
-        for (const [id, value] of Object.entries(playtime.minutes)) {
-          minutes[id] = (Number(minutes[id]) || 0) + (Number(value) || 0);
-        }
-      }
-    }
-    gogUnion = buildGogUnion({ products, minutes, works: allWorks, links: linkDocs });
-  }
+  const epicLayer =
+    input.epic && typeof input.epic === 'object' && input.epic.accountId ? input.epic : null;
+  const union = buildSecondaryUnion({
+    works: allWorks,
+    gogSnapshots,
+    epicLayer,
+    links: linkDocs,
+    secondaryLinks: input.secondaryLinks,
+  });
+  // Legacy alias: the GOG block below and the per-appid annotations read the
+  // same union object (it exposes `byAppid`/`secondaryWorks`/`summary`).
+  // Annotate Steam rows with cross-store fields only when a secondary library
+  // is actually connected — a Steam-only payload stays byte-identical.
+  const unionActive = gogSnapshots.length > 0 || Boolean(epicLayer);
+  const gogUnion = unionActive ? union : null;
   const gogConnected = input.gogConnected === true;
-  const gogSummary = gogUnion ? gogUnion.summary : null;
-  const gogHoursValue = gogSummary ? gogSummary.gogHours : null;
-  const gogOwnedValue = gogSummary ? gogSummary.gogProducts : null;
+  // GOG-specific numbers exist only when a GOG snapshot is attached to this
+  // owner: an Epic-only owner must see `gog: null`, never a zero.
+  const gogHoursValue = gogSnapshots.length ? union.summary.gogHours : null;
+  const gogOwnedValue = gogSnapshots.length ? union.summary.gogProducts : null;
   const gogAccountView = gogAccounts[0] || null;
   const gogSnapshotView = gogSnapshots[0] || null;
   const gogStatus = !gogConnected
@@ -562,14 +565,12 @@ function buildGamesStats(input = {}) {
   };
 
   /* ---------------- M6b/M6c: Epic same-owner secondary library ------------ */
-  // Epic is an **isolated read model**, not a unioner (§14.4, M6b contract):
-  // its games have no `workKey` yet (the Wikidata bridge P6278/P2725/P1733 is
-  // M6c), so they never join a Steam work. They are listed in `secondaryWorks`
-  // with `workKey: null` and `source: 'epic'`, and their hours live only in
-  // `hoursBySource.epic`. Nothing is added to `totalHours`, `topGames` or the
-  // achievement calendar.
-  const epicLayer =
-    input.epic && typeof input.epic === 'object' && input.epic.accountId ? input.epic : null;
+  // The Epic read model is assembled by `epic-layer.js` (status, catalog
+  // coverage, playtime). M6c joins its games into the union above: a game with
+  // a Wikidata `P6278`/title match becomes part of the Steam work, the rest is
+  // a secondary-only work (`epic:<catalogItemId>`). These constants only feed
+  // the `sources.epic` block and the Epic summary, never a Steam journal field
+  // (achievements, `lastPlayed`, completion).
   const epicSource = epicSourceBlock(epicLayer);
   const epicHoursValue =
     epicLayer && epicLayer.summary && epicLayer.summary.hours != null
@@ -579,28 +580,129 @@ function buildGamesStats(input = {}) {
     epicLayer && epicLayer.summary && epicLayer.summary.ownedCount != null
       ? epicLayer.summary.ownedCount
       : null;
-  const epicSecondaryList = epicLayer ? epicSecondaryWorks(epicLayer, { limit: 200 }) : [];
+
+  const unionByWorkKey = union.byWorkKey;
+  const unionOf = (work) => (work ? unionByWorkKey.get(work.workKey) || null : null);
+  const visibleWorks = [];
+  const excludedWorks = [];
+  for (const work of allWorks) {
+    // M6c: one work = one hours number. A Steam work that was never played on
+    // Steam but has GOG/Epic hours passes the filter on the display total.
+    const entry = unionOf(work);
+    const minutes = entry ? entry.displayMinutes : work.minutes;
+    if (hoursFilterPass(minutes, minHours)) visibleWorks.push(work);
+    else excludedWorks.push(work);
+  }
+  const visibleGames = [];
+  const workByAppid = new Map();
+  for (const work of visibleWorks) {
+    for (const game of work.games) {
+      visibleGames.push(game);
+      workByAppid.set(game.appid, work);
+    }
+  }
+  const excludedByHours = excludedWorks.length;
+
+  /* ---------------- M6c: secondary-only works join every aggregate -------- */
+  // A work that exists only in GOG/Epic is a real owned game: it must be
+  // counted in `gameCount`, contribute its hours to `totalHours` and appear in
+  // years/decades/genres/histogram/backlog. It is NOT given a Steam identity it
+  // does not have (`primaryAppid: null`, no achievements, no `lastPlayed`).
+  //
+  // `minHours` semantics for a secondary-only work:
+  //   - hours known and > 0 → the same filter as a Steam work;
+  //   - hours known and 0    → dropped by `minHours=0` exactly like Steam;
+  //   - hours **unknown** (playtime never received: budget/404/Epic gap) →
+  //     never dropped, marked `hoursUnknown` + `hoursStatus`, so a failed
+  //     playtime phase cannot silently erase a game from the library.
+  const secondaryVisible = [];
+  const secondaryExcludedByHours = [];
+  for (const entry of union.secondaryOnly) {
+    if (entry.hoursUnknown) {
+      secondaryVisible.push(entry);
+      continue;
+    }
+    if (hoursFilterPass(entry.secondaryMinutes, minHours)) secondaryVisible.push(entry);
+    else secondaryExcludedByHours.push(entry);
+  }
+
+  /**
+   * One row per work for every chart: a Steam work carries its display hours
+   * (Steam + secondary of the same work), a secondary-only entry is a row of
+   * its own with `games: []` so every Steam-only helper stays empty and honest.
+   */
+  const chartWorks = [
+    ...visibleWorks.map((work) => {
+      const entry = unionOf(work);
+      return {
+        workKey: work.workKey,
+        primary: work.primary,
+        games: work.games,
+        minutes: entry ? entry.displayMinutes : work.minutes,
+        minutes2w: work.minutes2w,
+        rtime: work.rtime,
+        hours: (entry ? entry.displayMinutes : work.minutes) / 60,
+        union: entry,
+        steamWork: work,
+        secondaryOnly: false,
+      };
+    }),
+    ...secondaryVisible.map((entry) => ({
+      workKey: entry.workKey,
+      primary: {
+        appid: null,
+        name: entry.name || null,
+        img_icon_url: null,
+      },
+      games: [],
+      minutes: entry.secondaryMinutes,
+      minutes2w: 0,
+      rtime: 0,
+      hours: entry.secondaryMinutes / 60,
+      union: entry,
+      steamWork: null,
+      secondaryOnly: true,
+    })),
+  ];
 
   const minutesList = visibleGames.map((game) => Number(game.playtime_forever) || 0);
-  const hoursList = minutesList.map((minutes) => minutes / 60);
   const ownedCount = games.length;
-  const gameCount = visibleWorks.length;
+  const steamWorkCount = visibleWorks.length;
+  // One canonical work per game **across the owner's stores** (M6c).
+  const gameCount = chartWorks.length;
   const totalMinutes = minutesList.reduce((sum, minutes) => sum + minutes, 0);
   const rawTotalHours = totalMinutes / 60;
+  // Steam journal hours (the number `hoursBySource.steam` reports) — unchanged.
   const totalHours = round1(rawTotalHours);
-  const playedCount = visibleWorks.filter((work) => work.minutes > 0).length;
-  const unplayedCount = visibleWorks.filter((work) => work.minutes === 0).length;
+  // Display total: Steam + GOG + Epic of the visible works (M6c decision).
+  const totalMinutesAll = chartWorks.reduce((sum, work) => sum + (Number(work.minutes) || 0), 0);
+  const rawTotalHoursAll = totalMinutesAll / 60;
+  const totalHoursAll = round1(rawTotalHoursAll);
+  const secondaryOnlyMinutes = secondaryVisible.reduce(
+    (sum, entry) => sum + (Number(entry.secondaryMinutes) || 0),
+    0
+  );
+  const playedCount = chartWorks.filter((work) => work.minutes > 0).length;
+  // A work whose hours the store never answered for is neither «played» nor
+  // «backlog»: it is an honest third bucket (`hoursUnknown`), so the backlog
+  // count never claims a game was not played when nobody knows.
+  const hoursUnknownCount = chartWorks.filter(
+    (work) => work.union && work.union.hoursUnknown
+  ).length;
+  const unplayedCount = chartWorks.filter(
+    (work) => work.minutes === 0 && !(work.union && work.union.hoursUnknown)
+  ).length;
 
   // Pareto: the share of hours held by the top 10% of works (by hours).
-  const sortedWorkMinutes = visibleWorks
+  const sortedWorkMinutes = chartWorks
     .map((work) => work.minutes)
     .sort((a, b) => b - a);
   const topCount = Math.max(1, Math.ceil(gameCount * 0.1));
   const topMinutes = sortedWorkMinutes.slice(0, topCount).reduce((sum, minutes) => sum + minutes, 0);
-  const top10HoursShare = totalMinutes > 0 ? round3(topMinutes / totalMinutes) : 0;
+  const top10HoursShare = totalMinutesAll > 0 ? round3(topMinutes / totalMinutesAll) : 0;
 
   const medianHours = round1((median(sortedWorkMinutes) || 0) / 60);
-  const meanHours = gameCount ? round2(totalHours / gameCount) : 0;
+  const meanHours = gameCount ? round2(totalHoursAll / gameCount) : 0;
 
   const recent2wMinutes = visibleWorks.reduce((sum, work) => sum + work.minutes2w, 0);
   const lastPlayedSeconds = visibleWorks.reduce((max, work) => Math.max(max, work.rtime), 0);
@@ -670,7 +772,12 @@ function buildGamesStats(input = {}) {
       if (value == null) continue;
       year = year == null ? value : Math.min(year, value);
     }
-    return year;
+    if (year != null) return year;
+    // M6c: a work that exists only outside Steam has no `appdetails`; the
+    // store catalogue's own release date is the honest year (GOG
+    // `getFilteredProducts.releaseDate`, Epic catalog `releaseInfo.date`).
+    const entry = work.union || unionOf(work);
+    return entry && entry.releaseYear != null ? entry.releaseYear : null;
   };
   /**
    * Per-appid year for `gamesIndex`. A row with no year of its own inherits
@@ -696,6 +803,15 @@ function buildGamesStats(input = {}) {
         if (!out.includes(name)) out.push(name);
       }
     }
+    if (!out.length) {
+      // M6c: GOG/Epic catalogue genres when the snapshot carries them. A store
+      // that has no genre field contributes nothing (honest gap, no guessing
+      // from tags).
+      const entry = work.union || unionOf(work);
+      for (const name of (entry && Array.isArray(entry.genres) ? entry.genres : [])) {
+        if (!out.includes(name)) out.push(name);
+      }
+    }
     return out;
   };
   /** B6: canonical (base-version) name of a work, when it differs. */
@@ -714,7 +830,12 @@ function buildGamesStats(input = {}) {
       if (doc && Array.isArray(doc.developers) && doc.developers.length) return [...doc.developers];
     }
     const base = baseDetailOfWork(work);
-    return base && Array.isArray(base.developers) ? [...base.developers] : [];
+    if (base && Array.isArray(base.developers) && base.developers.length) {
+      return [...base.developers];
+    }
+    // M6c: a secondary-only work takes the store catalogue's developers.
+    const entry = work.union || unionOf(work);
+    return entry && Array.isArray(entry.developers) ? [...entry.developers] : [];
   };
   const workPublishers = (work) => {
     for (const game of work.games) {
@@ -722,7 +843,11 @@ function buildGamesStats(input = {}) {
       if (doc && Array.isArray(doc.publishers) && doc.publishers.length) return [...doc.publishers];
     }
     const base = baseDetailOfWork(work);
-    return base && Array.isArray(base.publishers) ? [...base.publishers] : [];
+    if (base && Array.isArray(base.publishers) && base.publishers.length) {
+      return [...base.publishers];
+    }
+    const entry = work.union || unionOf(work);
+    return entry && Array.isArray(entry.publishers) ? [...entry.publishers] : [];
   };
   const workSpy = (work) => {
     for (const game of work.games) {
@@ -954,7 +1079,60 @@ function buildGamesStats(input = {}) {
     };
   }
 
-  const byHoursDesc = [...visibleWorks].sort(
+  /* --------- M6c: secondary-only works in the client-side index ---------- */
+  // The frontend recounts charts from `gamesIndex`; a secondary-only work has
+  // no appid, so it is keyed by its own `workKey` (`gog:<id>` / `epic:<id>`)
+  // with `appid: null`, `secondaryOnly: true` and the same field names. A
+  // client that only knows appids skips these rows (they stay additive); a
+  // client that renders the union counts exactly what the server counts.
+  for (const entry of secondaryVisible) {
+    const key = entry.workKey;
+    if (gamesIndex[key]) continue;
+    const source = entry.sources.includes('gog') ? 'gog' : 'epic';
+    gamesIndex[key] = {
+      appid: null,
+      workKey: key,
+      secondaryOnly: true,
+      source,
+      name: entry.name || null,
+      hours: round1(entry.secondaryMinutes / 60),
+      hours2w: 0,
+      rtime: 0,
+      lastPlayed: null,
+      iconUrl: null,
+      canonicalWorkKey: key,
+      primaryAppid: null,
+      isPrimary: true,
+      editionCount: 1,
+      canonicalHours: round1(entry.secondaryMinutes / 60),
+      sources: [...entry.sources],
+      storeIds: { ...entry.storeIds },
+      hoursBySource: { ...entry.hoursBySource },
+      hoursUnknown: Boolean(entry.hoursUnknown),
+      hoursStatus: { ...entry.hoursStatus },
+      type: 'game',
+      year: entry.releaseYear == null ? null : entry.releaseYear,
+      releaseYear: entry.releaseYear == null ? null : entry.releaseYear,
+      genres: [...entry.genres],
+      developers: [...entry.developers],
+      publishers: [...entry.publishers],
+      categories: [],
+      dlcCount: null,
+      metacritic: null,
+      isFree: null,
+      earlyAccess: null,
+      metadataSources: [...entry.metadataSources],
+      tags: [],
+      reviewScore: null,
+      reviewDesc: null,
+      franchise: null,
+      releaseYearWikidata: null,
+      completion: null,
+      achievements: null,
+    };
+  }
+
+  const byHoursDesc = [...chartWorks].sort(
     (left, right) =>
       right.minutes - left.minutes ||
       String(left.primary.name || '').localeCompare(String(right.primary.name || ''))
@@ -962,6 +1140,35 @@ function buildGamesStats(input = {}) {
 
   const topGames = byHoursDesc.slice(0, TOP_LIMIT).map((work) => {
     const game = work.primary;
+    // M6c: a work that exists only outside Steam has no appid — the card keeps
+    // `appid: null` and points at its own work key instead of inventing a Steam
+    // identity. `hours` is the display total of the work (Steam + GOG + Epic).
+    if (work.secondaryOnly) {
+      const entry = work.union;
+      return {
+        appid: null,
+        workKey: work.workKey,
+        name: entry.name || null,
+        hours: round1(work.hours),
+        hours2w: 0,
+        lastPlayed: null,
+        releaseYear: workYear(work),
+        genres: workGenres(work),
+        type: 'game',
+        isFree: null,
+        completion: null,
+        cover: null,
+        iconUrl: null,
+        canonicalWorkKey: work.workKey,
+        editionCount: 1,
+        sources: [...entry.sources],
+        hoursBySource: { ...entry.hoursBySource },
+        hoursUnknown: Boolean(entry.hoursUnknown),
+        source: entry.sources.includes('gog') ? 'gog' : 'epic',
+        ...(entry.developers.length ? { developers: [...entry.developers] } : {}),
+        ...(entry.publishers.length ? { publishers: [...entry.publishers] } : {}),
+      };
+    }
     const doc = detailOf(details, game.appid);
     const entry = {
       appid: game.appid,
@@ -979,6 +1186,13 @@ function buildGamesStats(input = {}) {
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
     };
+    // M6c: a Steam work that is also owned on GOG/Epic shows the display total
+    // (`hours`) plus the per-source breakdown.
+    if (work.union && work.union.sources.length > 1) {
+      entry.sources = [...work.union.sources];
+      entry.hoursBySource = { ...work.union.hoursBySource };
+      entry.hoursSteam = round1((Number(work.union.steamMinutes) || 0) / 60);
+    }
     // B6: the work's own metadata (base version) when the owned row is a
     // regional SKU without a store page. Additive: `name` stays the edition.
     const canonicalName = workCanonicalName(work);
@@ -1038,13 +1252,30 @@ function buildGamesStats(input = {}) {
       editionCount: work.games.length,
     }));
 
-  const backlogItems = [...visibleWorks]
-    .filter((work) => work.minutes === 0)
+  const backlogItems = [...chartWorks]
+    .filter((work) => work.minutes === 0 && !(work.union && work.union.hoursUnknown))
     .sort((left, right) =>
       String(left.primary.name || '').localeCompare(String(right.primary.name || ''))
     )
     .slice(0, BACKLOG_LIMIT)
     .map((work) => {
+      if (work.secondaryOnly) {
+        const entry = work.union;
+        return {
+          appid: null,
+          workKey: work.workKey,
+          name: entry.name || null,
+          iconUrl: null,
+          year: workYear(work),
+          releaseYear: workYear(work),
+          genres: workGenres(work),
+          canonicalWorkKey: work.workKey,
+          editionCount: 1,
+          sources: [...entry.sources],
+          source: entry.sources.includes('gog') ? 'gog' : 'epic',
+          hoursUnknown: Boolean(entry.hoursUnknown),
+        };
+      }
       const game = work.primary;
       const year = workYear(work);
       const entry = {
@@ -1080,7 +1311,7 @@ function buildGamesStats(input = {}) {
   const decadeMap = new Map();
   let unknownYearCount = 0;
   let unknownYearHours = 0;
-  for (const work of visibleWorks) {
+  for (const work of chartWorks) {
     const year = workYear(work);
     const hours = hoursOf(work);
     if (year == null) {
@@ -1092,17 +1323,20 @@ function buildGamesStats(input = {}) {
     pushBucket(decadeMap, Math.floor(year / 10) * 10, hours);
   }
 
-  const years = hasDetails
+  // M6c: a secondary-only work carries a release year from its store catalogue,
+  // so the year chart is meaningful even before Steam details exist.
+  const chartsHaveData = hasDetails || secondaryVisible.length > 0;
+  const years = chartsHaveData
     ? [...yearMap.entries()]
         .sort((left, right) => left[0] - right[0])
         .map(([year, entry]) => ({ year, count: entry.count, hours: round1(entry.hours) }))
     : [];
-  const decades = hasDetails
+  const decades = chartsHaveData
     ? [...decadeMap.entries()]
         .sort((left, right) => left[0] - right[0])
         .map(([decade, entry]) => ({ decade, count: entry.count, hours: round1(entry.hours) }))
     : [];
-  if (hasDetails && unknownYearCount > 0) {
+  if (chartsHaveData && unknownYearCount > 0) {
     const unknown = {
       key: 'unknown',
       label: UNKNOWN_YEAR_LABEL,
@@ -1120,7 +1354,7 @@ function buildGamesStats(input = {}) {
   // the frontend) drives the size; `count`/`share` stay available. One work
   // counts once even when two editions carry the same genre.
   const genreMap = new Map();
-  for (const work of visibleWorks) {
+  for (const work of chartWorks) {
     const hours = hoursOf(work);
     for (const name of workGenres(work)) {
       const entry = genreMap.get(name) || { name, count: 0, hours: 0 };
@@ -1129,7 +1363,7 @@ function buildGamesStats(input = {}) {
       genreMap.set(name, entry);
     }
   }
-  const genres = hasDetails
+  const genres = hasDetails || genreMap.size > 0
     ? [...genreMap.values()]
         .map((entry) => ({
           name: entry.name,
@@ -1440,7 +1674,8 @@ function buildGamesStats(input = {}) {
     // gameCount is an estimate until appdetails (M2) separates DLC/tools.
     libraryPartial: partial,
     summary: {
-      // M5-B: one canonical work per game, not per store edition.
+      // M5-B/M6c: one canonical work per game **across stores**, not per store
+      // edition. Includes works that exist only in GOG/Epic.
       gameCount,
       // Honest: with no details (or with unavailable/unknown types) the type
       // split is still an estimate; a fully enriched library flips it to false.
@@ -1448,23 +1683,41 @@ function buildGamesStats(input = {}) {
       ownedCount,
       playedCount,
       unplayedCount,
+      // Works whose hours no store answered for (never counted as backlog).
+      hoursUnknownCount,
       backlogShare: gameCount ? round3(unplayedCount / gameCount) : 0,
-      totalHours,
-      // M6a/M6c: hours and ownership per source — **never summed** across
-      // sources (§14.4 п. 2). `steam` is the journal total above; `gog`/`epic`
-      // are null when that library is not connected and 0 when connected but
-      // empty. The UI prints one row per source, never a combined total.
-      hoursBySource: { steam: totalHours, gog: gogHoursValue, epic: epicHoursValue },
+      // Display total of the owner's visible works: Steam + GOG + Epic
+      // (M6c product decision). `hoursBySource.steam` below stays the Steam
+      // journal number, so the breakdown never disappears.
+      totalHours: totalHoursAll,
+      totalHoursSteam: totalHours,
+      // Per-source numbers (never merged into one number by themselves):
+      // `steam` is the Steam journal total, `gog`/`epic` are null when that
+      // library is not connected and 0 when connected but empty. `all` is the
+      // display sum above (Steam + GOG + Epic of the same works).
+      hoursBySource: unionActive
+        ? {
+            steam: totalHours,
+            gog: gogHoursValue,
+            epic: epicHoursValue,
+            all: totalHoursAll,
+          }
+        : { steam: totalHours, gog: gogHoursValue, epic: epicHoursValue },
       ownedBySource: { steam: ownedCount, gog: gogOwnedValue, epic: epicOwnedValue },
-      // Union over canonical works (`workKey`): Steam + GOG, one row per work.
-      worksTotal: gogSummary ? gogSummary.worksTotal : gameCount,
-      secondaryOnlyWorks: gogSummary ? gogSummary.secondaryOnlyWorks : 0,
-      // Epic games have no work identity yet: counted as separate entries of
-      // `secondaryWorks`, never added to `worksTotal` (that would pretend an
-      // identity the bridge has not proven).
-      epicSecondaryGames: epicSecondaryList.length,
-      secondaryWorksTotal:
-        (gogSummary ? gogSummary.secondaryOnlyWorks : 0) + epicSecondaryList.length,
+      // Union over canonical works (`workKey`): Steam + GOG + Epic, one row per
+      // work. `worksTotal` counts every union work (filters aside);
+      // `gameCount` is the same number after type/free/minHours filters.
+      worksTotal: union.summary.worksTotal,
+      secondaryOnlyWorks: union.summary.secondaryOnlyWorks,
+      // Epic entries that could not be joined to a Steam/GOG work: counted as
+      // their own secondary works (they are real owned games).
+      epicSecondaryGames: union.summary.secondaryOnlyEpic,
+      secondaryWorksTotal: union.summary.secondaryOnlyWorks,
+      // Hours that exist only outside Steam, and works whose hours the store
+      // never answered for (`minHours` must not drop them).
+      secondaryHours: round1(secondaryOnlyMinutes / 60),
+      secondaryHoursUnknown: union.summary.hoursUnknownWorks,
+      secondaryWorksVisible: secondaryVisible.length,
       meanHours,
       medianHours,
       top10HoursShare,
@@ -1505,7 +1758,7 @@ function buildGamesStats(input = {}) {
       dlc: dlcSummary,
       metadata,
     },
-    hoursHistogram: hoursHistogram(visibleWorks.map((work) => work.hours)),
+    hoursHistogram: hoursHistogram(chartWorks.map((work) => work.hours)),
     topGames,
     recentlyPlayed,
     recently2w,
@@ -1534,11 +1787,13 @@ function buildGamesStats(input = {}) {
     // `workKey`) followed by Epic games (`workKey: null`, no identity yet).
     // The list is capped for payload size; `summary.secondaryWorksTotal` is
     // the full count. Never merged into the Steam journal aggregates.
-    secondaryWorks: [
-      ...(gogUnion ? gogUnion.secondaryWorks.slice(0, 200) : []),
-      ...epicSecondaryList.slice(0, 100),
-    ],
-    gog: gogSummary ? { ...gogSummary, status: gogStatus } : null,
+    secondaryWorks: secondaryVisible.slice(0, 200).map((entry) => ({
+      ...entry,
+      // The UI's «Вне Steam» list reads `source` for the badge.
+      source: entry.sources.includes('gog') ? 'gog' : 'epic',
+      hours: round1(entry.secondaryMinutes / 60),
+    })),
+    gog: gogSnapshots.length ? { ...union.summary, status: gogStatus } : null,
     // M6c: the Epic read model without per-game arrays (they are already in
     // `secondaryWorks`). `null` when no Epic account is bound to this owner.
     epic: epicLayer
@@ -1615,6 +1870,11 @@ function buildGamesStats(input = {}) {
           applied: true,
           excluded: excludedByHours,
           excludedAppids: excludedWorks.reduce((sum, work) => sum + work.games.length, 0),
+          // M6c: secondary-only works the filter dropped. Works whose hours the
+          // store never answered for are **kept** (`hoursUnknown`), never
+          // counted here — a failed playtime phase must not hide a game.
+          excludedSecondary: secondaryExcludedByHours.length,
+          keptSecondaryUnknownHours: secondaryVisible.filter((entry) => entry.hoursUnknown).length,
         },
       },
       pending: [

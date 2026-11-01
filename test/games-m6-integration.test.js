@@ -108,18 +108,30 @@ test('M6 integration', async (t) => {
   await epicImport.whenIdle();
   assert.equal(epicImport.getStatus(job.jobId).status, 'done');
 
-  await t.test('stats: Epic hours/ownership sit next to Steam and GOG, never summed', () => {
+  await t.test('stats: Epic hours join the display total, the breakdown stays', () => {
     const payload = buildGamesStatsFromCache(OWNER);
-    // Steam journal untouched: 3000 + 3000 minutes.
-    assert.equal(payload.summary.totalHours, 100);
-    assert.deepEqual(payload.summary.hoursBySource, { steam: 100, gog: null, epic: 10.5 });
+    // M6c: headline = Steam (100 h) + Epic (10.5 h) of the visible works.
+    assert.equal(payload.summary.totalHours, 110.5);
+    assert.equal(payload.summary.totalHoursSteam, 100);
+    assert.deepEqual(payload.summary.hoursBySource, {
+      steam: 100,
+      gog: null,
+      epic: 10.5,
+      all: 110.5,
+    });
     assert.deepEqual(payload.summary.ownedBySource, { steam: 2, gog: null, epic: 4 });
-    // Epic has no work identity yet: it cannot inflate the union.
-    assert.equal(payload.summary.worksTotal, payload.summary.gameCount);
+    // One row per work: 2 Steam + 4 Epic-only (none of the Epic ids is a Steam
+    // work in this fixture, so nothing is merged).
+    assert.equal(payload.summary.worksTotal, 6);
+    assert.equal(payload.summary.gameCount, 6);
     assert.equal(payload.summary.epicSecondaryGames, 4);
     assert.equal(payload.summary.secondaryWorksTotal, 4);
-    // The journal aggregates never see an Epic title.
-    assert.equal(payload.topGames.some((row) => /witcher|control/i.test(row.name || '')), false);
+    // Epic titles are real owned games: they are counted and ranked, with no
+    // invented Steam identity.
+    const witcher = payload.topGames.find((row) => /witcher/i.test(row.name || ''));
+    assert.ok(witcher);
+    assert.equal(witcher.appid, null);
+    assert.deepEqual(witcher.sources, ['epic']);
     assert.equal(payload.summary.achievements.total, 0);
   });
 
@@ -144,12 +156,14 @@ test('M6 integration', async (t) => {
     assert.equal(Object.prototype.hasOwnProperty.call(payload.epic, 'games'), false);
   });
 
-  await t.test('stats: Epic games are secondaryWorks with no workKey', () => {
+  await t.test('stats: Epic games are secondaryWorks with their own workKey', () => {
     const payload = buildGamesStatsFromCache(OWNER);
     assert.equal(payload.secondaryWorks.length, 4);
     for (const entry of payload.secondaryWorks) {
       assert.equal(entry.source, 'epic');
-      assert.equal(entry.workKey, null);
+      // M6c: an unmerged Epic game is its own work (),
+      // never a fake Steam work key.
+      assert.match(entry.workKey, /^epic:/);
       assert.deepEqual(entry.ownedOn, ['epic']);
       assert.equal(entry.storeIds.steam, null);
       assert.equal(entry.storeIds.gog, null);
