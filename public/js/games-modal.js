@@ -24,7 +24,7 @@ import { openModal } from './modal.js';
 import { getGameDetails } from './api.js';
 import {
   GAME_SORT_OPTIONS, sortGameRows, personGames, personSummaryText, hoursText, percentText,
-  formatDateRu, gameTypeLabel, personnelRoleLabel, normalizeGameCard,
+  formatDateRu, gameTypeLabel, personnelRoleLabel, normalizeGameCard, gamesInFranchise,
 } from './games-view.js';
 
 const GAME_BATCH = 60;
@@ -321,6 +321,28 @@ export function openGameListModal({
   renderVisible();
 
   return openModal({ head, body, labelledBy: titleId, className: 'modal-films' });
+}
+
+/**
+ * Franchise modal: the games of one franchise (IGDB/Wikidata link or the
+ * name heuristic), ordered by release year. Reuses the game-list modal so the
+ * sorting control and the card drilldown stay identical to every other list.
+ */
+export function openFranchiseModal({ franchise = null, games = [], hoursSum = null } = {}) {
+  const label = (franchise && (franchise.label || franchise.name || franchise.key)) || 'Франшиза';
+  const list = Array.isArray(games) ? games.filter(Boolean) : [];
+  const hoursPart = hoursSum != null ? ` · ${hoursText(hoursSum)}` : '';
+  return openGameListModal({
+    kicker: 'Франшиза',
+    title: label,
+    subtitle: `${fmtInt(list.length)} ${plural(list.length, GAME_PLURAL)}${hoursPart}`,
+    hint: 'Игры одной франшизы (IGDB/Wikidata или эвристика), по годам релиза. Часы — по данным Steam.',
+    groupLabel: label,
+    emptyText: 'Нет игр этой франшизы в библиотеке',
+    games: list,
+    sortScope: 'franchise',
+    defaultSort: 'year',
+  });
 }
 
 /* =========================================================
@@ -673,8 +695,57 @@ function fillGameCard({ head, copy, body, game }) {
   if (game.hours != null) subParts.push(hoursText(game.hours));
   if (game.completion != null) subParts.push(`completion ${percentText(game.completion, 0)}`);
   copy.append(el('div', { class: 'modal-sub', text: subParts.join(' · ') }));
+
+  // M4 card strip: top-3 SteamSpy tags, then the community review badge.
+  // The badge is explicitly labelled as Steam community data, not a personal
+  // rating — Steam has no personal scores.
+  if (game.tags && game.tags.length) {
+    const strip = el('div', { class: 'game-tags-strip', 'aria-label': 'Теги SteamSpy' });
+    for (const tag of game.tags.slice(0, 3)) {
+      strip.append(el('span', { class: 'game-tag-chip', text: tag }));
+    }
+    if (game.tags.length > 3) {
+      strip.append(el('span', {
+        class: 'game-tag-chip is-more',
+        text: `+${game.tags.length - 3}`,
+        title: game.tags.slice(3).join(', '),
+      }));
+    }
+    copy.append(strip);
+  }
+  if (game.reviewScore) {
+    const score = game.reviewScore.score;
+    const reviewLabel = game.reviewScore.label || game.reviewScore.desc || 'оценка Steam';
+    const badge = el('div', {
+      class: 'game-review-badge',
+      title: `community score Steam ${score != null ? `${score}/9` : ''} — оценка сообщества, не ваша личная`,
+    });
+    badge.append(el('span', {
+      class: 'game-review-dot',
+      style: { background: game.reviewScore.color || '#8f9464' },
+    }));
+    badge.append(el('span', { class: 'game-review-score', text: score != null ? `${score}/9` : '—' }));
+    badge.append(el('span', { class: 'game-review-label', text: reviewLabel }));
+    copy.append(badge);
+  }
+
   const menu = linkMenu(game);
   if (menu) copy.append(menu);
+
+  if (game.franchise && game.franchise.label) {
+    const chip = el('button', {
+      type: 'button',
+      class: 'game-franchise-chip',
+      title: 'Открыть игры этой франшизы',
+    });
+    chip.append(el('span', { class: 'game-franchise-key', text: 'Франшиза' }));
+    chip.append(el('strong', { text: game.franchise.label }));
+    chip.addEventListener('click', () => {
+      const list = sortGameRows(gamesInFranchise(context.gamesIndex, game.franchise), 'year');
+      openFranchiseModal({ franchise: game.franchise, games: list });
+    });
+    copy.append(chip);
+  }
 
   if (game.type && game.type !== 'game') {
     copy.append(el('p', {

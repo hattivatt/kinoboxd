@@ -4707,6 +4707,12 @@ img { display: block; }
 /* The count-by-release-year chart is its own full-width block: it never
    depends on the decade selection above it (unlike .w-games-years). */
 .w-games-yearcount { grid-column: span 12; }
+/* M4: tags 6 + scores 6, franchises 6 + DLC 6 — pairs, so the grid never
+   leaves a hole between the existing M1–M3 cards. */
+.w-games-tags { grid-column: span 6; }
+.w-games-scores { grid-column: span 6; }
+.w-games-franchises { grid-column: span 6; }
+.w-games-dlc { grid-column: span 6; }
 .w-games-genres { grid-column: span 8; }
 .w-games-modes { grid-column: span 4; }
 .w-games-access { grid-column: span 4; }
@@ -4714,6 +4720,37 @@ img { display: block; }
 .w-games-achievements { grid-column: span 4; }
 .w-games-calendar { grid-column: span 12; }
 .w-games-persons { grid-column: span 12; }
+
+/* M4 widgets: tags reuse the genre bar classes; scores reuse the donut/legend
+   classes; franchises are a plain ranked list; DLC is a summary + rows. */
+.games-scores-honest {
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  color: var(--muted-2);
+  font-style: italic;
+}
+.w-games-scores .ratings-body { gap: 10px; }
+.w-games-tags .games-weight-btn { font-size: 10px; }
+.games-dlc-summary {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.games-dlc-list .genre-row { cursor: pointer; }
+.games-dlc-row-count {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted-2);
+  font-size: 11px;
+}
+.games-franchises-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 2px;
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
 
 /* The games summary has 7–8 tiles (the 7th is «не типизированы»), so it
    sizes itself instead of overflowing the shared 6-column strip. */
@@ -4834,6 +4871,59 @@ img { display: block; }
 .game-credit-name { color: var(--text-soft); font-weight: 600; }
 .game-credit-roles { font-size: 10px; color: var(--muted-2); }
 .game-links { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* M4 game card extras: tags strip, Steam review badge, franchise chip. */
+.game-tags-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 6px 0 0;
+}
+.game-tag-chip {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 10.5px;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+.game-tag-chip.is-more { color: var(--muted-2); }
+.game-review-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-soft);
+}
+.game-review-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.game-review-score { font-weight: 700; font-variant-numeric: tabular-nums; }
+.game-review-label { color: var(--muted-2); }
+.game-franchise-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 3px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11px;
+  cursor: pointer;
+}
+.game-franchise-chip:hover { border-color: var(--green); color: var(--text); }
+.game-franchise-key { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted-2); }
 .game-link { font-size: 11px; padding: 6px 12px; text-decoration: none; }
 
 /* ---------------- personnel screen ---------------- */
@@ -4976,6 +5066,10 @@ img { display: block; }
 @media (max-width: 1120px) {
   .w-games-decades,
   .w-games-years,
+  .w-games-tags,
+  .w-games-scores,
+  .w-games-franchises,
+  .w-games-dlc,
   .w-games-genres,
   .w-games-modes,
   .w-games-access,
@@ -4988,6 +5082,10 @@ img { display: block; }
 @media (max-width: 760px) {
   .w-games-decades,
   .w-games-years,
+  .w-games-tags,
+  .w-games-scores,
+  .w-games-franchises,
+  .w-games-dlc,
   .w-games-genres,
   .w-games-modes,
   .w-games-access,

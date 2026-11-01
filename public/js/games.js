@@ -21,14 +21,14 @@
 
 import {
   getGamesStats, getGamesProfiles, startGamesImportSteam, getGamesImportStatus, startGamesRefresh,
-  getGamesPersonnel,
+  getGamesPersonnel, getGamesFranchises,
 } from './api.js';
 import {
   $, el, clear, fmtInt, plural, icon, toast, errorBox, showTooltip, moveTooltip, hideTooltip,
   shortErrorMessage, debounce,
 } from './ui.js';
 import { withPreservedScroll } from './books-refresh.js';
-import { renderYearBars } from './charts.js';
+import { renderYearBars, renderDonut } from './charts.js';
 import {
   normalizeGamesPayload, normalizeProfilesList, accountFromInput, profileCardView, summaryMetrics,
   paretoView, topHoursRows, backlogView, recentlyView, histogramView, lastPlayedInfo,
@@ -40,9 +40,12 @@ import {
   gamesInDecade, gamesWithoutYear, gamesWithoutType, gamesByGenre, gamesByMode,
   gamesByAccess, gamesInHoursBucket, gamesWithRecentHours, backlogGames, allGames, sortGameRows,
   yearsInDecade, gamesInYearGenre, yearCountView, yearCountGenreOptions,
+  tagsChartView, TAG_CHART_LIMIT, gamesByTag, scoresView, gamesByReviewBucket,
+  franchisesView, gamesInFranchise, dlcView, normalizeFranchisesResponse,
 } from './games-view.js';
 import {
   configureGamesModals, openGameCardModal, openGameListModal, openPersonModal, personAvatarEl,
+  openFranchiseModal,
 } from './games-modal.js';
 import { renderAchievementCalendar, renderAchievementStreaks } from './games-charts.js';
 
@@ -54,6 +57,8 @@ const ROLE_KEY = 'kinoboxd.games.role.v1';
 // Legacy key name: the genre widget was a cloud, now it is a bar chart. The
 // stored weight choice survives the change, so the string stays.
 const GENRE_WEIGHT_KEY = 'kinoboxd.games.cloudweight.v1';
+// Tags share the bar-chart idea but keep their own weight (hours/count/weight).
+const TAG_WEIGHT_KEY = 'kinoboxd.games.tagweight.v1';
 const POLL_INTERVAL = 1400;
 const ENRICH_POLL_INTERVAL = 3500;
 const ENRICH_POLL_LIMIT = 120;
@@ -91,6 +96,11 @@ const state = {
   // Genre bar chart: weight + «Показать все» (top 12 first).
   genreWeight: 'hours',
   genresExpanded: false,
+  // M4 tag bars: own weight (hours/count/weight) and fold state.
+  tagWeight: 'hours',
+  tagsExpanded: false,
+  // M4 franchises come from their own route, cached per profile (one owner).
+  franchises: { data: null, loading: false, error: null, profile: '' },
   // M3: personnel weights + per-role cache (one owner, no cross-profile mix).
   weight: 'hours',
   role: 'developer',
@@ -348,6 +358,8 @@ async function switchProfile(key) {
   // previous owner's F2P/DLC switches.
   state.filters = readStoredFilters(next);
   state.selectedDecade = null;
+  // Franchises belong to one owner too: never reuse the previous cache.
+  state.franchises = { data: null, loading: false, error: null, profile: '' };
   state.yearCountGenre = null;
   state.genresExpanded = false;
   syncFilterInputs();
@@ -801,8 +813,14 @@ function renderDashboard(data) {
   renderDecades(data);
   renderYears(data);
   renderYearCount(data);
+  // M4: tags + Steam scores sit next to the genre/mode pair; franchises and
+  // DLC follow. Every widget hides itself when its block is absent.
+  renderTags(data);
+  renderScores(data);
   renderGenreChart(data);
   renderModes(data);
+  renderFranchises(data);
+  renderDlc(data);
   renderAccess(data);
   renderMetadataProgress(data);
   renderAchievements(data);
@@ -1755,6 +1773,357 @@ function renderGenreChart(data) {
   }
 }
 
+/* =========================================================
+   M4: tags / Steam scores / franchises / DLC
+   ========================================================= */
+
+function renderTags(data) {
+  const widget = $('games-tags-widget');
+  const host = $('games-tags-chart');
+  const moreHost = $('games-tags-more');
+  const note = $('games-tags-note');
+  if (!widget || !host) return;
+  clear(host);
+  if (moreHost) clear(moreHost);
+  const view = tagsChartView(data.tags, {
+    weight: state.tagWeight,
+    limit: state.tagsExpanded ? 0 : TAG_CHART_LIMIT,
+    // Same fallback denominator as genres: the payload share wins.
+    totalHours: data.summary ? data.summary.totalHours : null,
+  });
+  if (!view) {
+    widget.hidden = true;
+    return;
+  }
+  widget.hidden = false;
+  if (note) note.textContent = view.note;
+
+  for (const row of view.rows) {
+    const node = el('div', {
+      class: 'genre-row games-genre-row is-clickable',
+      title: row.title,
+      role: 'button',
+      tabIndex: 0,
+      'aria-label': row.ariaLabel,
+    });
+    const name = el('div', { class: 'genre-name' });
+    name.append(el('span', { class: 'genre-label', text: row.name }));
+    node.append(name);
+    const track = el('div', { class: 'genre-track' });
+    const fill = el('div', { class: 'genre-fill' });
+    track.append(fill);
+    node.append(track);
+    const value = el('div', { class: 'genre-avg games-genre-value' });
+    value.append(el('span', { text: row.primaryText }));
+    if (row.secondaryText) value.append(el('small', { text: row.secondaryText }));
+    node.append(value);
+    host.append(node);
+    requestAnimationFrame(() => {
+      fill.style.width = `${row.widthPercent}%`;
+    });
+    node.addEventListener('pointerenter', (event) => {
+      showTooltip(row.title, row.hint);
+      moveTooltip(event);
+    });
+    node.addEventListener('pointermove', moveTooltip);
+    node.addEventListener('pointerleave', hideTooltip);
+    const activate = () => {
+      hideTooltip();
+      const games = sortGameRows(gamesByTag(data.gamesIndex, row.name), 'hours');
+      openGameListModal({
+        kicker: 'Тег',
+        title: `${row.name} — ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`,
+        subtitle: `${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)} · ${row.hoursText || 'часы неизвестны'}`,
+        hint: 'Теги SteamSpy; одна игра может иметь несколько тегов, поэтому сумма по тегам больше числа игр. '
+          + 'Список собран по gamesIndex — игры без тегов в него не попадают.',
+        groupLabel: row.name,
+        emptyText: 'Нет игр с этим тегом в индексе',
+        games,
+        sortScope: 'tags',
+        defaultSort: 'hours',
+      });
+    };
+    node.addEventListener('click', activate);
+    node.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      activate();
+    });
+  }
+
+  if (moreHost) {
+    if (view.hidden > 0) {
+      const button = el('button', {
+        type: 'button',
+        class: 'btn games-genre-more-btn',
+        text: `Показать все (${fmtInt(view.total)})`,
+      });
+      button.addEventListener('click', () => {
+        state.tagsExpanded = true;
+        renderTags(data);
+      });
+      moreHost.append(button);
+    } else if (state.tagsExpanded && view.total > TAG_CHART_LIMIT) {
+      const button = el('button', {
+        type: 'button',
+        class: 'btn btn-link games-genre-more-btn',
+        text: `Свернуть до топ-${TAG_CHART_LIMIT}`,
+      });
+      button.addEventListener('click', () => {
+        state.tagsExpanded = false;
+        renderTags(data);
+      });
+      moreHost.append(button);
+    }
+  }
+  for (const button of document.querySelectorAll('[data-games-tag-weight]')) {
+    const active = button.dataset.gamesTagWeight === view.weight;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+}
+
+function openScoreBucketModal(data, bucket) {
+  const view = scoresView(data.scores, data.reviewScore);
+  const seg = view ? view.segments.find((entry) => entry.bucket === Number(bucket)) : null;
+  if (!seg) return;
+  const games = sortGameRows(gamesByReviewBucket(data.gamesIndex, seg.bucket), 'hours');
+  openGameListModal({
+    kicker: 'Оценки Steam',
+    title: `${seg.label} — ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`,
+    subtitle: `${seg.desc} · community score ${seg.bucket} из 9`,
+    hint: 'Это community-оценка Steam (appreviews), а не ваша личная: личных оценок у Steam нет. '
+      + 'Список собран по gamesIndex — игры без оценки в него не попадают.',
+    groupLabel: seg.label,
+    emptyText: 'Нет игр с этой оценкой в индексе',
+    games,
+    sortScope: 'scores',
+    defaultSort: 'hours',
+  });
+}
+
+function renderScores(data) {
+  const widget = $('games-scores-widget');
+  const donutHost = $('games-scores-donut');
+  const legendHost = $('games-scores-legend');
+  const note = $('games-scores-note');
+  const honest = $('games-scores-honest');
+  if (!widget || !donutHost || !legendHost) return;
+  const view = scoresView(data.scores, data.reviewScore);
+  if (!view) {
+    widget.hidden = true;
+    clear(donutHost);
+    clear(legendHost);
+    return;
+  }
+  widget.hidden = false;
+  if (note) {
+    const avg = view.avgText !== '—' ? ` · средняя ${view.avgText}` : '';
+    note.textContent = `${view.note}${avg}`;
+  }
+  if (honest) honest.textContent = view.honestNote;
+  renderDonut(donutHost, {
+    segments: view.segments,
+    legendHost,
+    centerValue: fmtInt(view.total),
+    centerLabel: 'игр с оценкой',
+    ariaLabel: view.ariaLabel,
+    secondary: (seg) => {
+      const entry = view.segments.find((item) => item.key === seg.key);
+      return entry ? `${entry.desc} · ${fmtInt(seg.value)} ${plural(seg.value, GAME_PLURAL)}` : '';
+    },
+    onSelect: (seg) => {
+      hideTooltip();
+      openScoreBucketModal(data, seg.bucket);
+    },
+  });
+}
+
+/**
+ * Franchises: the block may arrive in `/stats` (tolerant) or from the
+ * dedicated `/api/games/franchises` route, which is asked once per profile.
+ * A 404 (backend round not merged yet) hides the widget instead of polling.
+ */
+async function ensureFranchises({ force = false } = {}) {
+  const profile = state.profileKey;
+  if (!profile) return;
+  if (state.franchises.loading) return;
+  if (!force && state.franchises.profile === profile
+    && (state.franchises.data || state.franchises.error)) return;
+  state.franchises = {
+    data: state.franchises.profile === profile ? state.franchises.data : null,
+    loading: true,
+    error: null,
+    profile,
+  };
+  if (state.data) renderFranchises(state.data);
+  try {
+    const raw = await getGamesFranchises({ profile });
+    if (profile !== state.profileKey) return;
+    state.franchises = {
+      data: normalizeFranchisesResponse(raw),
+      loading: false,
+      error: null,
+      profile,
+    };
+  } catch (error) {
+    if (profile !== state.profileKey) return;
+    state.franchises = { data: null, loading: false, error: error || true, profile };
+  }
+  if (state.data && profile === state.profileKey) renderFranchises(state.data);
+}
+
+function renderFranchises(data) {
+  const widget = $('games-franchises-widget');
+  const host = $('games-franchises-list');
+  const note = $('games-franchises-note');
+  const loading = $('games-franchises-loading');
+  if (!widget || !host) return;
+  const fromPayload = data && Array.isArray(data.franchises) ? data.franchises : [];
+  const cached = state.franchises.profile === state.profileKey ? state.franchises.data : null;
+  const list = fromPayload.length ? fromPayload : (cached || []);
+  const view = franchisesView(list);
+  clear(host);
+  if (loading) loading.hidden = true;
+
+  if (!view) {
+    // A successful but empty answer is shown honestly, not hidden: «нет» is
+    // data too (IGDB/Wikidata have no links and the heuristic confirmed none).
+    const fetchedEmpty = state.franchises.profile === state.profileKey
+      && Array.isArray(state.franchises.data) && !state.franchises.data.length;
+    if (fetchedEmpty && !fromPayload.length) {
+      widget.hidden = false;
+      if (note) note.textContent = 'нет данных';
+      host.append(el('div', {
+        class: 'empty-state',
+        text: 'Франшизы не собраны: IGDB/Wikidata ещё не дали связей, а эвристика не подтвердила ни одной серии. Это не «нет франшиз» — просто метадата не загружена.',
+      }));
+      return;
+    }
+    if (!fromPayload.length && !cached && !state.franchises.loading && !state.franchises.error) {
+      widget.hidden = false;
+      if (note) note.textContent = 'собираем…';
+      if (loading) loading.hidden = false;
+      ensureFranchises();
+      return;
+    }
+    // Either loading is already in flight, or the route is absent/failed.
+    widget.hidden = true;
+    return;
+  }
+
+  widget.hidden = false;
+  if (note) note.textContent = view.note;
+  for (const row of view.rows) {
+    const node = el('div', {
+      class: 'genre-row games-genre-row is-clickable',
+      title: row.title,
+      role: 'button',
+      tabIndex: 0,
+      'aria-label': row.ariaLabel,
+    });
+    const name = el('div', { class: 'genre-name' });
+    name.append(el('span', { class: 'genre-label', text: row.label }));
+    node.append(name);
+    const track = el('div', { class: 'genre-track' });
+    const fill = el('div', { class: 'genre-fill' });
+    track.append(fill);
+    node.append(track);
+    const value = el('div', { class: 'genre-avg games-genre-value' });
+    value.append(el('span', { text: row.primaryText }));
+    if (row.secondaryText) value.append(el('small', { text: row.secondaryText }));
+    node.append(value);
+    host.append(node);
+    requestAnimationFrame(() => {
+      fill.style.width = `${row.widthPercent}%`;
+    });
+    node.addEventListener('pointerenter', (event) => {
+      showTooltip(row.title, row.hint);
+      moveTooltip(event);
+    });
+    node.addEventListener('pointermove', moveTooltip);
+    node.addEventListener('pointerleave', hideTooltip);
+    const activate = () => {
+      hideTooltip();
+      const games = sortGameRows(
+        gamesInFranchise(data.gamesIndex, { key: row.key, label: row.label, appids: row.appids }),
+        'year',
+      );
+      openFranchiseModal({
+        franchise: { key: row.key, label: row.label, appids: row.appids },
+        games,
+        hoursSum: row.hoursSum,
+      });
+    };
+    node.addEventListener('click', activate);
+    node.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      activate();
+    });
+  }
+}
+
+function findAppidByName(gamesIndex, name) {
+  const target = String(name || '').trim().toLowerCase();
+  if (!target || !gamesIndex || typeof gamesIndex !== 'object') return null;
+  for (const entry of Object.values(gamesIndex)) {
+    if (entry && String(entry.name || '').trim().toLowerCase() === target) return entry.appid;
+  }
+  return null;
+}
+
+function renderDlc(data) {
+  const widget = $('games-dlc-widget');
+  const summary = $('games-dlc-summary');
+  const host = $('games-dlc-list');
+  const note = $('games-dlc-note');
+  if (!widget || !host) return;
+  clear(host);
+  const view = dlcView(data.dlc);
+  if (!view) {
+    widget.hidden = true;
+    if (summary) summary.textContent = '';
+    return;
+  }
+  widget.hidden = false;
+  if (summary) summary.textContent = view.summaryText;
+  if (note) note.textContent = view.note;
+  if (!view.rows.length) {
+    host.append(el('div', { class: 'empty-state', text: 'Список игр с DLC сервер не передал' }));
+    return;
+  }
+  for (const row of view.rows) {
+    const appid = row.appid != null ? row.appid : findAppidByName(data.gamesIndex, row.name);
+    const node = el('div', {
+      class: `genre-row games-dlc-row${appid != null ? ' is-clickable' : ''}`,
+      title: appid != null
+        ? `${row.name} — ${row.countText} · нажмите, чтобы открыть карточку`
+        : `${row.name} — ${row.countText}`,
+      role: appid != null ? 'button' : null,
+      tabIndex: appid != null ? 0 : null,
+      'aria-label': appid != null ? `${row.name}: ${row.countText} — открыть карточку игры` : null,
+    });
+    const name = el('div', { class: 'genre-name' });
+    name.append(el('span', { class: 'genre-label', text: row.name }));
+    node.append(name);
+    node.append(el('div', { class: 'games-dlc-row-count', text: row.countText }));
+    host.append(node);
+    if (appid != null) {
+      const activate = () => {
+        hideTooltip();
+        openGameCardModal(appid, { fallback: { name: row.name } });
+      };
+      node.addEventListener('click', activate);
+      node.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        activate();
+      });
+    }
+  }
+}
+
 function renderModes(data) {
   const widget = $('games-modes-widget');
   const host = $('games-modes-list');
@@ -2576,6 +2945,8 @@ export function initGames({ onActivate } = {}) {
   state.filters = readStoredFilters();
   const storedGenreWeight = text(safeStorageGet(GENRE_WEIGHT_KEY));
   state.genreWeight = storedGenreWeight === 'count' ? 'count' : 'hours';
+  const storedTagWeight = text(safeStorageGet(TAG_WEIGHT_KEY));
+  state.tagWeight = storedTagWeight === 'count' || storedTagWeight === 'weight' ? storedTagWeight : 'hours';
   const storedWeight = text(safeStorageGet(WEIGHT_KEY));
   state.weight = storedWeight === 'count' ? 'count' : 'hours';
   const storedRole = text(safeStorageGet(ROLE_KEY));
@@ -2639,6 +3010,18 @@ export function initGames({ onActivate } = {}) {
       state.genreWeight = next;
       safeStorageSet(GENRE_WEIGHT_KEY, next);
       if (state.data) renderGenreChart(state.data);
+    });
+  }
+
+  /* M4: tag bars weight (hours / count / SteamSpy weight). */
+  for (const button of document.querySelectorAll('[data-games-tag-weight]')) {
+    button.addEventListener('click', () => {
+      const raw = button.dataset.gamesTagWeight;
+      const next = raw === 'count' ? 'count' : raw === 'weight' ? 'weight' : 'hours';
+      if (state.tagWeight === next) return;
+      state.tagWeight = next;
+      safeStorageSet(TAG_WEIGHT_KEY, next);
+      if (state.data) renderTags(state.data);
     });
   }
 
@@ -2844,6 +3227,7 @@ export function resetGames() {
   state.view = 'import';
   state.seq += 1;
   state.selectedDecade = null;
+  state.franchises = { data: null, loading: false, error: null, profile: '' };
   state.personnel = {
     role: '', data: null, loading: false, error: null, cache: {}, openId: '',
     query: '', expanded: false, visible: PERSONS_INITIAL, rows: [],

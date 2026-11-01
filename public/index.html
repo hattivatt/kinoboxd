@@ -1222,6 +1222,43 @@
               </div>
             </section>
 
+            <section class="widget w-games-tags" id="games-tags-widget" aria-labelledby="games-tags-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-tags-title"><span class="w-dot green"></span>Теги</h2>
+                <span class="widget-note" id="games-tags-note"></span>
+              </div>
+              <div class="games-genre-toolbar">
+                <div class="games-weight-toggle" role="group" aria-label="Вес тегов">
+                  <button type="button" class="games-weight-btn is-active" data-games-tag-weight="hours">по часам</button>
+                  <button type="button" class="games-weight-btn" data-games-tag-weight="count">по числу игр</button>
+                  <button type="button" class="games-weight-btn" data-games-tag-weight="weight">по весу</button>
+                </div>
+                <span class="games-genre-hint">наведи — детали, клик — список</span>
+              </div>
+              <div class="genre-list games-tag-chart" id="games-tags-chart"></div>
+              <div class="games-genre-more" id="games-tags-more"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>доля часов по тегам SteamSpy</span>
+                <span class="chart-foot-hint">одна игра может иметь несколько тегов</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-scores" id="games-scores-widget" aria-labelledby="games-scores-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-scores-title"><span class="w-dot green"></span>Оценки Steam</h2>
+                <span class="widget-note" id="games-scores-note"></span>
+              </div>
+              <div class="ratings-body">
+                <div class="donut-host" id="games-scores-donut"></div>
+                <div class="legend" id="games-scores-legend"></div>
+              </div>
+              <p class="game-note games-scores-honest" id="games-scores-honest">оценки Steam, не личные</p>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>community score 1–9 (appreviews)</span>
+                <span class="chart-foot-hint">нажми на сегмент, чтобы увидеть игры</span>
+              </div>
+            </section>
+
             <section class="widget w-games-genres" id="games-genres-widget" aria-labelledby="games-genres-title" hidden>
               <div class="widget-head">
                 <h2 class="widget-title" id="games-genres-title"><span class="w-dot green"></span>Жанры</h2>
@@ -1251,6 +1288,35 @@
               <div class="chart-foot">
                 <span><i class="swatch orange"></i>single / multi / co-op</span>
                 <span class="chart-foot-hint">категории Steam Store</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-franchises" id="games-franchises-widget" aria-labelledby="games-franchises-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-franchises-title"><span class="w-dot green"></span>Франшизы</h2>
+                <span class="widget-note" id="games-franchises-note"></span>
+              </div>
+              <div class="games-franchises-loading" id="games-franchises-loading" hidden>
+                <span class="spinner" aria-hidden="true"></span>
+                <span>Собираем франшизы…</span>
+              </div>
+              <div class="genre-list" id="games-franchises-list"></div>
+              <div class="chart-foot">
+                <span><i class="swatch green"></i>игры одной франшизы (IGDB / Wikidata)</span>
+                <span class="chart-foot-hint">нажми на строку, чтобы увидеть игры по годам</span>
+              </div>
+            </section>
+
+            <section class="widget w-games-dlc" id="games-dlc-widget" aria-labelledby="games-dlc-title" hidden>
+              <div class="widget-head">
+                <h2 class="widget-title" id="games-dlc-title"><span class="w-dot orange"></span>DLC</h2>
+                <span class="widget-note" id="games-dlc-note"></span>
+              </div>
+              <p class="games-dlc-summary" id="games-dlc-summary"></p>
+              <div class="genre-list games-dlc-list" id="games-dlc-list"></div>
+              <div class="chart-foot">
+                <span><i class="swatch orange"></i>сколько DLC у игр библиотеки</span>
+                <span class="chart-foot-hint">нажми на строку — карточка игры</span>
               </div>
             </section>
 
