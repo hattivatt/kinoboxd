@@ -396,6 +396,89 @@ test('secondary works in every aggregate', async (t) => {
     assert.equal(payload.summary.hoursBySource.all, 125);
   });
 
+  await t.test('payload contract: secondaryWorks/summary/chart flags are complete', () => {
+    const payload = buildGamesStatsFromCache(OWNER);
+    // Summary contract (the UI «Вне Steam» + «Источники» widgets read these).
+    for (const key of [
+      'worksTotal',
+      'secondaryOnlyWorks',
+      'secondaryWorksTotal',
+      'hoursBySource',
+      'chartsIncludeSecondary',
+      'secondaryWorksInCharts',
+    ]) {
+      assert.ok(Object.prototype.hasOwnProperty.call(payload.summary, key), `summary.${key}`);
+    }
+    assert.equal(payload.summary.chartsIncludeSecondary, true);
+    assert.equal(payload.summary.secondaryWorksInCharts, 3);
+    // Source blocks tell a fetched playtime snapshot from a missing one.
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(payload.sources.gog, 'playtimeFetchedAt'),
+      'sources.gog.playtimeFetchedAt'
+    );
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(payload.sources.epic, 'playtimeFetchedAt'),
+      'sources.epic.playtimeFetchedAt'
+    );
+    assert.ok(payload.sources.gog.playtimeFetchedAt);
+    assert.ok(payload.sources.epic.playtimeFetchedAt);
+
+    // Every row carries the full card contract; hours are in HOURS.
+    for (const entry of payload.secondaryWorks) {
+      for (const key of [
+        'name',
+        'sources',
+        'ownedOn',
+        'storeIds',
+        'hoursBySource',
+        'releaseYear',
+        'releaseDate',
+        'genres',
+      ]) {
+        assert.ok(Object.prototype.hasOwnProperty.call(entry, key), `${entry.name}: ${key}`);
+      }
+      assert.ok(entry.storeIds && typeof entry.storeIds === 'object');
+      assert.ok(entry.hoursBySource && typeof entry.hoursBySource === 'object');
+      assert.equal(entry.hoursBySource.steam, null);
+      assert.equal(entry.hoursBySource.gog === undefined, false);
+      assert.equal(entry.hoursBySource.epic === undefined, false);
+      // No internal minute field leaks into the payload.
+      assert.equal(Object.prototype.hasOwnProperty.call(entry, 'displayMinutes'), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(entry, 'secondaryMinutes'), false);
+      if (entry.sources.includes('gog')) {
+        for (const key of ['slug', 'image', 'releaseDate', 'playtimeKnown']) {
+          assert.ok(Object.prototype.hasOwnProperty.call(entry.gog, key), `${entry.name}: gog.${key}`);
+        }
+      }
+      if (entry.sources.includes('epic')) {
+        for (const key of ['slug', 'releaseDate', 'image', 'genres']) {
+          assert.ok(Object.prototype.hasOwnProperty.call(entry.epic, key), `${entry.name}: epic.${key}`);
+        }
+      }
+    }
+    const gothic = payload.secondaryWorks.find((entry) => entry.name === 'Gothic 3');
+    assert.equal(gothic.gog.playtimeKnown, true);
+    assert.equal(gothic.hoursBySource.gog, 2);
+    assert.equal(gothic.releaseDate, '2006-10-13');
+    const unknown = payload.secondaryWorks.find((entry) => entry.name === 'Unknown Hours Game');
+    assert.equal(unknown.gog.playtimeKnown, false);
+    assert.equal(unknown.hoursBySource.gog, null);
+    const epicOnly = payload.secondaryWorks.find((entry) => entry.name === 'Epic Only Indie');
+    assert.equal(epicOnly.epic.playtimeKnown, true);
+    assert.deepEqual(epicOnly.epic.genres, []);
+    assert.equal(epicOnly.epic.image, null);
+    assert.equal(epicOnly.hoursBySource.epic, 3);
+
+    // Per-bucket inclusion counters (additive contract).
+    assert.equal(payload.years.find((entry) => entry.year === 2006).secondaryCount, 1);
+    assert.equal(payload.years.find((entry) => entry.year === 2020).secondaryCount, 1);
+    assert.equal(payload.years.find((entry) => entry.year == null).secondaryCount, 1);
+    assert.equal(payload.decades.find((entry) => entry.decade === 2000).secondaryCount, 1);
+    for (const bucket of payload.genres) {
+      assert.equal(typeof bucket.secondaryCount, 'number');
+    }
+  });
+
   await t.test('years and decades carry the store release dates', () => {
     const payload = buildGamesStatsFromCache(OWNER);
     const yearOf = (year) => payload.years.find((entry) => entry.year === year);
@@ -432,7 +515,8 @@ test('secondary works in every aggregate', async (t) => {
     // Steam 100 h + GOG 10 h + Epic 10 h.
     assert.equal(witcher.hours, 120);
     assert.deepEqual(witcher.sources, ['steam', 'gog', 'epic']);
-    assert.deepEqual(witcher.hoursBySource, { steam: 6000, gog: 600, epic: 600 });
+    // Payload contract: hours, not minutes (Steam 100 + GOG 10 + Epic 10).
+    assert.deepEqual(witcher.hoursBySource, { steam: 100, gog: 10, epic: 10 });
     const epicOnly = payload.topGames.find((row) => row.name === 'Epic Only Indie');
     assert.ok(epicOnly);
     assert.equal(epicOnly.appid, null);
@@ -448,7 +532,7 @@ test('secondary works in every aggregate', async (t) => {
     assert.equal(gothic.secondaryOnly, true);
     assert.equal(gothic.releaseYear, 2006);
     assert.equal(gothic.hours, 2);
-    assert.deepEqual(gothic.hoursBySource, { steam: null, gog: 120, epic: null });
+    assert.deepEqual(gothic.hoursBySource, { steam: null, gog: 2, epic: null });
     const epic = payload.gamesIndex['epic:epic-cat-2'];
     assert.ok(epic);
     assert.equal(epic.source, 'epic');
@@ -526,7 +610,7 @@ test('secondary works in every aggregate', async (t) => {
     assert.deepEqual(cyber.sources, ['steam', 'gog']);
     const top = payload.topGames.find((row) => row.name === 'Cyberpunk 2077');
     assert.equal(top.hours, 10);
-    assert.deepEqual(top.hoursBySource, { steam: 0, gog: 600, epic: null });
+    assert.deepEqual(top.hoursBySource, { steam: 0, gog: 10, epic: null });
   });
 
   await t.test('the recent strip stays honest: no invented lastPlayed', () => {
@@ -542,5 +626,55 @@ test('secondary works in every aggregate', async (t) => {
     assert.ok(payload.summary.hoursBySource.all > 0);
     assert.equal(payload.summary.secondaryWorksVisible, 3);
     assert.equal(Object.prototype.hasOwnProperty.call(payload, 'worksIndex'), false);
+  });
+
+  await t.test('stats reads the cached Wikidata bridge (no WDQS call)', () => {
+    // A GOG row whose title differs from Steam joins through the cached
+    // `links/secondary.json` written by the import job, not a network call.
+    const library = gogCache.getLibrary(GOG_KEY);
+    const bridgeProduct = {
+      gogGameId: '1440000009',
+      title: 'Vedmak 3 (bridge only)',
+      slug: 'the_witcher_3_wild_hunt_bridge',
+      category: 'game',
+      isGame: true,
+      releaseDate: '2015-05-18',
+    };
+    gogCache.saveLibrary(GOG_KEY, {
+      ...library,
+      products: [...library.products, bridgeProduct],
+    });
+    const linksDir = path.join(CACHE_DIR, 'links');
+    fs.mkdirSync(linksDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(linksDir, 'secondary.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        source: 'wikidata',
+        fetchedAt: new Date().toISOString(),
+        entries: {
+          'gog:the_witcher_3_wild_hunt_bridge': {
+            qid: 'Q4267401',
+            appid: '292030',
+            store: 'gog',
+          },
+        },
+      })
+    );
+    const payload = buildGamesStatsFromCache(OWNER, { minHours: -1 });
+    const witcher = payload.gamesIndex['292030'];
+    // The seeded Epic copy already joined this work by title; the bridge adds
+    // the GOG row, so all three sources are present on one work.
+    assert.deepEqual(witcher.sources, ['steam', 'gog', 'epic']);
+    assert.equal(witcher.storeIds.gog, '1440000009');
+    assert.equal(witcher.crossStoreMatchedBy, 'wikidata');
+    // The bridge row is the same work: no extra union row, no duplicate.
+    assert.equal(
+      payload.secondaryWorks.some((entry) => entry.name === 'Vedmak 3 (bridge only)'),
+      false
+    );
+    // Restore the library so later reruns (and the cache) stay clean.
+    gogCache.saveLibrary(GOG_KEY, library);
+    fs.rmSync(path.join(linksDir, 'secondary.json'), { force: true });
   });
 });

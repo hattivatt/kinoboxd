@@ -69,6 +69,7 @@
 const gameCache = require('./game-cache');
 const gogCache = require('./gog-cache');
 const { buildSecondaryUnion } = require('./secondary-union');
+const { readSecondaryLinks } = require('./secondary-identity');
 const { buildEpicLayerSync, epicSourceBlock } = require('./epic-layer');
 const franchise = require('./franchise');
 const editions = require('./editions');
@@ -172,10 +173,12 @@ function releaseYearOf(doc) {
 }
 
 /** Sum `count`/`hours` into a decade/year bucket. */
-function pushBucket(map, key, hours) {
-  const entry = map.get(key) || { count: 0, hours: 0 };
+function pushBucket(map, key, hours, secondary = false) {
+  const entry = map.get(key) || { count: 0, hours: 0, secondaryCount: 0 };
   entry.count++;
   entry.hours += hours;
+  // M6c contract: how many of this bucket's works exist only outside Steam.
+  if (secondary) entry.secondaryCount++;
   map.set(key, entry);
 }
 
@@ -193,6 +196,25 @@ function round3(value) {
 
 function minutesToHours(minutes) {
   return round1((Number(minutes) || 0) / 60);
+}
+
+/**
+ * M6c payload contract (integration round, 01.11.2026): every
+ * `hoursBySource` object the API returns is in **hours**, never minutes.
+ * `null` stays `null` — an unknown answer is not a zero. The union itself
+ * keeps minutes (`steamMinutes`/`displayMinutes`) for exact arithmetic; this
+ * helper is the only place where a per-source number crosses into the payload.
+ */
+function hoursBySourceOf(entry) {
+  const source = entry && entry.hoursBySource && typeof entry.hoursBySource === 'object'
+    ? entry.hoursBySource
+    : {};
+  const convert = (value) => (value == null ? null : round1((Number(value) || 0) / 60));
+  return {
+    steam: convert(source.steam),
+    gog: convert(source.gog),
+    epic: convert(source.epic),
+  };
 }
 
 /**
@@ -996,14 +1018,15 @@ function buildGamesStats(input = {}) {
       isPrimary: Boolean(work && work.primary.appid === appid),
       editionCount: work ? work.games.length : 1,
       canonicalHours: work ? round1(work.hours) : minutesToHours(game.playtime_forever),
-      // M6a: cross-store identity — only when a GOG library is connected.
-      // `sources`/`storeIds`/`hoursBySource` (minutes) are additive; a Steam-
-      // only payload stays byte-identical (no empty cross-store fields).
+      // M6a/M6c: cross-store identity — only when a secondary library is
+      // connected. `hoursBySource` is in **hours** (payload contract), the
+      // union keeps minutes internally. A Steam-only payload stays additive
+      // (no empty cross-store fields).
       ...(gogUnion && gogUnion.byAppid[String(appid)]
         ? {
             sources: gogUnion.byAppid[String(appid)].sources,
             storeIds: gogUnion.byAppid[String(appid)].storeIds,
-            hoursBySource: gogUnion.byAppid[String(appid)].hoursBySource,
+            hoursBySource: hoursBySourceOf(gogUnion.byAppid[String(appid)]),
             ownedOn: gogUnion.byAppid[String(appid)].ownedOn,
             crossStoreMatchedBy: gogUnion.byAppid[String(appid)].matchedBy,
           }
@@ -1107,7 +1130,7 @@ function buildGamesStats(input = {}) {
       canonicalHours: round1(entry.secondaryMinutes / 60),
       sources: [...entry.sources],
       storeIds: { ...entry.storeIds },
-      hoursBySource: { ...entry.hoursBySource },
+      hoursBySource: hoursBySourceOf(entry),
       hoursUnknown: Boolean(entry.hoursUnknown),
       hoursStatus: { ...entry.hoursStatus },
       type: 'game',
@@ -1162,7 +1185,7 @@ function buildGamesStats(input = {}) {
         canonicalWorkKey: work.workKey,
         editionCount: 1,
         sources: [...entry.sources],
-        hoursBySource: { ...entry.hoursBySource },
+        hoursBySource: hoursBySourceOf(entry),
         hoursUnknown: Boolean(entry.hoursUnknown),
         source: entry.sources.includes('gog') ? 'gog' : 'epic',
         ...(entry.developers.length ? { developers: [...entry.developers] } : {}),
@@ -1190,7 +1213,7 @@ function buildGamesStats(input = {}) {
     // (`hours`) plus the per-source breakdown.
     if (work.union && work.union.sources.length > 1) {
       entry.sources = [...work.union.sources];
-      entry.hoursBySource = { ...work.union.hoursBySource };
+      entry.hoursBySource = hoursBySourceOf(work.union);
       entry.hoursSteam = round1((Number(work.union.steamMinutes) || 0) / 60);
     }
     // B6: the work's own metadata (base version) when the owned row is a
@@ -1233,7 +1256,7 @@ function buildGamesStats(input = {}) {
       ...(gogUnion && gogUnion.byAppid[String(work.primary.appid)]
         ? {
             sources: gogUnion.byAppid[String(work.primary.appid)].sources,
-            hoursBySource: gogUnion.byAppid[String(work.primary.appid)].hoursBySource,
+            hoursBySource: hoursBySourceOf(gogUnion.byAppid[String(work.primary.appid)]),
           }
         : {}),
     }));
@@ -1311,16 +1334,18 @@ function buildGamesStats(input = {}) {
   const decadeMap = new Map();
   let unknownYearCount = 0;
   let unknownYearHours = 0;
+  let unknownYearSecondary = 0;
   for (const work of chartWorks) {
     const year = workYear(work);
     const hours = hoursOf(work);
     if (year == null) {
       unknownYearCount++;
       unknownYearHours += hours;
+      if (work.secondaryOnly) unknownYearSecondary++;
       continue;
     }
-    pushBucket(yearMap, year, hours);
-    pushBucket(decadeMap, Math.floor(year / 10) * 10, hours);
+    pushBucket(yearMap, year, hours, work.secondaryOnly);
+    pushBucket(decadeMap, Math.floor(year / 10) * 10, hours, work.secondaryOnly);
   }
 
   // M6c: a secondary-only work carries a release year from its store catalogue,
@@ -1329,12 +1354,22 @@ function buildGamesStats(input = {}) {
   const years = chartsHaveData
     ? [...yearMap.entries()]
         .sort((left, right) => left[0] - right[0])
-        .map(([year, entry]) => ({ year, count: entry.count, hours: round1(entry.hours) }))
+        .map(([year, entry]) => ({
+          year,
+          count: entry.count,
+          hours: round1(entry.hours),
+          secondaryCount: entry.secondaryCount || 0,
+        }))
     : [];
   const decades = chartsHaveData
     ? [...decadeMap.entries()]
         .sort((left, right) => left[0] - right[0])
-        .map(([decade, entry]) => ({ decade, count: entry.count, hours: round1(entry.hours) }))
+        .map(([decade, entry]) => ({
+          decade,
+          count: entry.count,
+          hours: round1(entry.hours),
+          secondaryCount: entry.secondaryCount || 0,
+        }))
     : [];
   if (chartsHaveData && unknownYearCount > 0) {
     const unknown = {
@@ -1343,6 +1378,7 @@ function buildGamesStats(input = {}) {
       unknown: true,
       count: unknownYearCount,
       hours: round1(unknownYearHours),
+      secondaryCount: unknownYearSecondary,
     };
     years.push({ year: null, ...unknown });
     decades.push({ decade: null, ...unknown });
@@ -1357,9 +1393,10 @@ function buildGamesStats(input = {}) {
   for (const work of chartWorks) {
     const hours = hoursOf(work);
     for (const name of workGenres(work)) {
-      const entry = genreMap.get(name) || { name, count: 0, hours: 0 };
+      const entry = genreMap.get(name) || { name, count: 0, hours: 0, secondaryCount: 0 };
       entry.count++;
       entry.hours += hours;
+      if (work.secondaryOnly) entry.secondaryCount++;
       genreMap.set(name, entry);
     }
   }
@@ -1371,6 +1408,7 @@ function buildGamesStats(input = {}) {
           hours: round1(entry.hours),
           weight: round1(entry.hours),
           share: rawTotalHours > 0 ? round3(entry.hours / rawTotalHours) : 0,
+          secondaryCount: entry.secondaryCount || 0,
         }))
         .sort(
           (left, right) =>
@@ -1705,9 +1743,11 @@ function buildGamesStats(input = {}) {
         : { steam: totalHours, gog: gogHoursValue, epic: epicHoursValue },
       ownedBySource: { steam: ownedCount, gog: gogOwnedValue, epic: epicOwnedValue },
       // Union over canonical works (`workKey`): Steam + GOG + Epic, one row per
-      // work. `worksTotal` counts every union work (filters aside);
-      // `gameCount` is the same number after type/free/minHours filters.
-      worksTotal: union.summary.worksTotal,
+      // work. With a secondary library connected `worksTotal` is the full
+      // union (filters aside); a Steam-only owner keeps the pre-M6c number
+      // (`gameCount`, i.e. after type/free/minHours), so an existing profile
+      // does not suddenly see 320 works instead of 210 at `minHours=0`.
+      worksTotal: unionActive ? union.summary.worksTotal : gameCount,
       secondaryOnlyWorks: union.summary.secondaryOnlyWorks,
       // Epic entries that could not be joined to a Steam/GOG work: counted as
       // their own secondary works (they are real owned games).
@@ -1718,6 +1758,11 @@ function buildGamesStats(input = {}) {
       secondaryHours: round1(secondaryOnlyMinutes / 60),
       secondaryHoursUnknown: union.summary.hoursUnknownWorks,
       secondaryWorksVisible: secondaryVisible.length,
+      // M6c chart contract (integration round): the year/decade/genre buckets
+      // count secondary-only works. The UI reads these flags instead of
+      // guessing from the bucket shape; a Steam-only payload reports `false`.
+      chartsIncludeSecondary: secondaryVisible.length > 0,
+      secondaryWorksInCharts: secondaryVisible.length,
       meanHours,
       medianHours,
       top10HoursShare,
@@ -1787,11 +1832,36 @@ function buildGamesStats(input = {}) {
     // `workKey`) followed by Epic games (`workKey: null`, no identity yet).
     // The list is capped for payload size; `summary.secondaryWorksTotal` is
     // the full count. Never merged into the Steam journal aggregates.
+    // Payload contract (integration round): `hoursBySource` is in **hours**,
+    // the display total is `displayHours`; the union's minute fields
+    // (`steamMinutes`/`secondaryMinutes`/`displayMinutes`) stay internal and
+    // never leak into the API. `null` means «the store did not answer».
     secondaryWorks: secondaryVisible.slice(0, 200).map((entry) => ({
-      ...entry,
+      workKey: entry.workKey,
+      name: entry.name || null,
+      sources: [...entry.sources],
+      ownedOn: [...entry.ownedOn],
+      storeIds: { ...entry.storeIds },
+      hoursBySource: hoursBySourceOf(entry),
+      primaryAppid: entry.primaryAppid == null ? null : entry.primaryAppid,
+      gog: entry.gog ? { ...entry.gog } : null,
+      epic: entry.epic ? { ...entry.epic } : null,
+      matchedBy: entry.matchedBy,
+      confidence: entry.confidence,
+      releaseYear: entry.releaseYear == null ? null : entry.releaseYear,
+      releaseDate: entry.releaseDate || null,
+      genres: [...entry.genres],
+      developers: [...entry.developers],
+      publishers: [...entry.publishers],
+      metadataSources: [...entry.metadataSources],
+      hours: round1(entry.secondaryMinutes / 60),
+      secondaryHours: round1(entry.secondaryMinutes / 60),
+      displayHours: round1(entry.displayMinutes / 60),
+      hoursUnknown: Boolean(entry.hoursUnknown),
+      hoursStatus: { ...entry.hoursStatus },
+      secondaryOnly: true,
       // The UI's «Вне Steam» list reads `source` for the badge.
       source: entry.sources.includes('gog') ? 'gog' : 'epic',
-      hours: round1(entry.secondaryMinutes / 60),
     })),
     gog: gogSnapshots.length ? { ...union.summary, status: gogStatus } : null,
     // M6c: the Epic read model without per-game arrays (they are already in
@@ -1994,6 +2064,11 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     gogAccounts,
     gogSnapshots,
     gogConnected: gogTokenAccounts.length > 0,
+    // M6c: the cached Wikidata bridge (`links/secondary.json`) written by the
+    // import jobs. A read-only lookup — `/stats` never calls WDQS (§14.5).
+    // Stale entries are still valid identity (a QID does not expire); an
+    // absent file is `{}` and the union falls back to title/slug matching.
+    secondaryLinks: readSecondaryLinks({ allowStale: true }),
     // M6b/M6c: Epic read model of the same owner. Built synchronously from the
     // cache (`buildEpicLayerSync`) because the stats route is synchronous and
     // polled; it reads only the redacted token summary, never a token value.

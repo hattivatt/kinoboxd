@@ -258,6 +258,10 @@ function buildSecondaryUnion({
       category: product.category || null,
       isGame: product.isGame == null ? null : product.isGame,
       isMovie: product.isMovie == null ? null : product.isMovie,
+      // Contract: the UI must tell «never launched» (0) from «playtime not
+      // fetched yet» (also 0) without guessing. A real answer (even 0) is
+      // `true`; a missing snapshot answer stays `false`.
+      playtimeKnown: gogValue != null,
       status: gogStatus[gogGameId] || (gogValue == null ? 'pending' : 'ok'),
     };
     if (!entry.name) entry.name = product.title || null;
@@ -316,11 +320,15 @@ function buildSecondaryUnion({
       slug: game.slug || null,
       namespace: game.namespace || null,
       platforms: Array.isArray(game.platforms) ? game.platforms : [],
-      image: null,
+      // Epic's catalog bulk has no artwork field today; the key stays present
+      // and `null` (honest gap), never a fabricated URL.
+      image: game.image || null,
       title: game.name || null,
       releaseDate: game.releaseDate || null,
       developer: game.developer || null,
       publisher: game.publisher || null,
+      genres: genreNames(game.genres),
+      playtimeKnown: epicValue != null,
       status: epicValue == null ? 'unknown' : 'ok',
     };
     if (!entry.name) entry.name = game.name;
@@ -358,6 +366,13 @@ function buildSecondaryUnion({
       (entry.sources.includes('gog') && entry.hoursBySource.gog == null) ||
         (entry.sources.includes('epic') && entry.hoursBySource.epic == null)
     );
+    // Contract: one release date string for the «Вне Steam» card, GOG first
+    // (its catalogue date is the one the library row already carries), Epic
+    // second. `null` means neither store answered.
+    if (entry.releaseDate == null) {
+      entry.releaseDate =
+        (entry.gog && entry.gog.releaseDate) || (entry.epic && entry.epic.releaseDate) || null;
+    }
     entry.hoursStatus = {
       steam: entry.sources.includes('steam') ? 'ok' : null,
       gog: entry.sources.includes('gog')

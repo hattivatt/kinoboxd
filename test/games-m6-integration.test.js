@@ -180,8 +180,10 @@ test('M6 integration', async (t) => {
     );
     assert.ok(witcher);
     assert.equal(witcher.name, 'The Witcher 3: Wild Hunt');
-    assert.equal(witcher.hoursBySource.epic, 600);
+    // Payload contract (integration round): hours, not minutes.
+    assert.equal(witcher.hoursBySource.epic, 10);
     assert.equal(witcher.epic.slug, 'the-witcher-3-wild-hunt');
+    assert.equal(witcher.epic.playtimeKnown, true);
   });
 
   await t.test('a Steam-only owner sees nulls, not zeroes', () => {
@@ -190,6 +192,11 @@ test('M6 integration', async (t) => {
     assert.deepEqual(payload.summary.ownedBySource, { steam: 1, gog: null, epic: null });
     assert.equal(payload.summary.epicSecondaryGames, 0);
     assert.equal(payload.summary.secondaryWorksTotal, 0);
+    // A Steam-only owner keeps the pre-M6c `worksTotal` (= gameCount), so the
+    // «Источники» headline does not change without a secondary library.
+    assert.equal(payload.summary.worksTotal, payload.summary.gameCount);
+    assert.equal(payload.summary.chartsIncludeSecondary, false);
+    assert.equal(payload.summary.secondaryWorksInCharts, 0);
     assert.equal(payload.sources.epic.status, 'not_connected');
     assert.equal(payload.sources.epic.connected, false);
     assert.equal(payload.sources.epic.productCount, null);

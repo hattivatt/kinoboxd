@@ -157,14 +157,30 @@ test('base filters (includeFree=1, includeDlc=0): DLC/demo excluded, unknown kep
 test('years/decades: releaseYear buckets with an honest unknown bucket last', () => {
   const payload = stats();
   assert.deepEqual(payload.years, [
-    { year: 2015, count: 1, hours: 100 },
-    { year: 2020, count: 1, hours: 50 },
-    { year: null, key: 'unknown', label: 'год неизвестен', unknown: true, count: 2, hours: 5 },
+    { year: 2015, count: 1, hours: 100, secondaryCount: 0 },
+    { year: 2020, count: 1, hours: 50, secondaryCount: 0 },
+    {
+      year: null,
+      key: 'unknown',
+      label: 'год неизвестен',
+      unknown: true,
+      count: 2,
+      hours: 5,
+      secondaryCount: 0,
+    },
   ]);
   assert.deepEqual(payload.decades, [
-    { decade: 2010, count: 1, hours: 100 },
-    { decade: 2020, count: 1, hours: 50 },
-    { decade: null, key: 'unknown', label: 'год неизвестен', unknown: true, count: 2, hours: 5 },
+    { decade: 2010, count: 1, hours: 100, secondaryCount: 0 },
+    { decade: 2020, count: 1, hours: 50, secondaryCount: 0 },
+    {
+      decade: null,
+      key: 'unknown',
+      label: 'год неизвестен',
+      unknown: true,
+      count: 2,
+      hours: 5,
+      secondaryCount: 0,
+    },
   ]);
   assert.equal(payload.summary.releaseYearFrom, 2015);
   assert.equal(payload.summary.releaseYearTo, 2020);
@@ -182,6 +198,7 @@ test('genres: playtime-weighted wall (hours/weight/share) and counts', () => {
     hours: 150,
     weight: 150,
     share: 0.968,
+    secondaryCount: 0,
   });
   assert.equal(payload.genres[1].hours, 100);
   assert.equal(payload.genres[2].hours, 0);

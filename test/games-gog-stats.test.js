@@ -144,12 +144,13 @@ test('GOG stats', async (t) => {
     assert.equal(payload.gog.gogHours, 31.5);
   });
 
-  await t.test('gamesIndex carries sources/storeIds/hoursBySource (minutes)', () => {
+  await t.test('gamesIndex carries sources/storeIds/hoursBySource (hours)', () => {
     const payload = buildGamesStatsFromCache(PROFILE_KEY);
     const witcher = payload.gamesIndex['292030'];
     assert.deepEqual(witcher.sources, ['steam', 'gog']);
     assert.deepEqual(witcher.storeIds, { steam: 292030, gog: '1207658924', epic: null });
-    assert.deepEqual(witcher.hoursBySource, { steam: 6000, gog: 1200, epic: null });
+    // Integration contract: payload hours, not minutes (100 h + 20 h).
+    assert.deepEqual(witcher.hoursBySource, { steam: 100, gog: 20, epic: null });
     assert.deepEqual(witcher.ownedOn, ['steam', 'gog']);
     const cyberpunk = payload.gamesIndex['1091500'];
     assert.deepEqual(cyberpunk.sources, ['steam', 'gog']);
@@ -160,7 +161,7 @@ test('GOG stats', async (t) => {
     const payload = buildGamesStatsFromCache(PROFILE_KEY);
     assert.equal(payload.secondaryWorks.length, 1);
     assert.equal(payload.secondaryWorks[0].workKey, 'gog:1999999999');
-    assert.equal(payload.secondaryWorks[0].hoursBySource.gog, 90);
+    assert.equal(payload.secondaryWorks[0].hoursBySource.gog, 1.5);
     assert.equal(payload.secondaryWorks[0].hoursBySource.steam, null);
     // M6c: it is a real owned game — one more row in the library, its hours in
     // the totals, its name in the top list.
