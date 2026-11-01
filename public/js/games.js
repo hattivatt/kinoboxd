@@ -89,9 +89,10 @@ const state = {
   // M3: personnel weights + per-role cache (one owner, no cross-profile mix).
   weight: 'hours',
   role: 'developer',
-  // Films parity: the years card is gated by a selected decade, and the
-  // inline persons widget batches locally (the personnel route returns the
-  // whole role — its `limit` is games per person, not persons).
+  // The years card is permanent: it paints every release year by default and
+  // a selected decade narrows the chart (clicking it again restores the full
+  // range). The inline persons widget batches locally (the personnel route
+  // returns the whole role — its `limit` is games per person, not persons).
   selectedDecade: null,
   personnel: {
     role: '', data: null, loading: false, error: null, cache: {}, openId: '',
@@ -1366,7 +1367,7 @@ function renderDecades(data) {
   });
 }
 
-function decadeHint(text = 'Выберите десятилетие слева, чтобы увидеть годы') {
+function decadeHint(text = 'Нет данных по годам релиза') {
   const box = el('div', { class: 'years-empty' });
   box.append(el('span', { class: 'years-empty-ring', 'aria-hidden': 'true' }));
   box.append(el('p', { class: 'years-empty-text', text }));
@@ -1393,43 +1394,54 @@ function renderYears(data) {
   const host = $('games-years-chart');
   const note = $('games-years-note');
   if (!widget || !host) return;
-  const view = yearsView(data.years);
-  if (!view) {
-    widget.hidden = true;
-    clear(host);
-    if (note) note.textContent = '';
-    return;
-  }
+  // The years card is a permanent block: it is never hidden. A hidden card
+  // looked like a lost feature (the 01.11 regression), so the widget stays and
+  // an empty payload gets an honest placeholder instead.
   widget.hidden = false;
   clear(host);
 
-  // Films parity: the years card is gated by the decade selection. A bar
-  // chart of every year at once duplicates the decades list and hides the
-  // drilldown; the placeholder says how to unlock it.
-  if (!state.selectedDecade) {
+  const view = yearsView(data.years);
+  if (!view) {
     if (note) note.textContent = '';
-    host.append(decadeHint());
+    host.append(decadeHint('Нет данных по годам релиза'));
     return;
   }
 
-  const start = Number(state.selectedDecade.start);
-  const years = yearsInDecade(data.years, start);
+  // Default: every release year in one chart (no decade click required).
+  // A selected decade narrows the chart to its ten years; clicking the same
+  // decade again clears the selection and brings the full range back.
+  const decade = state.selectedDecade;
+  const start = decade ? Number(decade.start) : null;
+  const years = decade ? yearsInDecade(data.years, start) : view.years;
   const total = years.reduce((sum, item) => sum + item.count, 0);
+  // The normalised payload keeps the unknown-year bucket aside (`unknownYear`),
+  // so the note stays honest: 303 known + 29 without a year.
+  const unknownCount = view.unknownCount || (data.unknownYear && data.unknownYear.count) || 0;
   if (note) {
-    note.textContent = total
-      ? `${start}–${start + 9} · ${fmtInt(years.length)} ${plural(years.length, ['год', 'года', 'лет'])} · ${fmtInt(total)} ${plural(total, GAME_PLURAL)}`
-      : `${state.selectedDecade.label} · нет игр`;
+    if (decade) {
+      note.textContent = total
+        ? `${start}–${start + 9} · ${fmtInt(years.length)} ${plural(years.length, ['год', 'года', 'лет'])} · ${fmtInt(total)} ${plural(total, GAME_PLURAL)}`
+        : `${decade.label} · нет игр`;
+    } else {
+      note.textContent = unknownCount > 0
+        ? `${view.note} · ${fmtInt(unknownCount)} без года`
+        : view.note;
+    }
   }
   if (!years.length) {
-    host.append(decadeHint(`В ${state.selectedDecade.label} нет игр с известным годом`));
+    host.append(decadeHint(decade
+      ? `В ${decade.label} нет игр с известным годом`
+      : `Годы релиза неизвестны — ${fmtInt(unknownCount)} ${plural(unknownCount, GAME_PLURAL)}`));
     return;
   }
 
   renderYearBars(host, years, {
     unitForms: GAME_PLURAL,
-    shareLabel: 'игр десятилетия',
+    shareLabel: decade ? 'игр десятилетия' : 'игр с известным годом',
     emptyText: 'Нет данных по годам релиза',
-    ariaLabel: `Игры по годам релиза: ${start} — ${start + 9}`,
+    ariaLabel: decade
+      ? `Игры по годам релиза: ${start} — ${start + 9}`
+      : `Игры по годам релиза: ${view.minYear} — ${view.maxYear}`,
     yearNote: () => 'год релиза из Steam Store / Wikidata',
     onYearClick: (year) => openYearModal(data, year),
   });

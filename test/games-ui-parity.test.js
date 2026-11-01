@@ -5,8 +5,9 @@
  *
  * Two layers, like the other games UI tests:
  *
- *   1. markup/layout: the inline persons widget, the decade→years gating and
- *      the 12-column grid without holes;
+ *   1. markup/layout: the inline persons widget, the permanent years card
+ *      (full range by default, decade narrows it) and the 12-column grid
+ *      without holes;
  *   2. DOM-free view models: client-side drilldowns (year / decade / genre /
  *      mode / access / hours bucket / backlog / unmatched), the game card and
  *      the person→games join.
@@ -195,7 +196,13 @@ test('games.js wires the new modals and no extra network calls', () => {
   assert.match(games, /renderPersonsWidget\(data\)/);
   assert.match(games, /renderYears\(data\)/);
   assert.match(games, /state\.selectedDecade/);
-  assert.match(games, /Выберите десятилетие слева/);
+  // The years card is permanent: no decade gate, the full range renders by
+  // default and a bar click opens that year's games. The empty state is a
+  // placeholder inside the widget, never a hidden card.
+  assert.doesNotMatch(games, /Выберите десятилетие слева/);
+  assert.match(games, /function renderYears\(data\)[\s\S]{0,900}widget\.hidden = false;/);
+  assert.match(games, /function renderYears\(data\)[\s\S]{0,2600}onYearClick: \(year\) => openYearModal\(data, year\)/);
+  assert.match(games, /Нет данных по годам релиза/);
   assert.match(games, /onYearClick/);
   assert.doesNotMatch(games, /fetch\(/);
   assert.doesNotMatch(games, /https?:\/\/api\.steampowered\.com/);

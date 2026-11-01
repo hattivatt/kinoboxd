@@ -524,6 +524,18 @@ function normalizeYears(raw) {
     .filter(Boolean);
 }
 
+/** The «год неизвестен» bucket of `years[]`, summed; null when absent. */
+function normalizeUnknownYear(raw) {
+  const unknown = arr(raw).filter((item) => item && typeof item === 'object' && item.unknown);
+  if (!unknown.length) return null;
+  const count = unknown.reduce((sum, item) => sum + toCount(item.count), 0);
+  const hours = unknown.map((item) => numOrNull(item.hours)).filter((value) => value != null);
+  return {
+    count,
+    hours: hours.length ? hours.reduce((sum, value) => sum + value, 0) : null,
+  };
+}
+
 function normalizePersonGames(raw) {
   return arr(raw)
     .map((item) => {
@@ -858,6 +870,9 @@ export function normalizeGamesPayload(raw) {
   const tags = normalizeWeightItems(source.tags);
   const decades = normalizeDecades(source.decades);
   const years = normalizeYears(source.years);
+  // «Год неизвестен» is a payload bucket, not a year: kept aside so the years
+  // card can print «29 без года» after normalisation drops the null-year entry.
+  const unknownYear = normalizeUnknownYear(source.years);
   const studios = normalizeStudios(source.studios);
   const personnelTop = normalizePersonnelTop(source.personnelTop);
   const timeline = normalizeTimeline(source.timeline);
@@ -878,6 +893,7 @@ export function normalizeGamesPayload(raw) {
     tags,
     decades,
     years,
+    unknownYear,
     studios,
     personnelTop,
     timeline,
@@ -1615,10 +1631,23 @@ export function decadesView(decades) {
   };
 }
 
-/** `years[]` → ascending bars; the caller paints them with `renderYearBars`. */
+/**
+ * `years[]` → ascending bars; the caller paints them with `renderYearBars`.
+ *
+ * «Год неизвестен» is a real payload bucket (`{ year: null, unknown: true }`)
+ * but not a year on the axis: it is reported apart (`unknownCount`) so the note
+ * can say «29 без года» instead of silently dropping those games. A payload
+ * with only unknown entries still returns a view — the card shows an honest
+ * empty state rather than disappearing.
+ */
 export function yearsView(years) {
   const list = normalizeYears(years);
-  if (!list.length) return null;
+  const unknown = arr(years).filter((item) => item && typeof item === 'object' && item.unknown);
+  const unknownCount = unknown.reduce((sum, item) => sum + toCount(item.count), 0);
+  const unknownHours = unknown
+    .map((item) => numOrNull(item.hours))
+    .filter((value) => value != null);
+  if (!list.length && !unknownCount) return null;
   const sorted = list.slice().sort((a, b) => a.year - b.year);
   const total = sorted.reduce((sum, item) => sum + item.count, 0);
   const withHours = sorted.filter((item) => item.hours != null);
@@ -1626,12 +1655,18 @@ export function yearsView(years) {
     years: sorted,
     total,
     totalText: fmtInt(total),
-    minYear: sorted[0].year,
-    maxYear: sorted[sorted.length - 1].year,
+    minYear: sorted.length ? sorted[0].year : null,
+    maxYear: sorted.length ? sorted[sorted.length - 1].year : null,
     hoursTotal: withHours.length
       ? withHours.reduce((sum, item) => sum + item.hours, 0)
       : null,
-    note: sorted.length === 1
+    unknownCount,
+    unknownHours: unknownHours.length
+      ? unknownHours.reduce((sum, value) => sum + value, 0)
+      : null,
+    note: !sorted.length
+      ? ''
+      : sorted.length === 1
       ? `${sorted[0].year} · ${fmtInt(total)} ${plural(total, GAME_PLURAL)}`
       : `${sorted[0].year} — ${sorted[sorted.length - 1].year} · ${fmtInt(total)} ${plural(total, GAME_PLURAL)}`,
     hint: YEAR_NOTE,

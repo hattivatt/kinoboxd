@@ -198,6 +198,16 @@ test('normalizeGamesPayload reads the M2/M3 blocks', async () => {
   assert.equal(data.tags.length, 3);
   assert.equal(data.decades.length, 5);
   assert.equal(data.years.length, 16);
+  // The fixture carries «год неизвестен» only in decades[], so there is no
+  // years bucket to keep aside. The live payload does (29 games / 361.8 h) and
+  // the years card prints it — see the yearsView test below.
+  assert.equal(data.unknownYear, null);
+  const withUnknownYear = normalizeGamesPayload({
+    summary: { gameCount: 3 },
+    years: [{ year: 2012, count: 2, hours: 5 }, { year: null, key: 'unknown', unknown: true, count: 1, hours: 0.5 }],
+  });
+  assert.deepEqual(withUnknownYear.unknownYear, { count: 1, hours: 0.5 });
+  assert.equal(withUnknownYear.years.length, 1, 'null-year bucket is not a year');
   assert.equal(data.studios.length, 3);
   assert.equal(data.personnelTop.composer.length, 2);
   assert.equal(data.achievementDays.length, 17);
@@ -248,7 +258,32 @@ test('years: release-year bars keep the range in the note', async () => {
   assert.equal(data.years.length, 16);
   assert.equal(data.note, '2004 — 2025 · 340 игр');
   assert.match(data.hint, /Год релиза игры/);
+  assert.equal(data.unknownCount, 0, 'в фикстуре нет бакета «год неизвестен»');
+
+  // «Год неизвестен» is reported apart: never a bar on the year axis, but the
+  // note can say how many games are missing a release year (live 01.11.2026:
+  // 303 known + 29 unknown = 332). The card must not vanish because of it.
+  const withUnknown = yearsView([
+    { year: 2010, count: 3, hours: 10 },
+    { year: 2012, count: 2, hours: 5 },
+    { year: null, key: 'unknown', label: 'год неизвестен', unknown: true, count: 29, hours: 361.8 },
+  ]);
+  assert.equal(withUnknown.years.length, 2);
+  assert.equal(withUnknown.total, 5);
+  assert.equal(withUnknown.unknownCount, 29);
+  assert.equal(withUnknown.unknownHours, 361.8);
+  assert.equal(withUnknown.note, '2010 — 2012 · 5 игр');
+
+  // Only unknown entries → still a view, so the widget shows an empty state
+  // («Годы релиза неизвестны — N игр») instead of disappearing.
+  const unknownOnly = yearsView([{ year: null, key: 'unknown', unknown: true, count: 5, hours: 1 }]);
+  assert.equal(unknownOnly.years.length, 0);
+  assert.equal(unknownOnly.unknownCount, 5);
+  assert.equal(unknownOnly.minYear, null);
+  assert.equal(unknownOnly.note, '');
+
   assert.equal(yearsView([]), null);
+  assert.equal(yearsView([{ year: 0, count: 4 }]), null, 'нулевой год — не год');
 });
 
 test('genre chart: horizontal bars by share of hours, count on demand', async () => {
