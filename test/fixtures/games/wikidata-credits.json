@@ -1,0 +1,953 @@
+{
+ "_comment": "Real WDQS answer (2026-11-01) for wd:Q4267401 (The Witcher 3) + wd:Q2429644 (Pathologic); trimmed to the two games, no request metadata. ИГРЫ-АРХИТЕКТУРА §2.4/§7.2 fixture.",
+ "head": {
+  "vars": [
+   "game",
+   "kind",
+   "role",
+   "entity",
+   "label",
+   "image"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q309996"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Namco"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    },
+    "image": {
+     "type": "uri",
+     "value": "http://commons.wikimedia.org/wiki/Special:FilePath/HK%20HFC%20%E6%9D%8F%E8%8A%B1%E9%82%A8%20Hang%20Fa%20Chuen%20Paradis%20Mall%20%E5%95%86%E5%A0%B4%20shop%20Namco%20games%20February%202023%20Px3%2002.jpg"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q309996"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Namco"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    },
+    "image": {
+     "type": "uri",
+     "value": "http://commons.wikimedia.org/wiki/Special:FilePath/HK%20HFC%20%E6%9D%8F%E8%8A%B1%E9%82%A8%20Hang%20Fa%20Chuen%20Paradis%20Mall%20%E5%95%86%E5%A0%B4%20shop%20Namco%20games%20February%202023%20Px3%2002.jpg"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1023212"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "cdp.pl"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1023212"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "CD Projekt"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1172164"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "CD Projekt RED"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1172164"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "CD Projekt RED"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1172164"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "CD Projekt RED"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1172164"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "CD Projekt RED"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "producer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1172164"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "CD Projekt RED"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "producer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1172164"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "CD Projekt RED"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "producer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1172164"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "CD Projekt RED"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "developer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1172164"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "CD Projekt RED"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "developer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1172164"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "CD Projekt RED"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "developer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1972036"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Buka Entertainment"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1972036"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Бука"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1972036"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "Buka Entertainment"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2248318"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Ice-Pick Lodge"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "developer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2248318"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Ice-Pick Lodge"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "developer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2248318"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "Ice-Pick Lodge"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "developer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2319420"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Warner Bros. Games"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2319420"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Warner Bros. Games"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2319420"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "Warner Bros. Games"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "publisher"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "studio"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q19005369"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Marcin Przybyłowicz"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "composer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    },
+    "image": {
+     "type": "uri",
+     "value": "http://commons.wikimedia.org/wiki/Special:FilePath/Marcin%20Przyby%C5%82owicz.jpg"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q19005369"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Марцин Пшибылович"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "composer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    },
+    "image": {
+     "type": "uri",
+     "value": "http://commons.wikimedia.org/wiki/Special:FilePath/Marcin%20Przyby%C5%82owicz.jpg"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q19005837"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Mikolai Stroinski"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "composer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q19005837"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Миколай Строинский"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "composer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q63537335"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Aleksey Bakhvalov"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "programmer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q63537346"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Andriesh Gandrabur"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "composer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q63537346"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Андриеш Гандрабур"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "composer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q63537392"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Sanan Ushanov"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "designer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q63537392"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Санан Ушанов"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "designer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q63537400"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Daniella Klimashevskaya"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "designer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q63537400"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Даниелла Климашевская"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "designer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q63537782"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Ivan Bunakov"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "producer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q63537782"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Иван Бунаков"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "producer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q109991844"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Marcin Blacha"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "writer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q109991844"
+    },
+    "label": {
+     "xml:lang": "mul",
+     "type": "literal",
+     "value": "Marcin Blacha"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "writer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q109991844"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Марцин Блаха"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4267401"
+    },
+    "role": {
+     "type": "literal",
+     "value": "writer"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q125589574"
+    },
+    "label": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Nikolai Dybowskiy"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "director"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   },
+   {
+    "entity": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q125589574"
+    },
+    "label": {
+     "xml:lang": "ru",
+     "type": "literal",
+     "value": "Дыбовский, Николай Владимирович"
+    },
+    "game": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2429644"
+    },
+    "role": {
+     "type": "literal",
+     "value": "director"
+    },
+    "kind": {
+     "type": "literal",
+     "value": "person"
+    }
+   }
+  ]
+ }
+}

@@ -1,0 +1,33 @@
+{
+  "_comment": "Hand-written MobyGames credits answer (docs unreachable from this network, ИГРЫ 2.4). Shape: credits -> role -> [{person_id, name}]. No real API key was used.",
+  "credits": {
+    "Composer": [
+      { "person_id": 9001, "name": "Marcin Przybyłowicz" },
+      { "person_id": 9002, "name": "Mikolai Stroinski" }
+    ],
+    "Game Design": [
+      { "person_id": 9003, "name": "Konrad Tomaszkiewicz" }
+    ],
+    "Writing": [
+      { "person_id": 9004, "name": "Marcin Blacha" }
+    ],
+    "Art/Graphics": [
+      { "person_id": 9005, "name": "Bartłomiej Gaweł" }
+    ],
+    "Programming": [
+      { "person_id": 9006, "name": "Grzegorz Mocarski" }
+    ],
+    "Production": [
+      { "person_id": 9007, "name": "Piotr Twardowski" }
+    ],
+    "Audio": [
+      { "person_id": 9008, "name": "Paweł Błaszczak" }
+    ],
+    "Voice Actor": [
+      { "person_id": 9009, "name": "Doug Cockle" }
+    ],
+    "Quality Assurance": [
+      { "person_id": 9010, "name": "QA Person" }
+    ]
+  }
+}
