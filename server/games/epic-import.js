@@ -29,6 +29,7 @@ const epic = require('./epic');
 const epicCache = require('./epic-cache');
 const gameCache = require('./game-cache');
 const tokenStore = require('./epic-token-store');
+const secondaryIdentity = require('./secondary-identity');
 
 const jobs = new Map();
 const jobOrder = [];
@@ -415,6 +416,24 @@ async function runImport(job, accountId, client, options) {
   await epicCache.saveEpicLibrary(accountId, finalLibrary);
 
   job.warning = job.warnings.length ? job.warnings.join(' ') : null;
+
+  // M6c: one Wikidata batch (P6278 → P1733) so an Epic game that is also on
+  // Steam joins the same work instead of duplicating it in every chart. Never
+  // fatal; an injected client (tests) skips it entirely.
+  job.stage = 'identity';
+  job.percent = 96;
+  const catalogIds = merged.games.map((game) => game.catalogItemId).filter(Boolean);
+  const catalogDocs = epicCache.listEpicCatalogItems(catalogIds);
+  job.secondaryLinks = await secondaryIdentity.refreshForJob({
+    epicGames: merged.games.map((game) => ({
+      slug:
+        (game.catalogItemId && catalogDocs[game.catalogItemId] && catalogDocs[game.catalogItemId].slug) ||
+        game.slug ||
+        null,
+    })),
+    options: { ...options, force: options.force === true },
+  });
+
   job.percent = 100;
   job.stage = 'done';
 }

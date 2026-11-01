@@ -129,10 +129,13 @@ test('GOG stats', async (t) => {
     budgetExceeded: false,
   });
 
-  await t.test('Steam journal total is unchanged; GOG hours are a separate number', () => {
+  await t.test('totalHours is the display sum; hoursBySource.steam stays the journal', () => {
     const payload = buildGamesStatsFromCache(PROFILE_KEY);
-    assert.equal(payload.summary.totalHours, 150);
-    assert.deepEqual(payload.summary.hoursBySource, { steam: 150, gog: 31.5, epic: null });
+    // M6c: the headline number is Steam + GOG + Epic of the same works …
+    assert.equal(payload.summary.totalHours, 181.5);
+    // … while the Steam journal number and the per-source breakdown stay.
+    assert.equal(payload.summary.totalHoursSteam, 150);
+    assert.deepEqual(payload.summary.hoursBySource, { steam: 150, gog: 31.5, epic: null, all: 181.5 });
     assert.deepEqual(payload.summary.ownedBySource, { steam: 2, gog: 3, epic: null });
     assert.equal(payload.summary.worksTotal, 3);
     assert.equal(payload.summary.secondaryOnlyWorks, 1);
@@ -153,13 +156,21 @@ test('GOG stats', async (t) => {
     assert.equal(cyberpunk.storeIds.gog, '1423049311');
   });
 
-  await t.test('secondary works are listed but never added to Steam hours', () => {
+  await t.test('a secondary-only work is counted and ranked, not hidden', () => {
     const payload = buildGamesStatsFromCache(PROFILE_KEY);
     assert.equal(payload.secondaryWorks.length, 1);
     assert.equal(payload.secondaryWorks[0].workKey, 'gog:1999999999');
     assert.equal(payload.secondaryWorks[0].hoursBySource.gog, 90);
     assert.equal(payload.secondaryWorks[0].hoursBySource.steam, null);
-    assert.equal(payload.topGames.some((row) => row.name === 'GOG Exclusive Indie'), false);
+    // M6c: it is a real owned game — one more row in the library, its hours in
+    // the totals, its name in the top list.
+    assert.equal(payload.summary.gameCount, 3);
+    assert.equal(payload.summary.secondaryOnlyWorks, 1);
+    const row = payload.topGames.find((entry) => entry.name === 'GOG Exclusive Indie');
+    assert.ok(row);
+    assert.equal(row.appid, null);
+    assert.deepEqual(row.sources, ['gog']);
+    assert.equal(row.hours, 1.5);
   });
 
   await t.test('sources block exposes GOG state without a token', () => {
