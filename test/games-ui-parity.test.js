@@ -114,7 +114,7 @@ function miniIndex() {
    markup + layout
    ========================================================= */
 
-test('inline persons widget: span 12, studios first, search + «показать всех»', () => {
+test('inline persons widget: span 12, developers first, search + «показать всех»', () => {
   const html = readPublic('index.html');
   for (const id of [
     'games-persons-widget', 'games-person-list', 'games-persons-more',
@@ -127,11 +127,15 @@ test('inline persons widget: span 12, studios first, search + «показать
   const select = /<select id="games-persons-role"[\s\S]*?<\/select>/.exec(html);
   assert.ok(select, 'нет select роли персоналий');
   const roles = [...select[0].matchAll(/value="([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(roles[0], 'studio', 'студии — первыми: это самые надёжные кредиты Steam');
+  assert.equal(roles[0], 'developer', 'разработчики — первыми: это самые надёжные кредиты Steam');
   assert.deepEqual(roles, [
-    'studio', 'publisher', 'composer', 'designer',
+    'developer', 'publisher', 'composer', 'designer',
     'writer', 'artist', 'programmer', 'producer',
   ]);
+  // Publishers have their own category: the studio label is «Разработчики».
+  assert.match(select[0], /value="developer" selected>Разработчики</);
+  assert.match(select[0], /value="publisher">Издатели</);
+  assert.doesNotMatch(select[0], /value="studio"/);
   assert.match(html, /id="games-persons-search"[^>]+placeholder="Поиск по имени"/);
   assert.match(html, /data-games-weight="hours"/);
   assert.match(html, /data-games-weight="count"/);

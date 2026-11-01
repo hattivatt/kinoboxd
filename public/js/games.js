@@ -33,9 +33,10 @@ import {
   normalizeGamesPayload, normalizeProfilesList, accountFromInput, profileCardView, summaryMetrics,
   paretoView, topHoursRows, backlogView, recentlyView, histogramView, lastPlayedInfo,
   importErrorText, jobStageText, jobProgress, gamesJobId, hoursText, HOURS_HINT,
-  decadesView, yearsView, genreCloudView, modesView, accessView, metadataProgressView, filtersView,
+  decadesView, yearsView, genreChartView, modesView, accessView, metadataProgressView, filtersView,
   calendarView, achievementStreaksView, achievementsOverviewView, normalizePersonnel, personnelRows,
-  studiosView, coverageBadge, PERSONNEL_ROLES, formatDateRu,
+  studiosView, coverageBadge, PERSONNEL_ROLES, formatDateRu, normalizePersonnelRole,
+  personnelRoleOptions, personnelRoleCountText, GENRE_CHART_LIMIT,
   gamesInYear, gamesInDecade, gamesWithoutYear, gamesWithoutType, gamesByGenre, gamesByMode,
   gamesByAccess, gamesInHoursBucket, gamesWithRecentHours, backlogGames, allGames, sortGameRows,
   yearsInDecade,
@@ -50,7 +51,9 @@ const JOB_KEY = 'kinoboxd.games.job.v1';
 const FILTERS_KEY = 'kinoboxd.games.filters.v1';
 const WEIGHT_KEY = 'kinoboxd.games.weight.v1';
 const ROLE_KEY = 'kinoboxd.games.role.v1';
-const CLOUD_KEY = 'kinoboxd.games.cloudweight.v1';
+// Legacy key name: the genre widget was a cloud, now it is a bar chart. The
+// stored weight choice survives the change, so the string stays.
+const GENRE_WEIGHT_KEY = 'kinoboxd.games.cloudweight.v1';
 const POLL_INTERVAL = 1400;
 const ENRICH_POLL_INTERVAL = 3500;
 const ENRICH_POLL_LIMIT = 120;
@@ -80,10 +83,12 @@ const state = {
   // M2: includeFree/includeDlc are sent only when they differ from the server
   // defaults (free included, DLC excluded) — a default request stays clean.
   filters: { includeFree: true, includeDlc: false },
-  cloudWeight: 'hours',
+  // Genre bar chart: weight + «Показать все» (top 12 first).
+  genreWeight: 'hours',
+  genresExpanded: false,
   // M3: personnel weights + per-role cache (one owner, no cross-profile mix).
   weight: 'hours',
-  role: 'studio',
+  role: 'developer',
   // Films parity: the years card is gated by a selected decade, and the
   // inline persons widget batches locally (the personnel route returns the
   // whole role — its `limit` is games per person, not persons).
@@ -713,7 +718,7 @@ function renderDashboard(data) {
   // missing, so an M1 server keeps a clean dashboard.
   renderDecades(data);
   renderYears(data);
-  renderGenreCloud(data);
+  renderGenreChart(data);
   renderModes(data);
   renderAccess(data);
   renderMetadataProgress(data);
@@ -1430,45 +1435,64 @@ function renderYears(data) {
   });
 }
 
-function renderGenreCloud(data) {
+function renderGenreChart(data) {
   const widget = $('games-genres-widget');
-  const host = $('games-genres-cloud');
+  const host = $('games-genres-chart');
+  const moreHost = $('games-genres-more');
   const note = $('games-genres-note');
   if (!widget || !host) return;
   clear(host);
-  const view = genreCloudView(data.genres, { weight: state.cloudWeight, limit: 24 });
+  if (moreHost) clear(moreHost);
+  const view = genreChartView(data.genres, {
+    weight: state.genreWeight,
+    limit: state.genresExpanded ? 0 : GENRE_CHART_LIMIT,
+    // Fallback denominator only: the payload's `genres[].share` wins when set.
+    totalHours: data.summary ? data.summary.totalHours : null,
+  });
   if (!view) {
     widget.hidden = true;
     return;
   }
   widget.hidden = false;
   if (note) note.textContent = view.note;
-  for (const chip of view.chips) {
-    const node = el('span', {
-      class: `games-cloud-chip cloud-${chip.size} is-clickable`,
-      title: `${chip.title}${chip.hint ? ` · ${chip.hint}` : ''}`,
+  for (const row of view.rows) {
+    const node = el('div', {
+      class: 'genre-row games-genre-row is-clickable',
+      title: row.title,
       role: 'button',
       tabIndex: 0,
-      'aria-label': `${chip.name}: ${chip.countText} игр. Открыть список`,
+      'aria-label': row.ariaLabel,
     });
-    node.append(el('span', { class: 'games-cloud-name', text: chip.name }));
-    node.append(el('span', { class: 'games-cloud-count', text: chip.countText }));
+    const name = el('div', { class: 'genre-name' });
+    name.append(el('span', { class: 'genre-label', text: row.name }));
+    node.append(name);
+    const track = el('div', { class: 'genre-track' });
+    const fill = el('div', { class: 'genre-fill' });
+    track.append(fill);
+    node.append(track);
+    const value = el('div', { class: 'genre-avg games-genre-value' });
+    value.append(el('span', { text: row.primaryText }));
+    if (row.secondaryText) value.append(el('small', { text: row.secondaryText }));
+    node.append(value);
     host.append(node);
+    requestAnimationFrame(() => {
+      fill.style.width = `${row.widthPercent}%`;
+    });
     node.addEventListener('pointerenter', (event) => {
-      showTooltip(chip.title, `${chip.hint || ''} · нажмите, чтобы открыть список`);
+      showTooltip(row.title, row.hint);
       moveTooltip(event);
     });
     node.addEventListener('pointermove', moveTooltip);
     node.addEventListener('pointerleave', hideTooltip);
     const activate = () => {
       hideTooltip();
-      const games = sortGameRows(gamesByGenre(data.gamesIndex, chip.name), 'hours');
+      const games = sortGameRows(gamesByGenre(data.gamesIndex, row.name), 'hours');
       openGameListModal({
         kicker: 'Жанр',
-        title: `${chip.name} — ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`,
-        subtitle: `${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)} · ${chip.hoursText || 'часы неизвестны'}`,
+        title: `${row.name} — ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`,
+        subtitle: `${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)} · ${row.hoursText || 'часы неизвестны'}`,
         hint: 'Жанры Steam Store; одна игра может попадать в несколько жанров, поэтому сумма по жанрам больше числа игр.',
-        groupLabel: chip.name,
+        groupLabel: row.name,
         emptyText: 'Нет игр этого жанра с карточкой Steam Store',
         games,
         sortScope: 'genre',
@@ -1482,8 +1506,33 @@ function renderGenreCloud(data) {
       activate();
     });
   }
-  for (const button of document.querySelectorAll('[data-games-cloud-weight]')) {
-    const active = button.dataset.gamesCloudWeight === view.weight;
+  if (moreHost) {
+    if (view.hidden > 0) {
+      const button = el('button', {
+        type: 'button',
+        class: 'btn games-genre-more-btn',
+        text: `Показать все (${fmtInt(view.total)})`,
+      });
+      button.addEventListener('click', () => {
+        state.genresExpanded = true;
+        renderGenreChart(data);
+      });
+      moreHost.append(button);
+    } else if (state.genresExpanded && view.total > GENRE_CHART_LIMIT) {
+      const button = el('button', {
+        type: 'button',
+        class: 'btn btn-link games-genre-more-btn',
+        text: 'Свернуть до топ-12',
+      });
+      button.addEventListener('click', () => {
+        state.genresExpanded = false;
+        renderGenreChart(data);
+      });
+      moreHost.append(button);
+    }
+  }
+  for (const button of document.querySelectorAll('[data-games-genre-weight]')) {
+    const active = button.dataset.gamesGenreWeight === view.weight;
     button.classList.toggle('is-active', active);
     button.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
@@ -1748,8 +1797,30 @@ function renderCalendar(data) {
    M3: inline persons widget (films parity)
    ========================================================= */
 
-function personnelRoleMeta(role) {
-  return PERSONNEL_ROLES.find((entry) => entry.key === role) || PERSONNEL_ROLES[0];
+/**
+ * Role select options follow the payload: developers first, then only the
+ * roles the payload reports (`coverage.byRole`), publishers when studio credits
+ * exist. The static markup is the fallback until the first payload arrives, so
+ * the select is never empty.
+ */
+function renderRoleOptions(payload) {
+  const select = $('games-persons-role');
+  if (!select) return;
+  const options = personnelRoleOptions(payload);
+  const signature = options.map((option) => option.key).join(',');
+  if (select.dataset && select.dataset.gamesRoles === signature && select.children.length === options.length) {
+    if (select.value !== state.role) select.value = state.role;
+    return;
+  }
+  clear(select);
+  for (const option of options) {
+    const node = el('option', { value: option.key, text: option.label });
+    node.title = option.hint || '';
+    if (option.key === state.role) node.setAttribute('selected', 'selected');
+    select.append(node);
+  }
+  if (select.dataset) select.dataset.gamesRoles = signature;
+  select.value = state.role;
 }
 
 function widgetPersonRows(payload) {
@@ -1838,6 +1909,7 @@ function renderPersonsWidget(data) {
     return;
   }
   widget.hidden = false;
+  renderRoleOptions(state.personnel.data);
   if (select && select.value !== state.role) select.value = state.role;
   if (searchWrap) searchWrap.hidden = !(state.personnel.expanded || state.personnel.query);
   for (const button of document.querySelectorAll('[data-games-weight]')) {
@@ -1847,7 +1919,6 @@ function renderPersonsWidget(data) {
   }
 
   const payload = state.personnel.data;
-  const role = personnelRoleMeta(state.role);
   const rows = widgetPersonRows(payload);
   state.personnel.rows = rows;
 
@@ -1867,7 +1938,7 @@ function renderPersonsWidget(data) {
   if (note) {
     const parts = [];
     if (rows.length) {
-      parts.push(`${fmtInt(rows.length)} ${plural(rows.length, [role.label.toLowerCase(), role.label.toLowerCase(), role.plural])}`);
+      parts.push(personnelRoleCountText(rows.length, state.role));
     } else if (state.personnel.loading) {
       parts.push('собираем кредиты…');
     }
@@ -1991,8 +2062,22 @@ function personnelCacheKey(role) {
   return `${state.profileKey}:${role}`;
 }
 
+/** One personnel request; an older server that only knows `studio` is retried. */
+async function fetchPersonnel(role) {
+  try {
+    return await getGamesPersonnel({ profile: state.profileKey, role });
+  } catch (error) {
+    // `studio` is the pre-split key (developers + publishers mixed). A server
+    // that rejects `developer` still answers it, so the UI never goes empty.
+    if (role === 'developer' && error && error.code === 'invalid_role') {
+      return getGamesPersonnel({ profile: state.profileKey, role: 'studio' });
+    }
+    throw error;
+  }
+}
+
 async function ensurePersonnel(role, { force = false } = {}) {
-  const nextRole = PERSONNEL_ROLES.some((entry) => entry.key === role) ? role : 'studio';
+  const nextRole = normalizePersonnelRole(role) || PERSONNEL_ROLES[0].key;
   if (!state.profileKey) return;
   const changed = state.role !== nextRole;
   state.role = nextRole;
@@ -2025,7 +2110,7 @@ async function ensurePersonnel(role, { force = false } = {}) {
   renderPersonnel();
   renderPersonsWidget(state.data);
   try {
-    const raw = await getGamesPersonnel({ profile: state.profileKey, role: nextRole });
+    const raw = await fetchPersonnel(nextRole);
     const data = normalizePersonnel(raw, nextRole);
     state.personnel.cache[key] = data;
     if (state.personnel.role === nextRole) {
@@ -2121,10 +2206,10 @@ function renderPersonnelToolbar() {
 function personnelRowsFromStats() {
   // Tolerant fallback: an M2 server already sends `studios` in the stats
   // payload but may not mount `/api/games/personnel` yet.
-  if (state.role !== 'studio' || !state.data) return null;
+  if (state.role !== 'developer' || !state.data) return null;
   const view = studiosView(state.data.studios, { weight: state.weight, limit: 0 });
   if (!view) return null;
-  return { rows: view.rows, note: 'студии из Steam Store (stats)', source: 'stats' };
+  return { rows: view.rows, note: 'разработчики из Steam Store (stats)', source: 'stats' };
 }
 
 function renderPersonnel() {
@@ -2261,12 +2346,12 @@ export function initGames({ onActivate } = {}) {
   state.onActivate = typeof onActivate === 'function' ? onActivate : null;
   state.profileKey = text(safeStorageGet(PROFILE_KEY));
   state.filters = readStoredFilters();
-  const storedCloud = text(safeStorageGet(CLOUD_KEY));
-  state.cloudWeight = storedCloud === 'count' ? 'count' : 'hours';
+  const storedGenreWeight = text(safeStorageGet(GENRE_WEIGHT_KEY));
+  state.genreWeight = storedGenreWeight === 'count' ? 'count' : 'hours';
   const storedWeight = text(safeStorageGet(WEIGHT_KEY));
   state.weight = storedWeight === 'count' ? 'count' : 'hours';
   const storedRole = text(safeStorageGet(ROLE_KEY));
-  state.role = PERSONNEL_ROLES.some((entry) => entry.key === storedRole) ? storedRole : 'studio';
+  state.role = normalizePersonnelRole(storedRole) || PERSONNEL_ROLES[0].key;
   syncFilterInputs();
 
   const form = $('games-import-form');
@@ -2318,14 +2403,14 @@ export function initGames({ onActivate } = {}) {
     }));
   }
 
-  /* M2: genre-cloud weight (local re-sort, no request). */
-  for (const button of document.querySelectorAll('[data-games-cloud-weight]')) {
+  /* M2: genre chart weight (local re-sort, no request). */
+  for (const button of document.querySelectorAll('[data-games-genre-weight]')) {
     button.addEventListener('click', () => {
-      const next = button.dataset.gamesCloudWeight === 'count' ? 'count' : 'hours';
-      if (state.cloudWeight === next) return;
-      state.cloudWeight = next;
-      safeStorageSet(CLOUD_KEY, next);
-      if (state.data) renderGenreCloud(state.data);
+      const next = button.dataset.gamesGenreWeight === 'count' ? 'count' : 'hours';
+      if (state.genreWeight === next) return;
+      state.genreWeight = next;
+      safeStorageSet(GENRE_WEIGHT_KEY, next);
+      if (state.data) renderGenreChart(state.data);
     });
   }
 
@@ -2341,23 +2426,17 @@ export function initGames({ onActivate } = {}) {
       renderPersonsWidget(state.data);
     });
   }
-  const openPersonnelButton = $('games-personnel-open');
-  if (openPersonnelButton) {
-    openPersonnelButton.addEventListener('click', () => openPersonnel({ push: true }));
-  }
   const closePersonnelButton = $('games-personnel-back');
   if (closePersonnelButton) {
     closePersonnelButton.addEventListener('click', () => closePersonnel({ push: true }));
   }
 
-  /* M3 inline widget: role select (studios first), search and «все персоналии». */
+  /* M3 inline widget: role select (developers first), search and «все персоналии». */
   const roleSelect = $('games-persons-role');
   if (roleSelect) {
     roleSelect.value = state.role;
     roleSelect.addEventListener('change', () => {
-      const next = PERSONNEL_ROLES.some((entry) => entry.key === roleSelect.value)
-        ? roleSelect.value
-        : 'studio';
+      const next = normalizePersonnelRole(roleSelect.value) || PERSONNEL_ROLES[0].key;
       if (state.role === next) return;
       ensurePersonnel(next);
     });

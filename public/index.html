@@ -1080,12 +1080,6 @@
             <div class="kicker dash-kicker" id="games-kicker">библиотека Steam · сводка</div>
             <h1>Твоя статистика по играм</h1>
             <p class="dash-sub" id="games-sub">Статистика одного профиля Steam.</p>
-            <div class="games-hero-actions">
-              <button type="button" class="btn btn-ghost" id="games-personnel-open" title="Студии, композиторы, дизайнеры, сценаристы и художники">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c0-3.1 2.5-5.2 5.5-5.2s5.5 2.1 5.5 5.2"/><path d="M16.5 5.2a3 3 0 0 1 0 5.6"/><path d="M18 14.8c2 .5 3.5 2.3 3.5 5.2"/></svg>
-                <span>Персоналии</span>
-              </button>
-            </div>
           </div>
 
           <div class="summary-strip" id="games-summary"></div>
@@ -1208,16 +1202,17 @@
                 <h2 class="widget-title" id="games-genres-title"><span class="w-dot green"></span>Жанры</h2>
                 <span class="widget-note" id="games-genres-note"></span>
               </div>
-              <div class="games-cloud-toolbar">
+              <div class="games-genre-toolbar">
                 <div class="games-weight-toggle" role="group" aria-label="Вес жанров">
-                  <button type="button" class="games-weight-btn is-active" data-games-cloud-weight="hours">по часам</button>
-                  <button type="button" class="games-weight-btn" data-games-cloud-weight="count">по числу игр</button>
+                  <button type="button" class="games-weight-btn is-active" data-games-genre-weight="hours">по часам</button>
+                  <button type="button" class="games-weight-btn" data-games-genre-weight="count">по числу игр</button>
                 </div>
-                <span class="games-cloud-hint">размер — вес, наведи — числа</span>
+                <span class="games-genre-hint">наведи — детали, клик — список</span>
               </div>
-              <div class="games-cloud" id="games-genres-cloud"></div>
+              <div class="genre-list games-genre-chart" id="games-genres-chart"></div>
+              <div class="games-genre-more" id="games-genres-more"></div>
               <div class="chart-foot">
-                <span><i class="swatch green"></i>жанры Steam Store</span>
+                <span><i class="swatch green"></i>доля часов по жанрам Steam Store</span>
                 <span class="chart-foot-hint">одна игра может быть в нескольких жанрах</span>
               </div>
             </section>
@@ -1291,7 +1286,7 @@
                   <span class="widget-note" id="games-persons-note"></span>
                   <div class="select-wrap">
                     <select id="games-persons-role" class="select" aria-label="Категория персоналий">
-                      <option value="studio" selected>Студии</option>
+                      <option value="developer" selected>Разработчики</option>
                       <option value="publisher">Издатели</option>
                       <option value="composer">Композиторы</option>
                       <option value="designer">Геймдизайнеры</option>
@@ -1323,7 +1318,7 @@
               <div class="person-list" id="games-person-list"></div>
               <div class="persons-more" id="games-persons-more"></div>
               <div class="chart-foot">
-                <span><i class="swatch green"></i>студии, люди и роли</span>
+                <span><i class="swatch green"></i>разработчики, издатели и люди</span>
                 <span class="chart-foot-hint">нажмите на строку — игры персоны; часы по данным Steam</span>
               </div>
             </section>
@@ -1343,7 +1338,7 @@
             <div class="kicker dash-kicker" id="games-personnel-kicker">персоналии · игры</div>
             <h1>Персоналии</h1>
             <p class="dash-sub" id="games-personnel-sub">
-              Студии первыми, затем композиторы, геймдизайнеры, сценаристы и художники.
+              Разработчики первыми, затем издатели, композиторы, геймдизайнеры, сценаристы и художники.
               Кредиты — MobyGames и Wikidata, веса — по часам или по числу игр.
             </p>
             <div class="games-hero-actions">
@@ -1373,7 +1368,7 @@
 
           <footer class="dash-footer">
             <p class="dash-footer-line">
-              Студии — Steam Store (developers/publishers). Люди — MobyGames (если ключ настроен) и Wikidata.
+              Разработчики и издатели — Steam Store (developers/publishers). Люди — MobyGames (если ключ настроен) и Wikidata.
               Одно имя из разных источников склеивается по QID; «не знаем» — честное состояние, а не ноль.
             </p>
           </footer>
