@@ -24,6 +24,7 @@ const kpCompare = require('./compare');
 const { buildStats, listUnmatched } = require('./stats');
 const booksRouter = require('./books/routes');
 const gamesRouter = require('./games/routes');
+const gamesPersonnelRouter = require('./games/personnel/routes-personnel');
 
 // Fail fast, before the HTTP server starts, if TMDB credentials are missing.
 // Missing config is an expected condition: print one clean line and exit 1
@@ -67,6 +68,11 @@ app.use('/api/books', booksRouter);
 // Games live in their own namespace and cache (cache-games/). The film and
 // book payloads are untouched.
 app.use('/api/games', gamesRouter);
+
+// Personnel (M3): GET /api/games/personnel + POST /api/games/override.
+// Mounted after the M1 router — the paths are disjoint (/personnel,
+// /override) so the ordering only keeps the existing routes untouched.
+app.use('/api/games', gamesPersonnelRouter);
 
 /* ------------------------------------------------------------------ */
 /* API                                                                 */
