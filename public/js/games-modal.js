@@ -332,11 +332,13 @@ export function openGameListModal({
  * The server caps games per person at 50 (`limit`), so when `count > games`
  * the modal says so honestly instead of pretending the list is complete.
  */
-export function openPersonModal({ person, role = 'studio', weight = 'hours', coverage = null } = {}) {
+export function openPersonModal({ person, role = 'developer', weight = 'hours', coverage = null } = {}) {
   if (!person) return null;
   seq += 1;
   const titleId = `game-person-title-${seq}`;
-  const isStudio = role === 'studio';
+  // `developer` is the split key; `studio` is the old mixed one. Both are
+  // companies, so both get the studio logo and the studio summary wording.
+  const isStudio = role === 'studio' || role === 'developer';
   const games = personGames(person, context.gamesIndex);
   const count = Math.max(Number(person.count) || 0, games.length);
   const hours = person.hours;

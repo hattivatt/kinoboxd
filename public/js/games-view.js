@@ -1638,48 +1638,91 @@ export function yearsView(years) {
   };
 }
 
+/** «68%» for a share ≥10%, «0,4%» below it, «<0,1%» for a sliver. */
+function sharePercentText(share) {
+  const value = percentNumber(share);
+  if (value == null) return '—';
+  if (value > 0 && value < 0.1) return '<0,1%';
+  return percentText(value / 100, value >= 10 ? 0 : 1);
+}
+
+/** Genres past this many are folded behind «Показать все (N)». */
+export const GENRE_CHART_LIMIT = 12;
+
 /**
- * Genre cloud: one chip per genre, sized by playtime (`hours`) or by the number
- * of games (`count`). Both weights are in the payload, so the toggle is local —
- * no extra request.
+ * Genre bar chart: one horizontal bar per genre, length = its share of the
+ * library playtime (`hours`, default) or of the genre marks (`count`). Both
+ * weights are in the payload, so the toggle is local — no extra request.
+ *
+ * The bar length *is* the printed share (RPG 68% → 68% of the track), which is
+ * what makes the numbers readable: «97 игр · 68% часов» is the count подпись,
+ * and the drilldown stays the existing genre modal.
+ *
+ * The hours share comes from the payload (`genres[].share`, the backend divides
+ * by the library total — 3977.2 h of 5862.6 h = 68%). When it is missing the
+ * share is derived from `totalHours` (or the sum of the genre hours, the only
+ * denominator left). Genres overlap, so the shares do not add up to 100% — the
+ * hint says so instead of hiding it.
  */
-export function genreCloudView(genres, { weight = 'hours', limit = 24 } = {}) {
+export function genreChartView(genres, {
+  weight = 'hours',
+  limit = GENRE_CHART_LIMIT,
+  totalHours = null,
+} = {}) {
   const list = normalizeWeightItems(genres).filter((item) => item.count > 0 || (item.hours || 0) > 0);
   if (!list.length) return null;
   const mode = weight === 'count' ? 'count' : 'hours';
   const value = (item) => (mode === 'count' ? item.count : (item.hours || 0));
   const sorted = list.slice().sort((a, b) => value(b) - value(a) || a.name.localeCompare(b.name, 'ru'));
   const shown = limit > 0 ? sorted.slice(0, limit) : sorted;
-  const max = Math.max(1, ...shown.map(value));
-  const totalHours = list.reduce((sum, item) => sum + (item.hours || 0), 0);
-  const totalCount = list.reduce((sum, item) => sum + item.count, 0);
+  const genreHours = list.reduce((sum, item) => sum + (item.hours || 0), 0);
+  const libraryHours = numOrNull(totalHours);
+  const hoursDenominator = libraryHours && libraryHours > 0 ? libraryHours : genreHours;
+  const totalMarks = list.reduce((sum, item) => sum + item.count, 0);
+  const shareOf = (item) => {
+    if (mode === 'count') return totalMarks > 0 ? item.count / totalMarks : 0;
+    const declared = item.share != null ? percentNumber(item.share) : null;
+    if (declared != null && declared > 0) return declared / 100;
+    return item.hours != null && hoursDenominator > 0 ? item.hours / hoursDenominator : 0;
+  };
+  const rows = shown.map((item) => {
+    const share = shareOf(item);
+    const countText = fmtInt(item.count);
+    const gamesText = `${countText} ${plural(item.count, GAME_PLURAL)}`;
+    const itemHours = item.hours != null ? hoursText(item.hours) : '';
+    const shareLabel = mode === 'count'
+      ? (totalMarks > 0 ? `${sharePercentText(share)} отметок` : '')
+      : (share > 0 ? `${sharePercentText(share)} часов` : 'часы неизвестны');
+    return {
+      name: item.name,
+      count: item.count,
+      hours: item.hours,
+      countText,
+      hoursText: itemHours,
+      shareText: shareLabel,
+      // Bar length = printed share, so the chart and the label never disagree.
+      widthPercent: Math.max(2, Math.min(100, Math.round(share * 1000) / 10)),
+      primaryText: mode === 'count' ? gamesText : (itemHours || '—'),
+      secondaryText: mode === 'count'
+        ? [itemHours, shareLabel].filter(Boolean).join(' · ')
+        : [gamesText, shareLabel].filter(Boolean).join(' · '),
+      title: itemHours
+        ? `${item.name} — ${gamesText} · ${itemHours}`
+        : `${item.name} — ${gamesText}`,
+      hint: mode === 'count'
+        ? `${totalMarks > 0 ? `${sharePercentText(share)} всех жанровых отметок` : 'число игр по жанру'} · нажмите, чтобы открыть список`
+        : `${share > 0 ? `${sharePercentText(share)} часов игр этого жанра` : 'часы по жанру сервер не передал'} · нажмите, чтобы открыть список`,
+      ariaLabel: `${item.name}: ${gamesText}${itemHours ? `, ${itemHours}` : ''}${shareLabel ? `, ${shareLabel}` : ''} — открыть список`,
+    };
+  });
   return {
     weight: mode,
-    chips: shown.map((item) => {
-      const ratio = value(item) / max;
-      return {
-        name: item.name,
-        count: item.count,
-        hours: item.hours,
-        countText: fmtInt(item.count),
-        hoursText: item.hours != null ? hoursText(item.hours) : '',
-        size: Math.max(1, Math.min(5, 1 + Math.round(ratio * 4))),
-        title: item.hours != null
-          ? `${item.name} — ${fmtInt(item.count)} ${plural(item.count, GAME_PLURAL)} · ${hoursText(item.hours)}`
-          : `${item.name} — ${fmtInt(item.count)} ${plural(item.count, GAME_PLURAL)}`,
-        hint: mode === 'hours'
-          ? item.hours != null && totalHours > 0
-            ? `${percentText(item.hours / totalHours)} часов игр этого жанра`
-            : 'часы по жанру сервер не передал'
-          : totalCount > 0
-          ? `${percentText(item.count / totalCount)} всех жанровых отметок`
-          : '',
-      };
-    }),
-    total: shown.length,
+    rows,
+    total: list.length,
+    shown: shown.length,
     hidden: Math.max(0, list.length - shown.length),
     note: `${fmtInt(list.length)} ${plural(list.length, ['жанр', 'жанра', 'жанров'])} · по ${mode === 'hours' ? 'часам' : 'числу игр'}`,
-    hint: 'Жанры Steam Store; одна игра может попадать в несколько жанров, поэтому сумма больше числа игр.',
+    hint: 'Жанры Steam Store; одна игра может попадать в несколько жанров, поэтому доли не складываются в 100%.',
   };
 }
 
@@ -2007,22 +2050,76 @@ export function achievementsOverviewView(summary) {
    M3: personnel
    ========================================================= */
 
-/** Role order: studios first (§7.1), then the people roles by priority. */
+/**
+ * Role order: the developer block first (§7.1), then the people roles by
+ * priority. `studio` is kept as an alias: an older server still answers
+ * `role=studio` (developers + publishers mixed), and the label stays
+ * «Разработчики» — publishers have their own category now.
+ */
 export const PERSONNEL_ROLES = [
-  { key: 'studio', apiRole: 'studio', label: 'Студии', plural: 'студий', hint: 'Разработчики и издатели — первыми: Steam отдаёт их почти всегда.' },
-  { key: 'publisher', apiRole: 'publisher', label: 'Издатели', plural: 'издателей', hint: 'publishers[] из Steam Store; Wikidata шумит региональными издателями.' },
-  { key: 'composer', apiRole: 'composer', label: 'Композиторы', plural: 'композиторов', hint: 'MobyGames / Wikidata P86.' },
-  { key: 'designer', apiRole: 'designer', label: 'Геймдизайнеры', plural: 'геймдизайнеров', hint: 'MobyGames Game Design / Wikidata P287. Покрытие хуже, чем у студий.' },
-  { key: 'writer', apiRole: 'writer', label: 'Сценаристы', plural: 'сценаристов', hint: 'MobyGames Writing; Wikidata P58 применим не всегда.' },
-  { key: 'artist', apiRole: 'artist', label: 'Художники', plural: 'художников', hint: 'MobyGames Art/Graphics — самый неровный источник.' },
-  { key: 'programmer', apiRole: 'programmer', label: 'Программисты', plural: 'программистов', hint: 'MobyGames Programming / Wikidata P943.' },
-  { key: 'producer', apiRole: 'producer', label: 'Продюсеры', plural: 'продюсеров', hint: 'MobyGames Production / Wikidata P162.' },
+  {
+    key: 'developer',
+    apiRole: 'developer',
+    aliases: ['studio'],
+    label: 'Разработчики',
+    forms: ['разработчик', 'разработчика', 'разработчиков'],
+    hint: 'developers[] из Steam Store; издатели — отдельной категорией.',
+  },
+  {
+    key: 'publisher',
+    apiRole: 'publisher',
+    label: 'Издатели',
+    forms: ['издатель', 'издателя', 'издателей'],
+    hint: 'publishers[] из Steam Store; Wikidata шумит региональными издателями.',
+  },
+  {
+    key: 'composer',
+    apiRole: 'composer',
+    label: 'Композиторы',
+    forms: ['композитор', 'композитора', 'композиторов'],
+    hint: 'MobyGames / Wikidata P86.',
+  },
+  {
+    key: 'designer',
+    apiRole: 'designer',
+    label: 'Геймдизайнеры',
+    forms: ['геймдизайнер', 'геймдизайнера', 'геймдизайнеров'],
+    hint: 'MobyGames Game Design / Wikidata P287. Покрытие хуже, чем у студий.',
+  },
+  {
+    key: 'writer',
+    apiRole: 'writer',
+    label: 'Сценаристы',
+    forms: ['сценарист', 'сценариста', 'сценаристов'],
+    hint: 'MobyGames Writing; Wikidata P58 применим не всегда.',
+  },
+  {
+    key: 'artist',
+    apiRole: 'artist',
+    label: 'Художники',
+    forms: ['художник', 'художника', 'художников'],
+    hint: 'MobyGames Art/Graphics — самый неровный источник.',
+  },
+  {
+    key: 'programmer',
+    apiRole: 'programmer',
+    label: 'Программисты',
+    forms: ['программист', 'программиста', 'программистов'],
+    hint: 'MobyGames Programming / Wikidata P943.',
+  },
+  {
+    key: 'producer',
+    apiRole: 'producer',
+    label: 'Продюсеры',
+    forms: ['продюсер', 'продюсера', 'продюсеров'],
+    hint: 'MobyGames Production / Wikidata P162.',
+  },
 ];
 
 const PERSON_ROLE_LABELS = {
   developer: 'разработчик',
   publisher: 'издатель',
-  studio: 'студия',
+  studio: 'разработчик',
   composer: 'композитор',
   music: 'композитор',
   designer: 'геймдизайнер',
@@ -2039,9 +2136,23 @@ const PERSON_ROLE_LABELS = {
   'voice actor': 'озвучка',
 };
 
-export function personnelRoleLabel(role) {
+/**
+ * Any role spelling the payload/URL may carry → the UI key. `studio` (the old
+ * server key that mixed developers and publishers) maps to `developer`, so the
+ * select keeps one entry labelled «Разработчики». Unknown roles return ''.
+ */
+export function normalizePersonnelRole(role) {
   const key = text(role).toLowerCase();
-  const found = PERSONNEL_ROLES.find((entry) => entry.key === key || entry.apiRole === key);
+  if (!key) return '';
+  const found = PERSONNEL_ROLES.find((entry) => entry.key === key
+    || entry.apiRole === key
+    || (entry.aliases || []).includes(key));
+  return found ? found.key : '';
+}
+
+export function personnelRoleLabel(role) {
+  const key = normalizePersonnelRole(role) || text(role).toLowerCase();
+  const found = PERSONNEL_ROLES.find((entry) => entry.key === key);
   if (found) return found.label;
   return PERSON_ROLE_LABELS[key] || key || 'персоналии';
 }
@@ -2085,27 +2196,86 @@ function normalizePersonItem(raw) {
 /**
  * `GET /api/games/personnel?role=…` → view model. The endpoint is M3 and may
  * be absent on an M1/M2 server; an empty body is a valid «кредитов нет».
+ *
+ * `coverage.byRole` is kept: the role select is built from what the payload
+ * actually has instead of hard-coding eight categories.
  */
 export function normalizePersonnel(raw, fallbackRole = '') {
   const source = raw && typeof raw === 'object' ? raw : {};
   const items = arr(source.items).map(normalizePersonItem).filter(Boolean);
   const coverageRaw = source.coverage && typeof source.coverage === 'object' ? source.coverage : null;
+  const byRoleRaw = coverageRaw && coverageRaw.byRole && typeof coverageRaw.byRole === 'object'
+    ? coverageRaw.byRole
+    : null;
+  const byRole = {};
+  if (byRoleRaw) {
+    for (const [key, value] of Object.entries(byRoleRaw)) {
+      const name = text(key).toLowerCase();
+      if (name) byRole[name] = toCount(value);
+    }
+  }
   const coverage = coverageRaw
     ? {
       gamesWithCredits: numOrNull(coverageRaw.gamesWithCredits),
       gamesTotal: numOrNull(coverageRaw.gamesTotal),
       percent: numOrNull(coverageRaw.percent),
+      gamesWithStudios: numOrNull(coverageRaw.gamesWithStudios),
+      studioPercent: numOrNull(coverageRaw.studioPercent),
+      byRole: Object.keys(byRole).length ? byRole : null,
     }
     : null;
   const role = text(source.role) || text(fallbackRole);
+  const roleKey = normalizePersonnelRole(role) || normalizePersonnelRole(fallbackRole);
   return {
     role,
-    roleLabel: personnelRoleLabel(role),
+    roleKey,
+    roleLabel: personnelRoleLabel(roleKey || role),
     items,
     coverage,
     hasItems: items.length > 0,
-    emptyText: `Кредиты «${personnelRoleLabel(role).toLowerCase()}» не собраны: MobyGames/Wikidata ещё не отдали данные для игр этой библиотеки.`,
+    emptyText: `Кредиты «${personnelRoleLabel(roleKey || role).toLowerCase()}» не собраны: MobyGames/Wikidata ещё не отдали данные для игр этой библиотеки.`,
   };
+}
+
+/**
+ * Role options for the inline select, in `PERSONNEL_ROLES` order: developers
+ * first (always), publishers when the payload has studio credits, people roles
+ * only when `coverage.byRole` reports at least one game. A payload without
+ * `byRole` keeps the full list, so an older server never collapses the select.
+ */
+export function personnelRoleOptions(payload) {
+  const data = payload && payload.roleLabel && Array.isArray(payload.items)
+    ? payload
+    : normalizePersonnel(payload);
+  const coverage = data.coverage || {};
+  const byRole = coverage.byRole || null;
+  const hasStudios = !byRole
+    || coverage.gamesWithStudios == null
+    || coverage.gamesWithStudios > 0;
+  const current = data.roleKey || normalizePersonnelRole(data.role);
+  const options = [];
+  for (const role of PERSONNEL_ROLES) {
+    if (role.key === 'developer') {
+      options.push(role);
+    } else if (role.key === 'publisher') {
+      if (hasStudios) options.push(role);
+    } else if (!byRole || (byRole[role.key] || 0) > 0) {
+      options.push(role);
+    }
+  }
+  // The selected role must stay selectable even when its block is empty.
+  if (current && !options.some((role) => role.key === current)) {
+    const extra = PERSONNEL_ROLES.find((role) => role.key === current);
+    if (extra) options.splice(1, 0, extra);
+  }
+  return options.map((role) => ({ key: role.key, label: role.label, hint: role.hint }));
+}
+
+/** «399 разработчиков» — the role-aware plural used by the widget note. */
+export function personnelRoleCountText(count, role) {
+  const key = normalizePersonnelRole(role) || PERSONNEL_ROLES[0].key;
+  const entry = PERSONNEL_ROLES.find((item) => item.key === key) || PERSONNEL_ROLES[0];
+  return `${fmtInt(count)} ${plural(count, entry.forms)}`;
 }
 
 function sortByWeight(items, weight) {
@@ -2176,8 +2346,8 @@ export function studiosView(studios, { weight = 'hours', limit = 8 } = {}) {
     rows,
     weight: weight === 'count' ? 'count' : 'hours',
     total: items.length,
-    note: `${fmtInt(items.length)} ${plural(items.length, ['студия', 'студии', 'студий'])} · по ${weight === 'count' ? 'числу игр' : 'часам'}`,
-    hint: 'Студии из Steam Store (developers/publishers). Нажмите на строку, чтобы увидеть игры.',
+    note: `${fmtInt(items.length)} ${plural(items.length, ['разработчик', 'разработчика', 'разработчиков'])} · по ${weight === 'count' ? 'числу игр' : 'часам'}`,
+    hint: 'Разработчики из Steam Store (developers). Нажмите на строку, чтобы увидеть игры.',
   };
 }
 

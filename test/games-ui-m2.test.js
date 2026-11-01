@@ -57,7 +57,7 @@ test('index.html carries the M2 widgets', () => {
   for (const id of [
     'games-decades-widget', 'games-decades-list',
     'games-years-widget', 'games-years-chart',
-    'games-genres-widget', 'games-genres-cloud',
+    'games-genres-widget', 'games-genres-chart', 'games-genres-more',
     'games-modes-widget', 'games-modes-list',
     'games-access-widget', 'games-access-body',
     'games-meta-widget', 'games-meta-body',
@@ -79,24 +79,30 @@ test('index.html carries the filters panel and the personnel screen', () => {
   const html = readPublic('index.html');
   for (const id of [
     'games-filters', 'games-filter-free', 'games-filter-dlc', 'games-filter-note',
-    'games-personnel-open', 'games-personnel-back', 'games-personnel',
+    'games-personnel-back', 'games-personnel',
     'games-personnel-coverage', 'games-role-chips', 'games-personnel-body',
     'games-personnel-loading', 'games-personnel-error', 'games-personnel-note',
   ]) {
     assert.match(html, new RegExp(`id="${id}"`), `нет узла #${id}`);
   }
+  // The hero «Персоналии» button is gone: the inline span-12 widget owns the
+  // personnel entry now, and its «Все персоналии» opens the sub-screen.
+  assert.doesNotMatch(html, /id="games-personnel-open"/);
   // Checkbox wording: one excludes free games, one includes DLC — the state is
   // sent as includeFree/includeDlc and `meta.filters` says what was applied.
   assert.match(html, /id="games-filter-free"[^>]*checked/);
   assert.match(html, /без бесплатных игр/);
   assert.match(html, /включить DLC/);
   // Both weight toggles are wired by data-attributes (games.js queries them).
-  assert.match(html, /data-games-cloud-weight="hours"/);
-  assert.match(html, /data-games-cloud-weight="count"/);
+  assert.match(html, /data-games-genre-weight="hours"/);
+  assert.match(html, /data-games-genre-weight="count"/);
   assert.match(html, /data-games-weight="hours"/);
   assert.match(html, /data-games-weight="count"/);
-  // Role chips are built from PERSONNEL_ROLES; studios are first by design.
-  assert.match(html, /Студии первыми/);
+  // The genre widget is a bar chart now: same hint as films, no chips.
+  assert.match(html, /наведи — детали, клик — список/);
+  assert.doesNotMatch(html, /class="games-cloud"/);
+  // Role chips are built from PERSONNEL_ROLES; developers are first by design.
+  assert.match(html, /Разработчики первыми/);
   assert.match(html, /MobyGames и Wikidata/);
   assert.match(html, /кредиты/i);
 });
@@ -106,7 +112,8 @@ test('style.css ships the M2/M3 games widgets', () => {
   for (const selector of [
     '.w-games-decades', '.w-games-years', '.w-games-genres', '.w-games-modes',
     '.w-games-access', '.w-games-meta', '.w-games-achievements', '.w-games-calendar',
-    '.games-cloud', '.games-cloud-chip', '.games-weight-toggle', '.games-weight-btn',
+    '.games-genre-chart', '.games-genre-row', '.games-genre-value',
+    '.games-genre-more', '.games-weight-toggle', '.games-weight-btn',
     '.games-filter-bar', '.games-filter', '.games-filter-note',
     '.games-access-item', '.games-meta-track', '.games-meta-fill',
     '.games-achievement-metric', '.games-coverage-badge', '.games-role-chip',
@@ -129,9 +136,18 @@ test('every new public script parses (node --check)', () => {
 test('games.js requests personnel and keeps the games URL addressable', () => {
   const games = readJs('games.js');
   assert.match(games, /getGamesPersonnel/);
-  assert.match(games, /getGamesPersonnel\(\{ profile: state\.profileKey, role: nextRole \}\)/);
+  // `developer` is the split role; an older server that only knows `studio`
+  // is retried inside fetchPersonnel instead of blanking the widget.
+  assert.match(games, /getGamesPersonnel\(\{ profile: state\.profileKey, role \}\)/);
+  assert.match(games, /role: 'studio'/);
+  assert.match(games, /error\.code === 'invalid_role'/);
   assert.match(games, /writeViewParam\('personnel'\)/);
   assert.match(games, /readViewParam\(\) === 'personnel'/);
+  // The genre widget is a bar chart: one renderer, one host, weight toggle.
+  assert.match(games, /renderGenreChart\(data\)/);
+  assert.match(games, /genreChartView\(data\.genres/);
+  assert.match(games, /data-games-genre-weight/);
+  assert.doesNotMatch(games, /genreCloudView|games-genres-cloud/);
   // Filters are appended only when they differ from the server defaults.
   assert.match(games, /if \(state\.filters\.includeFree === false\) query\.includeFree = false;/);
   assert.match(games, /if \(state\.filters\.includeDlc === true\) query\.includeDlc = true;/);
@@ -235,22 +251,52 @@ test('years: release-year bars keep the range in the note', async () => {
   assert.equal(yearsView([]), null);
 });
 
-test('genre cloud: size follows hours by default and count on demand', async () => {
-  const { genreCloudView } = await view();
-  const byHours = genreCloudView(fixture('stats-m2-mock.json').genres);
+test('genre chart: horizontal bars by share of hours, count on demand', async () => {
+  const { genreChartView, GENRE_CHART_LIMIT } = await view();
+  const byHours = genreChartView(fixture('stats-m2-mock.json').genres);
   assert.equal(byHours.weight, 'hours');
-  assert.deepEqual(byHours.chips.slice(0, 3).map((chip) => chip.name), ['Action', 'Shooter', 'RPG']);
-  assert.equal(byHours.chips[0].size, 5);
-  assert.equal(byHours.chips[0].countText, '96');
-  assert.match(plain(byHours.chips[0].title), /96 игр · 1 200,0 ч/);
+  assert.equal(GENRE_CHART_LIMIT, 12);
+  assert.deepEqual(byHours.rows.slice(0, 3).map((row) => row.name), ['Action', 'Shooter', 'RPG']);
+  assert.equal(byHours.rows[0].countText, '96');
+  assert.match(plain(byHours.rows[0].title), /96 игр · 1 200,0 ч/);
+  // The payload's `share` (0.283) is the bar length and the printed share.
+  assert.equal(byHours.rows[0].widthPercent, 28.3);
+  assert.equal(plain(byHours.rows[0].primaryText), '1 200,0 ч');
+  assert.equal(plain(byHours.rows[0].secondaryText), '96 игр · 28% часов');
   assert.equal(byHours.note, '8 жанров · по часам');
+  assert.equal(byHours.hidden, 0);
 
-  const byCount = genreCloudView(fixture('stats-m2-mock.json').genres, { weight: 'count' });
+  // Without `share` the fallback denominator is `totalHours` (the library).
+  const derived = genreChartView([{ name: 'RPG', count: 2, hours: 68 }], { totalHours: 100 });
+  assert.equal(derived.rows[0].widthPercent, 68);
+  assert.equal(plain(derived.rows[0].secondaryText), '2 игры · 68% часов');
+
+  const byCount = genreChartView(fixture('stats-m2-mock.json').genres, { weight: 'count' });
   assert.equal(byCount.weight, 'count');
-  assert.deepEqual(byCount.chips.slice(0, 3).map((chip) => chip.name), ['Action', 'RPG', 'Indie']);
+  assert.deepEqual(byCount.rows.slice(0, 3).map((row) => row.name), ['Action', 'RPG', 'Indie']);
+  assert.equal(byCount.rows[0].widthPercent, 22);
+  assert.equal(plain(byCount.rows[0].primaryText), '96 игр');
+  assert.equal(plain(byCount.rows[0].secondaryText), '1 200,0 ч · 22% отметок');
   assert.equal(byCount.note, '8 жанров · по числу игр');
 
-  assert.equal(genreCloudView([]), null);
+  // More than 12 genres fold behind «Показать все (N)»; limit 0 is the expanded state.
+  const many = Array.from({ length: 15 }, (_, index) => ({
+    name: `G${index}`, count: 15 - index, hours: (15 - index) * 10,
+  }));
+  const folded = genreChartView(many);
+  assert.equal(folded.rows.length, 12);
+  assert.equal(folded.hidden, 3);
+  assert.equal(folded.total, 15);
+  const expanded = genreChartView(many, { limit: 0 });
+  assert.equal(expanded.rows.length, 15);
+  assert.equal(expanded.hidden, 0);
+
+  // Hours missing → an honest «часы неизвестны» instead of a confident zero.
+  const noHours = genreChartView([{ name: 'Action', count: 4 }]);
+  assert.equal(noHours.rows[0].primaryText, '—');
+  assert.match(noHours.rows[0].secondaryText, /часы неизвестны/);
+
+  assert.equal(genreChartView([]), null);
 });
 
 test('modes: Steam categories with Russian labels', async () => {
@@ -398,7 +444,10 @@ test('personnel: studios normalized with QID, aliases, games and coverage', asyn
   const data = normalizePersonnel(fixture('personnel-studio-mock.json'), 'studio');
 
   assert.equal(data.role, 'studio');
-  assert.equal(data.roleLabel, 'Студии');
+  // `studio` is the pre-split key: it is shown as «Разработчики», publishers
+  // having their own category now.
+  assert.equal(data.roleKey, 'developer');
+  assert.equal(data.roleLabel, 'Разработчики');
   assert.equal(data.hasItems, true);
   assert.equal(data.items.length, 3);
   const cdpr = data.items.find((item) => item.name === 'CD PROJEKT RED');
@@ -414,6 +463,69 @@ test('personnel: studios normalized with QID, aliases, games and coverage', asyn
   ]);
   assert.equal(data.coverage.percent, 55);
   assert.equal(data.coverage.gamesWithCredits, 187);
+});
+
+test('role labels: studio/developer → «Разработчики», role list follows the payload', async () => {
+  const {
+    normalizePersonnel, normalizePersonnelRole, personnelRoleLabel,
+    personnelRoleOptions, personnelRoleCountText, PERSONNEL_ROLES,
+  } = await view();
+
+  // The split key and the old alias resolve to one UI role.
+  assert.equal(normalizePersonnelRole('developer'), 'developer');
+  assert.equal(normalizePersonnelRole('studio'), 'developer');
+  assert.equal(normalizePersonnelRole('STUDIO'), 'developer');
+  assert.equal(normalizePersonnelRole('composer'), 'composer');
+  assert.equal(normalizePersonnelRole('nonsense'), '');
+  assert.equal(personnelRoleLabel('developer'), 'Разработчики');
+  assert.equal(personnelRoleLabel('studio'), 'Разработчики');
+  assert.equal(personnelRoleLabel('publisher'), 'Издатели');
+  assert.equal(PERSONNEL_ROLES[0].key, 'developer', 'разработчики — первыми');
+
+  // Payload with byRole: only roles that actually have games, developers first.
+  const payload = {
+    role: 'studio',
+    items: [{ name: 'Valve' }],
+    coverage: {
+      gamesWithCredits: 10,
+      gamesTotal: 20,
+      percent: 50,
+      gamesWithStudios: 18,
+      byRole: { composer: 4, designer: 0, writer: 2, artist: 0, programmer: 0 },
+    },
+  };
+  const options = personnelRoleOptions(payload);
+  assert.deepEqual(options.map((option) => option.key), ['developer', 'publisher', 'composer', 'writer']);
+  assert.equal(options[0].label, 'Разработчики');
+
+  // No studios at all → publishers are not offered.
+  const noStudios = personnelRoleOptions({
+    role: 'composer', items: [], coverage: { gamesWithStudios: 0, byRole: { composer: 3 } },
+  });
+  assert.deepEqual(noStudios.map((option) => option.key), ['developer', 'composer']);
+
+  // Old payload without byRole keeps the full list (never one option).
+  assert.deepEqual(
+    personnelRoleOptions({ items: [] }).map((option) => option.key),
+    PERSONNEL_ROLES.map((role) => role.key),
+  );
+
+  // The selected role stays selectable even when its block is empty.
+  const emptySelected = personnelRoleOptions({
+    role: 'artist', items: [], coverage: { gamesWithStudios: 0, byRole: { composer: 2 } },
+  });
+  assert.deepEqual(emptySelected.map((option) => option.key), ['developer', 'artist', 'composer']);
+
+  // Coverage.byRole survives normalization (it feeds the select).
+  const normalized = normalizePersonnel(payload, 'studio');
+  assert.equal(normalized.coverage.byRole.composer, 4);
+  assert.equal(normalized.coverage.gamesWithStudios, 18);
+
+  // Role-aware plural for the widget note (the weight toggle keeps its wording).
+  assert.equal(personnelRoleCountText(399, 'developer'), '399 разработчиков');
+  assert.equal(personnelRoleCountText(3, 'studio'), '3 разработчика');
+  assert.equal(personnelRoleCountText(1, 'developer'), '1 разработчик');
+  assert.equal(personnelRoleCountText(12, 'publisher'), '12 издателей');
 });
 
 test('personnel rows: weights hours/count and the games dropdown data', async () => {
@@ -484,12 +596,12 @@ test('studios strip from the stats payload (same weights)', async () => {
   const strip = studiosView(data.studios);
   assert.equal(strip.rows.length, 3);
   assert.equal(strip.rows[0].name, 'Valve');
-  assert.equal(strip.note, '3 студии · по часам');
+  assert.equal(strip.note, '3 разработчика · по часам');
   assert.equal(strip.rows[0].rolesText, 'разработчик · издатель');
 
   const byCount = studiosView(data.studios, { weight: 'count', limit: 2 });
   assert.equal(byCount.rows.length, 2);
-  assert.equal(byCount.note, '3 студии · по числу игр');
+  assert.equal(byCount.note, '3 разработчика · по числу игр');
   assert.equal(studiosView([]), null);
 });
 
@@ -508,7 +620,7 @@ test('coverage badge: visible below 100%, hidden at 100%', async () => {
 
 test('an M1 payload hides every M2/M3 widget instead of printing zeroes', async () => {
   const {
-    normalizeGamesPayload, decadesView, yearsView, genreCloudView, modesView, accessView,
+    normalizeGamesPayload, decadesView, yearsView, genreChartView, modesView, accessView,
     metadataProgressView, filtersView, calendarView, achievementStreaksView, achievementsOverviewView,
     studiosView, normalizePersonnel,
   } = await view();
@@ -535,7 +647,7 @@ test('an M1 payload hides every M2/M3 widget instead of printing zeroes', async 
   assert.equal(data.has.streaks, false);
   assert.equal(decadesView(data.decades), null);
   assert.equal(yearsView(data.years), null);
-  assert.equal(genreCloudView(data.genres), null);
+  assert.equal(genreChartView(data.genres), null);
   assert.equal(modesView(data.summary.modes), null);
   assert.equal(accessView(data.summary), null);
   assert.equal(metadataProgressView(data.summary.metadata), null);
@@ -550,7 +662,7 @@ test('an M1 payload hides every M2/M3 widget instead of printing zeroes', async 
 
 test('malformed M2/M3 input never throws', async () => {
   const {
-    decadesView, yearsView, genreCloudView, modesView, accessView, metadataProgressView,
+    decadesView, yearsView, genreChartView, modesView, accessView, metadataProgressView,
     filtersView, calendarView, achievementStreaksView, achievementsOverviewView,
     personnelRows, studiosView, coverageBadge, normalizePersonnel,
   } = await view();
@@ -558,7 +670,7 @@ test('malformed M2/M3 input never throws', async () => {
   for (const raw of [null, undefined, {}, [], 'nonsense', 42, { items: 'no' }]) {
     assert.doesNotThrow(() => decadesView(raw));
     assert.doesNotThrow(() => yearsView(raw));
-    assert.doesNotThrow(() => genreCloudView(raw));
+    assert.doesNotThrow(() => genreChartView(raw));
     assert.doesNotThrow(() => modesView(raw));
     assert.doesNotThrow(() => accessView(raw));
     assert.doesNotThrow(() => metadataProgressView(raw));
@@ -571,7 +683,7 @@ test('malformed M2/M3 input never throws', async () => {
     assert.doesNotThrow(() => normalizePersonnel(raw));
     assert.equal(decadesView(raw), null);
     assert.equal(yearsView(raw), null);
-    assert.equal(genreCloudView(raw), null);
+    assert.equal(genreChartView(raw), null);
     assert.equal(modesView(raw), null);
     assert.equal(accessView(raw), null);
     assert.equal(metadataProgressView(raw), null);
@@ -611,7 +723,7 @@ test('alternate M2 spellings (minutes, array modes, kebab roles) are accepted', 
 
 test('mock payloads render the same numbers end to end', async () => {
   const {
-    normalizeGamesPayload, decadesView, yearsView, genreCloudView, modesView, accessView,
+    normalizeGamesPayload, decadesView, yearsView, genreChartView, modesView, accessView,
     metadataProgressView, filtersView, calendarView, achievementStreaksView,
     achievementsOverviewView, normalizePersonnel, personnelRows, coverageBadge,
   } = await view();
@@ -621,7 +733,7 @@ test('mock payloads render the same numbers end to end', async () => {
   assert.equal(data.summary.totalHours, 5862.6);
   assert.equal(decadesView(data.decades).total, 340);
   assert.equal(yearsView(data.years).note, '2004 — 2025 · 340 игр');
-  assert.equal(genreCloudView(data.genres).chips[0].name, 'Action');
+  assert.equal(genreChartView(data.genres).rows[0].name, 'Action');
   assert.equal(modesView(data.summary.modes).rows.length, 6);
   assert.equal(accessView(data.summary).items.length, 2);
   assert.equal(metadataProgressView(data.summary.metadata).details.text, 'детали 312/340');
