@@ -26,6 +26,7 @@ const booksRouter = require('./books/routes');
 const gamesRouter = require('./games/routes');
 const gamesPersonnelRouter = require('./games/personnel/routes-personnel');
 const gamesFranchiseRouter = require('./games/routes-franchise');
+const gamesEpicRouter = require('./games/routes-epic');
 
 // Fail fast, before the HTTP server starts, if TMDB credentials are missing.
 // Missing config is an expected condition: print one clean line and exit 1
@@ -92,6 +93,11 @@ app.use('/api/games', gamesPersonnelRouter);
 // Franchises (M4-B): GET /api/games/franchises + POST /api/games/franchise-enrich.
 // Disjoint paths again (/franchises, /franchise-enrich), mounted last.
 app.use('/api/games', gamesFranchiseRouter);
+
+// Epic secondary library (M6b): /api/games/epic/* (device-code auth, import,
+// isolated hoursBySource/exportedGames contract). The GOG branch (M6a) adds
+// /api/games/gog/* the same way; the union/UI integration is M6c.
+app.use('/api/games', gamesEpicRouter);
 
 /* ------------------------------------------------------------------ */
 /* API                                                                 */

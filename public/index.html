@@ -985,6 +985,10 @@
           <span class="games-profile-empty" id="games-profile-empty" hidden>профиль ещё не импортирован</span>
         </section>
 
+        <!-- M6b: Epic secondary library (device-code). The shared
+             «Подключения» screen of M6c renders the GOG slot next to it. -->
+        <section class="games-connections" id="games-connections" hidden aria-label="Подключения библиотек"></section>
+
         <!-- empty state: Steam import card -->
         <section class="games-import" id="games-import" hidden>
           <div class="dash-hero books-import-hero">
@@ -1531,6 +1535,7 @@
     <p style="padding:24px;text-align:center;color:#e8edf2">Для работы kinoboxd нужен JavaScript.</p>
   </noscript>
 
+  <script type="module" src="./js/games-epic.js"></script>
   <script type="module" src="./js/main.js"></script>
 </body>
 </html>

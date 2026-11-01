@@ -1,0 +1,13 @@
+{
+  "access_token": "eg1~fake-access-token-AAA",
+  "expires_in": 7200,
+  "expires_at": "2026-11-01T12:00:00.000Z",
+  "refresh_token": "eg1~fake-refresh-token-BBB",
+  "refresh_expires_in": 28800,
+  "refresh_expires_at": "2026-11-02T00:00:00.000Z",
+  "token_type": "bearer",
+  "account_id": "epic-account-1",
+  "displayName": "EpicTester",
+  "client_id": "fake-client-id",
+  "scope": "basic_profile friends_list"
+}

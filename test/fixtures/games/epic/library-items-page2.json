@@ -1,0 +1,15 @@
+{
+  "records": [
+    {
+      "appName": "Control",
+      "namespace": "ns-control",
+      "catalogItemId": "5c0e4c8b3a9f4c7e8d1b2a3c4d5e6f70",
+      "productId": "prod-control",
+      "sandboxType": "PUBLIC",
+      "country": "US",
+      "platform": ["Win32"],
+      "acquisitionDate": "2021-01-01T00:00:00.000Z"
+    }
+  ],
+  "responseMetadata": {}
+}

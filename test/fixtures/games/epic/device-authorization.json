@@ -1,0 +1,8 @@
+{
+  "device_code": "device-code-secret-not-for-clients",
+  "user_code": "ABCD-1234",
+  "verification_uri": "https://www.epicgames.com/id/activate",
+  "verification_uri_complete": "https://www.epicgames.com/id/activate?userCode=ABCD-1234",
+  "expires_in": 300,
+  "interval": 5
+}
