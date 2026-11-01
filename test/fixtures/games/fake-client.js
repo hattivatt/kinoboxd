@@ -36,10 +36,18 @@ function createFakeClient(options = {}) {
     calls,
     state,
     _keyProvider: () => ({ key: state.key, source: state.key ? 'test' : null }),
-    async getProfile() {
+    async getProfile(target) {
       calls.push('profile');
       if (state.fail.profile) throw state.fail.profile;
-      return { ...state.profile, mostPlayedGames: state.profile.mostPlayedGames.map((g) => ({ ...g })) };
+      // The real `profiles/<id64>/?xml=1` always echoes the requested id64;
+      // the trimmed fixture is one fixed profile, so echo it here too (this
+      // keeps the import's steamid_mismatch guard honest in tests).
+      const id64 = target && target.id64 ? String(target.id64) : state.profile.steamId64;
+      return {
+        ...state.profile,
+        steamId64: id64,
+        mostPlayedGames: state.profile.mostPlayedGames.map((g) => ({ ...g })),
+      };
     },
     async getPlayerSummaries() {
       calls.push('summaries');

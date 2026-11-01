@@ -3055,6 +3055,10 @@ const IMPORT_ERRORS = {
     title: 'Профиль не найден',
     message: 'Steam не нашёл такой vanity URL. Проверьте имя в ссылке steamcommunity.com/id/<имя> или вставьте steamid64 (17 цифр).',
   },
+  steamid_mismatch: {
+    title: 'Steam вернул другой профиль',
+    message: 'Steam ответил другим steamid64, чем запрошенный. Библиотеку нельзя приписать этому владельцу, поэтому импорт остановлен и ничего не сохранено. Проверьте ссылку профиля (steamcommunity.com/profiles/<17 цифр>) и повторите.',
+  },
   steam_key_missing: {
     title: 'Нет ключа Steam Web API',
     message: 'Без ключа Steam отдаёт только профиль, достижения и три последних игры — библиотеки с часами нет. Ключ бесплатный: steamcommunity.com/dev/apikey, затем добавьте его на сервере (STEAM_API_KEY).',

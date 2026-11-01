@@ -447,6 +447,44 @@ async function ensureProfileForSession(saved) {
   return record;
 }
 
+/**
+ * Registry record for a KinoPoisk stats source.
+ *
+ * One account = one record: the id is `kp:<userId>` unless a record with the
+ * same `kpUserId` already exists (legacy ids). Re-importing an existing
+ * profile therefore updates it in place instead of adding a duplicate row.
+ */
+function kinopoiskProfileRecord(source, { uploadId = null, previous = null } = {}) {
+  const kpUserId = source && source.kpUserId != null
+    ? String(source.kpUserId)
+    : (state.kp && state.kp.kpUserId ? String(state.kp.kpUserId) : null);
+  if (!kpUserId) return null;
+  const base = previous && typeof previous === 'object' ? previous : {};
+  const kpNick = source && source.kpNick
+    ? String(source.kpNick)
+    : ((state.kp && state.kp.kpNick) || base.kpNick || null);
+  return {
+    ...base,
+    id: base.id || `kp:${kpUserId}`,
+    type: 'kp',
+    label: `Кинопоиск · ${kpNick || `user ${kpUserId}`}`,
+    kpUrl: (state.kp && state.kp.url) || base.kpUrl || null,
+    kpUserId,
+    kpNick,
+    uploadId: uploadId || base.uploadId || null,
+    savedAt: Date.now(),
+    source: { type: 'kinopoisk', ...(source || {}) },
+  };
+}
+
+/** Local record of a KinoPoisk account (by kpUserId), active or not. */
+function knownKinopoiskProfile(kpUserId) {
+  if (kpUserId == null) return null;
+  return (state.profiles || []).find((item) => item
+    && item.type === 'kp'
+    && String(item.kpUserId || '') === String(kpUserId)) || null;
+}
+
 async function persistActiveProfile(stats) {
   if (!stats || typeof stats !== 'object') return;
   try {
@@ -458,33 +496,26 @@ async function persistActiveProfile(stats) {
       ? String(src.kpUserId)
       : (state.kp && state.kp.kpUserId ? String(state.kp.kpUserId) : null);
     if (!kpUserId) return;
-    const kpNick = src.kpNick ? String(src.kpNick) : ((state.kp && state.kp.kpNick) || null);
 
     // A delta refresh of the active profile must update that registry record
     // in place, even if its id predates the `kp:<userId>` convention.
+    const known = knownKinopoiskProfile(kpUserId);
     const active = state.profileId ? await getProfile(state.profileId) : null;
-    const id = active
+    const previousRecord = active
       && active.type === 'kp'
       && String(active.kpUserId || '') === String(kpUserId)
-      ? active.id
-      : `kp:${kpUserId}`;
+      ? active
+      : known;
+    const id = previousRecord && previousRecord.id ? previousRecord.id : `kp:${kpUserId}`;
 
     const previous = await getProfile(id);
-    const record = await saveProfile({
-      ...(previous || {}),
-      id,
-      type: 'kp',
-      label: `Кинопоиск · ${kpNick || `user ${kpUserId}`}`,
-      kpUrl: (state.kp && state.kp.url) || (previous && previous.kpUrl) || null,
-      kpUserId,
-      kpNick,
-      uploadId: state.uploadId || (previous && previous.uploadId) || null,
-      savedAt: Date.now(),
-      source: {
-        type: 'kinopoisk',
-        ...(src || {}),
-      },
-    }, { keepId: id });
+    const record = await saveProfile(
+      kinopoiskProfileRecord(src, {
+        uploadId: state.uploadId,
+        previous: previous || previousRecord,
+      }),
+      { keepId: id },
+    );
 
     state.profileId = record.id;
     setActiveId(record.id);
@@ -805,6 +836,24 @@ function applyStats(stats, { fromCache = false, profile = null } = {}) {
       kpUserId: source.kpUserId != null ? String(source.kpUserId) : (state.kp && state.kp.kpUserId) || null,
       kpNick: source.kpNick || (state.kp && state.kp.kpNick) || null,
     };
+  }
+  // A finished import is the activation point: make the new/updated KinoPoisk
+  // profile active *before* the async registry write, so the switcher shows it
+  // immediately (and keeps it even if `/api/profiles` is slow). The persisted
+  // record reuses the same id, so this is idempotent on a re-import.
+  if (!profile && source && source.type === 'kinopoisk' && source.kpUserId != null) {
+    const provisional = kinopoiskProfileRecord(source, {
+      uploadId: state.uploadId,
+      previous: knownKinopoiskProfile(source.kpUserId),
+    });
+    if (provisional) {
+      state.profileId = provisional.id;
+      setActiveId(provisional.id);
+      state.profiles = [
+        provisional,
+        ...(state.profiles || []).filter((item) => item.id !== provisional.id),
+      ];
+    }
   }
   state.attachedLb = stats.summary && stats.summary.attachedLb
     ? stats.summary.attachedLb
