@@ -815,6 +815,17 @@ function normalizeGameIndexEntry(entry, appid) {
     storeIds: item.storeIds && typeof item.storeIds === 'object' ? item.storeIds : null,
     hoursBySource:
       item.hoursBySource && typeof item.hoursBySource === 'object' ? item.hoursBySource : null,
+    // M6c: secondary-only rows live in `gamesIndex` under their own `workKey`
+    // (`appid: null`, `secondaryOnly: true`). Keeping the raw source blocks
+    // lets a drilldown row open the same union card as the chart payload.
+    workKey: firstString(item.workKey, item.work_key),
+    secondaryOnly: item.secondaryOnly === true,
+    source: normalizeSourceKey(item.source),
+    gog: item.gog && typeof item.gog === 'object' ? item.gog : null,
+    epic: item.epic && typeof item.epic === 'object' ? item.epic : null,
+    releaseDate: firstString(item.releaseDate, item.release_date),
+    hoursUnknown: item.hoursUnknown == null ? null : Boolean(item.hoursUnknown),
+    hoursStatus: item.hoursStatus && typeof item.hoursStatus === 'object' ? item.hoursStatus : null,
   };
 }
 
@@ -1019,42 +1030,6 @@ function asSecondaryWork(work) {
   if (!work || typeof work !== 'object') return null;
   if (work.sourceLabels && work.hoursBySource && work.name) return work;
   return normalizeSecondaryWork(work);
-}
-
-/**
- * «Вне Steam» list view: every secondary work, sorted by its own hours (desc;
- * unknown/zero hours last) and capped by `limit` (15 by default — the same
- * «Показать все» pattern as the genre chart). `minHours` never reaches this
- * list: a GOG work whose playtime is not resolved yet must stay visible with
- * the «часы не получены» note instead of disappearing.
- */
-export function secondaryWorksView(works, { limit = 15 } = {}) {
-  const rows = arr(works).map(asSecondaryWork).filter(Boolean);
-  const sortHours = (row) => (row.hoursUnknown ? -1 : (row.hours != null ? row.hours : -1));
-  const sorted = rows.slice().sort((left, right) => {
-    const leftHours = sortHours(left);
-    const rightHours = sortHours(right);
-    if (leftHours !== rightHours) return rightHours - leftHours;
-    return String(left.name || '').localeCompare(String(right.name || ''));
-  });
-  const total = sorted.length;
-  const cap = numOrNull(limit);
-  const visible = cap != null && cap > 0 ? sorted.slice(0, cap) : sorted;
-  const unknownHours = sorted.filter((row) => row.hoursUnknown).length;
-  const unplayed = sorted.filter((row) => row.notPlayed).length;
-  const parts = [`${fmtInt(total)} ${plural(total, SECONDARY_WORK_PLURAL)} вне Steam`];
-  if (unknownHours > 0) parts.push(`без часов: ${fmtInt(unknownHours)}`);
-  if (unplayed > 0) parts.push(`не запускали: ${fmtInt(unplayed)}`);
-  return {
-    rows: sorted,
-    visible,
-    total,
-    totalText: fmtInt(total),
-    hidden: Math.max(0, total - visible.length),
-    unknownHours,
-    unplayed,
-    note: total ? parts.join(' · ') : '',
-  };
 }
 
 /**
@@ -1480,8 +1455,9 @@ export function normalizeGamesPayload(raw) {
     achievementDays,
     streaks,
     filters,
-    // M6a: raw source state + GOG-only works (the «Вне Steam» widget). Both
-    // stay empty for a Steam-only payload, so existing widgets are unchanged.
+    // M6a: raw source state + GOG/Epic-only works (chart drilldowns and the
+    // client-side union card). Both stay empty for a Steam-only payload, so
+    // existing widgets are unchanged.
     sources: sourcesBlock,
     secondaryWorks: arr(source.secondaryWorks)
       .map((entry) => normalizeSecondaryWork(entry, secondaryContext))
@@ -1617,8 +1593,16 @@ export function gameRowsFromIndex(gamesIndex, predicate = null) {
   for (const [appid, entry] of Object.entries(gamesIndex)) {
     if (!entry || typeof entry !== 'object') continue;
     const row = normalizeGameIndexEntry(entry, appid);
-    if (row.appid == null) continue;
-    const key = row.canonicalWorkKey ? `work:${row.canonicalWorkKey}` : `appid:${row.appid}`;
+    // M6c: a secondary-only work has no appid but is still a real owned work.
+    // It must appear in the same drilldowns as the chart buckets that count it
+    // (years/decades/genres), and its row opens the union card.
+    const secondary = row.secondaryOnly === true || (row.appid == null && Boolean(row.workKey));
+    if (row.appid == null && !secondary) continue;
+    const key = row.canonicalWorkKey
+      ? `work:${row.canonicalWorkKey}`
+      : row.appid != null
+        ? `appid:${row.appid}`
+        : `work:${row.workKey || appid}`;
     const previous = works.get(key);
     works.set(key, previous ? mergeEditionRows(previous, row) : row);
   }
@@ -2170,6 +2154,10 @@ export function topHoursRows(topGames, { limit = 10, totalHours = null } = {}) {
     return {
       rank: index + 1,
       appid: game.appid,
+      // M6c: a secondary-only work has no appid; its own `workKey` opens the
+      // client-side union card instead of a Steam card.
+      workKey: game.workKey ?? game.canonicalWorkKey ?? null,
+      secondaryOnly: Boolean(game.secondaryOnly || game.appid == null),
       name: game.name,
       hours: game.hours,
       hoursText: hoursText(game.hours),

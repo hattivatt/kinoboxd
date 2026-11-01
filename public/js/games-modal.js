@@ -37,12 +37,50 @@ const SORT_VALUES = new Set(GAME_SORT_OPTIONS.map((option) => option.key));
 const context = {
   profile: '',
   gamesIndex: {},
+  // Full secondary entries (poster, store links, per-source hours) from the
+  // `/stats` payload. A drilldown row only has the light `gamesIndex` copy;
+  // the union card is painted from this list when the `workKey` matches.
+  secondaryWorks: [],
 };
 
 /** Called by games.js on every dashboard render (one owner, one index). */
-export function configureGamesModals({ profile = '', gamesIndex = null } = {}) {
+export function configureGamesModals({
+  profile = '',
+  gamesIndex = null,
+  secondaryWorks = null,
+} = {}) {
   context.profile = profile || '';
   context.gamesIndex = gamesIndex && typeof gamesIndex === 'object' ? gamesIndex : {};
+  context.secondaryWorks = Array.isArray(secondaryWorks) ? secondaryWorks.filter(Boolean) : [];
+}
+
+/** A secondary-only row: no Steam appid, its own work key. */
+function isSecondaryRow(row) {
+  return Boolean(row && (row.secondaryOnly === true || row.appid == null));
+}
+
+/** The full `secondaryWorks[]` entry behind a drilldown row, when present. */
+function secondaryWorkFor(row) {
+  if (!row) return null;
+  const key = row.workKey || row.canonicalWorkKey;
+  if (key) {
+    const match = context.secondaryWorks.find(
+      (work) => work && (work.workKey === key || work.key === key),
+    );
+    if (match) return match;
+  }
+  const name = String(row.name || '');
+  if (!name) return null;
+  return context.secondaryWorks.find((work) => work && String(work.name || '') === name) || null;
+}
+
+/** Open the card for one list row: Steam card vs client-side union card. */
+function openGameRow(row) {
+  if (!row) return null;
+  if (isSecondaryRow(row)) {
+    return openSecondaryWorkCardModal(secondaryWorkFor(row) || row);
+  }
+  return openGameCardModal(row.appid);
 }
 
 /* =========================================================
@@ -293,34 +331,49 @@ function gameRowSubtitle(game) {
 }
 
 function gameRow(game, { onOpen = null } = {}) {
+  const secondary = isSecondaryRow(game);
+  // The union card view gives an honest per-source hours line: a GOG+Epic
+  // work never prints one combined number.
+  const union = secondary ? secondaryWorkCardView(game) : null;
+  const label = game.name || (secondary ? 'работа вне Steam' : `appid ${game.appid}`);
   const row = el('div', {
     class: 'film-row game-row',
     role: 'button',
     tabIndex: 0,
-    'aria-label': `${game.name || `appid ${game.appid}`}: открыть карточку игры`,
+    'aria-label': `${label}: открыть карточку ${secondary ? 'работы вне Steam' : 'игры'}`,
   });
   row.append(gameIconEl(game));
   const info = el('div', { class: 'film-info' });
-  const title = el('div', { class: 'film-title', text: game.name || `appid ${game.appid}` });
+  const title = el('div', { class: 'film-title', text: label });
   if (game.releaseYear) title.append(el('span', { class: 'film-year', text: String(game.releaseYear) }));
   info.append(title);
-  const sub = gameRowSubtitle(game);
+  const sub = union ? union.subtitle : gameRowSubtitle(game);
   if (sub) info.append(el('div', { class: 'film-char', text: sub }));
   row.append(info);
 
   const value = el('div', { class: 'game-row-value' });
-  value.append(el('span', { text: game.hours != null ? hoursText(game.hours) : '—' }));
+  if (union) {
+    if (union.hoursUnknown) value.append(el('span', { text: 'часы не получены' }));
+    else if (union.notPlayed) value.append(el('span', { text: 'не запущена' }));
+    else value.append(el('span', { text: union.hoursText || '—' }));
+  } else {
+    value.append(el('span', { text: game.hours != null ? hoursText(game.hours) : '—' }));
+  }
   if (game.completion != null) {
     value.append(el('small', { text: `completion ${percentText(game.completion, 0)}` }));
   }
   row.append(value);
 
+  const hoursPart = union
+    ? (union.hoursText ? ` — ${union.hoursText}` : '')
+    : (game.hours != null ? ` — ${hoursText(game.hours)}` : '');
   row.addEventListener('pointerenter', (event) => {
     showTooltip(
-      `${game.name || `appid ${game.appid}`}${game.hours != null ? ` — ${hoursText(game.hours)}` : ''}`,
+      `${label}${hoursPart}`,
       [
         game.releaseYear ? `год релиза ${game.releaseYear}` : 'год релиза неизвестен',
         game.completion != null ? `completion ${percentText(game.completion, 0)}` : '',
+        secondary ? 'работа вне Steam: карточка из объединённой модели' : '',
         'нажмите, чтобы открыть карточку',
       ].filter(Boolean).join(' · '),
     );
@@ -332,7 +385,7 @@ function gameRow(game, { onOpen = null } = {}) {
   const activate = () => {
     hideTooltip();
     if (typeof onOpen === 'function') onOpen(game);
-    else openGameCardModal(game.appid);
+    else openGameRow(game);
   };
   row.addEventListener('click', activate);
   row.addEventListener('keydown', (event) => {
@@ -414,7 +467,7 @@ export function openGameListModal({
     clear(listHost);
     clear(moreHost);
     for (const game of ordered.slice(0, shown)) {
-      listHost.append(gameRow(game, { onOpen: onOpen || ((row) => openGameCardModal(row.appid)) }));
+      listHost.append(gameRow(game, { onOpen: onOpen || openGameRow }));
     }
     if (shown < ordered.length) {
       const more = el('button', {
@@ -1024,8 +1077,9 @@ export function openGameCardModal(appid, { fallback = null } = {}) {
  *
  * There is no `/api/games/game/:appid` for a non-Steam game, and inventing a
  * Steam card would be a lie. Everything is rendered from the union payload the
- * «Вне Steam» list already holds: title, poster, release year, genres when the
- * backend sent them, and **one hours row per source** (never a combined total).
+ * year/decade/genre drilldowns already hold: title, poster, release year,
+ * genres when the backend sent them, and **one hours row per source** (never a
+ * combined total).
  */
 export function openSecondaryWorkCardModal(work) {
   const card = secondaryWorkCardView(work);

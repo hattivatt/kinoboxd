@@ -1,9 +1,12 @@
 'use strict';
 
 /**
- * M6c «Вне Steam» (headless DOM): the real `games.js` paints the list from a
- * `/stats` payload, the 15-row cap expands, and a row opens the client-side
- * union card without a single `/api/games/game/:appid` request.
+ * M6c secondary-only works (headless DOM), no separate widget.
+ *
+ * Product decision (01.11.2026): the works are **not** a standalone «Вне
+ * Steam» widget. They are counted by the year/decade/genre charts and appear
+ * in those drilldowns; clicking a row opens the client-side union card
+ * without a single `/api/games/game/:appid` request.
  */
 
 const test = require('node:test');
@@ -57,6 +60,41 @@ function work(index) {
 
 const WORKS = Array.from({ length: 20 }, (_, index) => work(index));
 
+// The server puts secondary-only works into `gamesIndex` under their own
+// `workKey` (`appid: null`); the drilldown list must count them exactly like
+// the chart bucket does.
+const SECONDARY_INDEX_ROW = {
+  appid: null,
+  workKey: 'gog:1',
+  secondaryOnly: true,
+  source: 'gog',
+  name: 'Work 1',
+  hours: 13.8,
+  hours2w: 0,
+  rtime: 0,
+  lastPlayed: null,
+  iconUrl: null,
+  canonicalWorkKey: 'gog:1',
+  primaryAppid: null,
+  isPrimary: true,
+  editionCount: 1,
+  canonicalHours: 13.8,
+  sources: ['gog', 'epic'],
+  storeIds: { steam: null, gog: '1', epic: 'epic-1' },
+  hoursBySource: { steam: null, gog: 12.3, epic: 1.5 },
+  hoursUnknown: false,
+  hoursStatus: { gog: 'ok', epic: 'ok' },
+  type: 'game',
+  year: 2015,
+  releaseYear: 2015,
+  genres: ['RPG', 'Action'],
+  developers: [],
+  publishers: [],
+  categories: [],
+  tags: [],
+  metadataSources: [],
+};
+
 const payload = {
   sources: {
     connected: [KEY],
@@ -85,7 +123,7 @@ const payload = {
   secondaryWorks: WORKS,
   topGames: [],
   recentlyPlayed: [],
-  gamesIndex: {},
+  gamesIndex: { 'gog:1': SECONDARY_INDEX_ROW },
   timeline: [],
   achievementDays: [],
   streaks: [],
@@ -125,11 +163,54 @@ globalThis.fetch = async (url) => {
 const wait = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 
-test('«Вне Steam» paints 15 works, expands to all, and opens a no-network card', async () => {
+function lastModal() {
+  const root = nodeFor('modal-root');
+  if (!root || !root.children.length) return null;
+  return root.children[root.children.length - 1];
+}
+
+function lastModalText() {
+  const modal = lastModal();
+  return modal ? norm(textOf(modal)) : '';
+}
+
+function findByClass(root, className) {
+  const out = [];
+  const walk = (node) => {
+    if (!node) return;
+    const classes = String(node.className || '').split(/\s+/);
+    if (classes.includes(className)) out.push(node);
+    for (const child of node.children || []) walk(child);
+  };
+  walk(root);
+  return out;
+}
+
+function findSlices(hostId) {
+  const out = [];
+  const walk = (node) => {
+    if (!node) return;
+    const key = node.attributes && node.attributes['data-key'];
+    if (key) out.push({ key, node });
+    for (const child of node.children || []) walk(child);
+  };
+  walk(nodeFor(hostId));
+  return out;
+}
+
+test('secondary works live in the charts and open the union card from a drilldown', async () => {
   const games = await import('../public/js/games.js');
   games.initGames({ onActivate() {} });
   await games.showGames();
   await wait(60);
+
+  // There is no standalone «Вне Steam» widget any more.
+  assert.equal(payload.gamesIndex['gog:1'].secondaryOnly, true);
+  assert.equal(
+    (nodeFor('games-secondary-widget').children || []).length,
+    0,
+    'the removed widget must never be painted',
+  );
 
   // Sources widget: union headline + per-source hour totals + chart status.
   assert.equal(nodeFor('games-sources-widget').hidden, false);
@@ -143,63 +224,33 @@ test('«Вне Steam» paints 15 works, expands to all, and opens a no-network c
   assert.match(norm(textOf(sourceRows[1])), /10 игр · 120,4 ч/);
   assert.match(norm(textOf(sourceRows[2])), /5 игр · 45,0 ч/);
 
-  // Full list widget.
-  const widget = nodeFor('games-secondary-widget');
-  assert.equal(widget.hidden, false);
-  assert.match(norm(textOf(nodeFor('games-secondary-note'))), /20 работ вне Steam/);
-  const list = nodeFor('games-secondary-list');
-  assert.equal(list.children.length, 15);
-  assert.equal(norm(textOf(nodeFor('games-secondary-more'))), 'Показать все (20)');
-
-  // One row = poster + info + value.
-  const first = list.children[0];
-  assert.match(first.className, /games-secondary-row/);
-  assert.equal(first.children.length, 3);
-  assert.match(first.children[0].className, /games-secondary-poster/);
-  assert.equal(first.children[0].tagName, 'IMG');
-  assert.match(first.children[0].getAttribute('src'), /images\.gog\.com\/work\.jpg/);
-  assert.equal(first.children[1].className, 'games-secondary-info');
-  assert.match(norm(textOf(first)), /Work 19/);
-
-  // The GOG+Epic work prints both source chips and both hour totals, never a
-  // combined 13.8 h number.
-  const rowsByText = new Map(list.children.map((row) => [norm(textOf(row)), row]));
-  const both = [...rowsByText.entries()].find(([text]) => text.includes('Epic 1,5 ч'))?.[1];
-  assert.ok(both, 'the GOG+Epic work must paint both sources');
-  assert.match(norm(textOf(both)), /GOG/);
-  assert.match(norm(textOf(both)), /Epic/);
-  assert.match(norm(textOf(both)), /GOG 12,3 ч · Epic 1,5 ч/);
-  assert.equal(norm(textOf(both)).includes('13,8'), false);
-
   // Chart notes are tolerant and report the inclusion status.
   assert.match(norm(textOf(nodeFor('games-decades-note'))), /включая вне Steam: 20/);
   assert.match(norm(textOf(nodeFor('games-years-note'))), /включая вне Steam: 20/);
   assert.match(norm(textOf(nodeFor('games-genres-note'))), /включая вне Steam: 20/);
 
-  // «Показать все (N)» expands to every row and collapses again.
-  nodeFor('games-secondary-more').children[0].click();
+  // Genre drilldown: the RPG bar counts the secondary-only work, and its list
+  // contains the same row (no second widget, no separate screen).
+  const rpgRow = nodeFor('games-genres-chart').children
+    .find((row) => norm(textOf(row)).includes('RPG'));
+  assert.ok(rpgRow, 'the RPG genre row must be painted');
+  rpgRow.click();
   await wait(20);
-  assert.equal(nodeFor('games-secondary-list').children.length, 20);
-  assert.equal(norm(textOf(nodeFor('games-secondary-more'))), 'Свернуть до 15');
+  assert.match(lastModalText(), /RPG/);
+  assert.match(lastModalText(), /Work 1/);
 
-  // Unknown hours and a real zero are different, honest states; both stay in
-  // the full list even though they sort below every positive number.
-  const expandedRows = nodeFor('games-secondary-list').children;
-  const zero = expandedRows.find((row) => norm(textOf(row)).includes('GOG Zero Hours'));
-  const unknown = expandedRows.find((row) => norm(textOf(row)).includes('GOG Unknown Hours'));
-  assert.ok(zero, 'the zero-hour work must stay in the list');
-  assert.match(norm(textOf(zero)), /не запущена/);
-  assert.ok(unknown, 'the unknown-hour work must stay in the list');
-  assert.match(norm(textOf(unknown)), /часы не получены/);
+  const listRow = findByClass(lastModal(), 'film-row')
+    .find((row) => norm(textOf(row)).includes('Work 1'));
+  assert.ok(listRow, 'the secondary-only work must be a row in the genre modal');
+  // Per-source hours in the row: a GOG+Epic work never prints 13,8 ч.
+  assert.match(norm(textOf(listRow)), /GOG 12,3 ч · Epic 1,5 ч/);
+  assert.equal(norm(textOf(listRow)).includes('13,8'), false);
 
-  // A row opens the client-side union card: no appid, no details request.
+  // The row opens the client-side union card: no appid, no details request.
   const before = fetched.filter((url) => url.includes('/api/games/game/')).length;
-  const expandedList = nodeFor('games-secondary-list');
-  const bothAgain = expandedList.children.find((row) => norm(textOf(row)).includes('Epic 1,5 ч'));
-  assert.ok(bothAgain);
-  bothAgain.click();
+  listRow.click();
   await wait(20);
-  const modal = norm(textOf(nodeFor('modal-root')));
+  const modal = lastModalText();
   assert.match(modal, /Работа вне Steam/);
   assert.match(modal, /Work 1/);
   assert.match(modal, /Часы по источникам/);
@@ -212,4 +263,13 @@ test('«Вне Steam» paints 15 works, expands to all, and opens a no-network c
   assert.match(modal, /RPG/);
   const after = fetched.filter((url) => url.includes('/api/games/game/')).length;
   assert.equal(after, before, 'a secondary card must never call /api/games/game/:appid');
+
+  // Year drilldown counts the same secondary-only work (release year 2015).
+  nodeFor('modal-root').children = [];
+  const yearSlice = findSlices('games-years-donut')
+    .find((slice) => slice.key === 'year-2015');
+  assert.ok(yearSlice, 'the 2015 year slice must be painted');
+  yearSlice.node.click();
+  await wait(20);
+  assert.match(lastModalText(), /Work 1/);
 });

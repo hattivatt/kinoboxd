@@ -1,16 +1,17 @@
 'use strict';
 
 /**
- * M6c «Вне Steam» (frontend): a real list of secondary-only works.
+ * M6c secondary-only works (frontend, no separate widget).
  *
- * The list is DOM-free in `games-view.js`, so these tests pin the contract
- * without a browser:
+ * Product decision (01.11.2026): there is **no** «Вне Steam» widget — the
+ * works are counted by the year/decade/genre charts and open their union card
+ * from those drilldowns. These tests pin the DOM-free contract:
  *   - `secondaryWorks[]` entries from GOG and Epic normalise into one shape
  *     (poster, year, genres, per-source hours) with no invented numbers;
- *   - the list sorts by its own hours, keeps unknown/zero hours visible and
- *     caps at 15 with a «Показать все (N)» counter;
  *   - the client-side card renders one hours row per source (never a sum) and
  *     needs no `/api/games/game/:appid` request;
+ *   - `gamesIndex` secondary-only rows are part of the same drilldowns
+ *     (`gamesByGenre`/`gamesInYear`), so the chart count and its list agree;
  *   - chart inclusion is read tolerantly: an old payload hides the hint, a
  *     new payload can say «включая вне Steam: N».
  */
@@ -86,36 +87,25 @@ function payload(works) {
 }
 
 test('M6c «Вне Steam» view models', async (t) => {
-  await t.test('markup: a full list widget with a poster row and a «show all» host', () => {
+  await t.test('no separate «Вне Steam» widget: works live in the charts and drilldowns', () => {
     const html = readPublic('index.html');
     for (const id of [
       'games-secondary-widget',
-      'games-secondary-title',
       'games-secondary-note',
       'games-secondary-list',
       'games-secondary-more',
     ]) {
-      assert.ok(html.includes(`id="${id}"`), `index.html must carry #${id}`);
+      assert.equal(html.includes(`id="${id}"`), false, `index.html must not carry #${id}`);
     }
-    assert.match(html, /Вне Steam/);
-    assert.match(html, /работы только в GOG\/Epic/);
+    const gamesJs = readPublic('js/games.js');
+    assert.equal(gamesJs.includes('games-secondary-widget'), false);
+    assert.equal(gamesJs.includes('secondaryWorksView'), false);
 
+    // The union card (modal) survives: its per-source hours grid stays styled.
     const css = readPublic('style.css');
-    for (const selector of [
-      '.w-games-secondary',
-      '.games-secondary-row',
-      '.games-secondary-poster',
-      '.games-secondary-hours',
-      '.games-secondary-hour-row',
-    ]) {
-      assert.ok(css.includes(selector), `style.css must carry ${selector}`);
-    }
-    // Horizontal GOG/Epic art is centre-cropped into the same 2:3 frame.
-    assert.match(
-      css,
-      /\.games-secondary-poster \{[^}]*object-fit:\s*cover/,
-      'the poster must crop horizontal art into the vertical frame',
-    );
+    assert.ok(css.includes('.games-secondary-hours'), 'the union card hours grid must stay');
+    assert.ok(css.includes('.games-secondary-hour-row'));
+    assert.equal(css.includes('.w-games-secondary'), false);
   });
 
   await t.test('normalizeGamesPayload: GOG/Epic entries keep art, year and per-source hours', async () => {
@@ -193,33 +183,52 @@ test('M6c «Вне Steam» view models', async (t) => {
     assert.equal(resolvedWork.notPlayed, true);
   });
 
-  await t.test('secondaryWorksView: hours desc, unknown last, 15-row cap, show-all counter', async () => {
-    const { secondaryWorksView } = await import('../public/js/games-view.js');
-    const works = [
-      gogWork({ name: 'Ten', hoursBySource: { gog: 10 } }),
-      gogWork({ name: 'Zero', hoursBySource: { gog: 0 } }),
-      gogWork({ name: 'Unknown', hoursBySource: { gog: null }, gog: { gogGameId: '9' } }),
-      ...Array.from({ length: 17 }, (_, index) => gogWork({
-        name: `Work ${index}`,
-        hoursBySource: { gog: index + 1 },
-        gog: { gogGameId: `w${index}` },
-      })),
-    ];
-    const view = secondaryWorksView(works, { limit: 15 });
-    assert.equal(view.total, 20);
-    assert.equal(view.visible.length, 15);
-    assert.equal(view.hidden, 5);
-    assert.equal(view.unknownHours, 1);
-    assert.equal(view.unplayed, 1);
-    assert.equal(view.visible[0].name, 'Work 16');
-    // Unknown hours never sort above a real number, even a zero.
-    assert.equal(view.rows[view.rows.length - 1].name, 'Unknown');
-    assert.match(view.note, /20 работ вне Steam/);
-    assert.match(view.note, /без часов: 1/);
-
-    const expanded = secondaryWorksView(works, { limit: 0 });
-    assert.equal(expanded.visible.length, 20);
-    assert.equal(expanded.hidden, 0);
+  await t.test('gamesIndex secondary-only rows join the genre/year drilldowns', async () => {
+    const {
+      gameRowsFromIndex, gamesByGenre, gamesInYear, yearCountSeries,
+    } = await import('../public/js/games-view.js');
+    const index = {
+      42: {
+        appid: 42,
+        name: 'Steam RPG',
+        type: 'game',
+        releaseYear: 2020,
+        genres: ['RPG'],
+        hours: 10,
+        canonicalWorkKey: 'steam:42',
+      },
+      'gog:7': {
+        appid: null,
+        workKey: 'gog:7',
+        secondaryOnly: true,
+        source: 'gog',
+        name: 'GOG RPG',
+        type: 'game',
+        releaseYear: 2020,
+        genres: ['RPG'],
+        hours: 4,
+        canonicalWorkKey: 'gog:7',
+        sources: ['gog'],
+        storeIds: { steam: null, gog: '7', epic: null },
+        hoursBySource: { steam: null, gog: 4, epic: null },
+      },
+    };
+    const rows = gameRowsFromIndex(index);
+    assert.deepEqual(rows.map((row) => row.name).sort(), ['GOG RPG', 'Steam RPG']);
+    const secondary = rows.find((row) => row.name === 'GOG RPG');
+    assert.equal(secondary.appid, null);
+    assert.equal(secondary.secondaryOnly, true);
+    assert.equal(secondary.workKey, 'gog:7');
+    // The list behind a chart bar counts the same rows as the bar.
+    assert.deepEqual(
+      gamesByGenre(index, 'RPG').map((row) => row.name).sort(),
+      ['GOG RPG', 'Steam RPG'],
+    );
+    assert.deepEqual(
+      gamesInYear(index, 2020).map((row) => row.name).sort(),
+      ['GOG RPG', 'Steam RPG'],
+    );
+    assert.equal(yearCountSeries(index).series[0].count, 2);
   });
 
   await t.test('secondaryWorkCardView: one hours row per source, no combined total', async () => {

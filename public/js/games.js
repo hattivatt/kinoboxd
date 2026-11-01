@@ -44,7 +44,7 @@ import {
   yearsInDecade, gamesInYearGenre, yearCountView, yearCountGenreOptions,
   tagsChartView, TAG_CHART_LIMIT, gamesByTag, scoresView, gamesByReviewBucket,
   franchisesView, gamesInFranchise, dlcView, normalizeFranchisesResponse,
-  gogSourcesView, gogStatusText, secondaryWorksView,
+  gogSourcesView, gogStatusText,
 } from './games-view.js';
 import {
   configureGamesModals, openGameCardModal, openGameListModal, openPersonModal, personAvatarEl,
@@ -92,10 +92,6 @@ const YEAR_COLORS = [
 const TOP_LIMIT = 10;
 const PERSONS_INITIAL = 15;
 const PERSONS_BATCH = 50;
-// M6c: «Вне Steam» shows 15 rows first, then «Показать все (N)» — the same
-// pattern as the genre chart. The cap is visual only: it never depends on the
-// Steam `minHours` filter.
-const SECONDARY_LIST_LIMIT = 15;
 
 const state = {
   active: false,
@@ -123,7 +119,6 @@ const state = {
   // Genre bar chart: weight + «Показать все» (top 12 first).
   genreWeight: 'hours',
   genresExpanded: false,
-  secondaryExpanded: false,
   // M4 tag bars: own weight (hours/count/weight) and fold state.
   tagWeight: 'hours',
   tagsExpanded: false,
@@ -407,7 +402,6 @@ async function switchProfile(key) {
   state.franchises = { data: null, loading: false, error: null, profile: '' };
   state.yearCountGenre = null;
   state.genresExpanded = false;
-  state.secondaryExpanded = false;
   syncFilterInputs();
   // The old owner's numbers are already out of `state.data`; hide the DOM too,
   // so the switch shows the loader instead of a stale dashboard.
@@ -976,9 +970,10 @@ function renderSources(data) {
   if (secondary) {
     clear(secondary);
     if (view.secondaryOnly > 0) {
-      // The full list lives in the «Вне Steam» widget; this block only carries
-      // the per-source hour totals and the honest chart-inclusion status, so
-      // the count is never printed twice.
+      // There is no separate «Вне Steam» widget (product decision): the works
+      // live in the year/decade/genre charts and their drilldowns. This block
+      // only carries the per-source hour totals and the honest chart-inclusion
+      // status, so the count is never printed twice.
       if (view.worksTotal == null) {
         secondary.append(el('div', {
           text: `Вне Steam: ${fmtInt(view.secondaryOnly)} ${plural(view.secondaryOnly, SECONDARY_WORK_PLURAL)} `
@@ -1011,148 +1006,6 @@ function renderSources(data) {
     }
   }
   widget.hidden = false;
-}
-
-/**
- * «Вне Steam»: a real list of secondary-only works (GOG/Epic). It is painted
- * from `secondaryWorks` and is deliberately independent of the Steam
- * `minHours` filter: a GOG work whose playtime is not resolved yet stays in
- * the list with «часы не получены», not hidden as a 0-hour game.
- */
-function renderSecondaryWorks(data) {
-  const widget = $('games-secondary-widget');
-  const host = $('games-secondary-list');
-  const moreHost = $('games-secondary-more');
-  const note = $('games-secondary-note');
-  if (!widget || !host) return;
-
-  const view = secondaryWorksView(data.secondaryWorks, {
-    limit: state.secondaryExpanded ? 0 : SECONDARY_LIST_LIMIT,
-  });
-  clear(host);
-  if (moreHost) clear(moreHost);
-
-  const declaredRaw = data.summary ? Number(data.summary.secondaryOnlyWorks) : 0;
-  const declared = Number.isFinite(declaredRaw) && declaredRaw > 0 ? Math.floor(declaredRaw) : 0;
-  if (!view.total && !declared) {
-    widget.hidden = true;
-    if (note) note.textContent = '';
-    return;
-  }
-  widget.hidden = false;
-  if (note) note.textContent = view.note || `${fmtInt(declared)} ${plural(declared, SECONDARY_WORK_PLURAL)} вне Steam`;
-
-  if (!view.total) {
-    host.append(el('div', {
-      class: 'empty-state',
-      text: 'Работы вне Steam есть в объединённой библиотеке, но сервер ещё не прислал список записей.',
-    }));
-    return;
-  }
-
-  for (const row of view.visible) host.append(secondaryWorkRow(row));
-
-  if (moreHost) {
-    if (view.hidden > 0) {
-      const button = el('button', {
-        type: 'button',
-        class: 'btn games-secondary-more-btn',
-        text: `Показать все (${fmtInt(view.total)})`,
-      });
-      button.addEventListener('click', () => {
-        state.secondaryExpanded = true;
-        renderSecondaryWorks(data);
-      });
-      moreHost.append(button);
-    } else if (state.secondaryExpanded && view.total > SECONDARY_LIST_LIMIT) {
-      const button = el('button', {
-        type: 'button',
-        class: 'btn btn-link games-secondary-more-btn',
-        text: `Свернуть до ${SECONDARY_LIST_LIMIT}`,
-      });
-      button.addEventListener('click', () => {
-        state.secondaryExpanded = false;
-        renderSecondaryWorks(data);
-      });
-      moreHost.append(button);
-    }
-  }
-}
-
-/** One «Вне Steam» row: poster, name/year/chips, hours or an honest status. */
-function secondaryWorkRow(row) {
-  const node = el('div', {
-    class: `games-secondary-row is-${row.source || 'unknown'}`,
-    role: 'button',
-    tabIndex: 0,
-    'aria-label': `${row.name}: открыть карточку работы вне Steam`,
-  });
-  node.append(gameCoverVerticalEl({
-    name: row.name,
-    verticalCoverUrl: row.coverUrl,
-    coverUrl: row.coverUrl,
-  }, { className: 'games-secondary-poster' }));
-
-  const info = el('div', { class: 'games-secondary-info' });
-  const title = el('div', { class: 'games-secondary-title', text: row.name });
-  if (row.releaseYear) title.append(el('span', { class: 'games-secondary-year', text: String(row.releaseYear) }));
-  info.append(title);
-
-  const meta = el('div', { class: 'games-secondary-meta' });
-  for (const chip of row.sourceChips) {
-    meta.append(el('span', {
-      class: `games-sources-chip is-${chip.source}`,
-      text: chip.label,
-    }));
-  }
-  // A multi-store work (GOG + Epic) prints each source's hours separately:
-  // a single combined number would double-count a game launched in both.
-  if (row.hoursParts.length > 1) {
-    meta.append(el('span', {
-      class: 'games-secondary-hours-breakdown',
-      text: row.hoursParts.map((part) => `${part.label} ${part.hoursText}`).join(' · '),
-    }));
-  }
-  info.append(meta);
-  node.append(info);
-
-  const value = el('div', { class: 'games-secondary-value' });
-  if (row.hoursUnknown) {
-    value.append(el('span', { class: 'is-unknown', text: 'часы не получены' }));
-  } else if (row.notPlayed) {
-    value.append(el('span', { class: 'is-unplayed', text: 'не запущена' }));
-  } else {
-    value.append(el('span', { text: row.hours != null ? hoursText(row.hours) : '—' }));
-  }
-  node.append(value);
-
-  const hoursTitle = row.hoursParts.length
-    ? row.hoursParts.map((part) => `${part.label}: ${part.hoursText}`).join(' · ')
-    : 'часы не получены';
-  const tooltip = [
-    hoursTitle,
-    row.releaseYear ? `год релиза ${row.releaseYear}` : 'год релиза неизвестен',
-    row.genres.length ? row.genres.join(', ') : '',
-    'нажмите, чтобы открыть карточку',
-  ].filter(Boolean).join(' · ');
-  node.addEventListener('pointerenter', (event) => {
-    showTooltip(row.name, tooltip);
-    moveTooltip(event);
-  });
-  node.addEventListener('pointermove', moveTooltip);
-  node.addEventListener('pointerleave', hideTooltip);
-
-  const activate = () => {
-    hideTooltip();
-    openSecondaryWorkCardModal(row);
-  };
-  node.addEventListener('click', activate);
-  node.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    activate();
-  });
-  return node;
 }
 
 async function openGogLogin() {
@@ -1285,6 +1138,9 @@ function renderDashboard(data) {
   configureGamesModals({
     profile: (data.profile && data.profile.key) || state.profileKey,
     gamesIndex: data.gamesIndex,
+    // The drilldowns carry secondary-only rows from `gamesIndex`; the union
+    // card needs the full entry (poster, store links) from `secondaryWorks`.
+    secondaryWorks: data.secondaryWorks,
   });
   renderHead(data);
   renderProfileCard(data);
@@ -1292,7 +1148,6 @@ function renderDashboard(data) {
   // only when there is no payload at all; a Steam-only profile still shows the
   // GOG row with a «Подключить» link.
   renderSources(data);
-  renderSecondaryWorks(data);
   renderSummary(data);
   renderPartialNote(data);
   renderFilters(data);
@@ -1534,6 +1389,19 @@ function renderPartialNote(data) {
   host.hidden = false;
 }
 
+/**
+ * Open the union card of a secondary-only work. The chart row only carries
+ * the numbers; `secondaryWorks` holds the full entry (poster, store links).
+ */
+function openSecondaryWorkFor(data, row) {
+  const key = row && (row.workKey || row.canonicalWorkKey);
+  const works = Array.isArray(data && data.secondaryWorks) ? data.secondaryWorks : [];
+  const match = key
+    ? works.find((work) => work && (work.workKey === key || work.key === key))
+    : works.find((work) => work && work.name === row.name);
+  openSecondaryWorkCardModal(match || row);
+}
+
 function renderTopHours(data) {
   const widget = $('games-top-widget');
   const host = $('games-top-list');
@@ -1579,6 +1447,7 @@ function renderTopHours(data) {
     const activate = () => {
       hideTooltip();
       if (row.appid != null) openGameCardModal(row.appid, { fallback: row });
+      else if (row.workKey) openSecondaryWorkFor(data, row);
     };
     node.addEventListener('click', activate);
     node.addEventListener('keydown', (event) => {
@@ -1809,7 +1678,7 @@ function openUnknownDecadeModal(data) {
     kicker: 'Десятилетия',
     title: `Год неизвестен — ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`,
     subtitle: 'У этих записей нет releaseYear',
-    hint: 'Год релиза берётся из Steam Store / Wikidata. Если appdetails ещё не собраны, '
+    hint: 'Год релиза берётся из Steam Store / GOG / Epic / Wikidata. Если appdetails ещё не собраны, '
       + 'игра честно попадает в «год неизвестен», а не в выдуманное десятилетие.',
     groupLabel: 'Без года',
     emptyText: 'Все игры с известным годом',
@@ -1912,9 +1781,9 @@ function openYearModal(data, year, { genre = null } = {}) {
     ? `Год выхода ${year} · ${countText} · жанр ${filter}`
     : `Год релиза ${year} · ${countText} в выгрузке`;
   const hint = filter
-    ? `Только игры жанра «${filter}» (Steam Store). Год выхода — release_date, а не год, когда вы играли; `
+    ? `Только игры жанра «${filter}» (Steam Store и вторые библиотеки). Год выхода — release_date, а не год, когда вы играли; `
       + 'одна игра может попадать в несколько жанров.'
-    : 'Год релиза игры (release_date из Steam Store / Wikidata), а не год, когда вы в неё играли.';
+    : 'Год релиза игры (release_date из Steam Store / GOG / Epic / Wikidata), а не год, когда вы в неё играли.';
   openGameListModal({
     kicker: 'Годы релиза',
     title,
@@ -1923,7 +1792,7 @@ function openYearModal(data, year, { genre = null } = {}) {
     groupLabel: String(year),
     emptyText: filter
       ? 'Нет игр этого жанра за этот год'
-      : 'Для этого года нет игр с карточкой Steam Store',
+      : 'Для этого года нет игр с известным годом',
     games,
     sortScope: 'year',
     defaultSort: 'hours',
@@ -2185,9 +2054,9 @@ function renderGenreChart(data) {
         kicker: 'Жанр',
         title: `${row.name} — ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`,
         subtitle: `${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)} · ${row.hoursText || 'часы неизвестны'}`,
-        hint: 'Жанры Steam Store; одна игра может попадать в несколько жанров, поэтому сумма по жанрам больше числа игр.',
+        hint: 'Жанры Steam Store и вторых библиотек; одна игра может попадать в несколько жанров, поэтому сумма по жанрам больше числа игр.',
         groupLabel: row.name,
-        emptyText: 'Нет игр этого жанра с карточкой Steam Store',
+        emptyText: 'Нет игр этого жанра',
         games,
         sortScope: 'genre',
         defaultSort: 'hours',

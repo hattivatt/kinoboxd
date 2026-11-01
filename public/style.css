@@ -5272,81 +5272,6 @@ img { display: block; }
 .games-sources-secondary-charts { margin-top: 4px; }
 .games-sources-secondary-charts { color: var(--muted-2); }
 
-/* ── M6c: «Вне Steam» — full list of secondary-only works ── */
-.w-games-secondary { grid-column: span 12; }
-.games-secondary-list {
-  display: flex;
-  flex-direction: column;
-}
-/* [poster | name/year/chips | hours] — one row per work. */
-.games-secondary-row {
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 12px;
-  padding: 8px 4px;
-  border-bottom: 1px solid var(--border);
-  cursor: pointer;
-}
-.games-secondary-row:last-child { border-bottom: 0; }
-.games-secondary-row:hover,
-.games-secondary-row:focus-visible {
-  background: rgba(255, 255, 255, 0.035);
-  outline: none;
-}
-.games-secondary-poster {
-  width: 44px;
-  height: 66px;
-  border-radius: 6px;
-  object-fit: cover;
-  background: rgba(255, 255, 255, 0.06);
-  flex: none;
-}
-/* GOG/Epic art is horizontal more often than not: centre-crop it into the
-   same 2:3 frame as a Steam library poster. A missing URL ends in initials. */
-.games-secondary-poster.game-icon-fallback {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.7);
-}
-.games-secondary-info { min-width: 0; }
-.games-secondary-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.games-secondary-year {
-  margin-left: 6px;
-  font-size: 10.5px;
-  font-weight: 500;
-  color: var(--muted-2);
-}
-.games-secondary-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-  margin-top: 3px;
-  font-size: 10.5px;
-  color: var(--muted-2);
-}
-.games-secondary-hours-breakdown { font-variant-numeric: tabular-nums; }
-.games-secondary-value {
-  text-align: right;
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  color: var(--text-soft);
-}
-.games-secondary-value .is-unknown { color: #ffcf7a; font-size: 10.5px; }
-.games-secondary-value .is-unplayed { color: var(--muted-2); font-size: 10.5px; }
-.games-secondary-more-btn { margin-top: 8px; }
 .swatch.violet { background: var(--violet); }
 
 /* Card: one row per source, never a combined total. */
@@ -5374,15 +5299,6 @@ img { display: block; }
 .games-secondary-hour-row.is-gog .games-secondary-hour-source { color: #d9c9ff; }
 .games-secondary-hour-row.is-epic .games-secondary-hour-source { color: #f0e6ff; }
 .games-secondary-hour-value .is-muted { color: var(--muted-2); font-size: 11px; }
-
-@media (max-width: 760px) {
-  .games-secondary-row {
-    grid-template-columns: 40px minmax(0, 1fr) auto;
-    column-gap: 9px;
-  }
-  .games-secondary-poster { width: 40px; height: 60px; }
-  .games-secondary-value { font-size: 10.5px; }
-}
 
 /* ── M6c: «Подключения» — one screen for GOG + Epic ── */
 .games-connections-screen {
