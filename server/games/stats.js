@@ -624,7 +624,12 @@ function buildGamesStats(input = {}) {
     if (Number.isFinite(ts) && ts > lastEnrichedMs) lastEnrichedMs = ts;
   }
   const lastEnrichedAt = lastEnrichedMs ? new Date(lastEnrichedMs).toISOString() : null;
-  const metadata = hasDetails
+  // `running` closes the UX loop with the auto-enrich kick: right after an
+  // import the UI has no enrich job id, it only sees this flag in
+  // `summary.metadata` and starts polling. It is also why metadata exists
+  // before the first detail lands (detailsResolved = 0).
+  const enrichRunning = input.enrichRunning === true;
+  const metadata = hasDetails || enrichRunning
     ? {
         detailsResolved: detailsCount,
         detailsTotal: games.length,
@@ -634,6 +639,7 @@ function buildGamesStats(input = {}) {
         detailsUnavailable,
         detailsMissing,
         lastEnrichedAt,
+        running: enrichRunning,
       }
     : null;
 
@@ -807,6 +813,8 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     details,
     includeFree: options.includeFree !== false,
     includeDlc: Boolean(options.includeDlc),
+    // Set by the route from the enrich job registry (no live request).
+    enrichRunning: options.enrichRunning === true,
   });
 }
 

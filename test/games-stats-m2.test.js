@@ -216,6 +216,8 @@ test('modes / early access / free-to-play / platforms', () => {
     detailsUnavailable: 0,
     detailsMissing: 1,
     lastEnrichedAt: null,
+    // Additive (integration round): the UI polls while a job is running.
+    running: false,
   });
 });
 

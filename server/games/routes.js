@@ -347,7 +347,13 @@ function createRouter(deps = {}) {
       const includeFree = parseBoolParam(req.query.includeFree, 'includeFree', true);
       const includeDlc = parseBoolParam(req.query.includeDlc, 'includeDlc', false);
       const scope = resolveProfileOrThrow(req.query.profile);
-      const stats = buildGamesStatsFromCache(scope.parsed.key, { includeFree, includeDlc });
+      const stats = buildGamesStatsFromCache(scope.parsed.key, {
+        includeFree,
+        includeDlc,
+        // The UI polls `summary.metadata.running`; the flag comes from the
+        // in-process enrich job registry (no extra cache read, no request).
+        enrichRunning: enrichJobs.isRunning(scope.parsed.key),
+      });
       if (!stats) {
         throw new HttpError(
           400,

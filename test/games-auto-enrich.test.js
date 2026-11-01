@@ -199,3 +199,86 @@ test('a partial library (no Steam key) does not kick enrich', async (t) => {
   assert.equal(gameCache.getLibrary('76561198000000077').partial, true);
   await importJobs.whenIdle();
 });
+
+test('stats says metadata.running while the enrich job is still going', async (t) => {
+  // Unique appids: `details/` is global per appid, and every earlier test in
+  // this file already enriched the fixture library.
+  const owned = {
+    empty: false,
+    gameCount: 3,
+    games: [900001, 900002, 900003].map((appid) => ({
+      appid,
+      name: `Gate ${appid}`,
+      playtime_2weeks: 0,
+      playtime_forever: 60,
+      img_icon_url: null,
+      has_community_visible_stats: false,
+      playtime_windows_forever: 60,
+      playtime_mac_forever: 0,
+      playtime_linux_forever: 0,
+      playtime_deck_forever: 0,
+      rtime_last_played: 0,
+    })),
+    totalMinutes: 180,
+    fingerprint: 'gate',
+  };
+  const base = createFakeClient();
+  const profile = {
+    ...base.state.profile,
+    steamId64: '76561198000000088',
+    customUrl: 'gate-player',
+  };
+  const steamClient = createFakeClient({ profile, owned });
+
+  // The store client holds every request until the test releases the gate, so
+  // the enrich job is guaranteed to be `running` when stats is fetched.
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const gatedStore = {
+    calls: [],
+    async getAppDetails(appid) {
+      this.calls.push(appid);
+      await gate;
+      return detailDoc(appid);
+    },
+  };
+
+  const server = buildApp(steamClient, gatedStore).listen(PORT + 2);
+  t.after(() => {
+    release();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const url = `http://127.0.0.1:${PORT + 2}`;
+
+  const started = await post(url, '/api/games/import', { vanityOrId64: 'gate-player', force: true });
+  assert.equal(started.status, 201);
+  const job = await started.json();
+  const done = await waitFor(url, '/api/games/import', job.jobId);
+  assert.equal(done.status, 'done');
+
+  // No details have landed yet, but the payload must still describe progress
+  // (metadata exists because a job is running) and the UI starts polling.
+  const during = await (
+    await fetch(`${url}/api/games/stats?profile=steam-76561198000000088`)
+  ).json();
+  assert.ok(during.summary.metadata, 'metadata must exist while enrich runs');
+  assert.equal(during.summary.metadata.running, true);
+  assert.equal(during.summary.metadata.detailsResolved, 0);
+  assert.equal(during.summary.metadata.detailsTotal, 3);
+  assert.equal(during.meta.filters.includeDlc.applied, false);
+  assert.ok(during.meta.pending.includes('genres'));
+
+  release();
+  await enrichJobs.whenIdle();
+
+  const after = await (
+    await fetch(`${url}/api/games/stats?profile=steam-76561198000000088`)
+  ).json();
+  assert.equal(after.summary.metadata.running, false);
+  assert.equal(after.summary.metadata.detailsResolved, 3);
+  assert.equal(after.summary.metadata.detailsPercent, 100);
+  assert.equal(after.meta.filters.includeDlc.applied, true);
+  assert.equal(gatedStore.calls.length, 3);
+});
