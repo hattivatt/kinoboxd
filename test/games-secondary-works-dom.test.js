@@ -19,10 +19,10 @@ function work(index) {
   const both = index === 1;
   const sources = both ? ['gog', 'epic'] : epic ? ['epic'] : ['gog'];
   const hoursBySource = both
-    ? { steam: null, gog: 738, epic: 90 }
+    ? { steam: null, gog: 12.3, epic: 1.5 }
     : epic
-      ? { steam: null, gog: null, epic: (index + 1) * 60 }
-      : { steam: null, gog: (index + 1) * 60, epic: null };
+      ? { steam: null, gog: null, epic: index + 1 }
+      : { steam: null, gog: index + 1, epic: null };
   return {
     workKey: both ? 'gog:1' : epic ? null : `gog:${index}`,
     source: epic ? 'epic' : 'gog',

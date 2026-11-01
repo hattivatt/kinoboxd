@@ -845,10 +845,12 @@ function yearFromDate(value) {
 }
 
 /**
- * One `hoursBySource` value in **hours**. The M6a/M6c contract stores minutes
- * there (GOG `time_sum`, Epic `totalMinutes`, Steam `playtime_forever`), but a
- * newer backend may send an object (`{ minutes }` / `{ hours }`) or an explicit
- * `hours` field. All spellings are accepted without inventing a number.
+ * One `hoursBySource` value in **hours**. Integration contract (01.11.2026):
+ * the `/stats` payload sends hours there, not minutes (the union converts
+ * once, server-side). For robustness the normaliser still accepts an object
+ * (`{ minutes }` / `{ hours }`) from an older/newer backend, but a plain
+ * number is read as hours — never divided again (double conversion was the
+ * M6a/M6c integration risk).
  */
 function sourceHours(value) {
   if (value == null) return null;
@@ -858,8 +860,7 @@ function sourceHours(value) {
     const minutes = numOrNull(value.minutes ?? value.totalMinutes ?? value.playtime_forever);
     return minutes != null ? minutes / 60 : null;
   }
-  const minutes = numOrNull(value);
-  return minutes != null ? minutes / 60 : null;
+  return numOrNull(value);
 }
 
 function secondaryHoursBySource(entry, gog, epic) {

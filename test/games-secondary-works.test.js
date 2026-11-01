@@ -31,7 +31,7 @@ function gogWork(overrides = {}) {
     sources: ['gog'],
     ownedOn: ['gog'],
     storeIds: { steam: null, gog: '1999999999', epic: null },
-    hoursBySource: { steam: null, gog: 738, epic: null },
+    hoursBySource: { steam: null, gog: 12.3, epic: null },
     gog: {
       gogGameId: '1999999999',
       slug: 'gog_exclusive_indie',
@@ -52,7 +52,7 @@ function epicWork(overrides = {}) {
     sources: ['epic'],
     ownedOn: ['epic'],
     storeIds: { steam: null, gog: null, epic: 'epic-catalog-1' },
-    hoursBySource: { steam: null, gog: null, epic: 90 },
+    hoursBySource: { steam: null, gog: null, epic: 1.5 },
     epic: {
       catalogItemId: 'epic-catalog-1',
       slug: 'epic-exclusive',
@@ -196,12 +196,12 @@ test('M6c «Вне Steam» view models', async (t) => {
   await t.test('secondaryWorksView: hours desc, unknown last, 15-row cap, show-all counter', async () => {
     const { secondaryWorksView } = await import('../public/js/games-view.js');
     const works = [
-      gogWork({ name: 'Ten', hoursBySource: { gog: 600 } }),
+      gogWork({ name: 'Ten', hoursBySource: { gog: 10 } }),
       gogWork({ name: 'Zero', hoursBySource: { gog: 0 } }),
       gogWork({ name: 'Unknown', hoursBySource: { gog: null }, gog: { gogGameId: '9' } }),
       ...Array.from({ length: 17 }, (_, index) => gogWork({
         name: `Work ${index}`,
-        hoursBySource: { gog: (index + 1) * 60 },
+        hoursBySource: { gog: index + 1 },
         gog: { gogGameId: `w${index}` },
       })),
     ];
@@ -227,7 +227,7 @@ test('M6c «Вне Steam» view models', async (t) => {
     const card = secondaryWorkCardView(gogWork({
       name: 'GOG + Epic',
       sources: ['gog', 'epic'],
-      hoursBySource: { steam: null, gog: 738, epic: 90 },
+      hoursBySource: { steam: null, gog: 12.3, epic: 1.5 },
       epic: { catalogItemId: 'epic-1', slug: 'gog-epic' },
       releaseYear: 2015,
     }));

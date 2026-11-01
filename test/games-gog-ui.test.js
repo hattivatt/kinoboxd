@@ -57,7 +57,7 @@ function payload({ withGog = true } = {}) {
             workKey: 'gog:1999999999',
             name: 'GOG Exclusive Indie',
             storeIds: { steam: null, gog: '1999999999', epic: null },
-            hoursBySource: { steam: null, gog: 90, epic: null },
+            hoursBySource: { steam: null, gog: 1.5, epic: null },
             gog: { gogGameId: '1999999999', slug: 'gog_exclusive_indie' },
           },
         ]
