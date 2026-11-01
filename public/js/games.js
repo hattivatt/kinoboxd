@@ -921,31 +921,43 @@ function renderSources(data) {
       ? `${fmtInt(view.worksTotal)} ${plural(view.worksTotal, GAME_PLURAL)} в объединённой библиотеке`
       : '';
   }
+  // One horizontal row per source: [label | meta | action]. The numbers and the
+  // status live in the middle cell, the connect link is right-aligned in its
+  // own column — a narrow grid cell can no longer split «340 игр» into a
+  // vertical token stack (the M6a bug: the widget had no grid-column span).
   for (const row of view.rows) {
     const node = el('div', {
       class: `games-source-row is-${row.key}${row.journal ? ' is-journal' : ''}`,
     });
     node.append(el('span', { class: 'games-source-name', text: row.label }));
+    const meta = el('span', { class: 'games-source-meta' });
     const parts = [];
     if (row.games != null) parts.push(`${fmtInt(row.games)} ${plural(row.games, GAME_PLURAL)}`);
     if (row.hours != null) parts.push(hoursText(row.hours, 1));
-    node.append(el('span', {
-      class: 'games-source-numbers',
-      text: parts.length ? parts.join(' · ') : '—',
-    }));
-    const stateNode = el('span', { class: 'games-source-state' });
-    stateNode.append(document.createTextNode(row.statusText));
+    if (parts.length) {
+      // A single nowrap token: «340 игр · 5 852,7 ч» never breaks between the
+      // number and its unit.
+      meta.append(el('span', { class: 'games-source-numbers', text: parts.join(' · ') }));
+    }
+    if (row.statusText) {
+      meta.append(el('span', { class: 'games-source-state', text: row.statusText }));
+    }
+    node.append(meta);
+    const action = el('span', { class: 'games-source-action' });
     // M6c: both secondary libraries connect on the «Подключения» screen; the
     // row only links there, it never grows a second connect form.
     if ((row.key === 'gog' || row.key === 'epic') && row.canConnect) {
-      const link = el('button', { type: 'button', class: 'btn btn-link', text: 'Подключить' });
+      const link = el('button', {
+        type: 'button',
+        class: 'btn btn-link games-source-connect',
+        text: 'Подключить',
+      });
       link.addEventListener('click', () => {
         showScreen('connections');
       });
-      stateNode.append(document.createTextNode(' · '));
-      stateNode.append(link);
+      action.append(link);
     }
-    node.append(stateNode);
+    node.append(action);
     host.append(node);
   }
   const secondary = $('games-sources-secondary');

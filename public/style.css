@@ -5144,6 +5144,18 @@ img { display: block; }
      profile + top-by-hours pair stays 6+6. */
   .w-games-recent,
   .w-games-pareto { grid-column: span 12; }
+  /* Source rows: the name keeps the first line with the connect link on the
+     right, numbers + status drop to a second line — still one row of tokens,
+     never a vertical stack. */
+  .games-source-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "name action"
+      "meta meta";
+  }
+  .games-source-name { grid-area: name; }
+  .games-source-meta { grid-area: meta; }
+  .games-source-action { grid-area: action; }
   .summary-strip.games-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .games-personnel-row { grid-template-columns: 16px minmax(0, 1fr) 56px; }
   .games-personnel-row .games-personnel-track { display: none; }
@@ -5184,24 +5196,52 @@ img { display: block; }
   align-items: center;
   gap: 10px;
 }
+/* «Источники» is a full-width summary block under the summary strip
+   (films/books parity: like the year bars, it is one 12-col row). It used to
+   fall back to an implicit span 1 of the 12-col grid, which squeezed the row
+   into a ~60 px content column and split «340 игр · 5 852,7 ч» into a vertical
+   token stack. */
+.w-games-sources { grid-column: span 12; }
+
 .games-sources-body {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
+/* [label | meta | action] — one line per source, action pinned right. */
 .games-source-row {
   display: grid;
-  grid-template-columns: minmax(96px, 0.8fr) minmax(0, 1fr) minmax(0, 1.1fr);
-  align-items: baseline;
-  gap: 10px;
-  padding: 7px 0;
+  grid-template-columns: minmax(110px, 170px) minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 18px;
+  row-gap: 4px;
+  padding: 8px 0;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
 .games-source-row:last-child { border-bottom: 0; }
-.games-source-name { font-weight: 700; color: var(--text); }
-.games-source-numbers { font-variant-numeric: tabular-nums; color: var(--muted); }
-.games-source-state { font-size: 10.5px; color: var(--muted-2); text-align: right; }
+.games-source-name { font-weight: 700; color: var(--text); white-space: nowrap; }
+.games-source-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+/* Numbers + units are one unbreakable token («5 852,7 ч»). */
+.games-source-numbers {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+.games-source-state { font-size: 11px; color: var(--muted-2); }
+/* The dot belongs to the status, so the numbers keep their own token. */
+.games-source-numbers + .games-source-state::before {
+  content: '·';
+  margin-right: 8px;
+  color: var(--muted-2);
+}
+.games-source-action { justify-self: end; }
+.games-source-connect { font-size: 11px; white-space: nowrap; }
 .games-source-row.is-journal .games-source-name { color: #a9e2ff; }
 .games-source-row.is-gog .games-source-name { color: #d9c9ff; }
 .games-source-row.is-soon { opacity: 0.65; }

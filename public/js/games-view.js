@@ -3489,8 +3489,9 @@ export function gogSourcesView(payload) {
       fetchedAt: epicFetchedAt,
       username: text(epic.displayName) || null,
       journal: false,
-      // The Epic card itself lives in «Подключения»; the row only reports.
-      canConnect: false,
+      // The Epic card itself lives in «Подключения»; the row only links there
+      // (no second connect form), so an unconnected Epic still offers the link.
+      canConnect: !epicConnected,
     },
   ];
 
