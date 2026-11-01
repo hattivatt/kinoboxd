@@ -13,7 +13,8 @@
  *                                     phases: details|spy|reviews|all (default all)
  *   GET  /api/games/enrich/:jobId
  *   GET  /api/games/enrich/status?id=…
- *   GET  /api/games/stats?profile=steam-<steamid64>&includeFree=0|1&includeDlc=0|1
+ *   GET  /api/games/stats?profile=steam-<steamid64>&includeFree=0|1&includeDlc=0|1&minHours=N
+ *        minHours: -1 = all games (0-hour backlog), 0 = played only (default), N>=1 = N+ hours
  *   GET  /api/games/achievements?profile=…&appid=…&refresh=0|1
  *   GET  /api/games/game/:appid?profile=…
  *
@@ -119,6 +120,32 @@ function parseForce(raw) {
   if (['1', 'true', 'yes', 'on'].includes(value)) return true;
   if (['0', 'false', 'no', 'off'].includes(value)) return false;
   throw new HttpError(400, 'Parameter "force" must be 0 or 1.', 'invalid_force');
+}
+
+/**
+ * `minHours`: -1 = every game (0-hour backlog included), 0 = only played
+ * works (the endpoint default), N≥1 = works with at least N hours.
+ * Anything else (fraction, < -1, text) is a 400, never a silent ignore.
+ */
+function parseMinHours(raw, fallback = 0) {
+  if (raw == null || String(raw).trim() === '') return fallback;
+  const value = String(raw).trim();
+  if (!/^-?\d+$/.test(value)) {
+    throw new HttpError(
+      400,
+      'Query parameter "minHours" must be an integer >= -1 (-1 = all games, 0 = played only).',
+      'invalid_minHours'
+    );
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < -1) {
+    throw new HttpError(
+      400,
+      'Query parameter "minHours" must be an integer >= -1 (-1 = all games, 0 = played only).',
+      'invalid_minHours'
+    );
+  }
+  return parsed;
 }
 
 /**
@@ -420,13 +447,21 @@ function createRouter(deps = {}) {
 
   router.get('/stats', (req, res, next) => {
     try {
-      assertOnlyParams(req, ['profile', 'includeFree', 'includeDlc'], 'GET /api/games/stats');
+      assertOnlyParams(
+        req,
+        ['profile', 'includeFree', 'includeDlc', 'minHours'],
+        'GET /api/games/stats'
+      );
       const includeFree = parseBoolParam(req.query.includeFree, 'includeFree', true);
       const includeDlc = parseBoolParam(req.query.includeDlc, 'includeDlc', false);
+      // Default 0: only games the owner actually played (M5-B requirement).
+      // `minHours=-1` brings the 0-hour backlog back.
+      const minHours = parseMinHours(req.query.minHours, 0);
       const scope = resolveProfileOrThrow(req.query.profile);
       const stats = buildGamesStatsFromCache(scope.parsed.key, {
         includeFree,
         includeDlc,
+        minHours,
         // The UI polls `summary.metadata.running`; the flag comes from the
         // in-process enrich job registry (no extra cache read, no request).
         enrichRunning: enrichJobs.isRunning(scope.parsed.key),
