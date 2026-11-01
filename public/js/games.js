@@ -25,7 +25,7 @@ import {
 } from './api.js';
 import {
   $, el, clear, fmtInt, plural, icon, toast, errorBox, showTooltip, moveTooltip, hideTooltip,
-  shortErrorMessage,
+  shortErrorMessage, debounce,
 } from './ui.js';
 import { withPreservedScroll } from './books-refresh.js';
 import { renderYearBars } from './charts.js';
@@ -37,9 +37,9 @@ import {
   calendarView, achievementStreaksView, achievementsOverviewView, normalizePersonnel, personnelRows,
   studiosView, coverageBadge, PERSONNEL_ROLES, formatDateRu, normalizePersonnelRole,
   personnelRoleOptions, personnelRoleCountText, GENRE_CHART_LIMIT,
-  gamesInYear, gamesInDecade, gamesWithoutYear, gamesWithoutType, gamesByGenre, gamesByMode,
+  gamesInDecade, gamesWithoutYear, gamesWithoutType, gamesByGenre, gamesByMode,
   gamesByAccess, gamesInHoursBucket, gamesWithRecentHours, backlogGames, allGames, sortGameRows,
-  yearsInDecade,
+  yearsInDecade, gamesInYearGenre, yearCountView, yearCountGenreOptions,
 } from './games-view.js';
 import {
   configureGamesModals, openGameCardModal, openGameListModal, openPersonModal, personAvatarEl,
@@ -94,6 +94,9 @@ const state = {
   // range). The inline persons widget batches locally (the personnel route
   // returns the whole role — its `limit` is games per person, not persons).
   selectedDecade: null,
+  // «Количество игр по году выхода»: an independent full-width chart. The
+  // decade above never narrows it; only this genre filter does (client-side).
+  yearCountGenre: null,
   personnel: {
     role: '', data: null, loading: false, error: null, cache: {}, openId: '',
     query: '', expanded: false, visible: PERSONS_INITIAL, rows: [],
@@ -719,6 +722,7 @@ function renderDashboard(data) {
   // missing, so an M1 server keeps a clean dashboard.
   renderDecades(data);
   renderYears(data);
+  renderYearCount(data);
   renderGenreChart(data);
   renderModes(data);
   renderAccess(data);
@@ -1374,15 +1378,29 @@ function decadeHint(text = 'Нет данных по годам релиза') {
   return box;
 }
 
-function openYearModal(data, year) {
-  const games = sortGameRows(gamesInYear(data.gamesIndex, year), 'hours');
+function openYearModal(data, year, { genre = null } = {}) {
+  const filter = text(genre);
+  const games = sortGameRows(gamesInYearGenre(data.gamesIndex, year, filter || null), 'hours');
+  const countText = `${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)}`;
+  const title = filter
+    ? `${countText} ${year} года · фильтр: ${filter}`
+    : `${countText} ${year} года`;
+  const subtitle = filter
+    ? `Год выхода ${year} · ${countText} · жанр ${filter}`
+    : `Год релиза ${year} · ${countText} в выгрузке`;
+  const hint = filter
+    ? `Только игры жанра «${filter}» (Steam Store). Год выхода — release_date, а не год, когда вы играли; `
+      + 'одна игра может попадать в несколько жанров.'
+    : 'Год релиза игры (release_date из Steam Store / Wikidata), а не год, когда вы в неё играли.';
   openGameListModal({
     kicker: 'Годы релиза',
-    title: `${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)} ${year} года`,
-    subtitle: `Год релиза ${year} · ${fmtInt(games.length)} ${plural(games.length, GAME_PLURAL)} в выгрузке`,
-    hint: 'Год релиза игры (release_date из Steam Store / Wikidata), а не год, когда вы в неё играли.',
+    title,
+    subtitle,
+    hint,
     groupLabel: String(year),
-    emptyText: 'Для этого года нет игр с карточкой Steam Store',
+    emptyText: filter
+      ? 'Нет игр этого жанра за этот год'
+      : 'Для этого года нет игр с карточкой Steam Store',
     games,
     sortScope: 'year',
     defaultSort: 'hours',
@@ -1445,6 +1463,115 @@ function renderYears(data) {
     yearNote: () => 'год релиза из Steam Store / Wikidata',
     onYearClick: (year) => openYearModal(data, year),
   });
+}
+
+/* «Количество игр по году выхода» — the permanent full-width count chart.
+ *
+ * Independent of `state.selectedDecade` on purpose: the card above («Годы
+ * релиза») narrows to a decade when one is clicked, this one always paints
+ * every release year. The only filter is the genre select, applied locally
+ * from `gamesIndex` (films year-chart parity: no extra request, one select).
+ * Unknown years never become a bar — the note says «и ещё N игр без года».
+ */
+function renderYearCount(data) {
+  const widget = $('games-yearcount-widget');
+  const host = $('games-yearcount-chart');
+  const note = $('games-yearcount-note');
+  const hint = $('games-yearcount-hint');
+  if (!widget || !host) return;
+
+  if (host._gamesYearCountResize) {
+    host._gamesYearCountResize.disconnect();
+    host._gamesYearCountResize = null;
+  }
+
+  const options = yearCountGenreOptions(data.genres);
+  // A profile switch or a refresh can remove the genre the user picked:
+  // fall back to «Все» instead of showing a silently empty chart.
+  if (state.yearCountGenre && !options.some((option) => option.name === state.yearCountGenre)) {
+    state.yearCountGenre = null;
+  }
+  renderYearCountGenreFilter(options);
+
+  const view = yearCountView(data.years, data.gamesIndex, {
+    genre: state.yearCountGenre,
+    unknownYear: data.unknownYear,
+  });
+  widget.hidden = false;
+  clear(host);
+
+  if (!view.hasData) {
+    if (note) note.textContent = '';
+    host.append(decadeHint('Нет данных по годам выхода'));
+    return;
+  }
+
+  if (note) note.textContent = view.note;
+  if (hint) {
+    hint.textContent = view.filtered
+      ? `жанр ${view.genre}: клик по столбику — игры этого года и жанра`
+      : 'наведи на столбик — счётчик и часы; клик — список игр года';
+  }
+
+  if (!view.series.length) {
+    host.append(decadeHint(view.filtered
+      ? `Нет игр жанра «${view.genre}» с известным годом выхода`
+      : 'Годы выхода неизвестны'));
+    return;
+  }
+
+  const paintOptions = {
+    unitForms: GAME_PLURAL,
+    shareLabel: view.filtered ? 'игр этого жанра' : 'игр с известным годом',
+    emptyText: 'Нет данных по годам выхода',
+    ariaLabel: view.filtered
+      ? `Количество игр по году выхода: жанр ${view.genre}`
+      : `Количество игр по году выхода: ${view.minYear} — ${view.maxYear}`,
+    // The column height is the game count, so the count is printed above the
+    // bar and the tooltip adds the hours: «34 игры» vs «450 ч» is exactly the
+    // «игры, а не время» distinction the card is about.
+    barLabels: true,
+    yearNote: (year, item) => (item && item.hours != null
+      ? `${hoursText(item.hours)} по данным Steam`
+      : 'часы неизвестны'),
+    onYearClick: (year) => openYearModal(data, year, { genre: view.genre }),
+  };
+  renderYearBars(host, view.series, paintOptions);
+
+  if (typeof ResizeObserver === 'function') {
+    const observer = new ResizeObserver(debounce(() => {
+      if (!host.clientWidth) return;
+      renderYearBars(host, view.series, paintOptions);
+    }, 160));
+    observer.observe(host);
+    host._gamesYearCountResize = observer;
+  }
+}
+
+/** Genre select of the year-count chart; «Все» clears the client-side filter. */
+function renderYearCountGenreFilter(options) {
+  const select = $('games-yearcount-genre');
+  if (!select) return;
+  const signature = options.map((option) => option.name).join('|');
+  if (select.dataset && select.dataset.gamesYearCount === signature
+    && select.children.length === options.length + 1) {
+    if (select.value !== (state.yearCountGenre || '')) select.value = state.yearCountGenre || '';
+    return;
+  }
+  clear(select);
+  select.append(el('option', { value: '', text: 'Все' }));
+  for (const option of options) {
+    select.append(el('option', {
+      value: option.name,
+      text: `${option.name} (${fmtInt(option.count)})`,
+    }));
+  }
+  if (select.dataset) select.dataset.gamesYearCount = signature;
+  select.value = state.yearCountGenre || '';
+  select.onchange = () => {
+    state.yearCountGenre = select.value || null;
+    if (state.data) renderYearCount(state.data);
+  };
 }
 
 function renderGenreChart(data) {

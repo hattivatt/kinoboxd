@@ -1697,6 +1697,15 @@ img { display: block; }
 }
 @keyframes barIn { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 .tl-bar.is-hot { opacity: 1; filter: brightness(1.3) drop-shadow(0 0 5px rgba(255, 128, 0, 0.35)); }
+/* Optional count above a bar (`barLabels: true`): the games year chart prints
+   «N игр» on top of every column, films/books keep the compact chart. */
+.tl-bar-count {
+  fill: var(--muted-2);
+  font-size: 9.5px;
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
 /* «до 1000 г.»: its own slot, not a year on the axis — a different colour and
    a tinted background with a dashed separator keep that honest at a glance. */
 .tl-bar.is-ancient { fill: var(--blue); opacity: 0.9; }
@@ -4695,6 +4704,9 @@ img { display: block; }
 
 .w-games-decades { grid-column: span 6; }
 .w-games-years { grid-column: span 6; }
+/* The count-by-release-year chart is its own full-width block: it never
+   depends on the decade selection above it (unlike .w-games-years). */
+.w-games-yearcount { grid-column: span 12; }
 .w-games-genres { grid-column: span 8; }
 .w-games-modes { grid-column: span 4; }
 .w-games-access { grid-column: span 4; }

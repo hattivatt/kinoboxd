@@ -997,6 +997,56 @@ export function gamesInYear(gamesIndex, year) {
   return gameRowsFromIndex(gamesIndex, (row) => row.releaseYear === target);
 }
 
+/** Games of one release year that carry `genre` (Steam Store, case-insensitive). */
+export function gamesInYearGenre(gamesIndex, year, genre) {
+  const rows = gamesInYear(gamesIndex, year);
+  const target = text(genre).toLowerCase();
+  if (!target) return rows;
+  return rows.filter((row) => arr(row.genres).some((name) => text(name).toLowerCase() === target));
+}
+
+/**
+ * Release-year counts recomputed from `gamesIndex` for an optional genre.
+ *
+ * The unfiltered chart uses the server's `years[]` (already normalised), but
+ * a genre filter has to be applied client-side — exactly like the films year
+ * chart: no extra request, one pass over the index. Games without a release
+ * year are counted apart (`unknown`) so they can be reported honestly instead
+ * of being silently dropped or parked on a fake year.
+ */
+export function yearCountSeries(gamesIndex, genre = null) {
+  const target = text(genre).toLowerCase();
+  const map = new Map();
+  let unknown = 0;
+  let unknownHours = 0;
+  for (const entry of Object.values(gamesIndex || {})) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (target) {
+      const genres = arr(entry.genres);
+      if (!genres.some((name) => text(name).toLowerCase() === target)) continue;
+    }
+    const year = numOrNull(entry.releaseYear ?? entry.year);
+    const hours = numOrNull(entry.hours);
+    if (year == null || year <= 0) {
+      unknown += 1;
+      if (hours != null) unknownHours += hours;
+      continue;
+    }
+    const key = Math.round(year);
+    const current = map.get(key) || { year: key, count: 0, hours: 0 };
+    current.count += 1;
+    if (hours != null) current.hours += hours;
+    map.set(key, current);
+  }
+  const series = [...map.values()].sort((a, b) => a.year - b.year);
+  return {
+    series,
+    total: series.reduce((sum, item) => sum + item.count, 0),
+    unknown,
+    unknownHours,
+  };
+}
+
 export function gamesInDecade(gamesIndex, start) {
   const decade = numOrNull(start);
   if (decade == null) return [];
@@ -1671,6 +1721,84 @@ export function yearsView(years) {
       : `${sorted[0].year} — ${sorted[sorted.length - 1].year} · ${fmtInt(total)} ${plural(total, GAME_PLURAL)}`,
     hint: YEAR_NOTE,
   };
+}
+
+/**
+ * «Количество игр по году выхода»: the permanent count chart.
+ *
+ * Unlike `yearsView` (which feeds the decade-gated «Годы релиза» card), this
+ * view is never narrowed by a decade. It paints every release year in the
+ * payload and, when a genre is selected, recomputes the counts from
+ * `gamesIndex` — the films year-chart parity (a select, no extra request).
+ *
+ * «Год неизвестен» stays off the axis: it is reported as `unknown` so the
+ * widget can say «и ещё 29 игр без года» instead of inventing a column.
+ */
+export function yearCountView(years, gamesIndex, { genre = null, unknownYear = null } = {}) {
+  const base = yearsView(years);
+  const genreName = text(genre);
+  const filtered = Boolean(genreName);
+  const local = yearCountSeries(gamesIndex, genreName || null);
+
+  let series;
+  let unknown;
+  if (filtered) {
+    series = local.series;
+    unknown = local.unknown;
+  } else if (base) {
+    // Server-aggregated counts win when they exist: they are the payload
+    // contract, and a client recount would only mask a backend drift.
+    series = base.years.map((item) => ({ year: item.year, count: item.count, hours: item.hours }));
+    // `normalizeGamesPayload` keeps «год неизвестен» in `unknownYear`, so the
+    // normalized `years[]` no longer carries the null-year entry itself.
+    unknown = base.unknownCount || toCount(unknownYear && unknownYear.count);
+  } else {
+    series = local.series;
+    unknown = local.unknown || toCount(unknownYear && unknownYear.count);
+  }
+
+  const total = series.reduce((sum, item) => sum + item.count, 0);
+  const minYear = series.length ? series[0].year : null;
+  const maxYear = series.length ? series[series.length - 1].year : null;
+  const parts = [];
+  if (filtered) {
+    parts.push(`${fmtInt(total)} ${plural(total, GAME_PLURAL)}`);
+    parts.push(`жанр: ${genreName}`);
+  } else if (series.length) {
+    parts.push(minYear === maxYear ? String(minYear) : `${minYear} — ${maxYear}`);
+    parts.push(`${fmtInt(total)} ${plural(total, GAME_PLURAL)}`);
+  }
+  const unknownText = unknown > 0
+    ? `и ещё ${fmtInt(unknown)} ${plural(unknown, GAME_PLURAL)} без года`
+    : '';
+  if (unknownText) parts.push(unknownText);
+
+  return {
+    series,
+    total,
+    totalText: fmtInt(total),
+    minYear,
+    maxYear,
+    unknown,
+    unknownText,
+    filtered,
+    genre: filtered ? genreName : null,
+    note: parts.join(' · '),
+    // A payload without real years is still shown when games are known:
+    // the card reports «все игры без года» rather than pretending to be empty.
+    hasData: series.length > 0 || unknown > 0,
+  };
+}
+
+/**
+ * Genre options for the year-count filter: `genres[]` is `{ name, count,
+ * hours }` (no `key`, unlike films), so the name doubles as the value.
+ */
+export function yearCountGenreOptions(genres) {
+  return arr(genres)
+    .filter((item) => item && typeof item === 'object' && text(item.name) && toCount(item.count) > 0)
+    .map((item) => ({ name: text(item.name), count: toCount(item.count) }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
 }
 
 /** «68%» for a share ≥10%, «0,4%» below it, «<0,1%» for a sliver. */

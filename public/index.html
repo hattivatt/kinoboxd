@@ -1197,6 +1197,31 @@
               </div>
             </section>
 
+            <section class="widget w-games-yearcount" id="games-yearcount-widget" aria-labelledby="games-yearcount-title" hidden>
+              <div class="widget-head yearbars-head">
+                <h2 class="widget-title" id="games-yearcount-title"><span class="w-dot blue"></span>Количество игр по году выхода</h2>
+                <div class="yearbars-tools">
+                  <span class="genre-filter">
+                    <span class="country-filter-label">Жанр</span>
+                    <span class="select-wrap">
+                      <select id="games-yearcount-genre" class="select select-sm" aria-label="Фильтр по жанру Steam Store">
+                        <option value="">Все</option>
+                      </select>
+                      <span class="select-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+                    </span>
+                  </span>
+                  <span class="widget-note" id="games-yearcount-note"></span>
+                </div>
+              </div>
+              <div class="chart-scroll">
+                <div id="games-yearcount-chart"></div>
+              </div>
+              <div class="chart-foot">
+                <span><i class="swatch blue"></i>количество игр по году выхода · игры, а не время</span>
+                <span class="chart-foot-hint" id="games-yearcount-hint">наведи на столбик — счётчик и часы; клик — список игр года</span>
+              </div>
+            </section>
+
             <section class="widget w-games-genres" id="games-genres-widget" aria-labelledby="games-genres-title" hidden>
               <div class="widget-head">
                 <h2 class="widget-title" id="games-genres-title"><span class="w-dot green"></span>Жанры</h2>

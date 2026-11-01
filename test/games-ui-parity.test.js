@@ -177,6 +177,51 @@ test('layout: decades + years are adjacent (no 6-column holes)', () => {
   assert.equal(span('.w-games-achievements'), 4);
   assert.equal(span('.w-games-calendar'), 12);
   assert.equal(span('.w-games-persons'), 12);
+  // The count-by-release-year chart is a second, independent span-12 block:
+  // it must not be confused with the decade-gated «Годы релиза» card.
+  assert.equal(span('.w-games-yearcount'), 12);
+});
+
+test('year-count chart: span 12, own ids, counts above bars, genre filter', () => {
+  const html = readPublic('index.html');
+  for (const id of [
+    'games-yearcount-widget', 'games-yearcount-title', 'games-yearcount-note',
+    'games-yearcount-chart', 'games-yearcount-genre', 'games-yearcount-hint',
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`), `нет узла #${id}`);
+  }
+  assert.match(html, /Количество игр по году выхода/);
+  // The card is about games, not playtime — say it in the footer.
+  assert.match(html, /игры, а не время/);
+  assert.match(html, /наведи на столбик — счётчик и часы/);
+  // Own select, distinct from the persons role select and the weight toggles.
+  assert.match(html, /id="games-yearcount-genre"[^>]*aria-label="Фильтр по жанру Steam Store"/);
+
+  // Order: decades + years pair, then the full-width count chart, then genres.
+  const years = html.indexOf('id="games-years-widget"');
+  const count = html.indexOf('id="games-yearcount-widget"');
+  const genres = html.indexOf('id="games-genres-widget"');
+  assert.ok(years > 0 && years < count && count < genres,
+    'count chart must sit right after the years pair (no grid holes)');
+  // The existing decade-gated card keeps its own title — no duplicate wording.
+  assert.match(html, /id="games-years-title"[^>]*>[\s\S]{0,120}Годы релиза/);
+
+  const css = readPublic('style.css');
+  assert.match(css, /\.w-games-yearcount \{ grid-column: span 12; \}/);
+  assert.match(css, /\.tl-bar-count \{/);
+
+  const games = readJs('games.js');
+  assert.match(games, /renderYearCount\(data\)/);
+  assert.match(games, /yearCountView\(data\.years, data\.gamesIndex/);
+  assert.match(games, /barLabels: true/);
+  assert.match(games, /openYearModal\(data, year, \{ genre: view\.genre \}\)/);
+  assert.match(games, /yearCountGenreOptions\(data\.genres\)/);
+  // This card never reads the decade selection: the pair above owns it.
+  assert.doesNotMatch(games, /function renderYearCount\(data\)[\s\S]{0,3000}selectedDecade/);
+
+  const charts = readJs('charts.js');
+  assert.match(charts, /barLabels = false/);
+  assert.match(charts, /class: 'tl-bar-count'/);
 });
 
 test('topbar switcher wording: «Загрузить новый»', () => {
@@ -329,6 +374,61 @@ test('drilldowns from gamesIndex: year, decade, unknown year, genre, mode, acces
     { year: 2020, count: 8 },
   ], 2010);
   assert.deepEqual(years.map((item) => item.year), [2010, 2013]);
+});
+
+test('year-count view: payload counts, unknown bucket, RPG filter from gamesIndex', async () => {
+  const { normalizeGamesPayload, yearCountView, yearCountSeries, yearCountGenreOptions, gamesInYearGenre } = await view();
+  const data = normalizeGamesPayload({
+    summary: { gameCount: 5 },
+    years: [
+      { year: 2012, count: 1, hours: 0 },
+      { year: 2013, count: 2, hours: 17 },
+      { year: 2015, count: 1, hours: 120 },
+      { year: null, unknown: true, count: 1, hours: 7 },
+    ],
+    genres: [
+      { name: 'Action', count: 2, hours: 2.5 },
+      { name: 'RPG', count: 2, hours: 130 },
+      { name: 'Empty', count: 0 },
+    ],
+    gamesIndex: miniIndex(),
+  });
+
+  // Unfiltered: the server counts win (they are the payload contract), and the
+  // unknown bucket is reported apart — never parked on a fake year.
+  const all = yearCountView(data.years, data.gamesIndex, { unknownYear: data.unknownYear });
+  assert.deepEqual(all.series.map((item) => [item.year, item.count]), [[2012, 1], [2013, 2], [2015, 1]]);
+  assert.equal(all.total, 4);
+  assert.equal(all.unknown, 1);
+  assert.equal(plain(all.note), '2012 — 2015 · 4 игры · и ещё 1 игра без года');
+  assert.equal(all.filtered, false);
+
+  // Genre filter: recomputed client-side from gamesIndex (Alpha 2013, Delta 2015).
+  const rpg = yearCountView(data.years, data.gamesIndex, { genre: 'RPG' });
+  assert.deepEqual(rpg.series.map((item) => [item.year, item.count]), [[2013, 1], [2015, 1]]);
+  assert.equal(rpg.total, 2);
+  assert.equal(rpg.unknown, 0);
+  assert.equal(rpg.filtered, true);
+  assert.equal(rpg.genre, 'RPG');
+  assert.equal(plain(rpg.note), '2 игры · жанр: RPG');
+
+  // Case-insensitive, and a genre nobody has yields an honest empty series.
+  assert.equal(yearCountView(data.years, data.gamesIndex, { genre: 'rpg' }).total, 2);
+  assert.equal(yearCountView(data.years, data.gamesIndex, { genre: 'Nope' }).series.length, 0);
+
+  // No `years[]` at all (M1 server): recount from the index instead of hiding.
+  const fallback = yearCountView([], data.gamesIndex);
+  assert.equal(fallback.total, 4);
+  assert.equal(fallback.unknown, 1);
+
+  // The raw aggregation agrees with the payload (no silent drift).
+  const local = yearCountSeries(data.gamesIndex);
+  assert.deepEqual(local.series.map((item) => [item.year, item.count]), all.series.map((item) => [item.year, item.count]));
+
+  assert.deepEqual(gamesInYearGenre(data.gamesIndex, 2013, 'rpg').map((game) => game.name), ['Alpha']);
+  assert.deepEqual(gamesInYearGenre(data.gamesIndex, 2013, null).map((game) => game.name).sort(), ['Alpha', 'Epsilon']);
+
+  assert.deepEqual(yearCountGenreOptions(data.genres).map((item) => item.name), ['Action', 'RPG']);
 });
 
 test('game list sorting: hours / completion / year / name', async () => {
@@ -500,6 +600,39 @@ test('live snapshot: 332 games, year 2013 = 34, RPG = 97, untyped = 21', async (
   const metrics = new Map(summaryMetrics(data.summary).map((metric) => [metric.key, metric]));
   assert.equal(metrics.get('unmatched').value, '21');
   assert.equal(plain(metrics.get('unmatched').sub), '8 записей — не игры');
+});
+
+test('live snapshot: year-count chart 1997–2026, 2013 = 34, RPG 2013 = 10', async (t) => {
+  const raw = live('stats-live.json') || live('stats2.json');
+  if (!raw) {
+    t.skip(`нет ${LIVE_DIR}/stats-live.json`);
+    return;
+  }
+  const { normalizeGamesPayload, yearCountView, yearCountSeries } = await view();
+  const data = normalizeGamesPayload(raw);
+
+  const all = yearCountView(data.years, data.gamesIndex, { unknownYear: data.unknownYear });
+  assert.equal(all.series.length, 26, '26 лет с известным годом в снимке');
+  assert.equal(all.series[0].year, 1997);
+  assert.equal(all.series.at(-1).year, 2026);
+  assert.equal(all.total, 303);
+  assert.equal(all.unknown, 29);
+  assert.equal(all.series.find((item) => item.year === 2013).count, 34);
+  assert.match(plain(all.note), /1997 — 2026 · 303 игры · и ещё 29 игр без года/);
+
+  // The client-side recount (what the genre filter uses) matches the payload
+  // year by year — no drift between `years[]` and `gamesIndex`.
+  const local = yearCountSeries(data.gamesIndex);
+  assert.deepEqual(
+    local.series.map((item) => [item.year, item.count]),
+    all.series.map((item) => [item.year, item.count]),
+  );
+
+  const rpg = yearCountView(data.years, data.gamesIndex, { genre: 'RPG' });
+  assert.equal(rpg.total, 96);
+  assert.equal(rpg.unknown, 1);
+  assert.equal(rpg.series.find((item) => item.year === 2013).count, 10);
+  assert.match(plain(rpg.note), /96 игр · жанр: RPG · и ещё 1 игра без года/);
 });
 
 test('live snapshot: CK II card has 3 studios / 161 achievements / safe links', async (t) => {

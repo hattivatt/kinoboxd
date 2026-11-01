@@ -470,6 +470,10 @@ export function renderYearBars(host, years, {
   emptyText = 'Нет данных по годам выпуска',
   ariaLabel = '',
   yearNote = null,
+  // Print the count above every column. Off by default: films/books stay
+  // compact, the games year chart asks for it explicitly so «34 игры» is
+  // readable without hovering.
+  barLabels = false,
 } = {}) {
   const counts = new Map();
   // The ancient bucket is not a year: it is collected apart so it can be
@@ -604,6 +608,19 @@ export function renderYearBars(host, years, {
     });
     bar.style.animationDelay = `${Math.min(index * 4, 260)}ms`;
     svg.append(bar);
+
+    // Optional count above the column. Skipped when the bars get narrower
+    // than ~16px: 26+ years on a phone would turn the labels into noise.
+    if (barLabels && item.count > 0 && stepX >= 16) {
+      const label = svgEl('text', {
+        x: x + barW / 2,
+        y: Math.max(8, y - 4),
+        'text-anchor': 'middle',
+        class: 'tl-bar-count',
+      });
+      label.textContent = fmtInt(item.count);
+      svg.append(label);
+    }
 
     const hit = svgEl('rect', {
       x: axisLeft + index * stepX,
