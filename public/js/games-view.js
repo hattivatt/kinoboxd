@@ -758,7 +758,7 @@ function normalizeGameIndexEntry(entry, appid) {
       ?? item.reviewDesc ?? item.review_score_desc ?? item.review?.desc,
     ),
     reviewDesc: firstString(item.reviewDesc, item.review_score_desc, item.review?.desc),
-    franchise: normalizeFranchiseRef(item.franchise ?? item.collection),
+    franchise: normalizeFranchiseRef(item.franchise ?? item.collection ?? arr(item.franchises)[0]),
     achievements: normalizeIndexAchievements(item.achievements),
     metadataSources: arr(item.metadataSources).map((source) => text(source)).filter(Boolean),
   };

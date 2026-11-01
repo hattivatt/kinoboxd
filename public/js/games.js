@@ -1987,6 +1987,19 @@ function renderFranchises(data) {
   if (loading) loading.hidden = true;
 
   if (!view) {
+    // A successful but empty answer is shown honestly, not hidden: «нет» is
+    // data too (IGDB/Wikidata have no links and the heuristic confirmed none).
+    const fetchedEmpty = state.franchises.profile === state.profileKey
+      && Array.isArray(state.franchises.data) && !state.franchises.data.length;
+    if (fetchedEmpty && !fromPayload.length) {
+      widget.hidden = false;
+      if (note) note.textContent = 'нет данных';
+      host.append(el('div', {
+        class: 'empty-state',
+        text: 'Франшизы не собраны: IGDB/Wikidata ещё не дали связей, а эвристика не подтвердила ни одной серии. Это не «нет франшиз» — просто метадата не загружена.',
+      }));
+      return;
+    }
     if (!fromPayload.length && !cached && !state.franchises.loading && !state.franchises.error) {
       widget.hidden = false;
       if (note) note.textContent = 'собираем…';

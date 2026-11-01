@@ -173,6 +173,8 @@ test('games.js wires the M4 renderers, api.js exposes the franchise route', () =
   assert.match(games, /gamesByTag\(data\.gamesIndex, row\.name\)/);
   assert.match(games, /gamesByReviewBucket\(data\.gamesIndex, seg\.bucket\)/);
   assert.match(games, /openFranchiseModal\(/);
+  // An empty-but-successful franchise answer is shown honestly, not hidden.
+  assert.match(games, /Франшизы не собраны/);
   // Frontend still does no network of its own.
   assert.doesNotMatch(games, /fetch\(/);
 
