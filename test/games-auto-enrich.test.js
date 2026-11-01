@@ -28,6 +28,9 @@ process.env.KINOBOXD_CACHE_GAMES_DIR = fs.mkdtempSync(
 process.env.KINOBOXD_STATE_DIR = fs.mkdtempSync(
   path.join(os.tmpdir(), 'kinoboxd-games-auto-enrich-state-')
 );
+// These files pin the import/enrich contract; the personnel pass (and its
+// live WDQS batch) is covered by games-personnel-kick.test.js with a mock.
+process.env.KINOBOXD_GAMES_WD = 'off';
 process.env.KINOBOXD_STEAM_KEY_FILE = path.join(process.env.KINOBOXD_STATE_DIR, 'no-steam-token');
 
 const { createRouter } = require('../server/games/routes');

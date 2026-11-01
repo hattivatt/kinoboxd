@@ -13,6 +13,9 @@ const path = require('node:path');
 
 process.env.KINOBOXD_CACHE_GAMES_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-games-import-'));
 process.env.KINOBOXD_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-games-import-state-'));
+// These files pin the import/enrich contract; the personnel pass (and its
+// live WDQS batch) is covered by games-personnel-kick.test.js with a mock.
+process.env.KINOBOXD_GAMES_WD = 'off';
 
 const steam = require('../server/games/steam');
 const gameCache = require('../server/games/game-cache');

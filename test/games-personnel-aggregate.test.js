@@ -179,10 +179,14 @@ function byName(items, name) {
 
 test('studios first: developer/publisher roles, hours weights, QID bridge to Steam', async () => {
   await seed();
-  const payload = personnel.buildPersonnel(PROFILE, { role: 'studio' });
+  const payload = personnel.buildPersonnel(PROFILE, { role: 'developer' });
   assert.ok(payload);
-  assert.equal(payload.role, 'studio');
+  assert.equal(payload.role, 'developer');
+  assert.equal(payload.roleRequested, 'developer');
+  assert.equal(payload.roleAlias, null);
   assert.equal(payload.sort, 'hours');
+  assert.equal(payload.roles.default, 'developer');
+  assert.deepEqual(payload.roles.studio, ['developer', 'publisher']);
 
   // Every studio item carries at least one studio role; people never leak in.
   for (const item of payload.items) {
@@ -220,6 +224,17 @@ test('studios first: developer/publisher roles, hours weights, QID bridge to Ste
 });
 
 test('role filter: publisher only, composer weights and completion', async () => {
+  const developers = personnel.buildPersonnel(PROFILE, { role: 'developer' });
+  for (const item of developers.items) {
+    assert.ok(item.roles.includes('developer'), `${item.name} must be a developer`);
+  }
+  assert.ok(byName(developers.items, 'CD PROJEKT RED'));
+  assert.ok(byName(developers.items, 'Ice-Pick Lodge'));
+  assert.ok(byName(developers.items, 'Valve'));
+  // Publisher-only studios do not leak into the developer answer.
+  assert.equal(byName(developers.items, 'Namco'), undefined);
+  assert.equal(byName(developers.items, 'Buka Entertainment'), undefined);
+
   const publishers = personnel.buildPersonnel(PROFILE, { role: 'publisher' });
   for (const item of publishers.items) {
     assert.ok(item.roles.includes('publisher'), `${item.name} must be a publisher`);
@@ -257,7 +272,8 @@ test('same name, different QIDs: two items, both ambiguous (never merged)', () =
 });
 
 test('coverage and pending are honest: no details/credits → counters, not zeros', () => {
-  const payload = personnel.buildPersonnel(PROFILE, { role: 'studio' });
+  const payload = personnel.buildPersonnel(PROFILE);
+  assert.equal(payload.role, 'developer', 'developer is the default role');
   assert.equal(payload.coverage.gamesTotal, 5);
   assert.equal(payload.coverage.gamesWithDetails, 4);
   assert.equal(payload.coverage.detailsPercent, 80);
@@ -266,8 +282,14 @@ test('coverage and pending are honest: no details/credits → counters, not zero
   assert.equal(payload.coverage.byRole.composer, 4);
   assert.equal(payload.coverage.byRole.designer, 3);
   assert.equal(payload.coverage.byRole.director, 1);
+  // Studio roles are counted separately from people roles.
+  assert.equal(payload.coverage.byStudioRole.developer, 4);
+  assert.equal(payload.coverage.byStudioRole.publisher, 4);
+  assert.equal(payload.coverage.developerPercent, 80);
+  assert.equal(payload.coverage.publisherPercent, 80);
   assert.equal(payload.pending.details, 1);
   assert.equal(payload.pending.credits, 1);
+  assert.equal(payload.pending.running, false);
   assert.equal(payload.meta.completionAvailable, true);
   assert.equal(payload.sources.mobygames.enabled, false);
   assert.equal(payload.sources.mobygames.reason, 'key_missing');
@@ -564,4 +586,69 @@ test('details studios: strings and object entries are both accepted', () => {
     ['Object Studio:developer', 'Plain Publisher:publisher']
   );
   assert.deepEqual(personnel.studiosFromDetails(null), []);
+});
+
+test('a WD outage is not an answer: the 90-day cache is not poisoned', async () => {
+  // Regression for the production symptom «данные так и не приехали»: a
+  // transient WDQS timeout used to be recorded as `wdAsked`, the document got
+  // a fresh `fetchedAt` and the negative cache hid the credits for 90 days.
+  const now = new Date().toISOString();
+  await gameCache.saveLibrary(ID, {
+    fetchedAt: now,
+    partial: false,
+    game_count: 1,
+    games: [{ appid: 6001, name: 'Outage Game', playtime_forever: 600 }],
+  });
+  writeDetails(6001, { success: true, type: 'game', developers: ['Outage Studio'] });
+
+  const mobyOff = { isEnabled: () => false, fetchGameCredits: async () => ({}) };
+  const wdDown = {
+    wikidataEnabled: () => true,
+    creditsForAppids: async () => ({
+      credits: new Map(),
+      queries: 1,
+      batches: 1,
+      errors: ['23'],
+      disabledUntil: null,
+    }),
+    fetchCredits: async () => ({ credits: new Map(), queries: 0, batches: 0, errors: [] }),
+  };
+  const first = await personnel.enrichPersonnel({ profileKey: PROFILE, wikidata: wdDown, moby: mobyOff });
+  assert.equal(first.wdDeferred, 1, 'nothing was written: no answer, no cache');
+  assert.equal(first.updated, 0);
+  assert.equal(personnel.readPersonnelDoc(6001), null);
+
+  const wdUp = {
+    wikidataEnabled: () => true,
+    creditsForAppids: async (appids) => ({
+      credits: new Map(
+        appids.map((appid) => [
+          String(appid),
+          {
+            qid: 'Q600100',
+            appid,
+            studios: [credit('Outage Studio', ['developer'], { qid: 'Q600200' })],
+            people: [credit('Late Composer', ['composer'], { qid: 'Q600300' })],
+          },
+        ])
+      ),
+      queries: 1,
+      batches: 1,
+      errors: [],
+      disabledUntil: null,
+    }),
+    fetchCredits: async () => ({ credits: new Map(), queries: 0, batches: 0, errors: [] }),
+  };
+  const second = await personnel.enrichPersonnel({ profileKey: PROFILE, wikidata: wdUp, moby: mobyOff });
+  assert.equal(second.skippedFresh, 0, 'the failed run must not look fresh');
+  assert.equal(second.updated, 1);
+  assert.equal(second.wdAnswered, 1);
+  const doc = personnel.readPersonnelDoc(6001);
+  assert.equal(doc.wdAsked, true);
+  assert.deepEqual(doc.people.map((person) => person.name), ['Late Composer']);
+  assert.deepEqual(doc.sources, ['steam-store', 'wikidata']);
+
+  const third = await personnel.enrichPersonnel({ profileKey: PROFILE, wikidata: wdUp, moby: mobyOff });
+  assert.equal(third.skippedFresh, 1, 'a real answer is cached for 90 days');
+  assert.equal(third.updated, 0);
 });

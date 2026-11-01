@@ -22,6 +22,10 @@ process.env.KINOBOXD_MOBY_KEY_FILE = path.join(
   process.env.KINOBOXD_STATE_DIR,
   'no-moby-token'
 );
+// This file pins the payload/route contract only: the lazy WD pass is covered
+// by `games-personnel-kick.test.js` with an injected provider. Leaving the
+// provider on would make the GET below ask the real WDQS.
+process.env.KINOBOXD_GAMES_WD = 'off';
 
 const gameCache = require('../server/games/game-cache');
 const personnel = require('../server/games/personnel/personnel');
@@ -120,14 +124,18 @@ test.after(() => {
   if (server) server.close();
 });
 
-test('GET /api/games/personnel: §5.3 shape, studios by default', async () => {
+test('GET /api/games/personnel: §5.3 shape, developer by default', async () => {
   const response = await fetch(`${base}/api/games/personnel?profile=${PROFILE}`);
   assert.equal(response.status, 200);
   assert.ok(response.headers.get('x-games-personnel-build-ms'));
+  assert.equal(response.headers.get('x-games-personnel-pending'), '1');
   const body = await response.json();
 
   assert.equal(body.profile, PROFILE);
-  assert.equal(body.role, 'studio');
+  assert.equal(body.role, 'developer');
+  assert.equal(body.roleRequested, 'developer');
+  assert.equal(body.roleAlias, null);
+  assert.equal(body.roles.default, 'developer');
   assert.equal(body.sort, 'hours');
   assert.ok(Array.isArray(body.items));
   assert.ok(body.items.length >= 1);
@@ -150,9 +158,29 @@ test('GET /api/games/personnel: §5.3 shape, studios by default', async () => {
   assert.equal(body.coverage.percent, 50);
   assert.equal(body.pending.details, 1);
   assert.equal(body.pending.credits, 1);
+  assert.equal(body.pending.running, false);
+  // WD is switched off in this file (see the env line above): the route says
+  // why nothing will arrive instead of pretending the data is complete.
+  assert.equal(body.pending.reason, 'sources_disabled');
+  assert.equal(body.coverage.wikidata.state, 'disabled');
+  assert.equal(body.coverage.wikidata.badge, 'WD: выключено');
   assert.equal(body.sources.mobygames.enabled, false);
   assert.equal(body.sources.mobygames.reason, 'key_missing');
   assert.equal(body.meta.libraryPartial, false);
+});
+
+test('role=studio is the documented alias, role=publisher is a separate answer', async () => {
+  const aliased = await (await fetch(`${base}/api/games/personnel?profile=${PROFILE}&role=studio`)).json();
+  assert.equal(aliased.role, 'developer');
+  assert.equal(aliased.roleRequested, 'studio');
+  assert.equal(aliased.roleAlias, 'studio');
+  assert.ok(aliased.items.some((item) => item.name === 'CD PROJEKT RED'));
+
+  const publishers = await (
+    await fetch(`${base}/api/games/personnel?profile=${PROFILE}&role=publisher`)
+  ).json();
+  assert.equal(publishers.role, 'publisher');
+  for (const item of publishers.items) assert.ok(item.roles.includes('publisher'));
 });
 
 test('GET role=composer returns people, not studios', async () => {

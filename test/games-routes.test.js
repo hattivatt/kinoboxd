@@ -15,6 +15,9 @@ const express = require('express');
 
 process.env.KINOBOXD_CACHE_GAMES_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-games-routes-'));
 process.env.KINOBOXD_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-games-routes-state-'));
+// These files pin the import/enrich contract; the personnel pass (and its
+// live WDQS batch) is covered by games-personnel-kick.test.js with a mock.
+process.env.KINOBOXD_GAMES_WD = 'off';
 // The main tree ships a dev fallback at config/steam-token; keep the assertions
 // below independent of it (the "key configured" branch is covered separately).
 process.env.KINOBOXD_STEAM_KEY_FILE = path.join(
