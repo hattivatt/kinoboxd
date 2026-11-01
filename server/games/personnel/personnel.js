@@ -15,7 +15,9 @@
  * Reading never touches the network: a missing details document is reported as
  * `pending.details`, a missing credits document as `pending.credits`, never as
  * «0 people» (ИГРЫ §7.2: «Не знаем» — валидное состояние). The network phase is
- * `enrichPersonnel()`, called by the monthly job / `backfill.js`.
+ * `enrichPersonnel()`, called by the on-demand job (`jobs.js`: import/refresh/
+ * enrich kick + the lazy `GET /api/games/personnel`) and by the manual
+ * `backfill.js`; both share `personnel.lock`.
  *
  * Identity rules (§4.2, §4.3, §7.4), deliberately conservative:
  *
@@ -30,6 +32,14 @@
  * Weights (§7.3): `count` (games in this role), `hours` (sum of
  * `playtime_forever`), `hoursShare` (of the profile's considered hours),
  * `avgCompletion` (only games with achievements; `null` otherwise, never 0).
+ *
+ * Roles (§2.4/§7.2, round 01.11.2026): studios are NOT one bucket any more.
+ * `developer` (Steam `developers[]`, Wikidata `P178`) and `publisher`
+ * (Steam `publishers[]`, Wikidata `P123`) are separate roles, both selectable
+ * and both fed by the same studio entity (a company credited as both stays one
+ * item whose `roles` says so). `developer` is the default; the old `studio`
+ * token is a documented alias for it, so a cached frontend that still asks for
+ * `role=studio` keeps working.
  *
  * Manual overrides are union-safe: `applyOverride()` merges into the existing
  * file and never drops keys it did not touch (§5.5).
@@ -49,9 +59,8 @@ const OVERRIDES_PATH = path.join(gameCache.GAMES_CACHE_DIR, 'personnel-overrides
 
 const PERSONNEL_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
-/** Roles accepted by `?role=` (§5.3) plus the aliases the UI may send. */
+/** Canonical roles accepted by `?role=` (§5.3). */
 const ROLES = [
-  'studio',
   'developer',
   'publisher',
   'composer',
@@ -66,7 +75,25 @@ const ROLES = [
   'voice',
 ];
 
-/** People roles in the order §7.1 shows them (studio is a separate block). */
+/**
+ * Backward-compatible spellings. `studio` was the M3 default before the
+ * developer/publisher split (01.11.2026); it must keep answering, otherwise a
+ * cached frontend would get a 400 after the deploy. Aliases resolve to the
+ * canonical role and are echoed as `roleRequested`.
+ */
+const ROLE_ALIASES = {
+  studio: 'developer',
+  studios: 'developer',
+  dev: 'developer',
+  pub: 'publisher',
+};
+
+const DEFAULT_ROLE = 'developer';
+
+/** Studio roles (people roles are everything else). */
+const STUDIO_ROLES = ['developer', 'publisher'];
+
+/** People roles in the order §7.1 shows them (studios are a separate block). */
 const PEOPLE_ROLES = [
   'composer',
   'designer',
@@ -153,14 +180,27 @@ function readJson(filePath) {
 
 function normalizeRole(raw) {
   const value = String(raw == null ? '' : raw).trim().toLowerCase();
-  if (!value) return 'studio';
+  if (!value) return DEFAULT_ROLE;
+  if (ROLE_ALIASES[value]) return ROLE_ALIASES[value];
   if (!ROLES.includes(value)) {
     throw new PersonnelError(
-      `Unknown role "${raw}". Accepted: ${ROLES.map((role) => `"${role}"`).join(', ')}.`,
+      `Unknown role "${raw}". Accepted: ${ROLES.map((role) => `"${role}"`).join(', ')} ` +
+        `(alias: "studio" → "developer").`,
       'invalid_role'
     );
   }
   return value;
+}
+
+/** Canonical role + what the caller actually asked for (alias transparency). */
+function resolveRole(raw) {
+  const requested = String(raw == null ? '' : raw).trim().toLowerCase() || null;
+  const role = normalizeRole(raw);
+  return {
+    role,
+    requested: requested || role,
+    alias: requested && requested !== role ? requested : null,
+  };
 }
 
 function normalizeSort(raw) {
@@ -601,11 +641,54 @@ function itemId(group) {
 }
 
 /**
+ * «WD: …» coverage badge (ИГРЫ §8.3). The state is derived from the persisted
+ * breaker document, so the answer is honest even when the widget was opened
+ * long after the last run: `never_run` means Wikidata was never asked for this
+ * cache, `unavailable` carries the provider's own error code, `cooldown` says
+ * until when. `ok` has no badge (nothing to warn about).
+ */
+const WIKIDATA_BADGES = {
+  ok: null,
+  never_run: 'WD: не запущено',
+  unavailable: 'WD: недоступно',
+  cooldown: 'WD: недоступно',
+  disabled: 'WD: выключено',
+};
+
+function wikidataStatus(state, nowMs, enabled) {
+  const doc = state && typeof state === 'object' ? state : {};
+  const disabledUntilRaw = doc.disabledUntil || null;
+  const disabledUntilMs = disabledUntilRaw ? Date.parse(String(disabledUntilRaw)) : NaN;
+  const disabledUntil =
+    Number.isFinite(disabledUntilMs) && disabledUntilMs > nowMs ? disabledUntilRaw : null;
+  const base = {
+    enabled: Boolean(enabled),
+    lastSuccessAt: doc.lastSuccessAt || null,
+    lastAttemptAt: doc.lastAttemptAt || null,
+    lastError: doc.lastError || null,
+    disabledUntil,
+  };
+  let status;
+  if (!enabled) {
+    status = { state: 'disabled', reason: 'disabled_by_env' };
+  } else if (disabledUntil) {
+    status = { state: 'cooldown', reason: doc.lastError || 'cooldown' };
+  } else if (Number(doc.failures) > 0 && doc.lastError) {
+    status = { state: 'unavailable', reason: doc.lastError };
+  } else if (doc.lastSuccessAt) {
+    status = { state: 'ok', reason: null };
+  } else {
+    status = { state: 'never_run', reason: 'never_run' };
+  }
+  return { ...base, ...status, badge: WIKIDATA_BADGES[status.state] || null };
+}
+
+/**
  * Build the personnel payload for one profile (ИГРЫ §5.3).
  *
  * @param {string} profileKey `steam-<steamid64>`
  * @param {{role?:string, sort?:string, gamesLimit?:number,
- *          overrides?:object, now?:number}} [options]
+ *          overrides?:object, now?:number, running?:boolean}} [options]
  * @returns {object|null} null when the profile/library is unknown
  */
 function buildPersonnel(profileKey, options = {}) {
@@ -620,7 +703,8 @@ function buildPersonnel(profileKey, options = {}) {
   const library = gameCache.getLibrary(parsed.userKey);
   if (!library) return null;
 
-  const role = normalizeRole(options.role);
+  const resolvedRole = resolveRole(options.role);
+  const role = resolvedRole.role;
   const sort = normalizeSort(options.sort);
   const gamesLimit = Math.min(
     50,
@@ -691,7 +775,7 @@ function buildPersonnel(profileKey, options = {}) {
   }
 
   const totalHours = round2(games.reduce((sum, game) => sum + game.hours, 0));
-  const wantStudios = role === 'studio' || role === 'developer' || role === 'publisher';
+  const wantStudios = STUDIO_ROLES.includes(role);
 
   const buildItems = (kind) => {
     const entries = [];
@@ -704,10 +788,11 @@ function buildPersonnel(profileKey, options = {}) {
     const { groups } = groupEntries(entries, kind, overrides);
     const items = [];
     for (const group of groups) {
-      const relevant = group.entries.filter((entry) => {
-        if (role === 'studio') return true;
-        return (entry.roles || []).includes(role);
-      });
+      // Studio entities are grouped across both studio roles (one company =
+      // one card), but `count`/`hours` only over the games where this entity
+      // actually holds the requested role (§7.2: developer and publisher are
+      // separate answers, not one "studio" bucket).
+      const relevant = group.entries.filter((entry) => (entry.roles || []).includes(role));
       if (!relevant.length) continue;
       const gamesById = new Map();
       for (const entry of relevant) {
@@ -777,21 +862,55 @@ function buildPersonnel(profileKey, options = {}) {
       game.people.some((person) => (person.roles || []).includes(peopleRole))
     ).length;
   }
+  // Studio roles are counted separately: a game can have a developer without a
+  // publisher and vice versa, and mixing them into `byRole` (people) would
+  // make the two numbers incomparable.
+  const byStudioRole = {};
+  for (const studioRole of STUDIO_ROLES) {
+    byStudioRole[studioRole] = games.filter((game) =>
+      game.studios.some((studio) => (studio.roles || []).includes(studioRole))
+    ).length;
+  }
   const gamesTotal = games.length;
   const percent = gamesTotal ? Math.round((gamesWithCredits / gamesTotal) * 100) : 0;
   const studioPercent = gamesTotal ? Math.round((studiosResolved / gamesTotal) * 100) : 0;
+  const developerPercent = gamesTotal
+    ? Math.round((byStudioRole.developer / gamesTotal) * 100)
+    : 0;
+  const publisherPercent = gamesTotal
+    ? Math.round((byStudioRole.publisher / gamesTotal) * 100)
+    : 0;
 
+  const wdEnabled = wikidataProvider.wikidataEnabled();
   const wdState = wikidataProvider.defaultStateStore().read();
-  const wdDisabledUntil =
-    wdState && wdState.disabledUntil && Date.parse(wdState.disabledUntil) > nowMs
-      ? wdState.disabledUntil
-      : null;
+  const wdStatus = wikidataStatus(wdState, nowMs, wdEnabled);
   const mobyStatus = mobyProvider.createClient().status();
+  const pendingCredits = gamesTotal - gamesWithCredits;
+  let pendingReason = null;
+  if (pendingCredits > 0) {
+    if (wdStatus.state === 'cooldown') pendingReason = 'wikidata_cooldown';
+    else if (wdStatus.state === 'disabled' && !mobyStatus.enabled) pendingReason = 'sources_disabled';
+    else if (wdStatus.state === 'never_run' && !mobyStatus.enabled) pendingReason = 'wikidata_not_run';
+    else if (wdStatus.state === 'unavailable') pendingReason = 'wikidata_unavailable';
+    else pendingReason = 'not_fetched';
+  }
 
   return {
     profile: parsed.key,
     role,
+    // Alias transparency: a cached frontend asking `role=studio` gets the
+    // developer answer but can see what it asked for.
+    roleRequested: resolvedRole.requested,
+    roleAlias: resolvedRole.alias,
     sort,
+    // Contract for the frontend role select (default = developer, §7.2).
+    roles: {
+      accepted: [...ROLES],
+      default: DEFAULT_ROLE,
+      aliases: { ...ROLE_ALIASES },
+      studio: [...STUDIO_ROLES],
+      people: [...PEOPLE_ROLES],
+    },
     items,
     totals: {
       games: gamesTotal,
@@ -806,18 +925,28 @@ function buildPersonnel(profileKey, options = {}) {
       percent,
       gamesWithStudios: studiosResolved,
       studioPercent,
+      gamesWithDevelopers: byStudioRole.developer,
+      developerPercent,
+      gamesWithPublishers: byStudioRole.publisher,
+      publisherPercent,
       byRole,
+      byStudioRole,
+      // «WD: не запущено» / «WD: недоступно» (reason) — the badge the widget
+      // can print next to «Кредиты: N%» without another request.
+      wikidata: wdStatus,
     },
     pending: {
       details: gamesTotal - detailsResolved,
-      credits: gamesTotal - gamesWithCredits,
+      credits: pendingCredits,
+      // Filled by the route/job layer: is an enrichment pass in flight right
+      // now, and why credits are still missing when it is not.
+      running: Boolean(options.running),
+      jobId: null,
+      reason: pendingReason,
     },
     sources: {
       credits: ['steam-store', 'wikidata'].concat(mobyStatus.enabled ? ['mobygames'] : []),
-      wikidata: {
-        enabled: wikidataProvider.wikidataEnabled(),
-        disabledUntil: wdDisabledUntil,
-      },
+      wikidata: wdStatus,
       mobygames: mobyStatus,
     },
     meta: {
@@ -966,11 +1095,14 @@ async function enrichPersonnel(options = {}) {
     wdQueries: 0,
     wdSkipped: null,
     wdDisabledUntil: null,
+    wdAnswered: 0,
+    wdDeferred: 0,
     mobyRequests: 0,
     mobyErrors: [],
     errors: [],
   };
 
+  const wdEnabled = wd.wikidataEnabled();
   const targets = [];
   for (const game of library.games || []) {
     const appid = Number(game.appid);
@@ -983,11 +1115,16 @@ async function enrichPersonnel(options = {}) {
     if (details.type && details.type !== 'game') continue;
     const links = readLinks(appid);
     const existing = readPersonnelDoc(appid);
-    const available = ['steam-store'].concat(links.qid ? ['wikidata'] : []).concat(
-      mobyEnabled && links.mobyId && links.mobyPlatformId ? ['mobygames'] : []
-    );
-    const covered = existing && available.every((source) => existing.sources.includes(source));
-    if (!force && existing && covered && isPersonnelFresh(existing, now())) {
+    // Which sources can still add something? `wikidata` counts as covered only
+    // when the document records that Wikidata actually answered (`wdAsked`),
+    // otherwise a failed/skipped run would look complete and the 90-day
+    // freshness window would keep the credits away for three months.
+    const needs = ['steam-store'];
+    if (wdEnabled && !(existing && existing.wdAsked === true)) needs.push('wikidata');
+    if (mobyEnabled && links.mobyId && links.mobyPlatformId) needs.push('mobygames');
+    const covered =
+      Boolean(existing) && needs.every((source) => (existing.sources || []).includes(source));
+    if (!force && covered && isPersonnelFresh(existing, now())) {
       report.skippedFresh++;
       continue;
     }
@@ -999,15 +1136,17 @@ async function enrichPersonnel(options = {}) {
   // Wikidata: one appid batch (resolves P1733) for games without a QID, then
   // one QID batch for the rest. Both are ≤450 values inside the provider.
   const withoutQid = targets.filter((target) => !target.links.qid).map((target) => target.appid);
-  if (withoutQid.length && wd.wikidataEnabled()) {
+  if (withoutQid.length && wdEnabled) {
     const result = await wd.creditsForAppids(withoutQid, options);
     report.wdQueries += result.queries;
     report.wdSkipped = result.skipped || report.wdSkipped;
     report.wdDisabledUntil = result.disabledUntil || report.wdDisabledUntil;
     report.errors.push(...(result.errors || []));
-    if (!result.skipped) {
-      // Asked and answered (even with «nothing»): the negative cache is valid
-      // for 90 days, so the game is not asked again on the next run.
+    if (!result.skipped && !(result.errors || []).length) {
+      // Asked AND answered (even with «nothing»): the negative cache is valid
+      // for 90 days, so the game is not asked again on the next run. A network
+      // failure / breaker / HTTP error is NOT an answer — `wdAsked` stays
+      // false and the game is retried.
       for (const target of targets) {
         if (!target.links.qid) target.wdAsked = true;
       }
@@ -1024,13 +1163,13 @@ async function enrichPersonnel(options = {}) {
     .filter((target) => !target.wdCredits)
     .map((target) => target.links.qid)
     .filter(Boolean);
-  if (qids.length && wd.wikidataEnabled()) {
+  if (qids.length && wdEnabled) {
     const result = await wd.fetchCredits(qids, options);
     report.wdQueries += result.queries;
     report.wdSkipped = result.skipped || report.wdSkipped;
     report.wdDisabledUntil = result.disabledUntil || report.wdDisabledUntil;
     report.errors.push(...(result.errors || []));
-    if (!result.skipped) {
+    if (!result.skipped && !(result.errors || []).length) {
       for (const target of targets) {
         if (!target.wdCredits && target.links.qid) target.wdAsked = true;
       }
@@ -1061,6 +1200,7 @@ async function enrichPersonnel(options = {}) {
     const studios = studiosFromDetails(target.details);
     const people = [];
     const sources = new Set(['steam-store']);
+    const wdAnswered = Boolean(target.wdCredits) || target.wdAsked === true;
     if (target.wdCredits) {
       studios.push(...target.wdCredits.studios);
       people.push(...target.wdCredits.people);
@@ -1080,6 +1220,7 @@ async function enrichPersonnel(options = {}) {
         sources.add('wikidata');
       }
     }
+    let mobyAnswered = false;
     if (mobyEnabled && target.links.mobyId && target.links.mobyPlatformId) {
       try {
         const doc = await moby.fetchGameCredits({
@@ -1089,6 +1230,7 @@ async function enrichPersonnel(options = {}) {
         report.mobyRequests++;
         people.push(...doc.people);
         sources.add('mobygames');
+        mobyAnswered = true;
       } catch (err) {
         report.mobyErrors.push((err && err.code) || 'mobygames_failed');
         const carried = carryOver(target.existing, 'mobygames');
@@ -1098,6 +1240,14 @@ async function enrichPersonnel(options = {}) {
         }
       }
     }
+    // Nothing was asked successfully and nothing is cached: writing a document
+    // now would look «fresh» and hide the credits for 90 days. Defer instead —
+    // the next pass (or the lazy route kick) retries.
+    if (!wdAnswered && !mobyAnswered && !target.existing) {
+      report.wdDeferred++;
+      continue;
+    }
+    if (wdAnswered) report.wdAnswered++;
     const mergedPeople = dedupePeople(people);
     const mergedStudios = dedupeStudios(studios);
     const doc = {
@@ -1106,6 +1256,10 @@ async function enrichPersonnel(options = {}) {
       name: cleanName(target.name) || null,
       qid: target.qid || target.links.qid || null,
       fetchedAt: new Date(now()).toISOString(),
+      // Persisted verdict: «Wikidata was actually asked» (credits or a negative
+      // answer). `isPersonnelFresh`/`covered` rely on it, so a transient WDQS
+      // failure can never be mistaken for a complete run.
+      wdAsked: wdAnswered,
       studios: mergedStudios,
       people: mergedPeople,
       sources: [...sources].sort(),
@@ -1129,12 +1283,18 @@ module.exports = {
   OVERRIDES_PATH,
   PERSONNEL_TTL_MS,
   ROLES,
+  ROLE_ALIASES,
+  DEFAULT_ROLE,
+  STUDIO_ROLES,
   PEOPLE_ROLES,
   SORTS,
+  WIKIDATA_BADGES,
   PersonnelError,
   normalizeName,
   normalizeRole,
+  resolveRole,
   normalizeSort,
+  wikidataStatus,
   minutesToHours,
   readDetails,
   readLinks,

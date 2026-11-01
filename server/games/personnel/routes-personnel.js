@@ -3,32 +3,33 @@
 /**
  * `/api/games/personnel` + `POST /api/games/override` (M3, ИГРЫ §3.8/§5.3/§5.5).
  *
- * Self-contained router: the integration round mounts it under the existing
- * auth gate next to the M1 games router, e.g.
- *
- *   app.use('/api/games', require('./games/personnel/routes-personnel'));
- *
- * It is deliberately NOT wired into `server/games/routes.js` or
- * `server/index.js` in this round (the brief forbids touching `stats.js` and
- * the frontend; the orchestrator merges the wire-up after M2 lands).
- *
  *   GET  /api/games/personnel?profile=steam-<steamid64>&role=…&sort=…
  *   POST /api/games/override   { type, action, from, to }
  *
  * Query contract is strict, like every other games route: an unknown parameter
  * is a 400 `unexpected_parameter`, never a silent ignore.
  *
- * The payload is built from caches only — this route never waits for WDQS or
- * MobyGames. When details/credits are missing it reports honest `pending`
- * counters and `coverage.percent` (the «Кредиты: N%» badge), never fabricated
- * zeros (ИГРЫ §7.2).
+ * The payload is built from caches only — this route never *waits* for WDQS or
+ * MobyGames. But it is also the only reader of `personnel/<appid>.json`, so it
+ * owns the lazy trigger: when credits are still missing and no pass is in
+ * flight, it starts the personnel job fire-and-forget and says so
+ * (`pending.running`/`pending.reason`). Without that kick the cache had no
+ * writer in production and composers/designers never arrived (fix 01.11.2026,
+ * ИГРЫ §2.4). The answer is never blocked: the next request sees the credits.
+ *
+ * When details/credits are missing it reports honest `pending` counters and
+ * `coverage.percent` (the «Кредиты: N%» badge), never fabricated zeros
+ * (ИГРЫ §7.2). `coverage.wikidata` carries the «WD: не запущено / недоступно»
+ * badge with its reason, so the UI never has to guess why a role is empty.
  */
 
 const express = require('express');
 
 const { HttpError } = require('../../upload');
 const gameCache = require('../game-cache');
+const enrichJobs = require('../enrich');
 const personnel = require('./personnel');
+const personnelJobs = require('./jobs');
 
 const ENDPOINT = 'GET /api/games/personnel';
 
@@ -36,6 +37,9 @@ function mapError(err) {
   if (err instanceof HttpError) return err;
   if (err instanceof personnel.PersonnelError) {
     return new HttpError(err.status || 400, err.message, err.code);
+  }
+  if (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600) {
+    return new HttpError(err.status, err.message, err.code || 'games_personnel_error');
   }
   return err;
 }
@@ -92,6 +96,62 @@ function resolveProfileOrThrow(raw) {
   return { parsed, profile, library };
 }
 
+/**
+ * Fill `pending.running`/`pending.reason` and start the lazy pass when it can
+ * help. Never throws: a failed kick only changes the reported reason.
+ */
+function annotatePending(payload, scope, deps = {}) {
+  const jobs = deps.jobs || personnelJobs;
+  const enrich = deps.enrichJobs || enrichJobs;
+  const key = scope.parsed.key;
+  payload.pending = payload.pending || {};
+
+  const personnelRunning = typeof jobs.isRunning === 'function' && jobs.isRunning(key);
+  if (personnelRunning) {
+    payload.pending.running = true;
+    payload.pending.reason = 'running';
+    return payload;
+  }
+  if (typeof enrich.isRunning === 'function' && enrich.isRunning(key)) {
+    // The credits pass is started by the same import/enrich kick and waits for
+    // the details chain; say so instead of «нет данных».
+    payload.pending.running = true;
+    payload.pending.reason = 'waiting_details';
+    return payload;
+  }
+  if (!(payload.pending.credits > 0)) {
+    payload.pending.reason = null;
+    return payload;
+  }
+  if (deps.autoPersonnel === false) {
+    payload.pending.reason = 'auto_disabled';
+    return payload;
+  }
+  const gamesTotal = payload.totals ? payload.totals.games : 0;
+  if (gamesTotal > 0 && payload.pending.details >= gamesTotal) {
+    // No details document at all: Wikidata is asked by appid only for games
+    // whose `details/<appid>.json` exists, so a pass now would write nothing.
+    payload.pending.reason = 'details_pending';
+    return payload;
+  }
+
+  let status = null;
+  try {
+    status = jobs.kickQuietly(key, deps.personnelOptions || {});
+  } catch (err) {
+    payload.pending.reason = 'kick_failed';
+    return payload;
+  }
+  if (status && status.id) {
+    payload.pending.running = true;
+    payload.pending.jobId = status.id;
+    payload.pending.reason = 'started';
+  } else {
+    payload.pending.reason = (status && status.skipped) || 'not_fetched';
+  }
+  return payload;
+}
+
 function createRouter(deps = {}) {
   const builder = deps.buildPersonnel || personnel.buildPersonnel;
   const applyOverride = deps.applyOverride || personnel.applyOverride;
@@ -101,7 +161,9 @@ function createRouter(deps = {}) {
     try {
       assertOnlyParams(req, ['profile', 'role', 'sort', 'limit'], ENDPOINT);
       const scope = resolveProfileOrThrow(req.query.profile);
-      const role = personnel.normalizeRole(req.query.role);
+      // `role` is validated here for a fast 400, then passed through raw so the
+      // payload can echo `roleRequested` (e.g. the old `studio` alias).
+      personnel.normalizeRole(req.query.role);
       const sort = personnel.normalizeSort(req.query.sort);
       let gamesLimit = 5;
       if (req.query.limit != null && String(req.query.limit).trim() !== '') {
@@ -115,7 +177,17 @@ function createRouter(deps = {}) {
         }
         gamesLimit = parsed;
       }
-      const payload = builder(scope.parsed.key, { role, sort, gamesLimit });
+      const payload = builder(scope.parsed.key, {
+        role: req.query.role,
+        sort,
+        gamesLimit,
+        // Set from the in-process job registries (no extra cache read).
+        running:
+          (typeof (deps.jobs || personnelJobs).isRunning === 'function' &&
+            (deps.jobs || personnelJobs).isRunning(scope.parsed.key)) ||
+          (typeof (deps.enrichJobs || enrichJobs).isRunning === 'function' &&
+            (deps.enrichJobs || enrichJobs).isRunning(scope.parsed.key)),
+      });
       if (!payload) {
         throw new HttpError(
           400,
@@ -123,8 +195,25 @@ function createRouter(deps = {}) {
           'profile_not_imported'
         );
       }
+      annotatePending(payload, scope, deps);
       res.set('X-Games-Personnel-Build-Ms', String(payload.meta.buildMs));
+      res.set('X-Games-Personnel-Pending', String(payload.pending.credits));
       res.status(200).json(payload);
+    } catch (err) {
+      next(mapError(err));
+    }
+  });
+
+  router.get('/personnel/status', (req, res, next) => {
+    try {
+      assertOnlyParams(req, ['id'], 'GET /api/games/personnel/status');
+      const id = req.query.id;
+      if (id == null || String(id).trim() === '') {
+        throw new HttpError(400, 'Query parameter "id" is required.', 'job_id_required');
+      }
+      const status = (deps.jobs || personnelJobs).getStatus(String(id).trim());
+      if (!status) throw new HttpError(404, 'Unknown personnel job id.', 'unknown_job');
+      res.status(200).json(status);
     } catch (err) {
       next(mapError(err));
     }
@@ -158,3 +247,4 @@ function createRouter(deps = {}) {
 module.exports = createRouter();
 module.exports.createRouter = createRouter;
 module.exports.resolveProfileOrThrow = resolveProfileOrThrow;
+module.exports.annotatePending = annotatePending;

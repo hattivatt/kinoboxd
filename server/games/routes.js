@@ -29,6 +29,7 @@ const store = require('./store');
 const gameCache = require('./game-cache');
 const importJobs = require('./import');
 const enrichJobs = require('./enrich');
+const personnelJobs = require('./personnel/jobs');
 const { personnelForGame } = require('./personnel/personnel');
 const {
   buildGamesStatsFromCache,
@@ -208,6 +209,8 @@ function createRouter(deps = {}) {
       force,
       label,
       autoEnrich: deps.autoEnrich !== false,
+      autoPersonnel: deps.autoPersonnel !== false,
+      personnelOptions: deps.personnelOptions,
       enrichClient: storeClient || undefined,
     });
     const created = job.status === 'running' && !job.reused && job.stage === 'queued';
@@ -245,6 +248,8 @@ function createRouter(deps = {}) {
         client,
         force: true,
         autoEnrich: deps.autoEnrich !== false,
+        autoPersonnel: deps.autoPersonnel !== false,
+        personnelOptions: deps.personnelOptions,
         enrichClient: storeClient || undefined,
       });
       const created = job.status === 'running' && !job.reused && job.stage === 'queued';
@@ -309,8 +314,22 @@ function createRouter(deps = {}) {
         recheckDays,
         client: storeClient || undefined,
       });
+      // Credits follow the details: the personnel pass waits for this enrich
+      // job (`waitForEnrich`), so the widget gets people without a second
+      // manual step (ИГРЫ §2.4 fix).
+      let personnelJob = null;
+      if (deps.autoPersonnel !== false) {
+        personnelJob = personnelJobs.kickQuietly(scope.parsed.key, {
+          ...(deps.personnelOptions || {}),
+          waitForEnrich: true,
+        });
+      }
       const created = job.status === 'running' && job.stage === 'queued';
-      res.status(created ? 202 : 200).json(job);
+      res.status(created ? 202 : 200).json({
+        ...job,
+        personnelJobId: personnelJob && personnelJob.id ? personnelJob.id : null,
+        personnelSkipped: personnelJob ? personnelJob.skipped || null : null,
+      });
     } catch (err) {
       next(mapError(err));
     }

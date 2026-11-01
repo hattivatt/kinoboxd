@@ -1,78 +1,139 @@
 # API «Персоналии» (M3) — контракт для фронта
 
-Реализация: `server/games/personnel/` (backend-раунд M3). Роутер
-самодостаточный; интеграционный раунд монтирует его рядом с M1-роутером:
+Реализация: `server/games/personnel/` (backend-раунд M3 + раунд
+«раздельные роли / WD-триггер» 01.11.2026). Роутер самодостаточный; он уже
+смонтирован в `server/index.js` рядом с M1-роутером:
 
 ```js
-// server/index.js (делает оркестратор, не этот раунд)
-app.use('/api/games', require('./games/personnel/routes-personnel'));
+// server/index.js (сделано интеграционным раундом)
+app.use('/api/games', gamesRouter);
+app.use('/api/games', gamesPersonnelRouter);
 ```
 
-Монтировать **после** `/api/games` M1: пути `/personnel` и `/override` не
-пересекаются с существующими, порядок не важен, но один `app.use` на оба
-роутера проще.
+Пути `/personnel`, `/personnel/status` и `/override` не пересекаются с M1.
+
+## Роли: `developer` и `publisher` — разные ответы
+
+До 01.11.2026 студии были одной категорией (`studio` = разработчики +
+издатели). Теперь это **две роли**, обе выбираемы в селекте, обе собираются из
+двух источников:
+
+| Роль | Steam `appdetails` | Wikidata | По умолчанию |
+|---|---|---|---|
+| `developer` | `developers[]` | `P178` | **да** |
+| `publisher` | `publishers[]` | `P123` | нет |
+| `composer` | — | `P86` | нет |
+| `designer` | — | `P287` | нет |
+| `writer` | — | `P58` (low) | нет |
+| `artist` | MobyGames | — (нестабильно) | нет |
+| `programmer` | — | `P943` | нет |
+| `producer` | — | `P162` | нет |
+| `director` | — | `P57` | нет |
+| `creator` | — | `P170` (low) | нет |
+| `sound`, `voice` | MobyGames | — | нет |
+
+**Backward-compat:** старый токен `role=studio` — документированный алиас
+`developer` (ответ: `role: "developer"`, `roleRequested: "studio"`,
+`roleAlias: "studio"`). Кэшированный фронт, который ещё шлёт `studio`, не
+получит 400 и не сломается. Также принимаются `studios` → `developer`,
+`dev` → `developer`, `pub` → `publisher`.
+
+Студия, указанная и разработчиком, и издателем, — **один элемент** с
+`roles: ["developer","publisher"]`; но `count`/`hours` считаются только по
+играм, где у неё есть **запрошенная** роль. Поэтому `role=developer` и
+`role=publisher` дают разные списки и разные числа.
 
 ## `GET /api/games/personnel`
 
 | Параметр | Обязателен | Значения | По умолчанию |
 |---|---|---|---|
 | `profile` | да | `steam-<steamid64>`, ровно один | — |
-| `role` | нет | `studio`, `developer`, `publisher`, `composer`, `designer`, `writer`, `artist`, `programmer`, `producer`, `director`, `creator`, `sound`, `voice` | `studio` |
+| `role` | нет | `developer`, `publisher`, `composer`, `designer`, `writer`, `artist`, `programmer`, `producer`, `director`, `creator`, `sound`, `voice` (+ алиасы `studio`/`studios`/`dev`/`pub`) | `developer` |
 | `sort` | нет | `hours`, `count`, `completion`, `name` | `hours` |
 | `limit` | нет | целое 1–50, длина `games[]` в каждом элементе | `5` |
 
 Неизвестный параметр → `400 unexpected_parameter`; неизвестная роль →
-`400 invalid_role`; сортировка → `400 invalid_sort`; `limit` → `400 invalid_limit`;
+`400 invalid_role` (текст перечисляет принятые роли и алиас `studio`);
+сортировка → `400 invalid_sort`; `limit` → `400 invalid_limit`;
 отсутствующий/чужой профиль → `400 profile_required|invalid_profile|unknown_profile`.
-Ответ кэшируется браузером не должен: данные меняются после импорта/обогащения.
 
-`role=studio` — все студии (роли `developer` и/или `publisher` в одном элементе).
-`role=developer|publisher` — только студии с этой ролью. Остальные роли — люди.
-Студии **всегда первыми**: это отдельный запрос/блок, не смешивается с людьми.
+Ответ не кэшируется браузером: данные меняются после импорта/обогащения.
 
 ### Payload (§5.3 архитектуры)
 
 ```jsonc
 {
   "profile": "steam-76561198038369983",
-  "role": "composer",
+  "role": "developer",              // каноническая роль
+  "roleRequested": "studio",        // что реально прислал клиент ("" → роль)
+  "roleAlias": "studio",            // null, если запрошена каноническая роль
   "sort": "hours",
+  "roles": {                        // контракт для селекта фронта
+    "accepted": ["developer", "publisher", "composer", "designer", "writer",
+                 "artist", "programmer", "producer", "director", "creator",
+                 "sound", "voice"],
+    "default": "developer",
+    "aliases": { "studio": "developer", "studios": "developer",
+                 "dev": "developer", "pub": "publisher" },
+    "studio": ["developer", "publisher"],
+    "people": ["composer", "designer", "writer", "artist", "programmer",
+               "producer", "director", "creator", "sound", "voice"]
+  },
   "items": [
     {
-      "id": "wd:Q19005369",            // wd:Q… | moby:123 | name:<slug>
-      "name": "Marcin Przybyłowicz",   // canonical EN, иначе RU
-      "aliases": ["Марцин Пшибылович"],
-      "qid": "Q19005369",              // null, если QID нет
-      "mobyId": null,                  // null, если Moby не дал id
-      "roles": ["composer"],           // все роли человека (массив)
-      "count": 2,                      // игр библиотеки с этой ролью
-      "hours": 107.4,                  // сумма playtime_forever / 60, 0.1 ч
-      "hoursShare": 0.0183,            // доля от часов всех учтённых игр
-      "avgCompletion": 50,             // % достижений, null если данных нет
-      "games": [                       // top-N по часам (N = ?limit)
-        { "appid": 292030, "name": "The Witcher 3: Wild Hunt", "hours": 107.0 }
-      ],
-      "ambiguous": false,              // true: одно имя, разные QID
-      "sources": ["wikidata"]          // steam-store | wikidata | mobygames
+      "id": "wd:Q1172164",              // wd:Q… | moby:123 | name:<slug>
+      "name": "CD PROJEKT RED",         // canonical EN, иначе RU
+      "aliases": ["CD Projekt RED"],
+      "qid": "Q1172164",
+      "mobyId": null,
+      "roles": ["developer", "publisher"],  // все роли сущности
+      "count": 1,                       // игр с ЗАПРОШЕННОЙ ролью
+      "hours": 107.0,
+      "hoursShare": 0.0183,
+      "avgCompletion": 50,              // null, если достижений нет
+      "games": [{ "appid": 292030, "name": "The Witcher 3: Wild Hunt", "hours": 107.0 }],
+      "ambiguous": false,
+      "sources": ["steam-store", "wikidata"]
     }
   ],
   "totals": { "games": 340, "hours": 5862.6, "excludedNonGame": 0 },
   "coverage": {
     "gamesTotal": 340,
-    "gamesWithDetails": 0,
-    "detailsPercent": 0,
-    "gamesWithCredits": 119,           // игры, где есть хотя бы один человек
+    "gamesWithDetails": 340,
+    "detailsPercent": 100,
+    "gamesWithCredits": 119,
     "percent": 35,                     // «Кредиты: 35%»
     "gamesWithStudios": 296,
     "studioPercent": 87,
+    "gamesWithDevelopers": 290,        // role=developer
+    "developerPercent": 85,
+    "gamesWithPublishers": 240,        // role=publisher
+    "publisherPercent": 71,
     "byRole": { "composer": 97, "designer": 28, "writer": 15, "artist": 0,
                 "programmer": 9, "producer": 19, "director": 19,
-                "creator": 1, "sound": 0, "voice": 0 }
+                "creator": 1, "sound": 0, "voice": 0 },
+    "byStudioRole": { "developer": 290, "publisher": 240 },
+    "wikidata": {                      // бейдж «WD: …» (§8.3)
+      "state": "ok",                   // ok | never_run | unavailable | cooldown | disabled
+      "badge": null,                   // null | "WD: не запущено" | "WD: недоступно" | "WD: выключено"
+      "reason": null,                  // код провайдера: wikidata_429, never_run, cooldown, disabled_by_env
+      "enabled": true,
+      "lastSuccessAt": "2026-11-01T12:00:00.000Z",
+      "lastAttemptAt": "2026-11-01T12:00:00.000Z",
+      "lastError": null,
+      "disabledUntil": null
+    }
   },
-  "pending": { "details": 340, "credits": 221 },
+  "pending": {
+    "details": 0,                      // игры без details/<appid>.json
+    "credits": 221,                    // игры без людей-кредитов
+    "running": true,                   // пасс WD/импорт идёт прямо сейчас
+    "jobId": "games-personnel-…",      // id пасса, если running/started
+    "reason": "started"                // см. таблицу ниже; null — всё есть
+  },
   "sources": {
     "credits": ["steam-store", "wikidata"],
-    "wikidata": { "enabled": true, "disabledUntil": null },
+    "wikidata": { "state": "ok", "badge": null, "enabled": true, "disabledUntil": null, "...": "как в coverage.wikidata" },
     "mobygames": {
       "enabled": false, "configured": false, "source": null,
       "reason": "key_missing", "budget": 100, "budgetUsed": 0,
@@ -83,7 +144,7 @@ app.use('/api/games', require('./games/personnel/routes-personnel'));
     "builtAt": "2026-11-01T12:00:00.000Z",
     "buildMs": 19,
     "gamesConsidered": 340,
-    "completionAvailable": false,
+    "completionAvailable": true,
     "detailsSource": "cache-games/details",
     "creditsCache": "cache-games/personnel",
     "libraryPartial": false,
@@ -92,32 +153,96 @@ app.use('/api/games', require('./games/personnel/routes-personnel'));
 }
 ```
 
+### `pending.reason` — почему кредитов ещё нет
+
+| Значение | Что значит | Что делать UI |
+|---|---|---|
+| `null` | всё есть (`credits: 0`) | ничего |
+| `running` | пасс персоналий уже идёт | показать «собираем…», повторить запрос |
+| `waiting_details` | идёт store-enrich, пасс ждёт `details` | показать «обогащаем детали…» |
+| `started` | роут только что запустил пасс (fire-and-forget) | показать «собираем…», повторить через несколько секунд |
+| `recent_cooldown` | пасс уже прогонялся < 10 мин назад | просто бейдж покрытия |
+| `wikidata_not_run` | WD ещё не спрашивали, Moby без ключа | «WD: не запущено» |
+| `wikidata_cooldown` | WD в паузе после 403/429/5xx | «WD: недоступно» + `disabledUntil` |
+| `wikidata_unavailable` | WD отвечал ошибкой | «WD: недоступно» + `reason` |
+| `sources_disabled` | `KINOBOXD_GAMES_WD=off` и нет ключа Moby | «WD: выключено» |
+| `details_pending` | нет ни одного `details/<appid>.json` — WD по appid спрашивать нечего | кнопка «Обогатить» (M2) |
+| `auto_disabled` | сервер запущен с `autoPersonnel:false` (тесты/отладка) | — |
+| `lock_busy` | пасс идёт в другом процессе (`personnel.lock`) | повторить позже |
+| `kick_failed` | запуск пасса упал (см. лог сервера) | повторить позже |
+
 ### Семантика полей (важно для UI)
 
-- **`count`** — число игр, где человек/студия имеет **запрошенную роль**
-  (для `role=studio` — любая студийная роль). Это не «число упоминаний».
+- **`count`** — число игр, где человек/студия имеет **запрошенную роль**.
+  Для `role=developer` издатель той же компании не добавляет игру в счёт.
 - **`hours`** — сумма часов этих игр; один хит перевешивает десять малых.
 - **`hoursShare`** — доля от `totals.hours` (часы всех учтённых игр профиля),
-  округление до 4 знаков. Не доля от «всех часов Steam» при `includeFree=0` —
-  параметра фильтра у персоналий нет.
+  округление до 4 знаков.
 - **`avgCompletion`** — среднее `achieved/total` по играм автора, у которых есть
-  достижения; `null`, если ни у одной нет. **Не 0.** Если
-  `meta.completionAvailable === false` — виджет completion не рисуется.
+  достижения; `null`, если ни у одной нет. **Не 0.**
 - **`ambiguous: true`** — одно имя принадлежит разным QID (John Smith). Такие
-  элементы нельзя схлопывать и не стоит ставить в топ без ручного merge.
-- **`sources`** — происхождение записи; у студии Steam+Wikidata оба источника.
+  элементы нельзя схлопывать.
 - **`coverage.percent`** — бейдж «Кредиты: N%» (игры с людьми / все учтённые).
-  `studioPercent` — отдельный бейдж для студий (обычно 100% после M2).
-- **`pending`** — честная неполнота: `details` = игры без `details/<appid>.json`
-  (M2 ещё не обогатил), `credits` = игры без людей-кредитов. `0` — всё есть.
+  `developerPercent`/`publisherPercent` — отдельные бейджи ролей.
+- **`coverage.wikidata.badge`** — готовый текст «WD: не запущено» /
+  «WD: недоступно» / «WD: выключено» (`null` = скрыть). `reason` — код
+  провайдера, `disabledUntil` — до какого времени пауза.
+- **`pending`** — честная неполнота; `0` — всё есть. `running`/`reason`
+  описывают, что делает сервер, чтобы виджет не показывал «пусто» молча.
 - **`sources.mobygames`** — только флаги/источник ключа, **никогда значение**.
-  `enabled:false, reason:'key_missing'` — штатное состояние этого раунда.
 - **`meta.libraryPartial`** — библиотека без `STEAM_API_KEY` (только профиль).
 
-### Пустое состояние
+## Откуда берутся кредиты (WD-триггер)
 
-`items: []` — валидный ответ (нет details/кредитов). UI показывает бейдж
-покрытия и «данных пока нет», а не нули. Скрывать блок по `items.length === 0`.
+Ключевой фикс 01.11.2026. Раньше `enrichPersonnel()` был доступен только
+ручному CLI (`node server/games/personnel/backfill.js`), а
+`GET /api/games/personnel` читает кэш и никогда не ходит в сеть. На проде CLI
+никто не запускал → в `cache-games/personnel/` пусто → виджет навсегда видел
+только студии Steam («композиторы не приехали»). Теперь пасс запускается сам:
+
+1. **Импорт / refresh** (`POST /api/games/import`, `/import/steam`,
+   `/refresh`): после store-enrich стартует `kickPersonnelQuietly`. Ответ
+   импорта содержит `personnelJobId` / `personnelSkipped`.
+2. **`POST /api/games/enrich`**: рядом с enrich-джобой стартует пасс
+   персоналий; ответ содержит `personnelJobId`.
+3. **Ленивый запуск из `GET /api/games/personnel`**: если кредиты неполные и
+   пасс не идёт — fire-and-forget запуск, ответ **не блокируется**:
+   `pending.running: true`, `pending.reason: "started"`, `pending.jobId`.
+   Следующий запрос отдаёт уже собранные кредиты.
+4. **Порядок гарантирован**: пасс ждёт завершения store-enrich
+   (`enrichJobs.whenIdle()`), иначе `details/<appid>.json` ещё нет и
+   обогащать нечего.
+5. **Один пасс за раз**: в процессе — очередь, между процессами — файловый
+   лок `<state>/games/personnel.lock` (CLI/таймер vs сервер). Занятый лок →
+   джоба `skipped`, `skipped: "lock_busy"`, без запросов к WDQS.
+6. **Coalescing**: повторный `kick` во время работы возвращает тот же `jobId`;
+   повторный ленивый kick в течение 10 минут не перезапускает пасс
+   (`recent_cooldown`).
+7. **Полит-корректность WDQS не меняется**: один SPARQL-батч на ≤450
+   appid/QID, пауза между батчами, breaker 30 мин на 403/429/5xx
+   (`wikidata.js`). Лок персоналий — отдельный от enrich, счётчики не
+   пересекаются.
+
+## `GET /api/games/personnel/status?id=…`
+
+Статус пасса (для «собираем кредиты…» и диагностики). `id` обязателен,
+неизвестный → `404 unknown_job`.
+
+```jsonc
+{
+  "jobId": "games-personnel-…", "id": "games-personnel-…",
+  "job": "games-personnel", "source": "wikidata",
+  "profile": "steam-76561198038369983",
+  "status": "done",          // running | done | failed | skipped
+  "stage": "done",           // queued | waiting_details | fetching | done | failed | skipped
+  "done": true, "reused": false, "force": false, "limit": 500,
+  "games": 340, "updated": 297, "skippedFresh": 0, "pendingDetails": 0,
+  "wdQueries": 1, "wdSkipped": null, "wdDisabledUntil": null,
+  "mobyRequests": 0, "enrichWait": "idle",
+  "errors": [], "skipped": null, "code": null, "error": null,
+  "startedAt": 1762000000000, "finishedAt": 1762000037000, "elapsedMs": 37000
+}
+```
 
 ## `POST /api/games/override`
 
@@ -145,12 +270,10 @@ app.use('/api/games', require('./games/personnel/routes-personnel'));
 
 Ошибки: `400 invalid_override_type|invalid_override_action|invalid_override_from|invalid_override_to`.
 
-## Что появится после интеграции
+## Пустое состояние
 
-- `GET /api/games/game/:appid` должен отдавать `personnel` из
-  `personnelForGame(appid)` (студии + люди + `pending`), а не `null` из M1.
-- В `/api/games/stats` оркестратор добавит `summary.metadata.creditsResolved/percent`
-  (из `coverage`) — этот раунд `stats.js` не трогает.
+`items: []` — валидный ответ (нет details/кредитов). UI показывает бейдж
+покрытия и «данных пока нет», а не нули. Скрывать блок по `items.length === 0`.
 
 ## Ограничения (честно)
 
@@ -159,13 +282,13 @@ app.use('/api/games', require('./games/personnel/routes-personnel'));
 - **Wikidata неровная**: у Witcher 2 — 2 композитора, у Witcher 1 (Enhanced
   Edition) — ни одного; у Pathologic — композитор, 2 дизайнера, режиссёр,
   программист. Это не баг, это покрытие источника.
-- **`creator` (P170) и `writer` (P58)** — `confidence: 'low'`; P58 — свойство
-  сценариста кино, для игр применимо не всегда. UI может не показывать `low`.
+- **`creator` (P170) и `writer` (P58)** — `confidence: 'low'`.
 - **Компания в P162 (producer)** не становится человеком, если тот же QID уже
-  студия этой игры (дедуп в `wikidata.js`); компания-«продюсер» без dev/pub
-  остаётся человеком — известный шум Wikidata.
+  студия этой игры (дедуп в `wikidata.js`).
 - **`links/<appid>.json`** пока не пишет никто (M2): live-прогон резолвит игру
   через `P1733` (Steam appid) в том же SPARQL. Когда M2 начнёт писать `links`,
-  приоритет у `links.qid` (резолв один раз, §4.1).
+  приоритет у `links.qid`.
 - **details от M2**: принимаются `developers`/`publishers`; написание
-  `developirts` тоже принято (терпимость к контракту M2, не догадка о данных).
+  `developirts` тоже принято (терпимость к контракту M2).
+- **Негативный кэш 90 дней**: «WD ничего не знает об этой игре» запоминается,
+  поэтому повторный пасс не тратит WDQS-бюджет.

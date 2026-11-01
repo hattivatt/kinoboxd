@@ -32,6 +32,7 @@ const config = require('../config');
 const steam = require('./steam');
 const gameCache = require('./game-cache');
 const enrichJobs = require('./enrich');
+const personnelJobs = require('./personnel/jobs');
 
 const jobs = new Map();
 const jobOrder = [];
@@ -98,6 +99,10 @@ function publicStatus(job) {
     // was disabled, skipped (partial library) or failed.
     enrichJobId: job.enrichJobId || null,
     enrichSkipped: job.enrichSkipped || null,
+    // M3: the Wikidata/Moby pass started right after the store enrich, so the
+    // personnel widget has people credits by the time the dashboard opens.
+    personnelJobId: job.personnelJobId || null,
+    personnelSkipped: job.personnelSkipped || null,
   };
 }
 
@@ -176,6 +181,38 @@ function kickEnrichQuietly(job, options = {}) {
     console.warn(`[games-import ${job.id}] enrich kick failed (import kept): ${message}`);
     return null;
   }
+}
+
+/**
+ * Personnel (Wikidata/Moby) enrichment is the *second* follow-up: it only has
+ * something to do once `details/<appid>.json` exists, so the job waits for the
+ * enrich chain it was started next to. Without this kick the personnel route
+ * had no writer at all and composers/designers never arrived in production
+ * (ИГРЫ §2.4 fix, 01.11.2026). Fire-and-forget: a failure is a job warning, the
+ * import stays `done`.
+ */
+function kickPersonnelQuietly(job, options = {}) {
+  if (options.autoPersonnel === false) return null;
+  if (!job || !job.profile) return null;
+  if (job.libraryPartial) {
+    job.personnelSkipped = 'library_partial';
+    return null;
+  }
+  const status = personnelJobs.kickQuietly(job.profile, {
+    ...(options.personnelOptions || {}),
+    waitForEnrich: true,
+  });
+  if (status && status.id) {
+    job.personnelJobId = status.id;
+    console.log(
+      `[games-import ${job.id}] personnel kicked: ${status.id} ` +
+        `(stage=${status.stage}, running=${status.status === 'running'})`
+    );
+  } else {
+    job.personnelJobId = null;
+    job.personnelSkipped = (status && status.skipped) || 'skipped';
+  }
+  return status;
 }
 
 /** Resolve a vanity against the cached profiles (idempotent re-import). */
@@ -289,6 +326,7 @@ async function runImport(job, target, client, options) {
     job.warnings = ['steam_key_missing'];
     // Nothing to enrich without a real library; records `enrichSkipped`.
     kickEnrichQuietly(job, options);
+    kickPersonnelQuietly(job, options);
     return;
   }
 
@@ -356,6 +394,8 @@ async function runImport(job, target, client, options) {
   // Auto-enrich (§UX): the UI should not have to start the details job by
   // hand after a successful import or refresh.
   kickEnrichQuietly(job, options);
+  // …and the credits pass after it (it waits for the enrich chain itself).
+  kickPersonnelQuietly(job, options);
 }
 
 /**
@@ -428,6 +468,7 @@ function startImport(rawTarget, options = {}) {
       // A cached library still needs details: the UI treats "import done" as
       // the moment to show the dashboard, so the enrich job starts here too.
       kickEnrichQuietly(reused, options);
+      kickPersonnelQuietly(reused, options);
       return publicStatus(reused);
     }
   }

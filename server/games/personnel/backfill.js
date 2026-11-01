@@ -16,15 +16,21 @@
  * Results are written to `cache-games/personnel/<appid>.json`, including a
  * 90-day negative cache for «no credits».
  *
+ * The same `personnel.lock` the server's on-demand job uses is taken first
+ * (`GAMES_PERSONNEL_LOCK_WAIT_MS`, default 0): the CLI and a route-triggered
+ * pass must not spend the WDQS budget twice or race the same documents.
+ *
  * The report never contains a token: Moby status reports `source` only.
  * Exit codes: 0 = ran, 1 = bad usage/unknown profile, 2 = WDQS disabled and
- * Moby not configured (nothing could be fetched).
+ * Moby not configured (nothing could be fetched), 3 = `personnel.lock` is held
+ * by another pass (skipped, 0 requests).
  */
 
 const gameCache = require('../game-cache');
 const personnel = require('./personnel');
 const wikidata = require('./wikidata');
 const moby = require('./moby');
+const lock = require('./lock');
 
 function parseArgs(argv) {
   const out = { profileKey: null, limit: 200, force: false, json: false };
@@ -72,11 +78,28 @@ async function main(argv = process.argv.slice(2)) {
     );
     return 2;
   }
-  const report = await personnel.enrichPersonnel({
-    profileKey: parsed.key,
-    limit: args.limit,
-    force: args.force,
-  });
+  const lockWaitMs = (() => {
+    const raw = Number(process.env.GAMES_PERSONNEL_LOCK_WAIT_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 0;
+  })();
+  const held = await lock.acquireLock({ owner: 'games-personnel-backfill', waitMs: lockWaitMs });
+  if (!held.ok) {
+    console.error(
+      '[games-personnel] personnel.lock is held by another pass (server job?) — ' +
+        'skipped, 0 requests. Retry later or raise GAMES_PERSONNEL_LOCK_WAIT_MS.'
+    );
+    return 3;
+  }
+  let report;
+  try {
+    report = await personnel.enrichPersonnel({
+      profileKey: parsed.key,
+      limit: args.limit,
+      force: args.force,
+    });
+  } finally {
+    lock.releaseLock(held.token);
+  }
   const summary = {
     ...report,
     wikidata: { enabled: wdOn },
