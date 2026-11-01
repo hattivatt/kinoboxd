@@ -25,6 +25,7 @@ import { getGameDetails } from './api.js';
 import {
   GAME_SORT_OPTIONS, sortGameRows, personGames, personSummaryText, hoursText, percentText,
   formatDateRu, gameTypeLabel, personnelRoleLabel, normalizeGameCard, gamesInFranchise,
+  secondaryWorkCardView,
 } from './games-view.js';
 
 const GAME_BATCH = 60;
@@ -1016,4 +1017,104 @@ export function openGameCardModal(appid, { fallback = null } = {}) {
 
   load();
   return modal;
+}
+
+/**
+ * M6c: client-side card for a secondary (GOG/Epic-only) work.
+ *
+ * There is no `/api/games/game/:appid` for a non-Steam game, and inventing a
+ * Steam card would be a lie. Everything is rendered from the union payload the
+ * «Вне Steam» list already holds: title, poster, release year, genres when the
+ * backend sent them, and **one hours row per source** (never a combined total).
+ */
+export function openSecondaryWorkCardModal(work) {
+  const card = secondaryWorkCardView(work);
+  if (!card) {
+    toast('У этой работы нет данных для карточки', 'error');
+    return null;
+  }
+  seq += 1;
+  const titleId = `game-secondary-title-${seq}`;
+  const head = el('div', { class: 'modal-head' });
+  head.dataset.titleId = titleId;
+  const copy = el('div', { class: 'modal-head-copy' });
+  const storeLabel = card.sourceLabels.length ? card.sourceLabels.join(' + ') : 'вне Steam';
+  copy.append(el('div', { class: 'modal-role', text: `Работа вне Steam · ${storeLabel}` }));
+  copy.append(el('h2', { class: 'modal-title', id: titleId, text: card.name }));
+  if (card.subtitle) copy.append(el('div', { class: 'modal-sub', text: card.subtitle }));
+  head.append(copy);
+  head.insertBefore(gameCoverVerticalEl({
+    name: card.name,
+    verticalCoverUrl: card.coverUrl,
+    coverUrl: card.coverUrl,
+  }, { className: 'modal-game-cover' }), copy);
+
+  const body = el('div', { class: 'modal-body' });
+  if (card.sourceChips.length) {
+    const strip = el('div', { class: 'game-tags-strip', 'aria-label': 'Источники' });
+    for (const chip of card.sourceChips) {
+      strip.append(el('span', {
+        class: `games-sources-chip is-${chip.source}`,
+        text: chip.label,
+      }));
+    }
+    copy.append(strip);
+  }
+
+  const facts = el('dl', { class: 'games-facts game-card-facts' });
+  facts.append(factRow(
+    'год релиза',
+    card.releaseYear ? String(card.releaseYear) : 'неизвестен',
+    'releaseDate из GOG/Epic; Steam Store для этой работы не запрашивается',
+  ));
+  facts.append(factRow('источники', storeLabel, 'Работа есть только во вторых библиотеках, не в Steam'));
+  body.append(facts);
+
+  const hoursGrid = el('div', { class: 'games-secondary-hours' });
+  for (const row of card.hourRows) {
+    const line = el('div', {
+      class: `games-secondary-hour-row is-${row.source}${row.present ? '' : ' is-absent'}`,
+    });
+    line.append(el('span', { class: 'games-secondary-hour-source', text: row.label }));
+    const value = el('span', { class: 'games-secondary-hour-value' });
+    if (row.hours != null) value.append(el('strong', { text: row.hoursText }));
+    else value.append(el('span', { class: 'is-muted', text: row.status }));
+    line.append(value);
+    hoursGrid.append(line);
+  }
+  body.append(section(
+    'Часы по источникам',
+    hoursGrid,
+    el('p', {
+      class: 'game-note',
+      text: 'Часы не суммируются: одна игра может запускаться в нескольких магазинах. '
+        + 'Steam-журнал остаётся отдельным и в эти строки не входит.',
+    }),
+  ));
+
+  if (card.genres.length) {
+    const chips = el('div', { class: 'game-tags-strip' });
+    for (const genre of card.genres) {
+      chips.append(el('span', { class: 'game-tag-chip', text: genre }));
+    }
+    body.append(section('Жанры', chips));
+  }
+
+  if (card.storeLinks.length) {
+    const links = el('div', { class: 'game-links' });
+    for (const link of card.storeLinks) {
+      links.append(el('a', {
+        class: 'btn btn-ghost game-link',
+        href: link.href,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        text: link.label,
+      }));
+    }
+    body.append(section('Ссылки', links));
+  }
+
+  body.append(section('Детали', el('p', { class: 'game-note', text: card.note })));
+
+  return openModal({ head, body, labelledBy: titleId, className: 'modal-game' });
 }
