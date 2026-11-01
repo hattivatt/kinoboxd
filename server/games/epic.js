@@ -98,8 +98,11 @@ function maskSecrets(value) {
   return String(value == null ? '' : value)
     .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1***')
     .replace(/(basic\s+)[A-Za-z0-9+/=]+/gi, '$1***')
+    // Epic tokens have the `eg1~` prefix; mask the shape even if a future
+    // payload puts it somewhere the key-based rules do not expect.
+    .replace(/\beg1~[A-Za-z0-9._~+/=-]+/g, 'eg1~***')
     .replace(
-      /((?:access_token|refresh_token|device_code|client_secret|password|secret|authorization)["']?\s*[:=]\s*["']?)[^"'&\s,}]+/gi,
+      /((?:access_token|accessToken|refresh_token|refreshToken|device_code|deviceCode|client_secret|clientSecret|password|secret|authorization)["']?\s*[:=]\s*["']?)[^"'&\s,}]+/gi,
       '$1***'
     )
     .replace(
