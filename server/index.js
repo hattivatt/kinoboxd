@@ -51,7 +51,18 @@ const uploadMiddleware = multer({
 app.disable('x-powered-by');
 // /api/stats is several megabytes of JSON; gzip cuts it by ~85% and is the
 // single biggest transfer win. Also compresses static JS/CSS.
-app.use(compression());
+//
+// `/api/games/*` goes through our own zlib middleware (server/gzip.js): the
+// games payload is ~290 KB of JSON (the gamesIndex is ~90% of it) and an
+// explicit layer keeps the ratio measurable and testable. The filter below
+// keeps `compression()` away from that prefix so a response is never
+// compressed twice.
+const gzipGames = require('./gzip');
+app.use(
+  compression({
+    filter: gzipGames.skipPrefix('/api/games', compression.filter),
+  })
+);
 app.use(express.json({ limit: '1mb' }));
 
 // Password protection (KINOBOXD_PASSWORD). When the env var is missing the
@@ -67,6 +78,9 @@ app.use('/api/books', booksRouter);
 
 // Games live in their own namespace and cache (cache-games/). The film and
 // book payloads are untouched.
+// gzip: our own zlib middleware for this prefix (server/gzip.js) — mounted
+// before the routers so it wraps their `res.json` bodies.
+app.use('/api/games', gzipGames());
 app.use('/api/games', gamesRouter);
 
 // Personnel (M3): GET /api/games/personnel + POST /api/games/override.

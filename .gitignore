@@ -27,4 +27,5 @@ cache-games/
 
 # worktree-only symlinks to the main tree (never content)
 /cache
+/cache-games
 /node_modules

@@ -151,7 +151,7 @@ test('base filters (includeFree=1, includeDlc=0): DLC/demo excluded, unknown kep
 
   assert.deepEqual(Object.keys(payload.gamesIndex).sort(), ['1001', '1002', '1004', '1005']);
   assert.equal(payload.unmatchedCount, 1);
-  assert.deepEqual(payload.meta.pending, ['tags', 'franchises', 'studios', 'personnelTop']);
+  assert.deepEqual(payload.meta.pending, ['tags', 'reviews', 'franchises', 'studios', 'personnelTop']);
 });
 
 test('years/decades: releaseYear buckets with an honest unknown bucket last', () => {
@@ -243,6 +243,10 @@ test('gamesIndex carries the full details entry; top/backlog are enriched', () =
     isFree: false,
     earlyAccess: false,
     metadataSources: ['steam-store'],
+    // M4 (additive): no SteamSpy/reviews documents in this fixture.
+    tags: [],
+    reviewScore: null,
+    reviewDesc: null,
     completion: null,
     achievements: null,
   });
