@@ -33,6 +33,7 @@ const steam = require('./steam');
 const gameCache = require('./game-cache');
 const enrichJobs = require('./enrich');
 const personnelJobs = require('./personnel/jobs');
+const franchiseJobs = require('./franchise-jobs');
 
 const jobs = new Map();
 const jobOrder = [];
@@ -109,6 +110,10 @@ function publicStatus(job) {
     // personnel widget has people credits by the time the dashboard opens.
     personnelJobId: job.personnelJobId || null,
     personnelSkipped: job.personnelSkipped || null,
+    // M4-B: Wikidata franchises + release years, started after the credits
+    // pass and sharing its WDQS lock.
+    franchiseJobId: job.franchiseJobId || null,
+    franchiseSkipped: job.franchiseSkipped || null,
   };
 }
 
@@ -220,6 +225,40 @@ function kickPersonnelQuietly(job, options = {}) {
   } else {
     job.personnelJobId = null;
     job.personnelSkipped = (status && status.skipped) || 'skipped';
+  }
+  return status;
+}
+
+/**
+ * Franchise (Wikidata P179/P577) is the third follow-up: it only needs the
+ * library appids, so it does not wait for details. It takes the *same* WDQS
+ * lock as the personnel pass (`personnel.lock`), so the two passes queue
+ * instead of querying Wikidata at the same time; a failure/skip is a job
+ * warning, the import stays `done`.
+ */
+function kickFranchiseQuietly(job, options = {}) {
+  // Opt-in from the route layer (`autoFranchise: deps.autoFranchise !== false`):
+  // direct `startImport` calls (tests, scripts) must not silently spend WDQS.
+  if (options.autoFranchise !== true) return null;
+  if (!job || !job.profile) return null;
+  if (job.libraryPartial) {
+    job.franchiseSkipped = 'library_partial';
+    return null;
+  }
+  const status = franchiseJobs.kickQuietly(job.profile, {
+    ...(options.franchiseOptions || {}),
+    waitForEnrich: true,
+    forceKick: true,
+  });
+  if (status && status.id) {
+    job.franchiseJobId = status.id;
+    console.log(
+      `[games-import ${job.id}] franchise kicked: ${status.id} ` +
+        `(stage=${status.stage}, running=${status.status === 'running'})`
+    );
+  } else {
+    job.franchiseJobId = null;
+    job.franchiseSkipped = (status && status.skipped) || 'skipped';
   }
   return status;
 }
@@ -355,6 +394,7 @@ async function runImport(job, target, client, options) {
     // Nothing to enrich without a real library; records `enrichSkipped`.
     kickEnrichQuietly(job, options);
     kickPersonnelQuietly(job, options);
+    kickFranchiseQuietly(job, options);
     return;
   }
 
@@ -424,6 +464,9 @@ async function runImport(job, target, client, options) {
   kickEnrichQuietly(job, options);
   // …and the credits pass after it (it waits for the enrich chain itself).
   kickPersonnelQuietly(job, options);
+  // Franchises/release years share the WDQS lock with the credits pass, so
+  // they queue behind it instead of doubling the Wikidata debt.
+  kickFranchiseQuietly(job, options);
 }
 
 /**
@@ -497,6 +540,7 @@ function startImport(rawTarget, options = {}) {
       // the moment to show the dashboard, so the enrich job starts here too.
       kickEnrichQuietly(reused, options);
       kickPersonnelQuietly(reused, options);
+      kickFranchiseQuietly(reused, options);
       return publicStatus(reused);
     }
   }

@@ -501,7 +501,13 @@ async function runBatched(values, buildQuery, keyBy, options) {
       if (failure) return result;
       continue;
     }
-    const parsed = parseCreditsResponse(data, { keyBy });
+    // The dispatcher is shared: callers may inject their own parser (the
+    // franchise pass parses P179/P577, not credits) while keeping the exact
+    // same batching, pause and breaker semantics.
+    const parse = typeof options.parse === 'function'
+      ? options.parse
+      : (payload) => parseCreditsResponse(payload, { keyBy });
+    const parsed = parse(data);
     for (const [key, doc] of parsed) result.credits.set(key, doc);
 
     state.failures = 0;
@@ -575,5 +581,6 @@ module.exports = {
   parseCreditsResponse,
   fetchCredits,
   creditsForAppids,
+  runBatched,
   defaultStateStore,
 };

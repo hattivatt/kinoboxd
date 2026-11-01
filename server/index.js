@@ -25,6 +25,7 @@ const { buildStats, listUnmatched } = require('./stats');
 const booksRouter = require('./books/routes');
 const gamesRouter = require('./games/routes');
 const gamesPersonnelRouter = require('./games/personnel/routes-personnel');
+const gamesFranchiseRouter = require('./games/routes-franchise');
 
 // Fail fast, before the HTTP server starts, if TMDB credentials are missing.
 // Missing config is an expected condition: print one clean line and exit 1
@@ -87,6 +88,10 @@ app.use('/api/games', gamesRouter);
 // Mounted after the M1 router — the paths are disjoint (/personnel,
 // /override) so the ordering only keeps the existing routes untouched.
 app.use('/api/games', gamesPersonnelRouter);
+
+// Franchises (M4-B): GET /api/games/franchises + POST /api/games/franchise-enrich.
+// Disjoint paths again (/franchises, /franchise-enrich), mounted last.
+app.use('/api/games', gamesFranchiseRouter);
 
 /* ------------------------------------------------------------------ */
 /* API                                                                 */
