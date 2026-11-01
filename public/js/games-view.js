@@ -971,12 +971,22 @@ export function normalizeSecondaryWork(entry, context = {}) {
   const hoursTextValue = hoursParts.length === 1
     ? hoursParts[0].hoursText
     : hoursParts.map((part) => `${part.label} ${part.hoursText}`).join(' · ');
-  const image = normalizeHttpUrl(
-    entry.verticalCoverUrl || entry.coverUrl || entry.image
-    || gog.verticalCoverUrl || gog.coverUrl || gog.image
-    || epic.verticalCoverUrl || epic.coverUrl || epic.image
+  // M6d: the store product poster is `verticalCover` (GOG box art 171×241,
+  // Epic portrait 1200×1600). It is the card art and must win over the older
+  // `verticalCoverUrl` spelling and over the horizontal `image` (which CSS
+  // centre-crops into the 2:3 frame). Before this, the union card silently
+  // fell back to the landscape banner even when a cached detail had a poster.
+  const verticalCover = normalizeHttpUrl(
+    entry.verticalCover || entry.verticalCoverUrl
+    || gog.verticalCover || gog.verticalCoverUrl
+    || epic.verticalCover || epic.verticalCoverUrl
   );
-  const coverUrl = normalizeHttpUrl(entry.verticalCoverUrl || entry.coverUrl) || image;
+  const image = verticalCover || normalizeHttpUrl(
+    entry.coverUrl || entry.image
+    || gog.coverUrl || gog.image
+    || epic.coverUrl || epic.image
+  );
+  const coverUrl = image;
   const releaseYear = numOrNull(entry.releaseYear ?? entry.year)
     ?? yearFromDate(entry.releaseDate)
     ?? yearFromDate(gog.releaseDate)
@@ -1008,6 +1018,9 @@ export function normalizeSecondaryWork(entry, context = {}) {
     slug: slug || null,
     image: image || null,
     coverUrl: coverUrl || null,
+    // M6d poster in its own field: the store art, distinct from the horizontal
+    // `image` fallback, so callers can tell «настоящий постер» from «баннер».
+    verticalCover: verticalCover || null,
     releaseDate: text(entry.releaseDate) || text(gog.releaseDate) || text(epic.releaseDate) || null,
     releaseYear: releaseYear != null ? Math.round(releaseYear) : null,
     genres,

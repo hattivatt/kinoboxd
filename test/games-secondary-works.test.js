@@ -136,6 +136,42 @@ test('M6c «Вне Steam» view models', async (t) => {
     assert.equal(epic.storeLinks[0].href, 'https://store.epicgames.com/p/epic-exclusive');
   });
 
+  await t.test('M6d: the store poster `verticalCover` wins over older spellings and the banner', async () => {
+    const { normalizeGamesPayload, secondaryWorkCardView } = await import('../public/js/games-view.js');
+    const gogPoster = 'https://images-1.gog-statics.com/box_171x241.jpg';
+    const epicPoster = 'https://cdn2.unrealengine.com/egs-witcher/1200x1600.jpg';
+    const normalized = normalizeGamesPayload(payload([
+      gogWork({ verticalCover: gogPoster }),
+      // Both spellings present: the M6d `verticalCover` must win.
+      epicWork({ verticalCover: epicPoster, verticalCoverUrl: 'https://img/old-epic.jpg' }),
+    ]));
+    const [gog, epic] = normalized.secondaryWorks;
+
+    assert.equal(gog.verticalCover, gogPoster);
+    assert.equal(gog.coverUrl, gogPoster);
+    assert.equal(gog.image, gogPoster);
+    assert.equal(epic.verticalCover, epicPoster);
+    assert.equal(epic.coverUrl, epicPoster);
+
+    // The union card (chart drilldown → modal) paints the same poster.
+    const card = secondaryWorkCardView(gog);
+    assert.equal(card.coverUrl, gogPoster);
+    assert.equal(card.verticalCover, gogPoster);
+
+    // No store poster: the horizontal library art is the fallback (CSS
+    // centre-crops it into the 2:3 frame), and nothing is invented.
+    const fallback = normalizeGamesPayload(payload([gogWork()])).secondaryWorks[0];
+    assert.equal(fallback.verticalCover, null);
+    assert.equal(fallback.coverUrl, 'https://images.gog.com/indie.jpg');
+
+    const noArt = normalizeGamesPayload(payload([
+      gogWork({ gog: { gogGameId: '7', slug: 'no-art' } }),
+    ])).secondaryWorks[0];
+    assert.equal(noArt.verticalCover, null);
+    assert.equal(noArt.coverUrl, null);
+    assert.equal(noArt.image, null);
+  });
+
   await t.test('normalizeGamesPayload: missing/unknown playtime is not a confident zero', async () => {
     const { normalizeGamesPayload } = await import('../public/js/games-view.js');
     const normalized = normalizeGamesPayload(payload([
