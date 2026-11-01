@@ -45,7 +45,7 @@ import {
 } from './games-view.js';
 import {
   configureGamesModals, openGameCardModal, openGameListModal, openPersonModal, personAvatarEl,
-  openFranchiseModal, gameCoverEl,
+  openFranchiseModal, gameCoverVerticalEl,
 } from './games-modal.js';
 import { renderAchievementCalendar, renderAchievementStreaks } from './games-charts.js';
 
@@ -1185,7 +1185,7 @@ function renderRecentStrip(data) {
       title: `${item.name}${item.lastPlayedText ? ` · последний раз ${item.lastPlayedText}` : ''}`,
       'aria-label': `${item.name}: открыть карточку игры`,
     });
-    art.append(gameCoverEl(
+    art.append(gameCoverVerticalEl(
       { name: item.name, appid: item.appid, primaryAppid: item.primaryAppid, iconUrl: item.iconUrl },
       { className: 'games-recent-icon' },
     ));

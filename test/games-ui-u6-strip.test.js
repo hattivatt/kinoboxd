@@ -1,13 +1,14 @@
 'use strict';
 
 /**
- * Games U6: «Недавно играл» — one card per canonical work, wide Steam covers.
+ * Games U6: «Недавно играл» — one card per canonical work, vertical posters.
  *
  * The strip used to paint the payload's `recentlyPlayed` rows *and* every
  * `gamesIndex` entry, so two store editions of one work could appear twice.
  * This smoke drives the real `games.js`: the index carries two Darksiders
  * editions, the strip must paint one card, and every card/modal image must be
- * the wide `header.jpg` cover (not the stretched 32×32 community icon).
+ * the vertical `library_600x900` poster (not the stretched 32×32 community
+ * icon and not the landscape `header.jpg` while a vertical exists).
  */
 
 const test = require('node:test');
@@ -177,7 +178,7 @@ function images(host) {
 
 async function wait(ms = 0) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
-test('strip: two editions of one work paint one card with a wide header cover', async () => {
+test('strip: two editions of one work paint one card with a vertical poster', async () => {
   const games = await import('../public/js/games.js');
   games.initGames({ onActivate() {} });
   await games.showGames();
@@ -192,23 +193,32 @@ test('strip: two editions of one work paint one card with a wide header cover', 
   assert.match(textOf(strip.children[0]), /Darksiders Warmastered Edition/);
   assert.match(textOf(strip.children[1]), /Half-Life/);
 
-  // Every strip image is the wide cover of the canonical (primary) edition.
+  // Every strip image is the vertical library capsule of the canonical
+  // (primary) edition — the same 2:3 shape as books/films.
   const srcs = images(strip);
   assert.equal(srcs.length, 2);
   assert.deepEqual(srcs, [
-    'https://cdn.cloudflare.steamstatic.com/steam/apps/937/header.jpg',
-    'https://cdn.cloudflare.steamstatic.com/steam/apps/70/header.jpg',
+    'https://cdn.cloudflare.steamstatic.com/steam/apps/937/library_600x900.jpg',
+    'https://cdn.cloudflare.steamstatic.com/steam/apps/70/library_600x900.jpg',
   ]);
   for (const src of srcs) {
     assert.doesNotMatch(src, /steamcommunity\/public\/images/, '32×32 icon не должен быть обложкой');
+    assert.doesNotMatch(src, /\/header\.jpg$/, 'вертикальный capsule важнее ландшафтного header');
+  }
+  // The art frame and the image carry the classes the CSS sizes to 2:3.
+  for (const card of strip.children) {
+    const art = card.children.find((node) => String(node.className || '').includes('games-recent-art'));
+    assert.ok(art, 'карточка без .games-recent-art');
+    const img = art.children.find((node) => node.tagName === 'IMG');
+    assert.equal(img.className, 'games-recent-icon');
   }
 
-  // The card head of the modal uses the same wide cover (primary edition).
+  // The card head of the modal uses the same vertical poster (primary edition).
   strip.children[0].children[0].click();
   await wait(20);
   const modal = nodeFor('modal-root');
   const modalImages = images(modal);
   assert.ok(modalImages.length >= 1, 'в карточке нет обложки');
-  assert.equal(modalImages[0], 'https://cdn.cloudflare.steamstatic.com/steam/apps/937/header.jpg');
+  assert.equal(modalImages[0], 'https://cdn.cloudflare.steamstatic.com/steam/apps/937/library_600x900.jpg');
   assert.match(textOf(modal).replace(/\s+/g, ' '), /Darksiders Warmastered Edition/);
 });

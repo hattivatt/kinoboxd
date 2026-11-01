@@ -13,8 +13,9 @@
  *      donut slices (the year-less bucket is a note button, never a slice),
  *      «Годы релиза» paints every year as a donut slice by default, a decade
  *      slice narrows it, and the note opens the year-less list;
- *   3. the Steam cover chain: header.jpg → capsule_231x87 → 32×32 icon →
- *      initials, built from the canonical `primaryAppid`.
+ *   3. the Steam cover chains: the vertical `library_600x900.jpg` →
+ *      header.jpg → capsule_231x87 → 32×32 icon → initials (the games tab),
+ *      and the older landscape header-first chain kept for parity.
  *
  * The live snapshot is optional: without it the deterministic checks still
  * run (the file skips only the snapshot assertions).
@@ -306,7 +307,191 @@ test('cover element: a 32×32 icon is the last Steam step, then initials', async
 });
 
 /* =========================================================
-   4. «Недавно играл»: strict dedupe by canonical work
+   4. vertical posters (books/films shape)
+   ========================================================= */
+
+test('vertical cover chain: library_600x900 first, landscape header only as fallback', async () => {
+  const { gameVerticalCoverUrls } = await import('../public/js/games-modal.js');
+  const cdn = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+
+  assert.deepEqual(gameVerticalCoverUrls({
+    appid: 292030,
+    iconUrl: 'https://media.steampowered.com/steamcommunity/public/images/apps/292030/abc.jpg',
+  }), [
+    `${cdn}/292030/library_600x900.jpg`,
+    `${cdn}/292030/header.jpg`,
+    `${cdn}/292030/capsule_231x87.jpg`,
+    'https://media.steampowered.com/steamcommunity/public/images/apps/292030/abc.jpg',
+  ]);
+
+  // The canonical primary edition wins: two editions of one work share a poster.
+  assert.deepEqual(gameVerticalCoverUrls({ appid: 462780, primaryAppid: 937 }).slice(0, 1), [
+    `${cdn}/937/library_600x900.jpg`,
+  ]);
+
+  // No appid and no icon: nothing to request, the caller paints initials.
+  assert.deepEqual(gameVerticalCoverUrls({ name: 'No appid' }), []);
+  assert.deepEqual(gameVerticalCoverUrls(null), []);
+
+  // `library_600x900_2x` is not in the chain: the live audit showed identical
+  // availability to the 1x file, so it can never rescue a 404 — only weight.
+  assert.equal(
+    gameVerticalCoverUrls({ appid: 70 }).some((url) => url.includes('library_600x900_2x')),
+    false,
+  );
+});
+
+test('vertical cover element: error walks header → capsule → icon → initials', async () => {
+  const { gameCoverVerticalEl } = await import('../public/js/games-modal.js');
+  const cdn = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+  const icon = 'https://media.steampowered.com/steamcommunity/public/images/apps/70/abc.jpg';
+  const host = document.createElement('div');
+
+  const img = gameCoverVerticalEl(
+    { appid: 70, name: 'Half-Life', iconUrl: icon },
+    { className: 'games-recent-icon' },
+  );
+  host.append(img);
+  assert.equal(img.tagName, 'IMG');
+  assert.equal(img.className, 'games-recent-icon');
+  assert.equal(img.getAttribute('src'), `${cdn}/70/library_600x900.jpg`);
+
+  img.dispatch('error'); // no vertical capsule for this SKU → landscape header
+  assert.equal(img.getAttribute('src'), `${cdn}/70/header.jpg`);
+  img.dispatch('error'); // → old capsule
+  assert.equal(img.getAttribute('src'), `${cdn}/70/capsule_231x87.jpg`);
+  img.dispatch('error'); // → 32×32 community icon
+  assert.equal(img.getAttribute('src'), icon);
+  img.dispatch('error'); // → initials
+  assert.equal(host.children.length, 1);
+  const fallback = host.children[0];
+  assert.equal(fallback.tagName, 'DIV');
+  assert.equal(fallback.className, 'games-recent-icon game-icon-fallback');
+  assert.equal(fallback.textContent, 'H');
+
+  // No appid and no icon: initials straight away, no request.
+  const bare = gameCoverVerticalEl({ name: 'Half-Life' }, { className: 'games-recent-icon' });
+  assert.equal(bare.tagName, 'DIV');
+  assert.equal(bare.className, 'games-recent-icon game-icon-fallback');
+});
+
+test('CSS: strip cards and the card-modal head use a 2:3 vertical poster frame', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'style.css'), 'utf8');
+  const art = /\.games-recent-art \{[^}]*\}/.exec(css);
+  assert.ok(art, 'нет правила .games-recent-art');
+  assert.match(art[0], /width: 96px/);
+  assert.match(art[0], /aspect-ratio: 2 \/ 3/);
+  assert.doesNotMatch(art[0], /height: 116px/, 'квадратная обложка должна уйти');
+
+  const card = /\.games-recent-card \{[^}]*\}/.exec(css);
+  assert.ok(card);
+  assert.match(card[0], /flex: 0 0 96px/);
+
+  const modalBlocks = [...css.matchAll(/\.modal-game-cover \{[^}]*\}/g)].map((match) => match[0]);
+  const modal = modalBlocks.find((block) => block.includes('aspect-ratio'));
+  assert.ok(modal, 'карточка игры должна рисовать вертикальный постер');
+  assert.match(modal, /width: 88px/);
+  assert.match(modal, /aspect-ratio: 2 \/ 3/);
+  assert.equal(css.includes('.modal-game-icon {'), false, 'старый квадратный класс должен уйти');
+});
+
+test('recent strip paints vertical Steam posters and keeps the card click', async () => {
+  const games = await import('../public/js/games.js');
+  const cdn = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+  const payload = {
+    sources: {
+      connected: [KEY],
+      selected: [KEY],
+      profile: { key: KEY, source: 'steam', userKey: '76561198038369983', personaName: 'hattivatt', gameCount: 2 },
+    },
+    summary: { gameCount: 2, ownedCount: 2, playedCount: 2, unplayedCount: 0, totalHours: 30, recent2wHours: 1.2 },
+    topGames: [],
+    recentlyPlayed: [
+      { appid: 70, name: 'Half-Life', hours2w: 1.2, hoursTotal: 20, lastPlayed: '2026-10-31T12:00:00.000Z' },
+      { appid: 620, name: 'Portal 2', hours2w: 0, hoursTotal: 10, lastPlayed: '2026-10-30T12:00:00.000Z' },
+    ],
+    backlog: { count: 0, share: 0, items: [] },
+    gamesIndex: {
+      70: { appid: 70, name: 'Half-Life', hours: 20, canonicalWorkKey: 'steam:70' },
+      620: { appid: 620, name: 'Portal 2', hours: 10, canonicalWorkKey: 'steam:620' },
+    },
+  };
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    let body = {};
+    if (target.startsWith('/api/games/profiles')) {
+      body = {
+        profiles: [{ source: 'steam', userKey: '76561198038369983', key: KEY, personaName: 'hattivatt', gameCount: 2 }],
+        steamKey: { configured: true, source: 'file' },
+      };
+    } else if (target.startsWith('/api/games/stats')) {
+      body = payload;
+    } else if (target.startsWith('/api/games/personnel')) {
+      body = { role: 'developer', persons: [] };
+    } else if (target.startsWith('/api/games/franchises')) {
+      body = { franchises: [] };
+    } else if (target.startsWith('/api/games/enrich')) {
+      body = { running: false };
+    } else if (target.startsWith('/api/games/game/')) {
+      body = { appid: 70, name: 'Half-Life' };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      async json() { return body; },
+      async text() { return JSON.stringify(body); },
+    };
+  };
+
+  try {
+    games.resetGames();
+    games.initGames({ onActivate() {} });
+    await games.showGames();
+    await wait(80);
+
+    const strip = nodeFor('games-recent-strip');
+    assert.ok(strip, 'нет #games-recent-strip');
+    const cards = strip.children.filter((node) => String(node.className || '').includes('games-recent-card'));
+    assert.equal(cards.length, 2, 'две недавние игры — две карточки');
+
+    let imgs = 0;
+    for (const [index, card] of cards.entries()) {
+      const art = card.children.find((node) => String(node.className || '').includes('games-recent-art'));
+      assert.ok(art, 'карточка без .games-recent-art');
+      const img = art.children.find((node) => node.tagName === 'IMG');
+      assert.ok(img, 'в арте должна быть картинка-постер');
+      assert.equal(img.className, 'games-recent-icon');
+      const appid = index === 0 ? 70 : 620;
+      assert.equal(img.getAttribute('src'), `${cdn}/${appid}/library_600x900.jpg`);
+      imgs += 1;
+    }
+    assert.equal(imgs, 2, 'обе карточки просят вертикальный capsule');
+
+    // Card click behaviour is unchanged: the first art opens the game card.
+    const firstArt = cards[0].children.find((node) => String(node.className || '').includes('games-recent-art'));
+    firstArt.click();
+    await wait(40);
+    const modalRoot = nodeFor('modal-root');
+    assert.ok(modalRoot.children.length > 0, 'клик по постеру должен открыть карточку');
+
+    // The card-modal head paints the same vertical poster, not an 88×88 square.
+    const cover = [];
+    walk(modalRoot, (node) => {
+      if (String(node.className || '').includes('modal-game-cover')) cover.push(node);
+    });
+    assert.equal(cover.length, 1, 'в шапке карточки должен быть один вертикальный постер');
+    assert.equal(cover[0].tagName, 'IMG');
+    assert.equal(cover[0].getAttribute('src'), `${cdn}/70/library_600x900.jpg`);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+
+/* =========================================================
+   5. «Недавно играл»: strict dedupe by canonical work
    ========================================================= */
 
 test('strip dedupe: two index editions of one work paint one card', async () => {
