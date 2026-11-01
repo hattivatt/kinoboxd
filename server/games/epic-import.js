@@ -451,7 +451,7 @@ async function startImport(options = {}) {
   const tokenDoc = tokenDocs.find((doc) => doc.accountId === accountId) || null;
   if (!tokenDoc) {
     throw new epic.EpicError(
-      `Epic-аккаунт ${accountId} не подключён: сначала «Войти через Epic» (device-code).`,
+      `Epic-аккаунт ${accountId} не подключён: сначала «Войти через Epic» (вход по коду).`,
       'epic_not_connected'
     );
   }
@@ -485,7 +485,7 @@ async function startImport(options = {}) {
           displayName: (profile && profile.displayName) || tokenDoc.displayName || null,
           ownerKey,
           label: (profile && profile.label) || options.label || null,
-          authMethod: 'device_code',
+          authMethod: tokenDoc.authMethod || 'device_code',
           connectedAt: (profile && profile.connectedAt) || new Date().toISOString(),
         })
       ).data;

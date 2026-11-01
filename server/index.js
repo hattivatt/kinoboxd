@@ -99,7 +99,7 @@ app.use('/api/games', gamesPersonnelRouter);
 // Disjoint paths again (/franchises, /franchise-enrich), mounted last.
 app.use('/api/games', gamesFranchiseRouter);
 
-// Epic secondary library (M6b): /api/games/epic/* (device-code auth, import,
+// Epic secondary library (M6b): /api/games/epic/* (authorization-code auth, import,
 // isolated hoursBySource/exportedGames contract). The GOG branch (M6a) adds
 // /api/games/gog/* the same way; the union/UI integration is M6c.
 app.use('/api/games', gamesEpicRouter);
