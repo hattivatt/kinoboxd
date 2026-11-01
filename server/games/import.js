@@ -57,7 +57,13 @@ function rememberJob(job) {
 
 function findRunningJob(targetKey) {
   for (const job of jobs.values()) {
-    if (job.targetKey === targetKey && !job.done && job.status === 'running') return job;
+    if (job.done || job.status !== 'running') continue;
+    if (job.targetKey === targetKey) return job;
+    // A vanity job moves its key to `steam-<steamid64>` once the profile XML
+    // resolves it (P3). The pre-resolve key stays in `aliasKeys` so a second
+    // import of the same vanity still coalesces instead of starting a parallel
+    // job for the same owner.
+    if (Array.isArray(job.aliasKeys) && job.aliasKeys.includes(targetKey)) return job;
   }
   return null;
 }
@@ -278,8 +284,27 @@ async function runImport(job, target, client, options) {
     );
   }
   const steamId64 = profile.steamId64;
+  // Defensive (P0/s): the community XML is authoritative for the owner. If the
+  // resolved id64 is not the one that was asked for, the library that follows
+  // would be attributed to the wrong owner — the one thing the games model
+  // forbids (ИГРЫ §2.0: two owners are never merged). Fail instead of caching.
+  if (target.id64 && String(steamId64) !== String(target.id64)) {
+    throw new steam.SteamError(
+      `Steam вернул другой профиль: запрошен ${target.id64}, ответ — ${steamId64}. ` +
+        'Библиотека не сохранена, чтобы не приписать часы чужому владельцу. ' +
+        'Повторите импорт по vanity-имени или проверьте steamid64.',
+      'steamid_mismatch'
+    );
+  }
   job.userKey = steamId64;
   job.profile = gameCache.profileKeyOf(steamId64);
+  // P3: the running-job key must name the owner, not the vanity that was typed
+  // — otherwise `isRunning('steam-<id64>')` misses the job for the whole run.
+  const resolvedKey = `steam-${steamId64}`;
+  if (job.targetKey !== resolvedKey) {
+    job.aliasKeys = [...(job.aliasKeys || []), job.targetKey];
+    job.targetKey = resolvedKey;
+  }
 
   const profileDoc = {
     userKey: steamId64,

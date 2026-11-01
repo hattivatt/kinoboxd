@@ -253,6 +253,11 @@ function listProfiles() {
       userKey: hit.data.userKey,
       key: profileKeyOf(hit.data.userKey),
       personaName: hit.data.personaName || null,
+      // The human name typed at import (`ownerLabel`, ИГРЫ §5.4 `label`). Two
+      // owners of one Steam account (or a persona that does not say who it is)
+      // are told apart by this field in the switcher chips; it is additive and
+      // never replaces `personaName`.
+      label: hit.data.ownerLabel || null,
       avatarUrl: hit.data.avatarUrl || null,
       privacy: hit.data.privacy || null,
       importedAt: hit.data.importedAt || null,

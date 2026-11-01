@@ -41,6 +41,7 @@ const {
 
 const STEAM_ERROR_STATUS = {
   invalid_steamid: 400,
+  steamid_mismatch: 400,
   profile_private: 400,
   library_private: 400,
   steam_key_missing: 400,

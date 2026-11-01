@@ -657,6 +657,7 @@ function buildGamesStats(input = {}) {
         source: 'steam',
         userKey: steamId64,
         personaName: (profile && profile.personaName) || null,
+        label: (profile && profile.ownerLabel) || null,
         avatarUrl: (profile && profile.avatarUrl) || null,
         profileUrl:
           (profile && profile.profileUrl) ||
@@ -828,6 +829,8 @@ function profileSummary(profile, library) {
     source: 'steam',
     userKey: profile.userKey,
     personaName: profile.personaName || null,
+    // Additive: the owner-facing name from the import form (§5.4 `label`).
+    label: profile.ownerLabel || null,
     avatarUrl: profile.avatarUrl || null,
     privacy: profile.privacy || null,
     importedAt: profile.importedAt || null,
