@@ -2814,6 +2814,7 @@ img { display: block; }
   .modal-sort { margin-left: 0; width: 100%; justify-content: flex-end; padding-top: 4px; }
   .modal-sort-label { display: none; }
   .modal-portrait, .modal-portrait.avatar-fallback { width: 68px; height: 68px; }
+  .modal-game-cover { width: 68px; }
   .modal-title { font-size: 19px; }
   .modal-hint { font-size: 10px; }
   .film-row { grid-template-columns: 30px minmax(0, 1fr) auto; gap: 9px; padding: 6px 6px; }
@@ -4367,8 +4368,8 @@ img { display: block; }
   padding: 2px 2px 6px;
 }
 .games-recent-card {
-  flex: 0 0 116px;
-  width: 116px;
+  flex: 0 0 96px;
+  width: 96px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -4376,8 +4377,9 @@ img { display: block; }
 }
 .games-recent-art {
   position: relative;
-  width: 116px;
-  height: 116px;
+  width: 96px;
+  aspect-ratio: 2 / 3;
+  height: auto;
   border-radius: 8px;
   overflow: hidden;
   cursor: pointer;
@@ -4809,16 +4811,18 @@ img { display: block; }
   font-weight: 750;
   color: rgba(255, 255, 255, 0.82);
 }
-.modal-game-icon {
+/* Game card head: the same vertical poster shape as books/films (2:3). */
+.modal-game-cover {
   width: 88px;
-  height: 88px;
+  aspect-ratio: 2 / 3;
+  height: auto;
   border-radius: 11px;
   object-fit: cover;
   flex: none;
   background: #2b3744;
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
-.modal-game-icon.game-icon-fallback {
+.modal-game-cover.game-icon-fallback {
   display: grid;
   place-items: center;
   font-size: 32px;

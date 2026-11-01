@@ -148,8 +148,9 @@ export function gameIconEl(game, { className = 'game-icon' } = {}) {
 const STEAM_CDN = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
 
 /**
- * Cover URLs for one game, best first. No network probe happens here: the
- * browser walks the chain through `error` listeners in `gameCoverEl`.
+ * Landscape cover URLs for one game, best first. No network probe happens
+ * here: the browser walks the chain through `error` listeners in
+ * `gameCoverEl`.
  *
  *   header.jpg (460×215)     — the store header of the SKU, the real artwork;
  *   capsule_231x87.jpg       — the older capsule, same CDN;
@@ -160,6 +161,9 @@ const STEAM_CDN = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
  * editions of one work paint the same cover. `library_hero.jpg` is *not* in
  * the chain: it is missing for a lot of regional/older SKUs, and a 404 there
  * would burn a request on every card.
+ *
+ * The games tab paints vertical posters (see `gameVerticalCoverUrls`); this
+ * landscape chain is kept for callers that still want the store header.
  */
 export function gameCoverUrls(game) {
   const appid = positiveId(game && (game.primaryAppid ?? game.appid));
@@ -174,14 +178,40 @@ export function gameCoverUrls(game) {
 }
 
 /**
- * Wide cover (116×116 strip art, 88×88 card head) with the fallback chain.
- * Returns an <img> that swaps its own `src` down the chain, or the initials
- * block when every URL failed / none exists. Small 34×34 rows keep
- * `gameIconEl`: a 32×32 icon is the right size there, not a cropped header.
+ * Vertical poster URLs for one game, best first — the shape books/films use
+ * in their shelves. Live CDN audit (40 random appids of the 340-game
+ * library, 01.11.2026): `library_600x900.jpg` is present for 33/40 SKUs;
+ * the 7 misses are old/regional/package appids. For 6 of those 7 the
+ * landscape `header.jpg` still exists, so it is the first fallback and CSS
+ * centre-crops it into the 2:3 frame (`object-fit: cover`).
+ *
+ *   library_600x900.jpg (600×900, 2:3) — the official vertical library capsule;
+ *   header.jpg (460×215)              — landscape header, cropped vertically;
+ *   capsule_231x87.jpg                — older capsule, same CDN;
+ *   the 32×32 community icon          — last Steam-side step;
+ *   initials                          — client-side fallback (no request).
+ *
+ * `library_600x900_2x.jpg` is deliberately absent: the audit showed its
+ * availability is *identical* to the 1x file (40/40 parity), so it can never
+ * rescue a missing 1x, while it is ~4× heavier. The 600×900 file is already
+ * ~6× the rendered 96 px width — plenty even on HiDPI.
  */
-export function gameCoverEl(game, { className = 'game-cover' } = {}) {
+export function gameVerticalCoverUrls(game) {
+  const appid = positiveId(game && (game.primaryAppid ?? game.appid));
+  const urls = [];
+  if (appid) {
+    urls.push(`${STEAM_CDN}/${appid}/library_600x900.jpg`);
+    urls.push(`${STEAM_CDN}/${appid}/header.jpg`);
+    urls.push(`${STEAM_CDN}/${appid}/capsule_231x87.jpg`);
+  }
+  const icon = game && /^https?:\/\//i.test(String(game.iconUrl || '')) ? String(game.iconUrl) : '';
+  if (icon) urls.push(icon);
+  return urls;
+}
+
+/** Shared <img> that walks a URL chain and ends in the initials block. */
+function coverChainEl(game, urls, className) {
   const name = game && game.name ? game.name : '';
-  const urls = gameCoverUrls(game);
   const fallback = () => el('div', {
     class: `${className} game-icon-fallback`,
     style: fallbackStyle(name),
@@ -207,6 +237,24 @@ export function gameCoverEl(game, { className = 'game-cover' } = {}) {
     img.replaceWith(fallback());
   });
   return img;
+}
+
+/**
+ * Wide cover with the landscape chain. Kept for parity, but the games tab
+ * uses `gameCoverVerticalEl` everywhere it paints artwork.
+ */
+export function gameCoverEl(game, { className = 'game-cover' } = {}) {
+  return coverChainEl(game, gameCoverUrls(game), className);
+}
+
+/**
+ * Vertical poster (96×144 strip art, 88×132 card head) with the fallback
+ * chain. Returns an <img> that swaps its own `src` down the chain, or the
+ * initials block when every URL failed / none exists. Small 34×34 rows keep
+ * `gameIconEl`: a 32×32 icon is the right size there, not a cropped poster.
+ */
+export function gameCoverVerticalEl(game, { className = 'game-cover-vertical' } = {}) {
+  return coverChainEl(game, gameVerticalCoverUrls(game), className);
 }
 
 function firstGameIconUrl(person) {
@@ -752,7 +800,7 @@ function renderCardPersonnel(game) {
 function fillGameCard({ head, copy, body, game }) {
   clear(copy);
   clear(body);
-  head.insertBefore(gameCoverEl(game, { className: 'modal-game-icon' }), copy);
+  head.insertBefore(gameCoverVerticalEl(game, { className: 'modal-game-cover' }), copy);
   copy.append(el('div', {
     class: 'modal-role',
     text: game.type && game.type !== 'game' ? `Steam · ${game.typeLabel}` : 'Игра · Steam',
