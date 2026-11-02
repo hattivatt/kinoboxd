@@ -34,6 +34,10 @@ const fs = require('fs');
 const path = require('path');
 
 const gameCache = require('../game-cache');
+const { fetchOnce } = require('../../core/http');
+const { createBreaker } = require('../../core/breaker');
+const { budgetLimitFromEnv } = require('../../core/budget');
+const sources = require('../../core/sources');
 
 const MOBY_API = 'https://api.mobygames.com/v1';
 const KEY_ENV_KEYS = ['MOBYGAMES_API_KEY', 'MOBY_API_KEY'];
@@ -41,10 +45,10 @@ const KEY_FILE_ENV = 'KINOBOXD_MOBY_KEY_FILE';
 const KEY_FILE = path.join(__dirname, '..', '..', '..', 'config', 'moby-token');
 const BREAKER_PATH = path.join(gameCache.STATE_DIR, 'moby-breaker.json');
 
-const DEFAULT_PAUSE_MS = 1100;
-const DEFAULT_BUDGET = 100;
-const BREAKER_MS = 30 * 60 * 1000;
-const DEFAULT_TIMEOUT_MS = 30000;
+const DEFAULT_PAUSE_MS = sources.pauseMs('moby');
+const DEFAULT_BUDGET = sources.budgetLimit('moby');
+const BREAKER_MS = sources.breakerMs('moby');
+const DEFAULT_TIMEOUT_MS = sources.timeoutMs('moby');
 
 /**
  * Moby role string → local role. Order matters: «Audio/Graphics» must land in
@@ -222,11 +226,6 @@ function defaultBreakerStore() {
   };
 }
 
-function envInt(name, fallback) {
-  const raw = Number(process.env[name]);
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-}
-
 /* ------------------------------------------------------------------ */
 /* Client                                                              */
 /* ------------------------------------------------------------------ */
@@ -236,38 +235,41 @@ function envInt(name, fallback) {
  *        `pauseMs`, `budget`, `breakerStore` — every one injectable for tests.
  */
 function createClient(options = {}) {
-  const fetchImpl = options.fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  const fetchImpl = options.fetchImpl;
   const now = typeof options.now === 'function' ? options.now : () => Date.now();
   const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  const pauseMs = options.pauseMs == null ? envInt('GAMES_MOBY_PAUSE_MS', DEFAULT_PAUSE_MS) : Number(options.pauseMs);
+  const pauseMs = options.pauseMs == null ? sources.pauseMs('moby') : Number(options.pauseMs);
   const budget =
-    options.budget == null ? envInt('GAMES_MOBY_BUDGET', DEFAULT_BUDGET) : Number(options.budget);
+    options.budget == null
+      ? budgetLimitFromEnv('GAMES_MOBY_BUDGET', DEFAULT_BUDGET)
+      : Number(options.budget);
   const breakerStore = options.breakerStore || defaultBreakerStore();
   const keyProvider =
     options.keyProvider ||
     (() => ({ key: loadMobyKey(), source: loadMobyKey() ? cachedSource : null }));
   const stats = { requests: 0, budgetUsed: 0, budget };
+  const breaker = createBreaker({
+    now,
+    cooldownMs: BREAKER_MS,
+    read: () => breakerStore.read() || {},
+    write: (state) => breakerStore.write(state),
+  });
 
   let lastRequestAt = null;
 
   function assertNotBlocked() {
-    const state = breakerStore.read() || {};
-    const entry = state[MOBY_API];
-    if (!entry || !entry.until) return;
-    if (now() < entry.until) {
-      throw new MobyError(
-        `MobyGames временно не опрашивается (${entry.reason || 'blocked'}), ` +
-          `повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
-        'moby_rate_limited',
-        { retryAt: new Date(entry.until).toISOString() }
-      );
-    }
+    const entry = breaker.entry(MOBY_API);
+    if (!entry) return;
+    throw new MobyError(
+      `MobyGames временно не опрашивается (${entry.reason || 'blocked'}), ` +
+        `повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
+      'moby_rate_limited',
+      { retryAt: new Date(entry.until).toISOString() }
+    );
   }
 
   function tripBreaker(reason) {
-    const state = { ...(breakerStore.read() || {}) };
-    state[MOBY_API] = { until: now() + BREAKER_MS, reason: String(reason || 'blocked'), at: now() };
-    breakerStore.write(state);
+    return breaker.trip(MOBY_API, reason);
   }
 
   async function request(urlPath, label) {
@@ -297,13 +299,16 @@ function createClient(options = {}) {
 
     let response;
     try {
-      response = await fetchImpl(`${MOBY_API}${urlPath}`, {
+      response = await fetchOnce(`${MOBY_API}${urlPath}`, {
+        fetchImpl,
         method: 'GET',
         headers: {
           accept: 'application/json',
           authorization: `Bearer ${info.key}`,
           'user-agent': 'kinoboxd/1.0 (games personnel)',
         },
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        label: 'moby',
       });
     } catch (err) {
       // Transport error: deferred, never a negative cache (§3.9).
@@ -331,7 +336,7 @@ function createClient(options = {}) {
     }
     let json;
     try {
-      json = await response.json();
+      json = JSON.parse(response.body);
     } catch (err) {
       throw new MobyError('MobyGames вернул не JSON.', 'moby_bad_json', { status });
     }

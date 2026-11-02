@@ -59,12 +59,13 @@
  */
 
 const fs = require('fs');
-const http = require('http');
-const https = require('https');
 const path = require('path');
 const { URL } = require('url');
 
 const gogCache = require('./gog-cache');
+const { createBreaker } = require('../core/breaker');
+const { nodeRequest } = require('../core/http');
+const sources = require('../core/sources');
 
 const AUTH_HOST = 'auth.gog.com';
 const EMBED_HOST = 'embed.gog.com';
@@ -87,10 +88,10 @@ const REDIRECT_URI = 'https://embed.gog.com/on_login_success?origin=client';
 const PUBLIC_CLIENT_ID = '46899977096215655';
 const PUBLIC_CLIENT_SECRET = '9d85c43b1482497dbbce61f6e4aa173a433796eeae2ca8c5f6129f2dc4de46d9';
 
-const DEFAULT_TIMEOUT_MS = 20000;
-const DEFAULT_LIBRARY_PAUSE_MS = 400;
-const DEFAULT_PLAYTIME_PAUSE_MS = 500;
-const DEFAULT_BREAKER_MS = 30 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = sources.timeoutMs('gog');
+const DEFAULT_LIBRARY_PAUSE_MS = sources.pauseMs('gog');
+const DEFAULT_PLAYTIME_PAUSE_MS = sources.SOURCES.gog.playtimePauseMs;
+const DEFAULT_BREAKER_MS = sources.breakerMs('gog');
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
 const PRODUCTS_PER_PAGE = 100;
@@ -355,80 +356,28 @@ function httpGet(target, options = {}) {
   const timeoutMs = options.timeoutMs || envInt('GAMES_GOG_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
   const redirectsLeft = options.redirectsLeft == null ? MAX_REDIRECTS : options.redirectsLeft;
   const followRedirect = options.followRedirect !== false;
-  return new Promise((resolve, reject) => {
-    let parsed;
-    try {
-      parsed = new URL(target);
-    } catch (err) {
-      reject(new GogError(`Некорректный URL: ${maskSecrets(target)}`, 'gog_invalid_url'));
-      return;
-    }
-    const lib = parsed.protocol === 'http:' ? http : https;
-    const headers = {
+  return nodeRequest(target, {
+    timeoutMs,
+    maxRedirects: followRedirect ? redirectsLeft : 0,
+    followRedirect,
+    maxBytes: MAX_BODY_BYTES,
+    headers: {
       'User-Agent': 'kinoboxd/1.0 (+games-tab; gog)',
       Accept: 'application/json, */*',
       'Accept-Language': 'en-US,en;q=0.9',
       ...(options.headers || {}),
-    };
-    let req;
-    try {
-      req = lib.request(
-        parsed,
-        { method: 'GET', headers, timeout: timeoutMs },
-        (res) => {
-          const status = Number(res.statusCode) || 0;
-          const location = res.headers && res.headers.location;
-          if (followRedirect && status >= 300 && status < 400 && location) {
-            res.resume();
-            if (redirectsLeft <= 0) {
-              reject(
-                new GogError(
-                  `Слишком много редиректов: ${maskSecrets(target)}`,
-                  'gog_http_error',
-                  { status }
-                )
-              );
-              return;
-            }
-            let next;
-            try {
-              next = new URL(location, target).toString();
-            } catch (err) {
-              reject(new GogError('Некорректный Location в ответе GOG.', 'gog_http_error', { status }));
-              return;
-            }
-            resolve(httpGet(next, { ...options, redirectsLeft: redirectsLeft - 1 }));
-            return;
-          }
-          const chunks = [];
-          let size = 0;
-          res.on('data', (chunk) => {
-            size += chunk.length;
-            if (size > MAX_BODY_BYTES) {
-              req.destroy(new Error('response too large'));
-              return;
-            }
-            chunks.push(chunk);
-          });
-          res.on('end', () => {
-            resolve({
-              status,
-              headers: res.headers || {},
-              body: Buffer.concat(chunks).toString('utf8'),
-            });
-          });
-          res.on('error', (err) => reject(networkError(err, target)));
-        }
-      );
-    } catch (err) {
-      reject(networkError(err, target));
-      return;
+    },
+    label: 'gog',
+  }).catch((err) => {
+    if (err && err.code === 'invalid_url') {
+      throw new GogError(`Некорректный URL: ${maskSecrets(target)}`, 'gog_invalid_url');
     }
-    req.on('timeout', () => {
-      req.destroy(new GogError('GOG: таймаут запроса.', 'gog_unreachable', { host: parsed.host }));
-    });
-    req.on('error', (err) => reject(networkError(err, target)));
-    req.end();
+    if (err && err.code === 'too_many_redirects') {
+      throw new GogError(`Слишком много редиректов: ${maskSecrets(target)}`, 'gog_http_error', {
+        status: err.status,
+      });
+    }
+    throw networkError(err, target);
   });
 }
 
@@ -597,43 +546,19 @@ function createClient(options = {}) {
 
   let lastLibraryAt = null;
   let lastPlaytimeAt = null;
-  let breakerCache = null;
-
-  function loadBreaker() {
-    if (breakerCache) return breakerCache;
-    try {
-      const state = breakerStore.read();
-      breakerCache = state && typeof state === 'object' ? state : {};
-    } catch (err) {
-      breakerCache = {};
-    }
-    return breakerCache;
-  }
+  const breaker = createBreaker({
+    now,
+    cooldownMs: () => breakerMs,
+    read: () => breakerStore.read(),
+    write: (state) => breakerStore.write(state),
+  });
 
   function breakerFor(host) {
-    const state = loadBreaker();
-    const entry = state[host];
-    if (!entry || !entry.until) return null;
-    if (entry.until <= now()) {
-      delete state[host];
-      try {
-        breakerStore.write(state);
-      } catch (err) {
-        /* best-effort */
-      }
-      return null;
-    }
-    return entry;
+    return breaker.entry(host);
   }
 
   function tripBreaker(host, reason) {
-    const state = loadBreaker();
-    state[host] = { until: now() + breakerMs, reason: String(reason || 'blocked'), at: now() };
-    try {
-      breakerStore.write(state);
-    } catch (err) {
-      /* best-effort */
-    }
+    return breaker.trip(host, reason);
   }
 
   function assertNotBlocked(host) {

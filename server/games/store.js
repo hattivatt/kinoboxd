@@ -31,6 +31,8 @@
 
 const steam = require('./steam');
 const gameCache = require('./game-cache');
+const { createBreaker } = require('../core/breaker');
+const sources = require('../core/sources');
 
 const STORE_HOST = 'store.steampowered.com';
 const DETAILS_URL = `https://${STORE_HOST}/api/appdetails`;
@@ -45,9 +47,9 @@ const REVIEWS_HOST = 'api.steampowered.com';
 // a reviews 429 must not freeze GetOwnedGames/achievements for 30 minutes.
 const REVIEWS_BREAKER_KEY = `${REVIEWS_HOST}/IUserReviewsService`;
 const REVIEWS_URL = `https://${REVIEWS_HOST}/IUserReviewsService/GetAppReviews/v1/`;
-const DEFAULT_PAUSE_MS = 1700;
-const DEFAULT_REVIEWS_PAUSE_MS = 1700;
-const DEFAULT_BREAKER_MS = 30 * 60 * 1000;
+const DEFAULT_PAUSE_MS = sources.pauseMs('steamStore');
+const DEFAULT_REVIEWS_PAUSE_MS = sources.pauseMs('steamReviews');
+const DEFAULT_BREAKER_MS = sources.breakerMs('steamStore');
 const DEFAULT_TTL_MS = 180 * 24 * 60 * 60 * 1000;
 const DEFAULT_REVIEWS_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_SCREENSHOTS = 10;
@@ -461,41 +463,33 @@ function createClient(options = {}) {
   const sleep = options.sleep || sleepDefault;
   const now = options.now || (() => Date.now());
   const pauseMs =
-    options.pauseMs != null ? options.pauseMs : envInt('GAMES_STORE_PAUSE_MS', DEFAULT_PAUSE_MS);
+    options.pauseMs != null ? options.pauseMs : sources.pauseMs('steamStore');
   const breakerMs =
-    options.breakerMs != null ? options.breakerMs : envInt('GAMES_STORE_BREAKER_MS', DEFAULT_BREAKER_MS);
+    options.breakerMs != null ? options.breakerMs : sources.breakerMs('steamStore');
   const reviewsPauseMs =
     options.reviewsPauseMs != null
       ? options.reviewsPauseMs
-      : envInt('GAMES_REVIEWS_PAUSE_MS', DEFAULT_REVIEWS_PAUSE_MS);
+      : sources.pauseMs('steamReviews');
   const reviewsBreakerMs =
     options.reviewsBreakerMs != null
       ? options.reviewsBreakerMs
-      : envInt('GAMES_REVIEWS_BREAKER_MS', DEFAULT_BREAKER_MS);
+      : sources.breakerMs('steamReviews');
 
   let lastRequestAt = null;
   let lastReviewsAt = null;
+  const breaker = createBreaker({
+    now,
+    cooldownMs: () => breakerMs,
+    read: () => gameCache.readBreaker(),
+    write: (state) => gameCache.writeBreaker(state),
+  });
 
   function breakerEntryFor(host) {
-    const state = gameCache.readBreaker();
-    const entry = state && state[host];
-    if (!entry || !entry.until) return null;
-    if (entry.until <= now()) return null;
-    return entry;
+    return breaker.entry(host);
   }
 
   function tripBreakerFor(host, reason, windowMs) {
-    const state = gameCache.readBreaker();
-    state[host] = {
-      until: now() + (windowMs == null ? breakerMs : windowMs),
-      reason: String(reason || 'blocked'),
-      at: now(),
-    };
-    try {
-      gameCache.writeBreaker(state);
-    } catch (err) {
-      /* best-effort: an unwritable state dir must not hide the real error */
-    }
+    return breaker.trip(host, { reason, untilMs: windowMs });
   }
 
   function breakerEntry() {

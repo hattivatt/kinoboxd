@@ -56,6 +56,8 @@ const gameCache = require('./game-cache');
 const steam = require('./steam');
 const store = require('./store');
 const spy = require('./spy');
+const { createBudget: createBudgetImpl, budgetLimitFromEnv: budgetLimitFromEnvImpl } = require('../core/budget');
+const sources = require('../core/sources');
 
 const PHASES = ['details', 'spy', 'reviews'];
 const DEFAULT_BUDGET = 340;
@@ -165,8 +167,7 @@ function findRunningJob(profileKey) {
 
 function budgetLimitFromEnv(phaseName) {
   const spec = PHASE_SPECS[phaseName] || PHASE_SPECS.details;
-  const raw = Number(process.env[spec.budgetEnv]);
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : DEFAULT_BUDGET;
+  return budgetLimitFromEnvImpl(spec.budgetEnv, DEFAULT_BUDGET);
 }
 
 function recheckDaysFromEnv(phaseName) {
@@ -176,20 +177,7 @@ function recheckDaysFromEnv(phaseName) {
 }
 
 function createBudget(limit) {
-  const parsed = Number(limit);
-  const max = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_BUDGET;
-  return {
-    limit: max,
-    used: 0,
-    get remaining() {
-      return Math.max(max - this.used, 0);
-    },
-    take() {
-      if (this.used >= max) return false;
-      this.used++;
-      return true;
-    },
-  };
+  return createBudgetImpl(limit, DEFAULT_BUDGET);
 }
 
 /* ------------------------------------------------------------------ */

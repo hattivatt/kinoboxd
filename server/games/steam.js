@@ -37,21 +37,22 @@
  */
 
 const dns = require('dns');
-const http = require('http');
-const https = require('https');
 const crypto = require('crypto');
 const { URL } = require('url');
 const cheerio = require('cheerio');
 
 const config = require('../config');
 const gameCache = require('./game-cache');
+const { createBreaker } = require('../core/breaker');
+const { nodeRequest } = require('../core/http');
+const sources = require('../core/sources');
 
 const COMMUNITY_HOST = 'steamcommunity.com';
 const API_HOST = 'api.steampowered.com';
 
-const DEFAULT_TIMEOUT_MS = 20000;
-const DEFAULT_COMMUNITY_PAUSE_MS = 2000;
-const DEFAULT_BREAKER_MS = 30 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = sources.timeoutMs('steam');
+const DEFAULT_COMMUNITY_PAUSE_MS = sources.pauseMs('steamCommunity');
+const DEFAULT_BREAKER_MS = sources.breakerMs('steam');
 const MAX_REDIRECTS = 3;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 
@@ -153,97 +154,41 @@ function networkError(err, target) {
 }
 
 /**
- * GET a URL and buffer the body. Redirects are followed manually (Steam sends
- * a plain 302 for vanity/canonical URLs). The body size is capped.
+ * GET a URL and buffer the body. Redirects are followed (Steam sends a plain
+ * 302 for vanity/canonical URLs); the body size is capped. The socket work
+ * lives in `core/http.nodeRequest`; this wrapper only maps transport failures
+ * to the stable `SteamError` codes the routes know.
  */
 function httpGet(target, options = {}) {
   const timeoutMs = options.timeoutMs || envInt('GAMES_STEAM_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
   const redirectsLeft = options.redirectsLeft == null ? MAX_REDIRECTS : options.redirectsLeft;
   const lookup = options.lookup === undefined ? buildLookup() : options.lookup;
-  return new Promise((resolve, reject) => {
-    let parsed;
-    try {
-      parsed = new URL(target);
-    } catch (err) {
-      reject(new SteamError(`Некорректный URL: ${maskSecrets(target)}`, 'steam_invalid_url'));
-      return;
+  return nodeRequest(target, {
+    timeoutMs,
+    lookup,
+    maxRedirects: redirectsLeft,
+    maxBytes: MAX_BODY_BYTES,
+    headers: {
+      'User-Agent': 'kinoboxd/1.0 (+games-tab)',
+      Accept: 'application/json, text/xml, application/xml, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+    label: 'steam',
+  }).catch((err) => {
+    if (err && err.code === 'invalid_url') {
+      throw new SteamError(`Некорректный URL: ${maskSecrets(target)}`, 'steam_invalid_url');
     }
-    const lib = parsed.protocol === 'http:' ? http : https;
-    const requestOptions = {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'kinoboxd/1.0 (+games-tab)',
-        Accept: 'application/json, text/xml, application/xml, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-    };
-    if (lookup) requestOptions.lookup = lookup;
-    let req;
-    try {
-      req = lib.request(parsed, requestOptions, (res) => {
-        const status = Number(res.statusCode) || 0;
-        const location = res.headers && res.headers.location;
-        if (status >= 300 && status < 400 && location) {
-          res.resume();
-          if (redirectsLeft <= 0) {
-            reject(
-              new SteamError(
-                `Слишком много редиректов: ${maskSecrets(target)}`,
-                'steam_http_error',
-                { status }
-              )
-            );
-            return;
-          }
-          let next;
-          try {
-            next = new URL(location, parsed).href;
-          } catch (err) {
-            reject(new SteamError('Некорректный redirect от Steam', 'steam_http_error', { status }));
-            return;
-          }
-          resolve(httpGet(next, { ...options, redirectsLeft: redirectsLeft - 1, lookup }));
-          return;
-        }
-        const chunks = [];
-        let size = 0;
-        res.on('data', (chunk) => {
-          size += chunk.length;
-          if (size > MAX_BODY_BYTES) {
-            req.destroy(
-              new SteamError(`Ответ Steam больше ${MAX_BODY_BYTES} байт`, 'steam_http_error', {
-                status,
-              })
-            );
-            return;
-          }
-          chunks.push(chunk);
-        });
-        res.on('end', () => {
-          resolve({
-            status,
-            headers: res.headers || {},
-            body: Buffer.concat(chunks).toString('utf8'),
-            url: target,
-          });
-        });
-        res.on('error', (err) => reject(networkError(err, target)));
+    if (err && err.code === 'too_many_redirects') {
+      throw new SteamError(`Слишком много редиректов: ${maskSecrets(target)}`, 'steam_http_error', {
+        status: err.status,
       });
-    } catch (err) {
-      reject(networkError(err, target));
-      return;
     }
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(
-        new SteamError(
-          `Таймаут ${timeoutMs} мс при запросе к ${parsed.hostname} — сеть/DNS не пускает к Steam.`,
-          'steam_unreachable',
-          { host: parsed.hostname }
-        )
-      );
-    });
-    req.on('error', (err) => reject(networkError(err, target)));
-    req.end();
+    if (err && err.code === 'response_too_large') {
+      throw new SteamError(`Ответ Steam больше ${MAX_BODY_BYTES} байт`, 'steam_http_error', {
+        status: err.status,
+      });
+    }
+    throw networkError(err, target);
   });
 }
 
@@ -599,54 +544,30 @@ function createClient(options = {}) {
   const pauseMs =
     options.pauseMs != null
       ? options.pauseMs
-      : envInt('GAMES_STEAM_COMMUNITY_PAUSE_MS', DEFAULT_COMMUNITY_PAUSE_MS);
+      : sources.pauseMs('steamCommunity');
   const breakerMs =
     options.breakerMs != null
       ? options.breakerMs
-      : envInt('GAMES_STEAM_BREAKER_MS', DEFAULT_BREAKER_MS);
+      : sources.breakerMs('steam');
   const breakerStore = options.breakerStore || defaultBreakerStore();
   const keyProvider =
     options.keyProvider ||
     (() => ({ key: config.loadSteamKey(), source: config.steamKeySource() }));
 
   let lastCommunityAt = null;
-  let breakerCache = null;
-
-  function loadBreaker() {
-    if (breakerCache) return breakerCache;
-    try {
-      const state = breakerStore.read();
-      breakerCache = state && typeof state === 'object' ? state : {};
-    } catch (err) {
-      breakerCache = {};
-    }
-    return breakerCache;
-  }
+  const breaker = createBreaker({
+    now,
+    cooldownMs: () => breakerMs,
+    read: () => breakerStore.read(),
+    write: (state) => breakerStore.write(state),
+  });
 
   function breakerFor(host) {
-    const state = loadBreaker();
-    const entry = state[host];
-    if (!entry || !entry.until) return null;
-    if (entry.until <= now()) {
-      delete state[host];
-      try {
-        breakerStore.write(state);
-      } catch (err) {
-        /* best-effort */
-      }
-      return null;
-    }
-    return entry;
+    return breaker.entry(host);
   }
 
   function tripBreaker(host, reason) {
-    const state = loadBreaker();
-    state[host] = { until: now() + breakerMs, reason: String(reason || 'blocked'), at: now() };
-    try {
-      breakerStore.write(state);
-    } catch (err) {
-      /* best-effort: an unwritable state dir must not hide the real error */
-    }
+    return breaker.trip(host, reason);
   }
 
   function assertNotBlocked(host) {

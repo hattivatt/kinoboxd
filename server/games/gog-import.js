@@ -47,6 +47,7 @@ const gog = require('./gog');
 const gogAuth = require('./gog-auth');
 const secondaryIdentity = require('./secondary-identity');
 const secondaryDetails = require('./secondary-details');
+const { budgetLimitFromEnv } = require('../core/budget');
 
 const jobs = new Map();
 const jobOrder = [];
@@ -737,13 +738,8 @@ function startImport({
     finishedAt: null,
   };
   const api = client || gog.createClient();
-  const envBudget = Number(process.env.GAMES_GOG_BUDGET);
   const resolvedBudget =
-    budget != null
-      ? Number(budget)
-      : Number.isFinite(envBudget) && envBudget > 0
-        ? envBudget
-        : 200;
+    budget != null ? Number(budget) : budgetLimitFromEnv('GAMES_GOG_BUDGET', 200);
   job.budget = resolvedBudget;
   rememberJob(job);
 

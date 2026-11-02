@@ -127,8 +127,6 @@
  */
 
 const fs = require('fs');
-const http = require('http');
-const https = require('https');
 const path = require('path');
 const { URL } = require('url');
 
@@ -137,6 +135,9 @@ const gameCache = require('./game-cache');
 // has always been an alias of this function.
 const { safeKey } = require('../core/fs-store');
 const { envMs } = require('../core/env');
+const { createBreaker } = require('../core/breaker');
+const { nodeRequest } = require('../core/http');
+const sources = require('../core/sources');
 // The identity bridge (`links/secondary.json`) is the only source of a
 // Wikidata P577 year for a store slug; this module reads it, never WDQS.
 const secondaryIdentity = require('./secondary-identity');
@@ -178,11 +179,11 @@ const DEFAULT_NOT_FOUND_TTL_MS = 30 * DAY_MS;
 const DEFAULT_PROBE_TTL_MS = 7 * DAY_MS;
 const DEFAULT_CATALOG_PROBE_TTL_MS = 30 * DAY_MS;
 const DEFAULT_EPIC_NAMESPACE = 'fn';
-const DEFAULT_BUDGET = 200;
-const DEFAULT_PAUSE_MS = 2000;
-const DEFAULT_EPIC_PAUSE_MS = 1500;
-const DEFAULT_BREAKER_MS = 30 * 60 * 1000;
-const DEFAULT_TIMEOUT_MS = 20000;
+const DEFAULT_BUDGET = sources.budgetLimit('secondary');
+const DEFAULT_PAUSE_MS = sources.pauseMs('secondary');
+const DEFAULT_EPIC_PAUSE_MS = sources.SOURCES.secondary.epicPauseMs;
+const DEFAULT_BREAKER_MS = sources.breakerMs('secondary');
+const DEFAULT_TIMEOUT_MS = sources.timeoutMs('secondary');
 const DEFAULT_KICK_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_DEBUG_FILES = 3;
@@ -235,13 +236,8 @@ function maskSecrets(value) {
 /* env / time helpers                                                  */
 /* ------------------------------------------------------------------ */
 
-function envInt(name, fallback) {
-  const raw = Number(process.env[name]);
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : fallback;
-}
-
 function ttlMs() {
-  return envMs('GAMES_SECONDARY_TTL_MS', DEFAULT_TTL_MS);
+  return sources.ttlMs('secondary');
 }
 
 function notFoundTtlMs() {
@@ -262,20 +258,20 @@ function catalogProbeTtlMs() {
 }
 
 function budgetDefault() {
-  return envInt('GAMES_SECONDARY_BUDGET', DEFAULT_BUDGET);
+  return sources.budgetLimit('secondary');
 }
 
 function pauseMsFor(source) {
   const fallback = source === 'epic' ? DEFAULT_EPIC_PAUSE_MS : DEFAULT_PAUSE_MS;
-  return envMs('GAMES_SECONDARY_PAUSE_MS', fallback);
+  return sources.envNonNegative('GAMES_SECONDARY_PAUSE_MS', fallback);
 }
 
 function breakerMs() {
-  return envMs('GAMES_SECONDARY_BREAKER_MS', DEFAULT_BREAKER_MS);
+  return sources.breakerMs('secondary');
 }
 
 function timeoutMs() {
-  return envMs('GAMES_SECONDARY_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
+  return sources.timeoutMs('secondary');
 }
 
 function kickCooldownMs() {
@@ -1275,88 +1271,33 @@ function catalogFailure(err, kind, context = {}) {
 
 function httpGetJson(target, options = {}) {
   const timeout = options.timeoutMs || timeoutMs();
-  const userAgent = options.userAgent || 'kinoboxd/1.0 (+games-tab; secondary-details)';
-  return new Promise((resolve, reject) => {
-    let parsed;
-    try {
-      parsed = new URL(target);
-    } catch (err) {
-      reject(new SecondaryDetailsError('Некорректный URL метадаты.', 'secondary_details_invalid_url'));
-      return;
+  const userAgent = options.userAgent || sources.userAgent('secondary');
+  let host = null;
+  try {
+    host = new URL(target).host;
+  } catch (err) {
+    host = null;
+  }
+  return nodeRequest(target, {
+    timeoutMs: timeout,
+    followRedirect: false,
+    maxBytes: MAX_BODY_BYTES,
+    headers: {
+      'User-Agent': userAgent,
+      Accept: 'application/json, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+    label: 'secondary-details',
+  }).catch((err) => {
+    if (err && err.code === 'invalid_url') {
+      throw new SecondaryDetailsError('Некорректный URL метадаты.', 'secondary_details_invalid_url');
     }
-    const lib = parsed.protocol === 'http:' ? http : https;
-    let req;
-    try {
-      req = lib.request(
-        parsed,
-        {
-          method: 'GET',
-          headers: {
-            'User-Agent': userAgent,
-            Accept: 'application/json, */*',
-            'Accept-Language': 'en-US,en;q=0.9',
-          },
-          timeout,
-        },
-        (res) => {
-          const status = Number(res.statusCode) || 0;
-          const chunks = [];
-          let size = 0;
-          res.on('data', (chunk) => {
-            size += chunk.length;
-            if (size > MAX_BODY_BYTES) {
-              req.destroy(new Error('response too large'));
-              return;
-            }
-            chunks.push(chunk);
-          });
-          res.on('end', () => {
-            resolve({
-              status,
-              headers: res.headers || {},
-              body: Buffer.concat(chunks).toString('utf8'),
-            });
-          });
-          res.on('error', (err) =>
-            reject(
-              new SecondaryDetailsError(
-                `Сеть: ${maskSecrets((err && (err.code || err.message)) || 'error')}`,
-                'secondary_details_unreachable',
-                { host: parsed.host, deferred: true }
-              )
-            )
-          );
-        }
-      );
-    } catch (err) {
-      reject(
-        new SecondaryDetailsError(
-          `Сеть: ${maskSecrets((err && (err.code || err.message)) || 'error')}`,
-          'secondary_details_unreachable',
-          { host: parsed.host, deferred: true }
-        )
-      );
-      return;
-    }
-    req.on('timeout', () =>
-      req.destroy(
-        new SecondaryDetailsError(
-          `Таймаут ${timeout} мс: ${parsed.host}.`,
-          'secondary_details_unreachable',
-          { host: parsed.host, deferred: true }
-        )
-      )
+    const cause = (err && err.cause && err.cause.code) || (err && err.code) || 'error';
+    throw new SecondaryDetailsError(
+      `Сеть: ${maskSecrets(cause)}`,
+      'secondary_details_unreachable',
+      { host, deferred: true }
     );
-    req.on('error', (err) =>
-      reject(
-        new SecondaryDetailsError(
-          `Сеть: ${maskSecrets((err && (err.code || err.message)) || 'error')}`,
-          'secondary_details_unreachable',
-          { host: parsed.host, deferred: true }
-        )
-      )
-    );
-    req.end();
   });
 }
 
@@ -1857,26 +1798,44 @@ function writeBreaker(state) {
   return gameCache.writeJsonAtomicSync(BREAKER_PATH, state || {});
 }
 
+/**
+ * Breaker entries keep the ISO `{until, at, code, status}` format this module
+ * has always written; `core/breaker` only supplies the logic.
+ */
+const breaker = createBreaker({
+  now: () => nowMs(),
+  cooldownMs: () => breakerMs(),
+  read: () => readBreaker(),
+  write: (state) => writeBreaker(state),
+  encode: (entry) => ({
+    until: isoOf(entry.until),
+    at: isoOf(entry.at),
+    code: entry.code || 'blocked',
+    status: entry.status == null ? null : entry.status,
+  }),
+  decode: (raw) => {
+    const until = Date.parse(raw && raw.until ? raw.until : '');
+    if (!Number.isFinite(until)) return null;
+    return {
+      until,
+      at: Date.parse(raw.at || '') || null,
+      reason: raw.code || null,
+      code: raw.code || null,
+      status: raw.status == null ? null : raw.status,
+    };
+  },
+});
+
 /** `null` when the host may be queried; `{until, code}` when it is blocked. */
 function breakerBlock(source, now = nowMs()) {
-  const state = readBreaker();
-  const entry = state && state[source];
+  const entry = breaker.entry(source, now);
   if (!entry) return null;
-  const until = Date.parse(entry.until || '');
-  if (!Number.isFinite(until) || until <= now) return null;
-  return { until: isoOf(until), code: entry.code || 'blocked' };
+  return { until: isoOf(entry.until), code: entry.code || entry.reason || 'blocked' };
 }
 
 function tripBreaker(source, code, status) {
-  const state = readBreaker();
-  state[source] = {
-    until: isoOf(nowMs() + breakerMs()),
-    at: isoOf(nowMs()),
-    code: code || 'blocked',
-    status: status == null ? null : status,
-  };
-  writeBreaker(state);
-  return state[source];
+  breaker.trip(source, { code: code || 'blocked', status });
+  return readBreaker()[source];
 }
 
 /* ------------------------------------------------------------------ */

@@ -49,13 +49,14 @@
  * every message that leaves this module.
  */
 
-const http = require('http');
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 
 const gameCache = require('./game-cache');
+const { createBreaker } = require('../core/breaker');
+const { nodeRequest } = require('../core/http');
+const sources = require('../core/sources');
 
 const ACCOUNT_HOST = 'account-public-service-prod03.ol.epicgames.com';
 const ACCOUNT_HOST_FALLBACKS = ['account-public-service-prod.ol.epicgames.com'];
@@ -87,9 +88,9 @@ const DEFAULT_CLIENT_SECRET = 'daafbccc737745039dffe53d94fc76cf';
 const CLIENT_FILE_ENV = 'KINOBOXD_EPIC_CLIENT_FILE';
 const CLIENT_FILE_PATH = path.join(__dirname, '..', '..', 'config', 'epic-client.json');
 
-const DEFAULT_TIMEOUT_MS = 20000;
-const DEFAULT_PAUSE_MS = 300;
-const DEFAULT_BREAKER_MS = 30 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = sources.timeoutMs('epic');
+const DEFAULT_PAUSE_MS = sources.pauseMs('epic');
+const DEFAULT_BREAKER_MS = sources.breakerMs('epic');
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_LIBRARY_PAGES = 50;
 const MAX_ENTITLEMENT_PAGES = 20;
@@ -281,58 +282,24 @@ function networkError(err, target) {
 }
 
 function httpRequest({ method = 'GET', url, headers = {}, body = null, timeoutMs = DEFAULT_TIMEOUT_MS }) {
-  return new Promise((resolve, reject) => {
-    let parsed;
-    try {
-      parsed = new URL(url);
-    } catch (err) {
-      reject(new EpicError(`Некорректный Epic URL: ${maskSecrets(url)}`, 'epic_invalid_url'));
-      return;
+  return nodeRequest(url, {
+    method,
+    headers,
+    body,
+    timeoutMs,
+    followRedirect: false,
+    maxBytes: MAX_BODY_BYTES,
+    label: 'epic',
+  }).catch((err) => {
+    if (err && err.code === 'invalid_url') {
+      throw new EpicError(`Некорректный Epic URL: ${maskSecrets(url)}`, 'epic_invalid_url');
     }
-    const lib = parsed.protocol === 'http:' ? http : https;
-    const requestOptions = { method, headers };
-    let req;
-    try {
-      req = lib.request(parsed, requestOptions, (res) => {
-        const chunks = [];
-        let size = 0;
-        res.on('data', (chunk) => {
-          size += chunk.length;
-          if (size > MAX_BODY_BYTES) {
-            req.destroy(
-              new EpicError(`Ответ Epic больше ${MAX_BODY_BYTES} байт.`, 'epic_http_error', {
-                status: res.statusCode,
-              })
-            );
-            return;
-          }
-          chunks.push(chunk);
-        });
-        res.on('end', () => {
-          resolve({
-            status: Number(res.statusCode) || 0,
-            headers: res.headers || {},
-            body: Buffer.concat(chunks).toString('utf8'),
-          });
-        });
-        res.on('error', (err) => reject(networkError(err, url)));
+    if (err && err.code === 'response_too_large') {
+      throw new EpicError(`Ответ Epic больше ${MAX_BODY_BYTES} байт.`, 'epic_http_error', {
+        status: err.status,
       });
-    } catch (err) {
-      reject(networkError(err, url));
-      return;
     }
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(
-        new EpicError(
-          `Таймаут ${timeoutMs} мс при запросе к ${parsed.hostname} — Epic недоступен.`,
-          'epic_unreachable',
-          { host: parsed.hostname, deferred: true }
-        )
-      );
-    });
-    req.on('error', (err) => reject(networkError(err, url)));
-    if (body != null) req.write(body);
-    req.end();
+    throw networkError(err, url);
   });
 }
 
@@ -814,11 +781,11 @@ function createClient(options = {}) {
   const sleep = options.sleep || sleepDefault;
   const now = options.now || (() => Date.now());
   const pauseMs =
-    options.pauseMs != null ? options.pauseMs : envInt('GAMES_EPIC_PAUSE_MS', DEFAULT_PAUSE_MS);
+    options.pauseMs != null ? options.pauseMs : sources.pauseMs('epic');
   const breakerMs =
-    options.breakerMs != null ? options.breakerMs : envInt('GAMES_EPIC_BREAKER_MS', DEFAULT_BREAKER_MS);
+    options.breakerMs != null ? options.breakerMs : sources.breakerMs('epic');
   const breakerStore = options.breakerStore || defaultBreakerStore();
-  const timeoutMs = options.timeoutMs || envInt('GAMES_EPIC_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
+  const timeoutMs = options.timeoutMs || sources.timeoutMs('epic');
   const accountHost = options.accountHost || process.env.GAMES_EPIC_ACCOUNT_HOST || ACCOUNT_HOST;
   const accountHosts = unique([
     accountHost,
@@ -836,44 +803,20 @@ function createClient(options = {}) {
   const tokenStore = options.tokenStore || null;
 
   let lastRequestAt = null;
-  let breakerCache = null;
   let clientToken = null;
-
-  function loadBreaker() {
-    if (breakerCache) return breakerCache;
-    try {
-      const state = breakerStore.read();
-      breakerCache = state && typeof state === 'object' ? state : {};
-    } catch (err) {
-      breakerCache = {};
-    }
-    return breakerCache;
-  }
+  const breaker = createBreaker({
+    now,
+    cooldownMs: () => breakerMs,
+    read: () => breakerStore.read(),
+    write: (state) => breakerStore.write(state),
+  });
 
   function breakerFor(host) {
-    const state = loadBreaker();
-    const entry = state[host];
-    if (!entry || !entry.until) return null;
-    if (entry.until <= now()) {
-      delete state[host];
-      try {
-        breakerStore.write(state);
-      } catch (_) {
-        /* best-effort */
-      }
-      return null;
-    }
-    return entry;
+    return breaker.entry(host);
   }
 
   function tripBreaker(host, reason) {
-    const state = loadBreaker();
-    state[host] = { until: now() + breakerMs, reason: String(reason || 'blocked'), at: now() };
-    try {
-      breakerStore.write(state);
-    } catch (_) {
-      /* best-effort */
-    }
+    return breaker.trip(host, reason);
   }
 
   function assertNotBlocked(host) {

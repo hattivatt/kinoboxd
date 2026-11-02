@@ -27,11 +27,13 @@
 
 const steam = require('./steam');
 const gameCache = require('./game-cache');
+const { createBreaker } = require('../core/breaker');
+const sources = require('../core/sources');
 
 const SPY_HOST = 'steamspy.com';
 const SPY_ENDPOINT = `https://${SPY_HOST}/api.php`;
-const DEFAULT_PAUSE_MS = 1100;
-const DEFAULT_BREAKER_MS = 30 * 60 * 1000;
+const DEFAULT_PAUSE_MS = sources.pauseMs('steamSpy');
+const DEFAULT_BREAKER_MS = sources.breakerMs('steamSpy');
 const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_TAGS = 50;
 
@@ -161,28 +163,24 @@ function createClient(options = {}) {
   const sleep = options.sleep || sleepDefault;
   const now = options.now || (() => Date.now());
   const pauseMs =
-    options.pauseMs != null ? options.pauseMs : envInt('GAMES_SPY_PAUSE_MS', DEFAULT_PAUSE_MS);
+    options.pauseMs != null ? options.pauseMs : sources.pauseMs('steamSpy');
   const breakerMs =
-    options.breakerMs != null ? options.breakerMs : envInt('GAMES_SPY_BREAKER_MS', DEFAULT_BREAKER_MS);
+    options.breakerMs != null ? options.breakerMs : sources.breakerMs('steamSpy');
 
   let lastRequestAt = null;
+  const breaker = createBreaker({
+    now,
+    cooldownMs: () => breakerMs,
+    read: () => gameCache.readBreaker(),
+    write: (state) => gameCache.writeBreaker(state),
+  });
 
   function breakerEntry() {
-    const state = gameCache.readBreaker();
-    const entry = state && state[SPY_HOST];
-    if (!entry || !entry.until) return null;
-    if (entry.until <= now()) return null;
-    return entry;
+    return breaker.entry(SPY_HOST);
   }
 
   function tripBreaker(reason) {
-    const state = gameCache.readBreaker();
-    state[SPY_HOST] = { until: now() + breakerMs, reason: String(reason || 'blocked'), at: now() };
-    try {
-      gameCache.writeBreaker(state);
-    } catch (err) {
-      /* best-effort: an unwritable state dir must not hide the real error */
-    }
+    return breaker.trip(SPY_HOST, reason);
   }
 
   function assertNotBlocked() {

@@ -94,6 +94,8 @@ const editions = require('./editions');
 const gameCache = require('./game-cache');
 const store = require('./store');
 const wd = require('./personnel/wikidata');
+const { budgetLimitFromEnv } = require('../core/budget');
+const sources = require('../core/sources');
 
 const LINKS_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'links');
 const STATE_PATH = path.join(gameCache.STATE_DIR, 'franchise-state.json');
@@ -817,14 +819,11 @@ function needsBaseBridge(doc, ttlMs, nowMs) {
 /* ------------------------------------------------------------------ */
 
 function budgetFromEnv() {
-  const raw = Number(process.env.GAMES_FRANCHISE_BUDGET);
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : DEFAULT_BUDGET;
+  return budgetLimitFromEnv('GAMES_FRANCHISE_BUDGET', DEFAULT_BUDGET);
 }
 
 function ttlMsFromEnv() {
-  const raw = Number(process.env.GAMES_FRANCHISE_TTL_DAYS);
-  const days = Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_TTL_DAYS;
-  return days * 24 * 60 * 60 * 1000;
+  return sources.ttlMs('wikidataFranchise');
 }
 
 /** Is this appid already answered inside the TTL window? */
@@ -1090,8 +1089,7 @@ async function enrichFranchises(options = {}) {
 /* ------------------------------------------------------------------ */
 
 function baseDetailsBudgetFromEnv() {
-  const raw = Number(process.env.GAMES_BASE_DETAILS_BUDGET);
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : DEFAULT_BASE_DETAILS_BUDGET;
+  return budgetLimitFromEnv('GAMES_BASE_DETAILS_BUDGET', DEFAULT_BASE_DETAILS_BUDGET);
 }
 
 /**
