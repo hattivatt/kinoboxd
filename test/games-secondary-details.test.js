@@ -30,6 +30,7 @@ process.env.KINOBOXD_STATE_DIR = fs.mkdtempSync(
 const gameCache = require('../server/games/game-cache');
 const gogCache = require('../server/games/gog-cache');
 const epicCache = require('../server/games/epic-cache');
+const tokenStore = require('../server/games/epic-token-store');
 const details = require('../server/games/secondary-details');
 const epicLayer = require('../server/games/epic-layer');
 const { buildSecondaryUnion } = require('../server/games/secondary-union');
@@ -73,6 +74,15 @@ function clearCache() {
   } catch (err) {
     /* nothing to clean */
   }
+  // Negative catalog probes are per catalogItemId; each case uses its own id,
+  // but a clean slate keeps the assertions about «no second request» honest.
+  try {
+    for (const name of fs.readdirSync(details.CATALOG_PROBE_DIR)) {
+      if (name.endsWith('.json')) fs.unlinkSync(path.join(details.CATALOG_PROBE_DIR, name));
+    }
+  } catch (err) {
+    /* nothing to clean */
+  }
 }
 
 function fakeClient(handlers = {}) {
@@ -89,6 +99,52 @@ function fakeClient(handlers = {}) {
       return value;
     },
   };
+}
+
+/** Fake Epic client with only the catalog surface used by the details job. */
+function fakeCatalogClient(options = {}) {
+  const calls = [];
+  let call = 0;
+  return {
+    calls,
+    refreshedWith: null,
+    async getCatalogBulk(namespace, ids) {
+      calls.push({ namespace, ids: [...ids] });
+      call++;
+      if (typeof options.onCatalog === 'function') return options.onCatalog(call, ids);
+      return { items: options.items || {}, requests: 1, failures: options.failures || [] };
+    },
+    async refreshTokens(refreshToken) {
+      this.refreshedWith = refreshToken;
+      if (typeof options.refresh === 'function') return options.refresh(refreshToken);
+      if (options.refreshError) throw options.refreshError;
+      return {
+        accessToken: 'eg1~refreshed-access',
+        refreshToken: 'eg1~refreshed-refresh',
+        accessExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        refreshExpiresAt: new Date(Date.now() + 7200_000).toISOString(),
+      };
+    },
+  };
+}
+
+async function seedEpicOwner(ownerKey, accountId, options = {}) {
+  const nowIso = new Date().toISOString();
+  await epicCache.saveEpicProfile({ accountId, ownerKey, connectedAt: nowIso });
+  await tokenStore.saveTokens({
+    accountId,
+    displayName: 'EpicTester',
+    ownerKey,
+    accessToken: 'eg1~fake-access-token',
+    refreshToken: options.refreshToken === undefined ? 'eg1~fake-refresh-token' : options.refreshToken,
+    accessExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    refreshExpiresAt: new Date(Date.now() + 7200_000).toISOString(),
+  });
+  return accountId;
+}
+
+function authExpired() {
+  return Object.assign(new Error('401'), { code: 'epic_auth_expired', status: 401 });
 }
 
 async function waitForJob(ownerKey, timeoutMs = 3000) {
@@ -875,5 +931,369 @@ test('stats use the store metadata', async (t) => {
       noSlug: 0,
       running: false,
     });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Epic catalog refetch with the owner token (stale CMS page)          */
+/* ------------------------------------------------------------------ */
+
+test('Epic catalog refetch', async (t) => {
+  await t.test('stale CMS page → catalog bulk with the owner token fills genres/year', async () => {
+    details.resetJobs();
+    clearCache();
+    const owner = 'steam-test-catalog-refetch';
+    const account = 'epic-cat-refetch';
+    const catalogId = 'aw2-cat-refetch';
+    await seedEpicOwner(owner, account);
+    const cms = fakeClient({ '/products/alan-wake-2': EPIC_AW2 });
+    const catalogClient = fakeCatalogClient({ items: { [catalogId]: AW2_CATALOG } });
+    details.startSecondaryDetails({
+      ownerKey: owner,
+      gog: [],
+      epic: [
+        {
+          slug: 'alan-wake-2',
+          catalogItemId: catalogId,
+          namespace: 'fn',
+          title: 'Alan Wake 2',
+          catalog: null,
+        },
+      ],
+      client: cms,
+      epicClient: catalogClient,
+      tokenStore,
+      pauseMs: 0,
+    });
+    const job = await waitForJob(owner);
+    assert.equal(job.status, 'done');
+    assert.equal(job.epic.resolved, 1);
+    assert.equal(cms.calls.length, 1);
+    assert.equal(catalogClient.calls.length, 1);
+    assert.equal(catalogClient.calls[0].namespace, 'fn');
+    assert.deepEqual(catalogClient.calls[0].ids, [catalogId]);
+    // One CMS request + one catalog request.
+    assert.equal(job.requests, 2);
+
+    const doc = details.readDetail('epic', 'alan-wake-2').doc;
+    assert.equal(doc.status, 'ok');
+    assert.deepEqual(doc.data.genres, ['Action', 'Horror']);
+    assert.equal(doc.data.releaseYear, 2023);
+    assert.equal(doc.data.releaseDateSource, 'epic-catalog');
+    assert.equal(doc.data.catalogPending, undefined);
+    assert.match(doc.data.verticalCover, /1200x1600/);
+    // The catalog document is written in the old schema, so the read model and
+    // the next kick see it too.
+    assert.ok(fs.existsSync(epicCache.catalogPath(catalogId)));
+    assert.equal(epicCache.getEpicCatalogItem(catalogId).releaseDate, '2023-10-27T00:00:00.000Z');
+  });
+
+  await t.test('a cached poster-only detail is completed without a CMS request', async () => {
+    details.resetJobs();
+    clearCache();
+    const owner = 'steam-test-catalog-cached';
+    const account = 'epic-cat-cached';
+    const catalogId = 'aw2-cat-cached';
+    await seedEpicOwner(owner, account);
+    // This is the production state: the detail was written before the catalog
+    // existed (poster only, no genres/year).
+    details.writeDetail(
+      'epic',
+      'alan-wake-2',
+      'ok',
+      details.normalizeEpicProduct(EPIC_AW2, { slug: 'alan-wake-2' })
+    );
+    const cms = fakeClient({});
+    const catalogClient = fakeCatalogClient({ items: { [catalogId]: AW2_CATALOG } });
+    details.startSecondaryDetails({
+      ownerKey: owner,
+      gog: [],
+      epic: [
+        {
+          slug: 'alan-wake-2',
+          catalogItemId: catalogId,
+          namespace: 'fn',
+          title: 'Alan Wake 2',
+          catalog: null,
+        },
+      ],
+      client: cms,
+      epicClient: catalogClient,
+      tokenStore,
+      pauseMs: 0,
+    });
+    const job = await waitForJob(owner);
+    assert.equal(job.status, 'done');
+    assert.equal(job.epic.resolved, 1);
+    assert.equal(job.epic.cached, 1);
+    // No CMS request: the cached document only needed the catalog fields.
+    assert.equal(cms.calls.length, 0);
+    assert.equal(catalogClient.calls.length, 1);
+    const doc = details.readDetail('epic', 'alan-wake-2').doc;
+    assert.deepEqual(doc.data.genres, ['Action', 'Horror']);
+    assert.equal(doc.data.releaseYear, 2023);
+    assert.equal(doc.data.releaseDateSource, 'epic-catalog');
+    assert.match(doc.data.verticalCover, /1200x1600/);
+  });
+
+  await t.test('401 without a refresh token is deferred and stays pending', async () => {
+    details.resetJobs();
+    clearCache();
+    const owner = 'steam-test-catalog-auth';
+    const account = 'epic-cat-auth';
+    const catalogId = 'aw2-cat-auth';
+    await seedEpicOwner(owner, account, { refreshToken: null });
+    await epicCache.saveEpicLibrary(account, {
+      accountId: account,
+      ownerKey: owner,
+      fetchedAt: new Date().toISOString(),
+      games: [
+        { appName: 'Ginger', catalogItemId: catalogId, namespace: 'fn', name: 'Alan Wake 2' },
+      ],
+    });
+    const cms = fakeClient({ '/products/alan-wake-2': EPIC_AW2 });
+    const catalogClient = fakeCatalogClient({
+      onCatalog() {
+        throw authExpired();
+      },
+    });
+    details.startSecondaryDetails({
+      ownerKey: owner,
+      gog: [],
+      epic: [
+        {
+          slug: 'alan-wake-2',
+          catalogItemId: catalogId,
+          namespace: 'fn',
+          title: 'Alan Wake 2',
+          catalog: null,
+        },
+      ],
+      client: cms,
+      epicClient: catalogClient,
+      tokenStore,
+      pauseMs: 0,
+    });
+    const job = await waitForJob(owner);
+    // The poster document is still written — auth expiry is not a reason to
+    // lose it — but the catalog step is deferred, not denied.
+    assert.equal(job.epic.resolved, 1);
+    assert.equal(job.epic.deferred, 1);
+    assert.ok(job.warnings.includes('catalog_auth_expired'));
+    const doc = details.readDetail('epic', 'alan-wake-2').doc;
+    assert.equal(doc.data.catalogPending, true);
+    assert.deepEqual(doc.data.genres, []);
+    assert.match(doc.data.verticalCover, /1200x1600/);
+    // Coverage stays pending so the next kick retries the catalog.
+    const coverage = details.coverageForOwner(owner);
+    assert.equal(coverage.epic.resolved, 0);
+    assert.equal(coverage.epic.pending, 1);
+    // Auth expiry is retryable: no negative probe is written.
+    assert.equal(details.readCatalogProbe(catalogId).doc, null);
+  });
+
+  await t.test('401 → one silent refresh → the retry succeeds', async () => {
+    details.resetJobs();
+    clearCache();
+    const owner = 'steam-test-catalog-refresh';
+    const account = 'epic-cat-refresh';
+    const catalogId = 'aw2-cat-refresh';
+    await seedEpicOwner(owner, account);
+    const cms = fakeClient({ '/products/alan-wake-2': EPIC_AW2 });
+    const catalogClient = fakeCatalogClient({
+      onCatalog(call) {
+        if (call === 1) throw authExpired();
+        return { items: { [catalogId]: AW2_CATALOG }, requests: 1, failures: [] };
+      },
+    });
+    details.startSecondaryDetails({
+      ownerKey: owner,
+      gog: [],
+      epic: [
+        {
+          slug: 'alan-wake-2',
+          catalogItemId: catalogId,
+          namespace: 'fn',
+          title: 'Alan Wake 2',
+          catalog: null,
+        },
+      ],
+      client: cms,
+      epicClient: catalogClient,
+      tokenStore,
+      pauseMs: 0,
+    });
+    const job = await waitForJob(owner);
+    assert.equal(job.epic.resolved, 1);
+    assert.equal(catalogClient.calls.length, 2);
+    assert.equal(catalogClient.refreshedWith, 'eg1~fake-refresh-token');
+    const doc = details.readDetail('epic', 'alan-wake-2').doc;
+    assert.deepEqual(doc.data.genres, ['Action', 'Horror']);
+    assert.equal(doc.data.releaseYear, 2023);
+    assert.equal(doc.data.catalogPending, undefined);
+    const saved = await tokenStore.getTokens(account);
+    assert.equal(saved.accessToken, 'eg1~refreshed-access');
+    assert.equal(saved.refreshToken, 'eg1~refreshed-refresh');
+  });
+
+  await t.test('an empty catalog answer is a 30-day negative memory', async () => {
+    details.resetJobs();
+    clearCache();
+    const owner = 'steam-test-catalog-empty';
+    const account = 'epic-cat-empty';
+    const catalogId = 'aw2-cat-empty';
+    await seedEpicOwner(owner, account);
+    const cms = fakeClient({ '/products/alan-wake-2': EPIC_AW2 });
+    const catalogClient = fakeCatalogClient({ items: {} });
+    const target = {
+      slug: 'alan-wake-2',
+      catalogItemId: catalogId,
+      namespace: 'fn',
+      title: 'Alan Wake 2',
+      catalog: null,
+    };
+    details.startSecondaryDetails({
+      ownerKey: owner,
+      gog: [],
+      epic: [target],
+      client: cms,
+      epicClient: catalogClient,
+      tokenStore,
+      pauseMs: 0,
+    });
+    const first = await waitForJob(owner);
+    assert.equal(first.epic.resolved, 1);
+    const probe = details.readCatalogProbe(catalogId);
+    assert.equal(probe.fresh, true);
+    assert.equal(probe.doc.status, 'empty');
+    // A second kick does not repeat the dead end (the detail is fresh and the
+    // probe is negative) — no catalog request.
+    details.resetJobs();
+    details.startSecondaryDetails({
+      ownerKey: owner,
+      gog: [],
+      epic: [target],
+      client: cms,
+      epicClient: catalogClient,
+      tokenStore,
+      pauseMs: 0,
+    });
+    const second = await waitForJob(owner);
+    assert.equal(second.epic.cached, 1);
+    assert.equal(catalogClient.calls.length, 1);
+    assert.equal(second.requests, 0);
+  });
+
+  await t.test('no owner token → library-only, no catalog request', async () => {
+    details.resetJobs();
+    clearCache();
+    const owner = 'steam-test-catalog-notoken';
+    const account = 'epic-cat-notoken';
+    const catalogId = 'aw2-cat-notoken';
+    const nowIso = new Date().toISOString();
+    await epicCache.saveEpicProfile({ accountId: account, ownerKey: owner, connectedAt: nowIso });
+    const cms = fakeClient({ '/products/alan-wake-2': EPIC_AW2 });
+    const catalogClient = fakeCatalogClient({ items: { [catalogId]: AW2_CATALOG } });
+    details.startSecondaryDetails({
+      ownerKey: owner,
+      gog: [],
+      epic: [
+        {
+          slug: 'alan-wake-2',
+          catalogItemId: catalogId,
+          namespace: 'fn',
+          title: 'Alan Wake 2',
+          catalog: null,
+        },
+      ],
+      client: cms,
+      epicClient: catalogClient,
+      tokenStore,
+      pauseMs: 0,
+    });
+    const job = await waitForJob(owner);
+    assert.equal(job.epic.resolved, 1);
+    assert.equal(catalogClient.calls.length, 0);
+    assert.equal(job.requests, 1);
+    const doc = details.readDetail('epic', 'alan-wake-2').doc;
+    assert.deepEqual(doc.data.genres, []);
+    assert.equal(doc.data.catalogPending, undefined);
+    assert.match(doc.data.verticalCover, /1200x1600/);
+  });
+
+  await t.test('429 trips the existing Epic secondary breaker, detail stays pending', async () => {
+    details.resetJobs();
+    clearCache();
+    details.writeBreaker({});
+    const owner = 'steam-test-catalog-rate';
+    const account = 'epic-cat-rate';
+    const catalogId = 'aw2-cat-rate';
+    await seedEpicOwner(owner, account);
+    const cms = fakeClient({ '/products/alan-wake-2': EPIC_AW2 });
+    const catalogClient = fakeCatalogClient({
+      onCatalog() {
+        throw Object.assign(new Error('429'), { code: 'epic_rate_limited', status: 429 });
+      },
+    });
+    details.startSecondaryDetails({
+      ownerKey: owner,
+      gog: [],
+      epic: [
+        {
+          slug: 'alan-wake-2',
+          catalogItemId: catalogId,
+          namespace: 'fn',
+          title: 'Alan Wake 2',
+          catalog: null,
+        },
+      ],
+      client: cms,
+      epicClient: catalogClient,
+      tokenStore,
+      pauseMs: 0,
+    });
+    const job = await waitForJob(owner);
+    assert.equal(job.epic.resolved, 1);
+    assert.ok(job.warnings.includes('catalog_blocked'));
+    const blocked = details.breakerBlock('epic');
+    assert.ok(blocked);
+    assert.equal(blocked.code, 'catalog_blocked');
+    const doc = details.readDetail('epic', 'alan-wake-2').doc;
+    assert.equal(doc.data.catalogPending, true);
+    details.writeBreaker({});
+  });
+
+  await t.test('a spent budget skips the catalog request honestly', async () => {
+    details.resetJobs();
+    clearCache();
+    const owner = 'steam-test-catalog-budget';
+    const account = 'epic-cat-budget';
+    const catalogId = 'aw2-cat-budget';
+    await seedEpicOwner(owner, account);
+    const cms = fakeClient({ '/products/alan-wake-2': EPIC_AW2 });
+    const catalogClient = fakeCatalogClient({ items: { [catalogId]: AW2_CATALOG } });
+    details.startSecondaryDetails({
+      ownerKey: owner,
+      gog: [],
+      epic: [
+        {
+          slug: 'alan-wake-2',
+          catalogItemId: catalogId,
+          namespace: 'fn',
+          title: 'Alan Wake 2',
+          catalog: null,
+        },
+      ],
+      client: cms,
+      epicClient: catalogClient,
+      tokenStore,
+      pauseMs: 0,
+      budget: 1,
+    });
+    const job = await waitForJob(owner);
+    assert.equal(job.epic.resolved, 1);
+    assert.ok(job.warnings.includes('catalog_budget'));
+    assert.equal(catalogClient.calls.length, 0);
+    assert.equal(job.requests, 1);
   });
 });

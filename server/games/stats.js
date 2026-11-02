@@ -542,7 +542,10 @@ function buildGamesStats(input = {}) {
   const secondaryDetailTotal = union.works.filter(
     (entry) => (entry.gog && entry.gog.gogGameId) || (entry.epic && entry.epic.slug)
   ).length;
-  const secondaryDetailResolved = union.works.filter((entry) => entry.secondaryDetails).length;
+  const secondaryDetailResolved = union.works.filter(
+    (entry) =>
+      entry.secondaryDetails && entry.secondaryDetails.catalogPending !== true
+  ).length;
   // Epic works that have no store slug at all (`productmapping`, catalog and
   // the validated title probe all failed): «library-only» — title + hours, no
   // genres/year/poster. Reported honestly instead of being silently dropped.

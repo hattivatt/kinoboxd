@@ -290,6 +290,25 @@ test('M6c «Вне Steam» view models', async (t) => {
     assert.equal(card.storeLinks.length, 2);
   });
 
+  await t.test('secondaryWorkCardView: empty top-level genres/year fall back to the epic block', async () => {
+    const { secondaryWorkCardView } = await import('../public/js/games-view.js');
+    const card = secondaryWorkCardView(epicWork({
+      genres: [],
+      releaseYear: null,
+      epic: {
+        catalogItemId: 'epic-catalog-1',
+        slug: 'epic-exclusive',
+        releaseDate: '2023-10-27T00:00:00.000Z',
+        genres: ['Action', 'Horror'],
+      },
+    }));
+    // An older payload may leave the union fields empty and carry the store
+    // metadata only on the source block — the card must still show it.
+    assert.deepEqual(card.genres, ['Action', 'Horror']);
+    assert.equal(card.releaseYear, 2023);
+    assert.equal(card.releaseDate, '2023-10-27T00:00:00.000Z');
+  });
+
   await t.test('secondaryChartStatus: old payload hides, new payload reports inclusion', async () => {
     const { secondaryChartStatus } = await import('../public/js/games-view.js');
     assert.deepEqual(secondaryChartStatus({ summary: { secondaryOnlyWorks: 7 } }), {

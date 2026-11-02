@@ -49,6 +49,19 @@
  *      three failed CMS answers are dumped (status + ≤2 KB body, tokens masked)
  *      to `cache-games/debug/epic/<slug>.json` for the owner to send back.
  *
+ *      **Catalog fallback (02.11.2026).** A stale CMS page can carry a poster
+ *      but no `meta.releaseDate`/`meta.tags` (Alan Wake 2). The catalog bulk is
+ *      then the only store-owned source, and it requires the **owner's** token.
+ *      The details job calls `getCatalogBulk` once for that `catalogItemId`
+ *      (same per-run budget/pause, same Epic secondary-details breaker), writes
+ *      `catalog/<catalogItemId>.json` in the old schema and re-runs the
+ *      normalizer, so genres/year/developers appear without a fake value. A
+ *      401 triggers one silent token refresh + retry; a still-expired token is
+ *      **deferred** (`catalogPending` in the detail, coverage stays pending so
+ *      the next kick retries). A definitive empty/invalid answer is a negative
+ *      probe (`catalog-probe/`, 30 days), so a polled kick never repeats it. No
+ *      token (not connected) keeps the previous library-only behaviour.
+ *
  * Politeness (§14.5): one request per product, pause `GAMES_SECONDARY_PAUSE_MS`
  * (default **2 s**, GOG's undocumented ~200 req/h/IP limit is the reference),
  * budget `GAMES_SECONDARY_BUDGET` (default **200** requests/run, GOG first then
@@ -94,12 +107,18 @@ const BREAKER_PATH = path.join(STATE_DIR, 'secondary-details-breaker.json');
 const STATUS_PATH = path.join(STATE_DIR, 'secondary-details-status.json');
 // Failed CMS answers kept for the owner to send back (diagnostics only).
 const DEBUG_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'debug', 'epic');
+// A stale Epic CMS page can only be completed from the catalog bulk (needs the
+// owner's token). A catalog answer that cannot help is remembered for 30 days
+// so a repeated kick does not spend a request on the same dead end.
+const CATALOG_PROBE_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'catalog-probe');
 
 const SCHEMA_VERSION = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_TTL_MS = 30 * DAY_MS;
 const DEFAULT_NOT_FOUND_TTL_MS = 30 * DAY_MS;
 const DEFAULT_PROBE_TTL_MS = 7 * DAY_MS;
+const DEFAULT_CATALOG_PROBE_TTL_MS = 30 * DAY_MS;
+const DEFAULT_EPIC_NAMESPACE = 'fn';
 const DEFAULT_BUDGET = 200;
 const DEFAULT_PAUSE_MS = 2000;
 const DEFAULT_EPIC_PAUSE_MS = 1500;
@@ -117,6 +136,7 @@ const COVERAGE_MEMO_MS = 60 * 1000;
 try {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
   fs.mkdirSync(STATE_DIR, { recursive: true });
+  fs.mkdirSync(CATALOG_PROBE_DIR, { recursive: true });
 } catch (err) {
   /* read-only worktree: reading still works, writing will fail loudly */
 }
@@ -177,6 +197,14 @@ function notFoundTtlMs() {
 /** Shorter TTL for a *guessed* slug that 404s (the guess may become valid). */
 function probeTtlMs() {
   return envMs('GAMES_SECONDARY_PROBE_TTL_MS', DEFAULT_PROBE_TTL_MS);
+}
+
+/**
+ * A failed catalog probe is a memory, not a verdict about the game: the same
+ * `catalogItemId` is retried after 30 days or on an explicit forced import.
+ */
+function catalogProbeTtlMs() {
+  return envMs('GAMES_SECONDARY_CATALOG_PROBE_TTL_MS', DEFAULT_CATALOG_PROBE_TTL_MS);
 }
 
 function budgetDefault() {
@@ -581,6 +609,320 @@ function normalizeEpicProduct(payload, options = {}) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Epic catalog refetch (owner token)                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A stale Epic CMS page (Alan Wake 2: `meta` has only `customReleaseDate:
+ * "Coming Soon"`) has no tags/release date. The catalog bulk is the only
+ * store-owned source left, and it requires the **owner's** token. This block
+ * is the bounded fallback: it is reached only for an Epic work whose CMS page
+ * has no meta and whose catalog document is missing/stale, uses the same
+ * per-run budget and pause as the Epic details phase, and never invents a
+ * genre/date.
+ */
+
+/** Does the CMS page carry the fields the catalog could complete? */
+function epicPageNeedsCatalog(payload) {
+  const page = pickEpicPage(payload);
+  const meta = (page && page.data && page.data.meta) || {};
+  const hasTags = Array.isArray(meta.tags) && meta.tags.length > 0;
+  return !meta.releaseDate && !hasTags;
+}
+
+/** A cached detail with neither genres nor a year is a candidate. */
+function detailNeedsCatalog(data) {
+  if (!data || data.source !== 'epic') return false;
+  const noGenres = !(Array.isArray(data.genres) && data.genres.length);
+  return noGenres && data.releaseYear == null;
+}
+
+function catalogHasMeta(catalog) {
+  if (!catalog || typeof catalog !== 'object') return false;
+  return Boolean(catalog.releaseDate) ||
+    (Array.isArray(catalog.categories) && catalog.categories.length > 0);
+}
+
+function catalogIsFresh(catalog) {
+  if (!catalog || typeof catalog !== 'object') return false;
+  try {
+    return gameCache.isFresh(catalog, require('./epic-cache').epicCatalogTtlMs());
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * Merge a catalog document into an already cached detail (the cached document
+ * has no raw CMS payload to re-normalize). Additive only: a field that is
+ * already set is never replaced, and an empty catalog never produces a fake
+ * genre or date.
+ */
+function applyCatalogToDetail(data, catalog) {
+  if (!data || !catalog) return data;
+  const next = { ...data };
+  if (!(Array.isArray(next.genres) && next.genres.length)) {
+    const genres = epicGenresFromCategories(catalog.categories);
+    if (genres.length) {
+      next.genres = genres;
+      next.genresSource = 'epic-catalog';
+    }
+  }
+  if (next.releaseDate == null && catalog.releaseDate) {
+    next.releaseDate = catalog.releaseDate;
+    next.releaseYear = yearOfDate(catalog.releaseDate);
+    next.releaseDateSource = 'epic-catalog';
+    next.storeReleaseDate = catalog.releaseDate;
+  }
+  if (!(Array.isArray(next.developers) && next.developers.length) && catalog.developer) {
+    next.developers = [String(catalog.developer)];
+  }
+  if (!(Array.isArray(next.publishers) && next.publishers.length) && catalog.publisher) {
+    next.publishers = [String(catalog.publisher)];
+  }
+  return next;
+}
+
+function createCatalogClient(options = {}) {
+  try {
+    const epic = require('./epic');
+    const store = options.tokenStore || require('./epic-token-store');
+    return epic.createClient({ tokenStore: store });
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * One silent refresh + one retry. `getAccessToken` already refreshes a token
+ * that is within two minutes of expiry; a 401 after that means the token was
+ * revoked, but Epic sometimes rejects a token that the local clock still
+ * considers valid. The retry is bounded (exactly one) and never prints a value.
+ */
+async function trySilentTokenRefresh(options, accountId) {
+  const client =
+    options.epicClient || options.catalogClient || createCatalogClient(options);
+  if (!client || typeof client.refreshTokens !== 'function') return false;
+  const store = options.tokenStore || require('./epic-token-store');
+  if (typeof store.getTokens !== 'function' || typeof store.saveTokens !== 'function') {
+    return false;
+  }
+  let doc;
+  try {
+    doc = await store.getTokens(accountId);
+  } catch (err) {
+    return false;
+  }
+  if (!doc || !doc.refreshToken) return false;
+  try {
+    if (typeof options.onRequest === 'function') options.onRequest();
+    const fresh = await client.refreshTokens(doc.refreshToken);
+    if (!fresh || !fresh.accessToken) return false;
+    await store.saveTokens({
+      ...doc,
+      ...fresh,
+      refreshToken: fresh.refreshToken || doc.refreshToken,
+      lastAuthError: null,
+      lastAuthErrorAt: null,
+    });
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * Fetch `catalog/<catalogItemId>.json` with the owner's token. Returns
+ * `{ catalog, pending, deferred, warning, skipped }`:
+ *
+ *   - `catalog` — the saved catalog document (or null);
+ *   - `pending` — the owner may still get this metadata later (401/expired,
+ *     rate limit, network): the detail is written but coverage stays pending,
+ *     so the next kick retries. A *negative* answer is not pending;
+ *   - `warning` — the job/status code (`catalog_auth_expired`, `catalog_blocked`,
+ *     `catalog_empty`, …).
+ *
+ * Guards: no token / not connected → `skipped: 'not_connected'` (library-only,
+ * previous behaviour); a fresh negative probe → `skipped: 'probe'`; a spent
+ * budget → `skipped: 'budget'`. A 403/429 trips the **existing** Epic
+ * secondary-details breaker (no new breaker is introduced).
+ */
+async function refetchEpicCatalog(options = {}) {
+  const catalogItemId = options.catalogItemId ? String(options.catalogItemId) : '';
+  if (!catalogItemId) return { catalog: null, skipped: 'no_catalog_id' };
+  const epicCache = require('./epic-cache');
+  const ownerKey = options.ownerKey ? String(options.ownerKey) : '';
+  const accountId =
+    options.epicAccountId || (ownerKey ? epicCache.epicAccountForOwner(ownerKey) : null);
+  if (!accountId) return { catalog: null, skipped: 'not_connected' };
+  const store = options.tokenStore || require('./epic-token-store');
+  let token = null;
+  try {
+    token = typeof store.readTokenSummarySync === 'function'
+      ? store.readTokenSummarySync(accountId)
+      : null;
+  } catch (err) {
+    token = null;
+  }
+  if (!token || !token.hasAccessToken) return { catalog: null, skipped: 'not_connected' };
+  if (options.force !== true && options.forceCatalog !== true) {
+    const probe = readCatalogProbe(catalogItemId);
+    if (probe.fresh && probe.doc && probe.doc.status && probe.doc.status !== 'ok') {
+      return { catalog: null, skipped: 'probe' };
+    }
+  }
+  if (typeof options.canRequest === 'function' && !options.canRequest()) {
+    return { catalog: null, skipped: 'budget', warning: 'catalog_budget' };
+  }
+  const client =
+    options.epicClient || options.catalogClient || createCatalogClient(options);
+  if (!client || typeof client.getCatalogBulk !== 'function') {
+    return { catalog: null, skipped: 'no_client' };
+  }
+  const namespace = options.namespace || DEFAULT_EPIC_NAMESPACE;
+
+  const record = (entry) => {
+    try {
+      recordError({
+        ownerKey: ownerKey || null,
+        source: 'epic',
+        id: catalogItemId,
+        ...entry,
+      });
+    } catch (err) {
+      /* diagnostics must never break the job */
+    }
+  };
+
+  const attempt = async () => {
+    if (typeof options.onRequest === 'function') options.onRequest();
+    return client.getCatalogBulk(namespace, [catalogItemId], { accountId });
+  };
+
+  let result;
+  try {
+    result = await attempt();
+  } catch (err) {
+    const code = (err && err.code) || 'epic_http_error';
+    if (code === 'epic_auth_expired') {
+      // One silent refresh (rerun the token), then one retry. If that fails,
+      // the metadata is deferred, not denied: the next kick tries again.
+      if (await trySilentTokenRefresh(options, accountId)) {
+        try {
+          result = await attempt();
+        } catch (retryErr) {
+          return catalogFailure(retryErr, failureKindOf(retryErr), {
+            record,
+            catalogItemId,
+            namespace,
+          });
+        }
+      } else {
+        return catalogFailure(err, 'auth', { record, catalogItemId, namespace });
+      }
+    } else {
+      return catalogFailure(err, failureKindOf(err), { record, catalogItemId, namespace });
+    }
+  }
+
+  const item = result && result.items ? result.items[catalogItemId] : null;
+  if (item) {
+    try {
+      await epicCache.saveEpicCatalogItem(catalogItemId, item);
+    } catch (err) {
+      /* a read-only cache must not fail the fetch */
+    }
+    if (!catalogHasMeta(item)) {
+      // The catalog knows the item but has no date/categories either: this is
+      // a definitive dead end, not a retryable one. Remember it for 30 days.
+      writeCatalogProbe(catalogItemId, 'empty', { namespace, code: 'no_meta' });
+      record({ code: 'catalog_empty', reason: 'no_meta', status: null, message: null });
+      return { catalog: item, pending: false, deferred: false, warning: 'catalog_empty' };
+    }
+    return { catalog: item, pending: false, deferred: false, warning: null };
+  }
+
+  const failures = Array.isArray(result && result.failures) ? result.failures : [];
+  const failure = failures[0] || null;
+  if (failure) {
+    const code = failure.code || 'epic_http_error';
+    if (code === 'epic_auth_expired') {
+      return catalogFailure(failure, 'auth', { record, catalogItemId, namespace });
+    }
+    if (code === 'epic_rate_limited') {
+      return catalogFailure(failure, 'rate', { record, catalogItemId, namespace });
+    }
+    if (code === 'epic_unreachable') {
+      return catalogFailure(failure, 'network', { record, catalogItemId, namespace });
+    }
+  }
+  // A 200 without the item is a definitive answer for this catalog id: remember
+  // it for 30 days so a polled kick does not repeat the request.
+  writeCatalogProbe(catalogItemId, failure ? 'http_error' : 'empty', {
+    namespace,
+    code: failure ? failure.code || null : null,
+  });
+  const warning = failure ? 'catalog_http_error' : 'catalog_empty';
+  record({ code: warning, reason: warning, status: null, message: null });
+  return { catalog: null, pending: false, deferred: false, warning };
+}
+
+function failureKindOf(err) {
+  const code = (err && err.code) || 'epic_http_error';
+  if (code === 'epic_auth_expired') return 'auth';
+  if (code === 'epic_rate_limited') return 'rate';
+  if (code === 'epic_unreachable' || (err && err.deferred)) return 'network';
+  return 'http';
+}
+
+function catalogFailure(err, kind, context = {}) {
+  const { record, catalogItemId, namespace } = context;
+  const code = (err && err.code) || 'epic_http_error';
+  const status = err && err.status != null ? err.status : null;
+  if (kind === 'auth') {
+    if (record) record({ code: 'catalog_auth_expired', reason: code, status, message: null });
+    return {
+      catalog: null,
+      pending: true,
+      deferred: true,
+      warning: 'catalog_auth_expired',
+    };
+  }
+  if (kind === 'rate') {
+    tripBreaker('epic', 'catalog_blocked', status);
+    if (record) record({ code: 'catalog_blocked', reason: code, status, message: null });
+    return {
+      catalog: null,
+      pending: true,
+      deferred: true,
+      warning: 'catalog_blocked',
+    };
+  }
+  if (kind === 'network') {
+    if (record) record({ code: 'catalog_deferred', reason: code, status, message: null });
+    return {
+      catalog: null,
+      pending: true,
+      deferred: true,
+      warning: 'catalog_deferred',
+    };
+  }
+  if (catalogItemId) {
+    writeCatalogProbe(catalogItemId, 'http_error', {
+      namespace: namespace || null,
+      code,
+    });
+  }
+  if (record) record({ code: 'catalog_http_error', reason: code, status, message: null });
+  return {
+    catalog: null,
+    pending: false,
+    deferred: false,
+    warning: 'catalog_http_error',
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* HTTP                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -740,6 +1082,44 @@ function writeDetail(source, id, status, data, extra = {}) {
   return doc;
 }
 
+/* --------------------- Epic catalog probe cache -------------------- */
+
+function catalogProbePath(catalogItemId) {
+  return path.join(CATALOG_PROBE_DIR, `${safeKey(catalogItemId)}.json`);
+}
+
+/**
+ * `{doc, fresh}` for the negative catalog memory of one `catalogItemId`.
+ * Only *negative* answers are stored here; a successful catalog document lives
+ * in `cache-games/catalog/<id>.json` (180-day TTL) and is read by the caller.
+ */
+function readCatalogProbe(catalogItemId, options = {}) {
+  if (!catalogItemId) return { doc: null, fresh: false };
+  const hit = gameCache.readJsonWithFingerprint(catalogProbePath(catalogItemId));
+  if (!hit || !hit.data) return { doc: null, fresh: false };
+  const fetchedAt = Date.parse(hit.data.fetchedAt || '');
+  const at = options.now == null ? nowMs() : options.now;
+  const fresh = Number.isFinite(fetchedAt) && at - fetchedAt < catalogProbeTtlMs();
+  return { doc: hit.data, fresh };
+}
+
+function writeCatalogProbe(catalogItemId, status, extra = {}) {
+  const doc = {
+    schemaVersion: SCHEMA_VERSION,
+    source: 'epic-catalog-probe',
+    catalogItemId: String(catalogItemId),
+    status,
+    fetchedAt: isoOf(nowMs()),
+    ...extra,
+  };
+  try {
+    gameCache.writeJsonAtomicSync(catalogProbePath(catalogItemId), doc);
+  } catch (err) {
+    /* diagnostics/cache must never fail the job */
+  }
+  return doc;
+}
+
 /**
  * Sync index for `stats.js`: `{ 'gog:<id>': data, 'epic:<slug>': data }` of
  * fresh, successfully resolved entries only. Stale entries are excluded so a
@@ -854,6 +1234,10 @@ function enrichUnionWithDetails(union, index) {
       id: detail.id,
       releaseDateSource: detail.releaseDateSource || null,
       fetchedAt: detail.fetchedAt || null,
+      // The catalog step was deferred (owner token expired/blocked): the
+      // poster is real, but year/genres are still pending — coverage must not
+      // count this as resolved.
+      catalogPending: detail.catalogPending === true,
     };
     if (changed) touched++;
   }
@@ -1261,6 +1645,40 @@ async function discoverEpicSlug(options = {}) {
   return { slug: guess, payload, host: fetched.host || null };
 }
 
+/**
+ * Use the cached catalog when it is fresh, otherwise refetch it with the
+ * owner's token. A stale-but-present catalog is still returned as a fallback
+ * even when the refetch is deferred: a real store date beats no date.
+ */
+async function ensureEpicCatalog(options = {}) {
+  const catalog = options.catalog;
+  if (catalogHasMeta(catalog) && catalogIsFresh(catalog)) {
+    return { catalog, pending: false, deferred: false, warning: null };
+  }
+  const result = await refetchEpicCatalog(options);
+  if (result.catalog) return result;
+  if (catalogHasMeta(catalog)) return { ...result, catalog };
+  return result;
+}
+
+function noteCatalogResult(result, options = {}) {
+  if (!result) return;
+  if (result.warning && typeof options.onWarning === 'function') {
+    try {
+      options.onWarning(result.warning);
+    } catch (err) {
+      /* a diagnostic hook must never break the fetch */
+    }
+  }
+  if (result.deferred && typeof options.onCatalogDeferred === 'function') {
+    try {
+      options.onCatalogDeferred(result.warning);
+    } catch (err) {
+      /* ignore */
+    }
+  }
+}
+
 async function resolveEpic(slug, options = {}) {
   let id = String(slug == null ? '' : slug).trim();
   let probedPayload = null;
@@ -1292,8 +1710,30 @@ async function resolveEpic(slug, options = {}) {
     doc && doc.status === 'not_found' && doc.probe === true
   );
   if (fresh && doc && !options.force && !(probeOnlyNegative && !probedPayload)) {
+    let data = doc.status === 'ok' ? doc.data : null;
+    // A detail cached before the catalog existed (Alan Wake 2: poster only)
+    // is completed in place: the raw CMS payload is not cached, so the catalog
+    // fields are merged additively. No catalog item → nothing to do.
+    if (data && detailNeedsCatalog(data) && options.catalogItemId) {
+      const ensured = await ensureEpicCatalog(options);
+      noteCatalogResult(ensured, options);
+      let next = data;
+      if (ensured.catalog) next = applyCatalogToDetail(next, ensured.catalog);
+      if (ensured.pending) {
+        next = { ...next, catalogPending: true };
+      } else if (next.catalogPending) {
+        // A later successful (or definitively negative) catalog answer clears
+        // the pending marker: coverage is resolved, not retried forever.
+        next = { ...next };
+        delete next.catalogPending;
+      }
+      if (next !== data) {
+        writeDetail('epic', id, 'ok', next);
+        data = next;
+      }
+    }
     return {
-      data: doc.status === 'ok' ? doc.data : null,
+      data,
       status: doc.status,
       cached: true,
     };
@@ -1351,11 +1791,23 @@ async function resolveEpic(slug, options = {}) {
       host = recovered.host || null;
     }
   }
+  let catalog = options.catalog;
+  let catalogPending = false;
+  // Stale CMS page (Alan Wake 2): `meta` has no tags/releaseDate at all, so
+  // the catalog bulk is the only store-owned source left. It needs the
+  // owner's token and is bounded by the same budget/breaker as this phase.
+  if (epicPageNeedsCatalog(payload)) {
+    const ensured = await ensureEpicCatalog(options);
+    noteCatalogResult(ensured, options);
+    if (ensured.catalog) catalog = ensured.catalog;
+    catalogPending = Boolean(ensured.pending);
+  }
   const data = normalizeEpicProduct(payload, {
     slug: id,
     title: options.title,
-    catalog: options.catalog,
+    catalog,
   });
+  if (catalogPending) data.catalogPending = true;
   writeDetail('epic', id, 'ok', data);
   // Persist a discovered slug so the read model (`epic-layer.joinGames`) can
   // key the union entry `epic:<slug>` and attach this detail next request.
@@ -1442,26 +1894,46 @@ async function runPhase(job, source, targets, resolveOne) {
       break;
     }
     const cached = readDetail(source, target.id);
-    if (cached.fresh && !job.force) {
+    // A cached Epic detail that is still «poster only» (stale CMS page, no
+    // catalog when it was written) is completed from the catalog with the
+    // owner's token. This is not a CMS refetch: `resolveEpic` sees the fresh
+    // document and only merges catalog fields into it.
+    const completingCatalog =
+      cached.fresh &&
+      !job.force &&
+      source === 'epic' &&
+      cached.doc &&
+      cached.doc.status === 'ok' &&
+      target.catalogItemId &&
+      detailNeedsCatalog(cached.doc.data);
+    if (cached.fresh && !job.force && !completingCatalog) {
       if (cached.doc.status === 'ok') phase.resolved++;
       else phase.notFound++;
       phase.cached++;
       continue;
     }
     try {
-      job.requests++;
+      if (!completingCatalog) job.requests++;
       const result = await resolveOne(target, {
         client: job.client,
         force: job.force,
         // A no-slug target needs a probe + a product page; both count.
         probeBudget: job.budget - job.requests + 1,
+        canRequest: () => job.requests < job.budget,
+        onWarning: (warning) => {
+          if (warning) job.warnings.push(String(warning));
+        },
+        onCatalogDeferred: () => {
+          phase.deferred++;
+        },
         onRequest: () => {
           job.requests++;
         },
       });
       if (result.status === 'ok') {
         phase.resolved++;
-        phase.fetched++;
+        if (completingCatalog) phase.cached++;
+        else phase.fetched++;
       } else if (result.status === 'not_found') {
         // `no_slug` is not a verdict about the product (it was never
         // addressed): it is already counted in `phase.missingSlug`.
@@ -1525,6 +1997,10 @@ function startSecondaryDetails(options = {}) {
     options.budget != null && Number.isFinite(Number(options.budget))
       ? Math.max(0, Math.floor(Number(options.budget)))
       : budgetDefault();
+  // One client per job: its `client_credentials` token and throttle state are
+  // reused across catalog refetches instead of fetched per product.
+  const epicClient =
+    options.epicClient || options.catalogClient || (epic.length ? createCatalogClient(options) : null);
   const job = {
     id: `secondary-details-${++jobSeq}`,
     ownerKey,
@@ -1537,6 +2013,11 @@ function startSecondaryDetails(options = {}) {
     budgetExceeded: false,
     force: Boolean(options.force),
     client: options.client,
+    // Owner-token catalog refetch (stale Epic CMS): injected in tests, created
+    // once per job from the token store in production.
+    epicClient: epicClient,
+    tokenStore: options.tokenStore || null,
+    epicAccountId: options.epicAccountId || null,
     pauseMs: options.pauseMs != null ? options.pauseMs : pauseMsFor('gog'),
     gog: emptyPhase(),
     epic: emptyPhase(),
@@ -1574,6 +2055,7 @@ function startSecondaryDetails(options = {}) {
             title: entry.title || null,
             catalogItemId: entry.catalogItemId || null,
             catalog: entry.catalog || null,
+            namespace: entry.namespace || null,
           })),
         (target, opts) =>
           resolveEpic(target.slug, {
@@ -1581,6 +2063,12 @@ function startSecondaryDetails(options = {}) {
             title: target.title,
             catalog: target.catalog,
             catalogItemId: target.catalogItemId,
+            namespace: target.namespace,
+            ownerKey: job.ownerKey,
+            epicClient: job.epicClient,
+            tokenStore: job.tokenStore,
+            epicAccountId: job.epicAccountId,
+            forceCatalog: job.force,
           })
       );
       job.status = job.budgetExceeded ? 'partial' : 'done';
@@ -1704,6 +2192,7 @@ function targetsForOwner(ownerKey) {
         id: String(game.catalogItemId || game.appName || slug || ''),
         catalogItemId: game.catalogItemId || null,
         appName: game.appName || null,
+        namespace: game.namespace || null,
         title,
         catalog: meta,
       });
@@ -1750,8 +2239,12 @@ function coverageForOwner(ownerKey) {
       }
       const { doc, fresh } = readDetail(source, id);
       if (!fresh || !doc) continue;
-      if (doc.status === 'ok') resolved++;
-      else if (doc.status === 'not_found') notFound++;
+      if (doc.status === 'ok') {
+        // A detail written while the catalog refetch was deferred (owner token
+        // expired/rate-limited) is not coverage: the next kick retries it.
+        if (source === 'epic' && doc.data && doc.data.catalogPending === true) continue;
+        resolved++;
+      } else if (doc.status === 'not_found') notFound++;
     }
     return {
       total: list.length,
@@ -1905,6 +2398,7 @@ module.exports = {
   BROWSER_UA,
   CACHE_DIR,
   DEBUG_DIR,
+  CATALOG_PROBE_DIR,
   STATE_DIR,
   BREAKER_PATH,
   STATUS_PATH,
@@ -1912,6 +2406,7 @@ module.exports = {
   DEFAULT_PAUSE_MS,
   DEFAULT_BREAKER_MS,
   DEFAULT_PROBE_TTL_MS,
+  DEFAULT_CATALOG_PROBE_TTL_MS,
   MAX_DEBUG_FILES,
   EPIC_FEATURE_TAGS,
   yearOfDate,
@@ -1921,6 +2416,15 @@ module.exports = {
   pickEpicPage,
   epicTagName,
   epicGenresFromCategories,
+  epicPageNeedsCatalog,
+  detailNeedsCatalog,
+  catalogHasMeta,
+  applyCatalogToDetail,
+  refetchEpicCatalog,
+  ensureEpicCatalog,
+  readCatalogProbe,
+  writeCatalogProbe,
+  catalogProbePath,
   slugFromTitle,
   discoverEpicSlug,
   gogUrl,

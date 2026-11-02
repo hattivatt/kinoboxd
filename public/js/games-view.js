@@ -991,7 +991,18 @@ export function normalizeSecondaryWork(entry, context = {}) {
     ?? yearFromDate(entry.releaseDate)
     ?? yearFromDate(gog.releaseDate)
     ?? yearFromDate(epic.releaseDate);
-  const genres = normalizeGenres(entry.genres ?? epic.genres ?? gog.genres);
+  // M6d tolerant fallback: an older payload may carry the store genres on the
+  // `epic`/`gog` block only (or an empty top-level array) — the top-level
+  // non-empty list always wins, otherwise the source block fills the card.
+  const genres = normalizeGenres(
+    Array.isArray(entry.genres) && entry.genres.length
+      ? entry.genres
+      : Array.isArray(epic.genres) && epic.genres.length
+        ? epic.genres
+        : Array.isArray(gog.genres) && gog.genres.length
+          ? gog.genres
+          : entry.genres ?? epic.genres ?? gog.genres
+  );
   const slug = firstString(entry.slug, gog.slug, epic.slug);
   const gogSlug = firstString(gog.slug, entry.slug);
   const epicSlug = firstString(epic.slug, entry.slug);
