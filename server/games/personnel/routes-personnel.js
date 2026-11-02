@@ -25,7 +25,8 @@
 
 const express = require('express');
 
-const { HttpError } = require('../../upload');
+const { HttpError } = require('../core/errors');
+const { assertOnlyParams } = require('../core/params');
 const gameCache = require('../game-cache');
 const enrichJobs = require('../enrich');
 const personnel = require('./personnel');
@@ -44,17 +45,6 @@ function mapError(err) {
   return err;
 }
 
-function assertOnlyParams(req, allowed, endpoint) {
-  const keys = Object.keys(req.query || {});
-  const extra = keys.filter((key) => !allowed.includes(key));
-  if (!extra.length) return;
-  throw new HttpError(
-    400,
-    `Unexpected query parameter(s) for ${endpoint}: ${extra.map((key) => `"${key}"`).join(', ')}. ` +
-      `Accepted: ${allowed.map((key) => `"${key}"`).join(', ')}.`,
-    'unexpected_parameter'
-  );
-}
 
 /** Exactly one cached games profile (same contract as `/api/games/stats`). */
 function resolveProfileOrThrow(raw) {

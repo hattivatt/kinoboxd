@@ -19,7 +19,8 @@
 
 const express = require('express');
 
-const { HttpError } = require('../upload');
+const { HttpError } = require('../core/errors');
+const { assertOnlyParams, parseForce } = require('../core/params');
 const gameCache = require('./game-cache');
 const gogCache = require('./gog-cache');
 const gog = require('./gog');
@@ -61,25 +62,7 @@ function mapError(err) {
   return err;
 }
 
-function assertOnlyParams(req, allowed, endpoint) {
-  const keys = Object.keys(req.query || {});
-  const extra = keys.filter((key) => !allowed.includes(key));
-  if (!extra.length) return;
-  throw new HttpError(
-    400,
-    `Unexpected query parameter(s) for ${endpoint}: ${extra.map((key) => `"${key}"`).join(', ')}. ` +
-      `Accepted: ${allowed.map((key) => `"${key}"`).join(', ')}.`,
-    'unexpected_parameter'
-  );
-}
 
-function parseForce(raw) {
-  if (raw == null || String(raw).trim() === '') return false;
-  const value = String(raw).trim().toLowerCase();
-  if (['1', 'true', 'yes', 'on'].includes(value)) return true;
-  if (['0', 'false', 'no', 'off'].includes(value)) return false;
-  throw new HttpError(400, 'Parameter "force" must be 0 or 1.', 'invalid_force');
-}
 
 function bodyOf(req) {
   return req.body && typeof req.body === 'object' ? req.body : {};

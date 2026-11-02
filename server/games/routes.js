@@ -28,7 +28,8 @@
 
 const express = require('express');
 
-const { HttpError } = require('../upload');
+const { HttpError } = require('../core/errors');
+const { assertOnlyParams, parseBoolParam, parseMinHours, parseForce } = require('../core/params');
 const config = require('../config');
 const steam = require('./steam');
 const store = require('./store');
@@ -102,59 +103,9 @@ function mapError(err) {
   return err;
 }
 
-function assertOnlyParams(req, allowed, endpoint) {
-  const keys = Object.keys(req.query || {});
-  const extra = keys.filter((key) => !allowed.includes(key));
-  if (!extra.length) return;
-  throw new HttpError(
-    400,
-    `Unexpected query parameter(s) for ${endpoint}: ${extra.map((key) => `"${key}"`).join(', ')}. ` +
-      `Accepted: ${allowed.map((key) => `"${key}"`).join(', ')}.`,
-    'unexpected_parameter'
-  );
-}
 
-function parseBoolParam(raw, name, fallback) {
-  if (raw == null || String(raw).trim() === '') return fallback;
-  const value = String(raw).trim().toLowerCase();
-  if (['1', 'true', 'yes', 'on'].includes(value)) return true;
-  if (['0', 'false', 'no', 'off'].includes(value)) return false;
-  throw new HttpError(400, `Query parameter "${name}" must be 0 or 1.`, `invalid_${name}`);
-}
 
-function parseForce(raw) {
-  if (raw == null || String(raw).trim() === '') return false;
-  const value = String(raw).trim().toLowerCase();
-  if (['1', 'true', 'yes', 'on'].includes(value)) return true;
-  if (['0', 'false', 'no', 'off'].includes(value)) return false;
-  throw new HttpError(400, 'Parameter "force" must be 0 or 1.', 'invalid_force');
-}
 
-/**
- * `minHours`: -1 = every game (0-hour backlog included), 0 = only played
- * works (the endpoint default), N≥1 = works with at least N hours.
- * Anything else (fraction, < -1, text) is a 400, never a silent ignore.
- */
-function parseMinHours(raw, fallback = 0) {
-  if (raw == null || String(raw).trim() === '') return fallback;
-  const value = String(raw).trim();
-  if (!/^-?\d+$/.test(value)) {
-    throw new HttpError(
-      400,
-      'Query parameter "minHours" must be an integer >= -1 (-1 = all games, 0 = played only).',
-      'invalid_minHours'
-    );
-  }
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < -1) {
-    throw new HttpError(
-      400,
-      'Query parameter "minHours" must be an integer >= -1 (-1 = all games, 0 = played only).',
-      'invalid_minHours'
-    );
-  }
-  return parsed;
-}
 
 /**
  * Resolve `?profile=` to exactly one cached games profile. Mirrors the books

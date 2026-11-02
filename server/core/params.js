@@ -59,6 +59,11 @@ function parseBoolParam(raw, name, fallback) {
   return parseBoolean(raw, { name, fallback, label: 'Query parameter' });
 }
 
+/** `force` as accepted by the import/refresh endpoints (body or query). */
+function parseForce(raw) {
+  return parseBoolean(raw, { name: 'force', label: 'Parameter', code: 'invalid_force' });
+}
+
 /**
  * `minHours`: -1 = every game (0-hour backlog included), 0 = only played
  * works (the endpoint default), N>=1 = works with at least N hours. Anything
@@ -118,6 +123,7 @@ module.exports = {
   assertOnlyParams,
   parseBoolean,
   parseBoolParam,
+  parseForce,
   parseMinHours,
   parseInteger,
   parseEnum,

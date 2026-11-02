@@ -12,7 +12,8 @@
 const express = require('express');
 const multer = require('multer');
 
-const { HttpError } = require('../upload');
+const { HttpError } = require('../core/errors');
+const { assertOnlyParams } = require('../core/params');
 const config = require('../config');
 const bookCache = require('./book-cache');
 const authorsBridge = require('./authors-bridge');
@@ -612,24 +613,6 @@ function resolveProfileScopeOrThrow(req) {
   return resolveProfileTokenOrThrow(req.query.profile, 'Query parameter "profile"');
 }
 
-/**
- * Strict query contract: the endpoint accepts exactly the listed parameters.
- * An unknown one is a client bug (a stale build still sending `?sources=`,
- * `?profiles=` or a typo), and silently ignoring it would make the payload look
- * like it honoured a filter it never applied.
- */
-function assertOnlyParams(req, allowed, endpoint) {
-  const keys = Object.keys(req.query || {});
-  const extra = keys.filter((key) => !allowed.includes(key));
-  if (!extra.length) return;
-  const list = extra.map((key) => `"${key}"`).join(', ');
-  throw new HttpError(
-    400,
-    `Unexpected query parameter(s) for ${endpoint}: ${list}. ` +
-      `Accepted: ${allowed.map((key) => `"${key}"`).join(', ')}.`,
-    'unexpected_parameter'
-  );
-}
 
 /**
  * GET /api/books/stats?profile=livelib-Margaret&includeMangaComics=0|1

@@ -7,12 +7,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const {
-  HttpError,
-  parseLetterboxdZip,
-  createUpload,
-  getUpload,
-} = require('./upload');
+const { parseLetterboxdZip, createUpload, getUpload } = require('./upload');
+const { HttpError, errorMiddleware } = require('./core/errors');
 const enrich = require('./enrich');
 const kp = require('./kp');
 const attachment = require('./attachment');
@@ -628,17 +624,7 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Not found.', code: 'not_found' });
 });
 
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  if (err instanceof HttpError) {
-    return res.status(err.status).json({ error: err.message, code: err.code });
-  }
-  if (err instanceof SyntaxError && 'body' in err) {
-    return res.status(400).json({ error: 'Invalid JSON body.', code: 'invalid_json' });
-  }
-  console.error('[server] Unhandled error:', err);
-  res.status(500).json({ error: 'Internal server error.', code: 'internal_error' });
-});
+app.use(errorMiddleware);
 
 // Non-internal IPv4 addresses of this machine, so the startup log shows the
 // exact URLs to open from another device on the same network.
