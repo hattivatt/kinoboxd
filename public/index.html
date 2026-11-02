@@ -249,27 +249,16 @@
               </svg>
               <span>Сравнить</span>
             </button>
-            <div class="profile-switcher" id="profile-switcher">
-              <button type="button" class="btn btn-ghost profile-btn" id="profile-btn" aria-haspopup="dialog" aria-expanded="false" title="Сохранённые профили на этом устройстве">
-                <span class="profile-btn-dot" aria-hidden="true"></span>
-                <span class="profile-label" id="profile-btn-label">Профиль</span>
-                <svg class="profile-caret" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            <div class="profile-bar" id="profile-switcher" role="group" aria-label="Сохранённые профили на этом устройстве">
+              <div class="profile-list" id="profile-list" role="list" aria-label="Список профилей"></div>
+              <button type="button" class="profile-add" id="compare-menu" hidden title="Сравнить два профиля Кинопоиска">
+                <span aria-hidden="true">⚖</span>
+                <span>Сравнить</span>
               </button>
-              <div class="profile-menu" id="profile-menu" role="dialog" aria-label="Сохранённые профили" hidden>
-                <div class="profile-menu-head">
-                  <span>Профили на этом устройстве</span>
-                  <span class="profile-menu-hint">до 6</span>
-                </div>
-                <div class="profile-list" id="profile-list" role="listbox" aria-label="Список профилей"></div>
-                <button type="button" class="profile-add profile-compare-menu" id="compare-menu" hidden>
-                  <span aria-hidden="true">⚖</span>
-                  <span>Сравнить профили</span>
-                </button>
-                <button type="button" class="profile-add" id="profile-add">
-                  <span aria-hidden="true">+</span>
-                  <span>Загрузить новый профиль</span>
-                </button>
-              </div>
+              <button type="button" class="profile-add" id="profile-add" title="Загрузить новый профиль">
+                <span aria-hidden="true">+</span>
+                <span>Профиль</span>
+              </button>
             </div>
             <button type="button" class="btn btn-ghost btn-logout" id="logout-btn" hidden title="Выйти из аккаунта" aria-label="Выйти">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -612,22 +601,12 @@
 
         <!-- local profile switcher: every browser keeps its own book profiles -->
         <section class="books-profile-bar" id="books-profile-bar" aria-label="Книжный профиль">
-          <div class="profile-switcher books-profile-switcher" id="books-profile-switcher">
-            <button type="button" class="btn btn-ghost profile-btn books-profile-btn" id="books-profile-btn" aria-haspopup="dialog" aria-expanded="false" title="Книжные профили на этом устройстве">
-              <span class="profile-btn-dot" aria-hidden="true"></span>
-              <span class="profile-label" id="books-profile-btn-label">Профиль</span>
-              <svg class="profile-caret" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+          <div class="profile-bar" id="books-profile-switcher" role="group" aria-label="Книжные профили на этом устройстве">
+            <div class="profile-list" id="books-profile-list" role="list" aria-label="Список книжных профилей"></div>
+            <button type="button" class="profile-add" id="books-profile-add" title="Создать профиль">
+              <span aria-hidden="true">+</span>
+              <span>Создать профиль</span>
             </button>
-            <div class="profile-menu books-profile-menu" id="books-profile-menu" role="dialog" aria-label="Книжные профили на этом устройстве" hidden>
-              <div class="profile-menu-head">
-                <span>Книжные профили</span>
-                <span class="profile-menu-hint">на этом устройстве</span>
-              </div>
-              <div class="profile-list" id="books-profile-list" role="listbox" aria-label="Список книжных профилей"></div>
-              <button type="button" class="profile-add" id="books-profile-add">
-                <span aria-hidden="true">+</span> Создать профиль
-              </button>
-            </div>
           </div>
           <div class="books-profile-empty" id="books-profile-empty" hidden>
             <p class="books-profile-empty-text">В этом браузере ещё нет книжных профилей. Данные других устройств сюда не попадают — профиль хранится локально.</p>

@@ -117,7 +117,6 @@ test('films import: the new KinoPoisk profile is active before /api/profiles ans
 
   assert.equal(rows().length, 1, 'exactly one switcher row');
   assert.equal(activeRows().length, 1, 'the imported profile is highlighted');
-  assert.equal(nodeFor('profile-btn-label').textContent, 'Кинопоиск · tester');
   assert.match(textById(nodeFor, 'profile-list'), /Кинопоиск · tester/);
 });
 

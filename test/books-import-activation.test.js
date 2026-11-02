@@ -88,7 +88,6 @@ test('books file import: 201 makes livelib-Margaret the active profile', async (
     'the stats request is scoped to the imported profile',
   );
   assert.ok(storage.get('kinoboxd.books.profile.v1'), 'the active id is persisted');
-  assert.equal(nodeFor('books-profile-btn-label').textContent, 'LiveLib @Margaret');
   assert.ok(nodeFor('books-profile-switcher').classList.contains('has-active'));
   assert.equal(rows().length, 1);
   assert.equal(activeRows().length, 1, 'the imported profile is highlighted');
@@ -105,6 +104,5 @@ test('books re-import of the same account stays on one active row', async () => 
 
   assert.equal(rows().length, 1, 'no duplicate profile row');
   assert.equal(activeRows().length, 1);
-  assert.equal(nodeFor('books-profile-btn-label').textContent, 'LiveLib @Margaret');
   assert.ok(storage.get('kinoboxd.books.profile.v1'), 'the active id is restored');
 });

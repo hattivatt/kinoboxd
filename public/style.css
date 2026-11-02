@@ -1039,6 +1039,40 @@ body:not([data-view="dashboard"]):not([data-view="books"]):not([data-view="games
 .profile-add:hover { background: rgba(0, 224, 84, 0.07); }
 .profile-add span[aria-hidden] { font-size: 15px; line-height: 1; }
 
+/* Profile chips: films and books show their profiles as a horizontal bar
+   (games keeps its own .games-profile-chip). The rows keep their markup;
+   the container turns them into chips and hides the second line. */
+.profile-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.profile-bar .profile-list {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  max-height: none;
+  overflow: visible;
+  min-width: 0;
+}
+.profile-bar .profile-item {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.profile-bar .profile-item:hover { background: rgba(255, 255, 255, 0.05); }
+.profile-bar .profile-item.is-active { border-color: var(--green); background: rgba(0, 224, 84, 0.1); }
+.profile-bar .profile-pick { padding: 5px 10px; gap: 7px; border-radius: 999px; }
+.profile-bar .profile-kind { display: none; }
+.profile-bar .profile-meta { display: none; }
+.profile-bar .profile-del { border-radius: 999px; padding: 0 8px 0 2px; }
+.profile-bar .profile-add {
+  width: auto;
+  margin-top: 0;
+  padding: 5px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 .dash {
   max-width: 1400px;
   margin: 0 auto;
