@@ -112,6 +112,7 @@ const DEBUG_BODY_LIMIT = 2048;
 const MAX_STATUS_ERRORS = 5;
 const MAX_KICK_HISTORY = 10;
 const MAX_SLUGLESS = 50;
+const COVERAGE_MEMO_MS = 60 * 1000;
 
 try {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -1377,6 +1378,9 @@ async function resolveEpic(slug, options = {}) {
 
 const jobs = new Map();
 const lastKick = new Map();
+// `ownerKey → {at, pending}` — a *negative* coverage verdict, memoized because
+// `/stats` is polled (see `kickFromStats`).
+const coverageMemo = new Map();
 let jobSeq = 0;
 
 function sleep(ms) {
@@ -1858,9 +1862,19 @@ function kickFromStats(ownerKey, meta, options = {}) {
   if (!coverageNeedsKick(meta)) return { skipped: 'covered' };
   // Refine with the cache: a product whose slug 404'd (or whose title probe
   // already failed) is *attempted*, not pending. Without this a no-op job would
-  // start every cooldown window for a work that cannot be resolved.
+  // start every cooldown window for a work that cannot be resolved. A negative
+  // verdict is memoized for a minute: `/stats` is polled, and the refinement
+  // re-reads the library/catalog.
+  const memo = coverageMemo.get(key);
+  if (memo && memo.pending <= 0 && nowMs() - memo.at < COVERAGE_MEMO_MS) {
+    return { skipped: 'attempted' };
+  }
   const coverage = coverageForOwner(key);
-  if (coverage.pending <= 0) return { skipped: 'attempted' };
+  if (coverage.pending <= 0) {
+    coverageMemo.set(key, { at: nowMs(), pending: 0 });
+    return { skipped: 'attempted' };
+  }
+  coverageMemo.delete(key);
   const gate = kickGate(key, options);
   if (gate) return { skipped: gate };
   return kickSecondaryDetailsQuietly(key, {
@@ -1874,6 +1888,7 @@ function kickFromStats(ownerKey, meta, options = {}) {
 function resetJobs() {
   jobs.clear();
   lastKick.clear();
+  coverageMemo.clear();
   try {
     fs.rmSync(STATUS_PATH, { force: true });
   } catch (err) {
