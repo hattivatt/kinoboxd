@@ -553,12 +553,26 @@ function buildGamesStats(input = {}) {
   const secondaryDetailTotal = union.works.filter(
     (entry) => (entry.gog && entry.gog.gogGameId) || (entry.epic && entry.epic.slug)
   ).length;
-  const secondaryDetailResolved = union.works.filter(
-    (entry) =>
-      entry.secondaryDetails &&
-      entry.secondaryDetails.catalogPending !== true &&
-      entry.secondaryDetails.needsCatalog !== true
-  ).length;
+  const secondaryDetailResolved = union.works.filter((entry) => {
+    if (
+      !entry.secondaryDetails ||
+      entry.secondaryDetails.catalogPending === true ||
+      entry.secondaryDetails.needsCatalog === true
+    ) {
+      return false;
+    }
+    // Epic details are only «resolved» when the **facts** arrived (year and
+    // genres), not when a file exists: a settled negative is `unavailable` in
+    // the secondary-details status, never a fake 1/1 coverage. GOG keeps its
+    // previous «detail exists» contract.
+    if (entry.secondaryDetails.source === 'epic') {
+      return (
+        entry.secondaryDetails.yearHas === true &&
+        entry.secondaryDetails.genresOk === true
+      );
+    }
+    return true;
+  }).length;
   // Epic works that have no store slug at all (`productmapping`, catalog and
   // the validated title probe all failed): «library-only» — title + hours, no
   // genres/year/poster. Reported honestly instead of being silently dropped.

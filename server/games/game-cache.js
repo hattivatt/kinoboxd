@@ -26,6 +26,8 @@
  *     editions.json                       canonical edition index (M5-B, profiles keyed)
  *     state/games-breaker.json            host breakers (30 min) — see §10.1
  *     state/enrich-state.json             details enrich progress/journal (resume)
+ *     state/details-heal-state.json       one-time heal ledger for documents
+ *                                         written before `headerImage` existed
  *     state/spy-state.json                SteamSpy phase progress/journal
  *     state/reviews-state.json            appreviews phase progress/journal
  *
@@ -67,6 +69,7 @@ const ACHIEVEMENTS_DIR = path.join(GAMES_CACHE_DIR, 'achievements');
 const GLOBAL_DIR = path.join(GAMES_CACHE_DIR, 'global');
 const BREAKER_PATH = path.join(STATE_DIR, 'games-breaker.json');
 const ENRICH_STATE_PATH = path.join(STATE_DIR, 'enrich-state.json');
+const DETAILS_HEAL_STATE_PATH = path.join(STATE_DIR, 'details-heal-state.json');
 const SPY_STATE_PATH = path.join(STATE_DIR, 'spy-state.json');
 const REVIEWS_STATE_PATH = path.join(STATE_DIR, 'reviews-state.json');
 
@@ -548,6 +551,40 @@ async function saveReviewsState(state) {
   return savePhaseState(REVIEWS_STATE_PATH, state);
 }
 
+/**
+ * One-time heal ledger for `details` documents written **before** the store
+ * parser started keeping `headerImage` (e5bc5b9, 02.11.2026). Those documents
+ * are TTL-fresh, so the ordinary enrich pass skips them and the card never gets
+ * a real header. The ledger is global (a details document is global per appid,
+ * not owner-scoped) and keyed by appid:
+ *
+ *   { appids: { "<appid>": { at, appid, result } } }
+ *
+ * `result` is `healed` (the refetch produced a header), `no_artwork` (the store
+ * answered without a header image — do not ask again) or `unavailable` (the
+ * store said the item has no page). Any recorded appid is never a heal
+ * candidate again; a fetch failure is NOT recorded, so the next run retries.
+ */
+function readDetailsHealState() {
+  const hit = readJsonWithFingerprint(DETAILS_HEAL_STATE_PATH);
+  const doc = (hit && hit.data) || {};
+  return {
+    schemaVersion: 1,
+    updatedAt: doc.updatedAt || null,
+    appids: doc.appids && typeof doc.appids === 'object' ? doc.appids : {},
+  };
+}
+
+async function saveDetailsHealState(state) {
+  const payload = {
+    schemaVersion: 1,
+    updatedAt: new Date().toISOString(),
+    appids: state && state.appids && typeof state.appids === 'object' ? state.appids : {},
+  };
+  const fingerprint = await writeJsonAtomic(DETAILS_HEAL_STATE_PATH, payload);
+  return { data: payload, fingerprint };
+}
+
 /* ------------------------------------------------------------------ */
 /* Achievements (per game) + global percentages                        */
 /* ------------------------------------------------------------------ */
@@ -630,6 +667,7 @@ module.exports = {
   GLOBAL_DIR,
   BREAKER_PATH,
   ENRICH_STATE_PATH,
+  DETAILS_HEAL_STATE_PATH,
   SPY_STATE_PATH,
   REVIEWS_STATE_PATH,
   PROFILE_TTL_MS,
@@ -684,6 +722,8 @@ module.exports = {
   savePhaseState,
   readEnrichState,
   saveEnrichState,
+  readDetailsHealState,
+  saveDetailsHealState,
   readSpyState,
   saveSpyState,
   readReviewsState,

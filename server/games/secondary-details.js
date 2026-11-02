@@ -62,6 +62,23 @@
  *      probe (`catalog-probe/`, 30 days), so a polled kick never repeats it. No
  *      token (not connected) keeps the previous library-only behaviour.
  *
+ *      **Catalog trace (02.11.2026 fix-round).** Production showed
+ *      `resolved 1/1` for Alan Wake 2 while the card still had no year/genres,
+ *      and there was no evidence whether the catalog had been asked at all.
+ *      Every attempt is now recorded per owner + `catalogItemId` in
+ *      `state/catalog-state.json` (result `shape_ok`/`ok`/`empty`/`401`/`403`/
+ *      `unavailable`/`budget`, HTTP status, response bytes, `genresOk`,
+ *      `yearHas`, at most 5 entries). Any attempt that is not `shape_ok` also
+ *      leaves a ≤2 KB diagnostic dump in `cache-games/debug/epic/
+ *      catalog-<catalogItemId>.json` (status/namespace/normalized item,
+ *      secrets masked, token never written) — including an `empty` bulk answer,
+ *      which used to be invisible. `/secondary-details/status` exposes the same
+ *      ledger as `catalogAttempts`, and `resolved` counts only documents whose
+ *      year **and** genres actually arrived: a settled negative (the store has
+ *      no release info at all) is reported as `unavailable` instead of a fake
+ *      success. A retry is due when the ledger is missing/unsuccessful, the
+ *      negative TTL expired, or the job is forced.
+ *
  * Politeness (§14.5): one request per product, pause `GAMES_SECONDARY_PAUSE_MS`
  * (default **2 s**, GOG's undocumented ~200 req/h/IP limit is the reference),
  * budget `GAMES_SECONDARY_BUDGET` (default **200** requests/run, GOG first then
@@ -111,6 +128,13 @@ const DEBUG_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'debug', 'epic');
 // owner's token). A catalog answer that cannot help is remembered for 30 days
 // so a repeated kick does not spend a request on the same dead end.
 const CATALOG_PROBE_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'catalog-probe');
+// Per-owner catalog ledger (see `recordCatalogAttempt`): what the catalog
+// actually answered for every `catalogItemId`, so «resolved 1/1 with an empty
+// card» can be told apart from «the job never asked».
+const CATALOG_STATE_PATH = path.join(STATE_DIR, 'catalog-state.json');
+const MAX_CATALOG_ATTEMPTS = 5;
+const MAX_CATALOG_DEBUG_FILES = 5;
+const MAX_CATALOG_STATUS_ITEMS = 20;
 
 const SCHEMA_VERSION = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -652,13 +676,69 @@ function needsCatalogCompletion(data) {
 
 /**
  * Should the job spend a catalog attempt on this cached detail? Yes for a
- * pre-catalog document (one-time heal) and for a document whose catalog step
- * was deferred (retry on every kick until the token works).
+ * pre-catalog document (one-time heal), for a document whose catalog step was
+ * deferred (retry on every kick until the token works), and for a document the
+ * per-owner ledger says is due again (a definitive negative after its 30-day
+ * window, or no attempt recorded at all — the pre-deploy heal). `options`
+ * carries `ownerKey` + `catalogItemId`; without them the marker alone decides
+ * (backward-compatible for the read model and the old tests).
  */
-function shouldAttemptCatalog(data) {
+function shouldAttemptCatalog(data, options = {}) {
   if (!detailNeedsCatalog(data)) return false;
   if (data.catalogPending === true) return true;
-  return data.catalogChecked !== true;
+  if (data.catalogChecked !== true) return true;
+  if (options.ownerKey && options.catalogItemId) {
+    return catalogRetryDue(options.ownerKey, options.catalogItemId, options);
+  }
+  return false;
+}
+
+/**
+ * How complete is an Epic detail as far as the stores allow?
+ *   - `complete`    — year **and** genres arrived;
+ *   - `partial`     — only one of them (reported honestly, never invented);
+ *   - `pending`     — an attempt is still due (deferred token, pre-catalog
+ *                     document, or a negative answer whose TTL expired);
+ *   - `unavailable` — settled: the store has no release info for this work
+ *                     (an `empty` catalog, or no catalog at all / not
+ *                     connected). «resolved 0/1» must not pretend otherwise.
+ */
+function catalogCompletionState(data, options = {}) {
+  if (!data || typeof data !== 'object') return 'unavailable';
+  const flags = catalogMetaFlags(data);
+  if (flags.metaStatus !== 'unavailable') return flags.metaStatus;
+  if (data.catalogPending === true) return 'pending';
+  if (data.catalogChecked !== true) return 'pending';
+  // «Not connected» is terminal while there is no token; a later connect makes
+  // the same document retryable again (the ledger has no attempt for it).
+  if (data.catalogSkipped === 'not_connected') {
+    return options.hasCatalogToken === true ? 'pending' : 'unavailable';
+  }
+  if (options.catalogItemId && options.ownerKey) {
+    return catalogRetryDue(options.ownerKey, options.catalogItemId, options)
+      ? 'pending'
+      : 'unavailable';
+  }
+  return 'unavailable';
+}
+
+/** Does this owner have a usable Epic access token right now? Cheap sync read. */
+function ownerHasCatalogToken(ownerKey) {
+  const key = String(ownerKey == null ? '' : ownerKey).trim();
+  if (!key) return false;
+  try {
+    const epicCache = require('./epic-cache');
+    const accountId = epicCache.epicAccountForOwner(key);
+    if (!accountId) return false;
+    const store = require('./epic-token-store');
+    const summary =
+      typeof store.readTokenSummarySync === 'function'
+        ? store.readTokenSummarySync(accountId)
+        : null;
+    return Boolean(summary && summary.hasAccessToken);
+  } catch (err) {
+    return false;
+  }
 }
 
 function catalogHasMeta(catalog) {
@@ -789,6 +869,7 @@ async function refetchEpicCatalog(options = {}) {
     token = null;
   }
   if (!token || !token.hasAccessToken) return { catalog: null, skipped: 'not_connected' };
+  const namespace = options.namespace || DEFAULT_EPIC_NAMESPACE;
   if (options.force !== true && options.forceCatalog !== true) {
     const probe = readCatalogProbe(catalogItemId);
     if (probe.fresh && probe.doc && probe.doc.status && probe.doc.status !== 'ok') {
@@ -796,6 +877,12 @@ async function refetchEpicCatalog(options = {}) {
     }
   }
   if (typeof options.canRequest === 'function' && !options.canRequest()) {
+    noteCatalogAttempt(ownerKey, catalogItemId, {
+      namespace,
+      result: 'budget',
+      code: 'catalog_budget',
+      reason: 'budget',
+    });
     return { catalog: null, skipped: 'budget', warning: 'catalog_budget' };
   }
   const client =
@@ -803,7 +890,6 @@ async function refetchEpicCatalog(options = {}) {
   if (!client || typeof client.getCatalogBulk !== 'function') {
     return { catalog: null, skipped: 'no_client' };
   }
-  const namespace = options.namespace || DEFAULT_EPIC_NAMESPACE;
 
   const record = (entry) => {
     try {
@@ -839,30 +925,61 @@ async function refetchEpicCatalog(options = {}) {
             record,
             catalogItemId,
             namespace,
+            ownerKey,
           });
         }
       } else {
-        return catalogFailure(err, 'auth', { record, catalogItemId, namespace });
+        return catalogFailure(err, 'auth', { record, catalogItemId, namespace, ownerKey });
       }
     } else {
-      return catalogFailure(err, failureKindOf(err), { record, catalogItemId, namespace });
+      return catalogFailure(err, failureKindOf(err), {
+        record,
+        catalogItemId,
+        namespace,
+        ownerKey,
+      });
     }
   }
 
   const item = result && result.items ? result.items[catalogItemId] : null;
+  const transport = catalogTransportFacts(result, catalogItemId);
   if (item) {
     try {
       await epicCache.saveEpicCatalogItem(catalogItemId, item);
     } catch (err) {
       /* a read-only cache must not fail the fetch */
     }
+    const yearHas = Boolean(item.releaseDate);
+    const genresOk = epicGenresFromCategories(item.categories).length > 0;
     if (!catalogHasMeta(item)) {
       // The catalog knows the item but has no date/categories either: this is
-      // a definitive dead end, not a retryable one. Remember it for 30 days.
+      // a definitive dead end, not a retryable one. Remember it for 30 days
+      // and leave a dump — «the item exists but its shape is empty» is exactly
+      // the Alan Wake 2 symptom that used to be invisible.
       writeCatalogProbe(catalogItemId, 'empty', { namespace, code: 'no_meta' });
-      record({ code: 'catalog_empty', reason: 'no_meta', status: null, message: null });
+      record({ code: 'catalog_empty', reason: 'no_meta', status: transport.httpStatus, message: null });
+      noteCatalogAttempt(ownerKey, catalogItemId, {
+        namespace,
+        result: 'empty',
+        ...transport,
+        genresOk,
+        yearHas,
+        code: 'catalog_empty',
+        reason: 'no_meta',
+        item,
+      });
       return { catalog: item, pending: false, deferred: false, warning: 'catalog_empty' };
     }
+    // `shape_ok` is the only outcome that needs no follow-up: a release date
+    // AND a real genre line. `ok` (one of them) is dumped for the owner.
+    noteCatalogAttempt(ownerKey, catalogItemId, {
+      namespace,
+      result: yearHas && genresOk ? 'shape_ok' : 'ok',
+      ...transport,
+      genresOk,
+      yearHas,
+      item,
+    });
     return { catalog: item, pending: false, deferred: false, warning: null };
   }
 
@@ -871,13 +988,13 @@ async function refetchEpicCatalog(options = {}) {
   if (failure) {
     const code = failure.code || 'epic_http_error';
     if (code === 'epic_auth_expired') {
-      return catalogFailure(failure, 'auth', { record, catalogItemId, namespace });
+      return catalogFailure(failure, 'auth', { record, catalogItemId, namespace, ownerKey });
     }
     if (code === 'epic_rate_limited') {
-      return catalogFailure(failure, 'rate', { record, catalogItemId, namespace });
+      return catalogFailure(failure, 'rate', { record, catalogItemId, namespace, ownerKey });
     }
     if (code === 'epic_unreachable') {
-      return catalogFailure(failure, 'network', { record, catalogItemId, namespace });
+      return catalogFailure(failure, 'network', { record, catalogItemId, namespace, ownerKey });
     }
   }
   // A 200 without the item is a definitive answer for this catalog id: remember
@@ -887,8 +1004,61 @@ async function refetchEpicCatalog(options = {}) {
     code: failure ? failure.code || null : null,
   });
   const warning = failure ? 'catalog_http_error' : 'catalog_empty';
-  record({ code: warning, reason: warning, status: null, message: null });
+  record({
+    code: warning,
+    reason: warning,
+    status: transport.httpStatus,
+    message: null,
+  });
+  noteCatalogAttempt(ownerKey, catalogItemId, {
+    namespace,
+    result: failure && transport.httpStatus !== 404 ? 'unavailable' : 'empty',
+    ...transport,
+    code: failure ? failure.code || null : 'catalog_empty',
+    reason: warning,
+  });
   return { catalog: null, pending: false, deferred: false, warning };
+}
+
+/**
+ * Status + byte size of the chunk that carried this catalog id. A fake client
+ * may omit `chunks` (tests) — then the fields stay `null`, never invented.
+ */
+function catalogTransportFacts(result, catalogItemId) {
+  const id = String(catalogItemId == null ? '' : catalogItemId);
+  const has = (entry) =>
+    Array.isArray(entry && entry.ids) && entry.ids.map(String).includes(id);
+  const chunks = Array.isArray(result && result.chunks) ? result.chunks : [];
+  const chunk = chunks.find(has);
+  if (chunk) {
+    return {
+      httpStatus: chunk.status == null ? null : Number(chunk.status),
+      bytes: chunk.bytes == null ? null : Number(chunk.bytes),
+    };
+  }
+  const failures = Array.isArray(result && result.failures) ? result.failures : [];
+  const failure = failures.find(has);
+  if (failure) {
+    return {
+      httpStatus: failure.status == null ? null : Number(failure.status),
+      bytes: failure.bytes == null ? null : Number(failure.bytes),
+    };
+  }
+  return { httpStatus: null, bytes: null };
+}
+
+/**
+ * Record one catalog attempt in the owner ledger and dump a diagnostic file
+ * for anything short of `shape_ok`. Both are best-effort: diagnostics must
+ * never fail the job.
+ */
+function noteCatalogAttempt(ownerKey, catalogItemId, entry = {}) {
+  if (!ownerKey || !catalogItemId) return null;
+  const recorded = recordCatalogAttempt(ownerKey, catalogItemId, entry);
+  if (entry.result !== 'shape_ok') {
+    dumpCatalogFailure(catalogItemId, entry);
+  }
+  return recorded;
 }
 
 function failureKindOf(err) {
@@ -900,11 +1070,22 @@ function failureKindOf(err) {
 }
 
 function catalogFailure(err, kind, context = {}) {
-  const { record, catalogItemId, namespace } = context;
+  const { record, catalogItemId, namespace, ownerKey } = context;
   const code = (err && err.code) || 'epic_http_error';
   const status = err && err.status != null ? err.status : null;
+  const bytes = err && err.bodyBytes != null ? err.bodyBytes : null;
+  const note = (result, extra = {}) =>
+    noteCatalogAttempt(ownerKey, catalogItemId, {
+      namespace,
+      result,
+      httpStatus: status,
+      bytes,
+      code,
+      ...extra,
+    });
   if (kind === 'auth') {
     if (record) record({ code: 'catalog_auth_expired', reason: code, status, message: null });
+    note('401');
     return {
       catalog: null,
       pending: true,
@@ -915,6 +1096,7 @@ function catalogFailure(err, kind, context = {}) {
   if (kind === 'rate') {
     tripBreaker('epic', 'catalog_blocked', status);
     if (record) record({ code: 'catalog_blocked', reason: code, status, message: null });
+    note('403');
     return {
       catalog: null,
       pending: true,
@@ -924,6 +1106,7 @@ function catalogFailure(err, kind, context = {}) {
   }
   if (kind === 'network') {
     if (record) record({ code: 'catalog_deferred', reason: code, status, message: null });
+    note('unavailable');
     return {
       catalog: null,
       pending: true,
@@ -938,6 +1121,7 @@ function catalogFailure(err, kind, context = {}) {
     });
   }
   if (record) record({ code: 'catalog_http_error', reason: code, status, message: null });
+  note(status === 404 ? 'empty' : 'unavailable');
   return {
     catalog: null,
     pending: false,
@@ -1144,6 +1328,204 @@ function writeCatalogProbe(catalogItemId, status, extra = {}) {
   return doc;
 }
 
+/* -------------------- Epic catalog attempt ledger ------------------ */
+
+/**
+ * Per-owner catalog ledger (`state/catalog-state.json`):
+ *
+ *   { schemaVersion, updatedAt, owners: { "<ownerKey>": {
+ *       "<catalogItemId>": { catalogItemId, namespace, lastResult, lastAt,
+ *                            attempts: [{ at, result, httpStatus, bytes,
+ *                                         genresOk, yearHas }, … ≤5] } } } }
+ *
+ * The authoritative token is per owner, so the ledger is too — a shared
+ * `catalog/` document is global, but «did *this* owner's token answer?» is not.
+ * Results: `shape_ok` (date + genres), `ok` (only one of them), `empty` (no
+ * item/no meta), `401`/`403`/`unavailable` (retryable), `budget` (not asked).
+ */
+function readCatalogState() {
+  const hit = gameCache.readJsonWithFingerprint(CATALOG_STATE_PATH);
+  const doc = (hit && hit.data) || {};
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    updatedAt: doc.updatedAt || null,
+    owners: doc.owners && typeof doc.owners === 'object' ? doc.owners : {},
+  };
+}
+
+function writeCatalogState(state) {
+  try {
+    gameCache.writeJsonAtomicSync(CATALOG_STATE_PATH, {
+      schemaVersion: SCHEMA_VERSION,
+      updatedAt: isoOf(nowMs()),
+      owners: state && state.owners && typeof state.owners === 'object' ? state.owners : {},
+    });
+  } catch (err) {
+    /* diagnostics must never break the job */
+  }
+}
+
+function readCatalogAttempt(ownerKey, catalogItemId) {
+  const key = String(ownerKey == null ? '' : ownerKey).trim();
+  const id = String(catalogItemId == null ? '' : catalogItemId);
+  if (!key || !id) return null;
+  const state = readCatalogState();
+  const owner = state.owners[key];
+  const entry = owner && owner[id];
+  return entry && typeof entry === 'object' ? entry : null;
+}
+
+/** Append one attempt (ring of `MAX_CATALOG_ATTEMPTS`) and persist. */
+function recordCatalogAttempt(ownerKey, catalogItemId, entry = {}) {
+  const key = String(ownerKey == null ? '' : ownerKey).trim();
+  const id = String(catalogItemId == null ? '' : catalogItemId);
+  if (!key || !id) return null;
+  try {
+    const state = readCatalogState();
+    if (!state.owners[key] || typeof state.owners[key] !== 'object') state.owners[key] = {};
+    const previous = state.owners[key][id] || {};
+    const attempts = Array.isArray(previous.attempts) ? previous.attempts.slice() : [];
+    const result = entry.result || 'unavailable';
+    attempts.push({
+      at: isoOf(nowMs()),
+      result,
+      httpStatus: entry.httpStatus == null ? null : Number(entry.httpStatus),
+      bytes: entry.bytes == null ? null : Number(entry.bytes),
+      genresOk: entry.genresOk === true,
+      yearHas: entry.yearHas === true,
+    });
+    const next = {
+      catalogItemId: id,
+      namespace: entry.namespace || previous.namespace || null,
+      lastResult: result,
+      lastAt: attempts[attempts.length - 1].at,
+      attempts: attempts.slice(-MAX_CATALOG_ATTEMPTS),
+    };
+    state.owners[key][id] = next;
+    writeCatalogState(state);
+    return next;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Is another catalog attempt due for this owner/item? A successful `shape_ok`
+ * is final; a retryable answer (`401`/`403`/`unavailable`/`budget`) is retried
+ * on the next kick; a definitive negative (`empty`/`ok` partial) waits for the
+ * same 30-day window as the negative probe. No ledger entry means the catalog
+ * was never asked for this owner — due (a pre-deploy document, the heal case).
+ */
+function catalogRetryDue(ownerKey, catalogItemId, options = {}) {
+  const entry = readCatalogAttempt(ownerKey, catalogItemId);
+  if (!entry) return true;
+  const result = entry.lastResult || null;
+  if (result === 'shape_ok') return false;
+  if (result === '401' || result === '403' || result === 'unavailable' || result === 'budget') {
+    return true;
+  }
+  const at = Date.parse(entry.lastAt || '');
+  const now = options.now == null ? nowMs() : options.now;
+  if (!Number.isFinite(at)) return true;
+  return now - at >= catalogProbeTtlMs();
+}
+
+/** `{ yearHas, genresOk, metaStatus }` for a normalized detail document. */
+function catalogMetaFlags(data) {
+  const yearHas = Boolean(data && data.releaseYear != null);
+  const genresOk = Boolean(data && Array.isArray(data.genres) && data.genres.length);
+  return {
+    yearHas,
+    genresOk,
+    metaStatus: yearHas && genresOk ? 'complete' : yearHas || genresOk ? 'partial' : 'unavailable',
+  };
+}
+
+/**
+ * Keep a ≤2 KB diagnostic dump of a failed catalog attempt for the owner to
+ * send back. Written for every result except `shape_ok` — including an `empty`
+ * bulk answer, which used to leave no trace at all. The token is never part of
+ * `info` (the client keeps it inside the Authorization header), and the item
+ * JSON is masked + truncated just in case. The file name is the catalog id, so
+ * a retry overwrites its own dump instead of growing the folder.
+ */
+function dumpCatalogFailure(catalogItemId, info = {}) {
+  try {
+    const id = String(catalogItemId == null ? '' : catalogItemId);
+    if (!id) return null;
+    fs.mkdirSync(DEBUG_DIR, { recursive: true });
+    const file = path.join(DEBUG_DIR, `catalog-${safeKey(id)}.json`);
+    if (!fs.existsSync(file)) {
+      let count = 0;
+      for (const name of fs.readdirSync(DEBUG_DIR)) {
+        if (name.startsWith('catalog-') && name.endsWith('.json')) count++;
+      }
+      if (count >= MAX_CATALOG_DEBUG_FILES) return null;
+    }
+    let item = null;
+    if (info.item != null) {
+      try {
+        item = maskSecrets(JSON.stringify(info.item)).slice(0, DEBUG_BODY_LIMIT);
+      } catch (err) {
+        item = null;
+      }
+    }
+    const doc = {
+      schemaVersion: SCHEMA_VERSION,
+      source: 'epic-catalog',
+      catalogItemId: id,
+      namespace: info.namespace || null,
+      at: isoOf(nowMs()),
+      result: info.result || 'unavailable',
+      httpStatus: info.httpStatus == null ? null : Number(info.httpStatus),
+      bytes: info.bytes == null ? null : Number(info.bytes),
+      genresOk: info.genresOk === true,
+      yearHas: info.yearHas === true,
+      code: info.code || null,
+      reason: info.reason || null,
+      item,
+      note:
+        'Диагностика каталога Epic: статус/размер ответа и нормализованный item ' +
+        '(≤2 KB, секреты замаскированы; токен не пишется).',
+    };
+    gameCache.writeJsonAtomicSync(file, doc);
+    return file;
+  } catch (err) {
+    return null;
+  }
+}
+
+/** Owner-facing catalog ledger for the status endpoint (newest first). */
+function catalogAttemptsForOwner(ownerKey) {
+  const key = String(ownerKey == null ? '' : ownerKey).trim();
+  const state = readCatalogState();
+  const owner = (key && state.owners[key]) || {};
+  const items = Object.values(owner)
+    .filter((entry) => entry && typeof entry === 'object')
+    .map((entry) => {
+      const attempts = Array.isArray(entry.attempts) ? entry.attempts.slice(-MAX_CATALOG_ATTEMPTS) : [];
+      const last = attempts.length ? attempts[attempts.length - 1] : null;
+      return {
+        catalogItemId: entry.catalogItemId || null,
+        namespace: entry.namespace || null,
+        attempts: attempts.length,
+        lastResult: entry.lastResult || null,
+        lastAt: entry.lastAt || null,
+        httpStatus: last ? last.httpStatus : null,
+        bytes: last ? last.bytes : null,
+        genresOk: last ? last.genresOk === true : false,
+        yearHas: last ? last.yearHas === true : false,
+        history: attempts,
+      };
+    })
+    .sort((a, b) => (Date.parse(b.lastAt || '') || 0) - (Date.parse(a.lastAt || '') || 0));
+  return {
+    total: items.reduce((sum, entry) => sum + entry.attempts, 0),
+    items: items.slice(0, MAX_CATALOG_STATUS_ITEMS),
+  };
+}
+
+
 /**
  * Sync index for `stats.js`: `{ 'gog:<id>': data, 'epic:<slug>': data }` of
  * fresh, successfully resolved entries only. Stale entries are excluded so a
@@ -1253,6 +1635,7 @@ function enrichUnionWithDetails(union, index) {
       entry.metadataSources.push(metadataSource);
       changed = true;
     }
+    const flags = catalogMetaFlags(detail);
     entry.secondaryDetails = {
       source: detail.source,
       id: detail.id,
@@ -1267,6 +1650,11 @@ function enrichUnionWithDetails(union, index) {
       needsCatalog:
         Boolean(entry.epic && entry.epic.catalogItemId) &&
         needsCatalogCompletion(detail),
+      // What the document actually contains: `resolved` counts `complete`
+      // (year **and** genres), never the mere existence of a file.
+      yearHas: flags.yearHas,
+      genresOk: flags.genresOk,
+      metaStatus: detail.metaStatus || flags.metaStatus,
     };
     if (changed) touched++;
   }
@@ -1466,7 +1854,9 @@ function dumpEpicFailure(slug, info = {}) {
     if (!fs.existsSync(file)) {
       let count = 0;
       for (const name of fs.readdirSync(DEBUG_DIR)) {
-        if (name.endsWith('.json')) count++;
+        // The catalog ledger has its own cap (`MAX_CATALOG_DEBUG_FILES`): a
+        // catalog failure must not evict the CMS dumps and vice versa.
+        if (name.endsWith('.json') && !name.startsWith('catalog-')) count++;
       }
       if (count >= MAX_DEBUG_FILES) return null;
     }
@@ -1743,23 +2133,48 @@ async function resolveEpic(slug, options = {}) {
     // A detail cached before the catalog existed (Alan Wake 2: poster only)
     // is completed in place: the raw CMS payload is not cached, so the catalog
     // fields are merged additively. No catalog item → nothing to do.
-    if (data && shouldAttemptCatalog(data) && options.catalogItemId) {
+    if (
+      data &&
+      options.catalogItemId &&
+      shouldAttemptCatalog(data, {
+        ownerKey: options.ownerKey,
+        catalogItemId: options.catalogItemId,
+      })
+    ) {
       const ensured = await ensureEpicCatalog(options);
       noteCatalogResult(ensured, options);
       let next = data;
       if (ensured.catalog) next = applyCatalogToDetail(next, ensured.catalog);
-      if (ensured.pending) {
-        next = { ...next, catalogPending: true };
-        if (next.catalogChecked) {
-          next = { ...next };
+      if (ensured.skipped === 'not_connected') {
+        if (next.catalogSkipped !== 'not_connected') {
+          next = { ...next, catalogSkipped: 'not_connected' };
+        }
+      } else if (ensured.pending) {
+        if (next.catalogPending !== true || next.catalogChecked === true) {
+          next = { ...next, catalogPending: true };
           delete next.catalogChecked;
         }
-      } else {
+        if (next.catalogSkipped) {
+          next = { ...next };
+          delete next.catalogSkipped;
+        }
+      } else if (next.catalogChecked !== true || next.catalogPending || next.catalogSkipped) {
         // Filled, definitively empty, or «not connected»: the one-time
         // completion attempt is over. A later connect still re-imports and the
         // run-phase `completingCatalog` path retries regardless of this marker.
         next = { ...next, catalogChecked: true };
         delete next.catalogPending;
+        delete next.catalogSkipped;
+      }
+      const flags = catalogMetaFlags(next);
+      if (next.metaStatus !== flags.metaStatus || next.metaCheckedAt == null) {
+        next = {
+          ...next,
+          metaStatus: flags.metaStatus,
+          metaYearHas: flags.yearHas,
+          metaGenresOk: flags.genresOk,
+          metaCheckedAt: isoOf(nowMs()),
+        };
       }
       if (next !== data) {
         writeDetail('epic', id, 'ok', next);
@@ -1830,11 +2245,13 @@ async function resolveEpic(slug, options = {}) {
   // Stale CMS page (Alan Wake 2): `meta` has no tags/releaseDate at all, so
   // the catalog bulk is the only store-owned source left. It needs the
   // owner's token and is bounded by the same budget/breaker as this phase.
+  let catalogSkipped = null;
   if (epicPageNeedsCatalog(payload)) {
     const ensured = await ensureEpicCatalog(options);
     noteCatalogResult(ensured, options);
     if (ensured.catalog) catalog = ensured.catalog;
     catalogPending = Boolean(ensured.pending);
+    if (ensured.skipped === 'not_connected') catalogSkipped = 'not_connected';
   }
   const data = normalizeEpicProduct(payload, {
     slug: id,
@@ -1850,6 +2267,12 @@ async function resolveEpic(slug, options = {}) {
     // a work whose store metadata is as complete as the stores allow.
     data.catalogChecked = true;
   }
+  if (catalogSkipped) data.catalogSkipped = catalogSkipped;
+  const flags = catalogMetaFlags(data);
+  data.metaStatus = flags.metaStatus;
+  data.metaYearHas = flags.yearHas;
+  data.metaGenresOk = flags.genresOk;
+  data.metaCheckedAt = isoOf(nowMs());
   writeDetail('epic', id, 'ok', data);
   // Persist a discovered slug so the read model (`epic-layer.joinGames`) can
   // key the union entry `epic:<slug>` and attach this detail next request.
@@ -1947,7 +2370,10 @@ async function runPhase(job, source, targets, resolveOne) {
       cached.doc &&
       cached.doc.status === 'ok' &&
       target.catalogItemId &&
-      shouldAttemptCatalog(cached.doc.data);
+      shouldAttemptCatalog(cached.doc.data, {
+        ownerKey: job.ownerKey,
+        catalogItemId: target.catalogItemId,
+      });
     if (cached.fresh && !job.force && !completingCatalog) {
       if (cached.doc.status === 'ok') phase.resolved++;
       else phase.notFound++;
@@ -2256,14 +2682,19 @@ function targetsForOwner(ownerKey) {
  */
 function coverageForOwner(ownerKey) {
   const targets = targetsForOwner(ownerKey);
+  const epicHasToken = ownerHasCatalogToken(ownerKey);
   const phase = (source, list, idOf) => {
     let resolved = 0;
     let notFound = 0;
+    let unavailable = 0;
+    let partial = 0;
+    let pending = 0;
     for (const target of list) {
       const id = idOf(target);
       if (!id) {
         // A slugless Epic work is addressable only by its title guess. A fresh
         // probe negative means «attempted, nothing found» — not pending.
+        let attempted = false;
         if (source === 'epic' && target.title) {
           const guess = slugFromTitle(target.title);
           const hit = guess ? readDetail('epic', guess) : null;
@@ -2275,35 +2706,48 @@ function coverageForOwner(ownerKey) {
             hit.doc.probe === true
           ) {
             notFound++;
+            attempted = true;
           }
         }
+        if (!attempted) pending++;
         continue;
       }
       const { doc, fresh } = readDetail(source, id);
-      if (!fresh || !doc) continue;
-      if (doc.status === 'ok') {
-        // A detail written while the catalog refetch was deferred (owner token
-        // expired/rate-limited) is not coverage: the next kick retries it.
-        if (source === 'epic' && doc.data && doc.data.catalogPending === true) continue;
-        // A detail written before the catalog fallback existed (poster only,
-        // no `catalogChecked`) is retried once too.
-        if (
-          source === 'epic' &&
-          target.catalogItemId &&
-          doc.data &&
-          needsCatalogCompletion(doc.data)
-        ) {
-          continue;
-        }
+      if (!fresh || !doc) {
+        pending++;
+        continue;
+      }
+      if (doc.status !== 'ok') {
+        if (doc.status === 'not_found') notFound++;
+        else pending++;
+        continue;
+      }
+      if (source === 'gog') {
+        // GOG was resolved before the `metaStatus` work; keep its contract.
         resolved++;
-      } else if (doc.status === 'not_found') notFound++;
+        continue;
+      }
+      // Epic: `resolved` means the **facts** arrived (year + genres), not that
+      // a file exists. A settled negative is `unavailable` (honest «store has
+      // no release info»), a deferred/pre-catalog document is still pending.
+      const completion = catalogCompletionState(doc.data, {
+        ownerKey,
+        catalogItemId: target.catalogItemId,
+        hasCatalogToken: epicHasToken,
+      });
+      if (completion === 'complete') resolved++;
+      else if (completion === 'partial') partial++;
+      else if (completion === 'pending') pending++;
+      else unavailable++;
     }
     return {
       total: list.length,
       resolved,
       notFound,
+      unavailable,
+      partial,
       missingSlug: 0,
-      pending: Math.max(0, list.length - resolved - notFound),
+      pending,
     };
   };
   const gog = phase('gog', targets.gog, (target) => target.id);
@@ -2352,12 +2796,16 @@ function statusForOwner(ownerKey) {
     profile: key || null,
     resolved: coverage.resolved,
     total: coverage.total,
-    pending: Math.max(0, coverage.total - coverage.resolved),
+    pending: coverage.pending,
     running: runningFor(key),
     bySource: {
       gog: { ...coverage.gog },
       epic: { ...coverage.epic },
     },
+    // The per-owner catalog ledger: which `catalogItemId`s were asked, what
+    // the token answered, HTTP status/bytes and whether year/genres arrived.
+    // `total: 0` is itself the answer to «did the job ever ask?».
+    catalogAttempts: catalogAttemptsForOwner(key),
     slugless: coverage.slugless,
     lastErrors: state.lastErrors
       .filter((entry) => entry && entry.ownerKey === key)
@@ -2451,6 +2899,7 @@ module.exports = {
   CACHE_DIR,
   DEBUG_DIR,
   CATALOG_PROBE_DIR,
+  CATALOG_STATE_PATH,
   STATE_DIR,
   BREAKER_PATH,
   STATUS_PATH,
@@ -2460,6 +2909,8 @@ module.exports = {
   DEFAULT_PROBE_TTL_MS,
   DEFAULT_CATALOG_PROBE_TTL_MS,
   MAX_DEBUG_FILES,
+  MAX_CATALOG_ATTEMPTS,
+  MAX_CATALOG_DEBUG_FILES,
   EPIC_FEATURE_TAGS,
   yearOfDate,
   absoluteUrl,
@@ -2479,6 +2930,17 @@ module.exports = {
   readCatalogProbe,
   writeCatalogProbe,
   catalogProbePath,
+  readCatalogState,
+  writeCatalogState,
+  readCatalogAttempt,
+  recordCatalogAttempt,
+  catalogRetryDue,
+  catalogMetaFlags,
+  catalogCompletionState,
+  ownerHasCatalogToken,
+  catalogTransportFacts,
+  dumpCatalogFailure,
+  catalogAttemptsForOwner,
   slugFromTitle,
   discoverEpicSlug,
   gogUrl,

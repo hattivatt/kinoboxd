@@ -242,6 +242,8 @@ test('secondary details status + lazy kick', async (t) => {
       total: 2,
       resolved: 0,
       notFound: 0,
+      unavailable: 0,
+      partial: 0,
       missingSlug: 1,
       pending: 2,
     });

@@ -1442,11 +1442,16 @@ function createClient(options = {}) {
   async function getCatalogBulk(namespace, catalogItemIds, opts = {}) {
     return readWithAuth(opts.accountId, async () => {
       const ids = unique((Array.isArray(catalogItemIds) ? catalogItemIds : []).map(String));
-      if (!ids.length) return { items: {}, requests: 0, failures: [] };
+      if (!ids.length) return { items: {}, requests: 0, failures: [], chunks: [] };
       const token = await getAccessToken(opts.accountId);
       const chunkSize = Math.max(1, Math.min(50, Number(opts.chunkSize) || CATALOG_CHUNK));
       const items = {};
       const failures = [];
+      // Per-chunk transport facts for the diagnostics ledger: status + exact
+      // response size. A success used to be invisible after normalization,
+      // which is why a silent «empty» catalog could not be told apart from a
+      // shape the parser ignored.
+      const chunks = [];
       let requests = 0;
       for (let index = 0; index < ids.length; index += chunkSize) {
         const chunk = ids.slice(index, index + chunkSize);
@@ -1457,15 +1462,26 @@ function createClient(options = {}) {
           locale,
         });
         for (const id of chunk) query.append('id', id);
+        const url =
+          `https://${catalogHost}/catalog/api/shared/namespace/` +
+          `${encodeURIComponent(namespace || 'fn')}/bulk/items?${query.toString()}`;
+        let bytes = null;
         try {
-          const json = await requestJson({
-            url:
-              `https://${catalogHost}/catalog/api/shared/namespace/` +
-              `${encodeURIComponent(namespace || 'fn')}/bulk/items?${query.toString()}`,
-            host: catalogHost,
-            token,
-          });
+          const response = await requestRaw({ url, host: catalogHost, token });
           requests++;
+          bytes = Buffer.byteLength(String(response.body || ''), 'utf8');
+          if (response.status < 200 || response.status >= 300) {
+            throw classify(response.status, url, catalogHost);
+          }
+          const json = parseJsonBody(response.body);
+          if (json == null) {
+            throw new EpicError(
+              `Epic (${catalogHost}) вернул не JSON: ${maskSecrets(url)}`,
+              'epic_http_error',
+              { status: response.status, host: catalogHost }
+            );
+          }
+          chunks.push({ ids: chunk, status: response.status, bytes });
           const source = json && typeof json === 'object' && json.items ? json.items : json;
           for (const id of chunk) {
             const raw = source && typeof source === 'object' ? source[id] : null;
@@ -1479,13 +1495,15 @@ function createClient(options = {}) {
             namespace: namespace || null,
             ids: chunk,
             code: (err && err.code) || 'epic_http_error',
+            status: err && err.status != null ? err.status : null,
+            bytes,
           });
           if (err && (err.code === 'epic_auth_expired' || err.code === 'epic_rate_limited')) {
             throw err;
           }
         }
       }
-      return { items, requests, failures };
+      return { items, requests, failures, chunks };
     });
   }
 

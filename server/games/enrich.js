@@ -24,6 +24,16 @@
  *     spy/reviews 30 days). Re-running the job continues where the previous
  *     run stopped (the cache is the progress); `force: true` re-fetches
  *     everything regardless of freshness;
+ *   - **one-time heal (details).** A *fresh* document written before the store
+ *     parser kept `headerImage` (02.11.2026, e5bc5b9) is a heal candidate even
+ *     though its TTL has not expired: «Обновить профиль» must add the missing
+ *     artwork instead of inventing a forced full refetch. The heal is recorded
+ *     per appid in `state/details-heal-state.json`, so a document is asked
+ *     exactly once — whether the answer was `healed`, `no_artwork` or
+ *     `unavailable` — and a failed request is retried on the next run. Only
+ *     `success:true` documents are candidates: the 21 honest `unavailable`
+ *     rows have no artwork because the store has no page for them, not because
+ *     the parser lost a field;
  *   - **budgeted per phase.** `GAMES_STORE_BUDGET` / `GAMES_SPY_BUDGET` /
  *     `GAMES_REVIEWS_BUDGET` (default 340 each) appids per run, one unit per
  *     appid; the remaining count is reported and the next run picks it up;
@@ -72,6 +82,15 @@ const PHASE_SPECS = {
     readState: () => gameCache.readEnrichState(),
     saveState: (state) => gameCache.saveEnrichState(state),
     systemicCodes: ['store_rate_limited', 'store_unreachable'],
+    // One-time heal of pre-`headerImage` documents (see the module comment).
+    // Only a real store answer without artwork is a candidate; an
+    // `unavailable` row (success:false) has no page to fetch.
+    heal: {
+      missing: (doc) =>
+        Boolean(doc && doc.success === true && !doc.headerImage),
+      readState: () => gameCache.readDetailsHealState(),
+      saveState: (state) => gameCache.saveDetailsHealState(state),
+    },
   },
   spy: {
     name: 'spy',
@@ -239,6 +258,8 @@ function emptyPhase(name) {
     total: null,
     selected: null,
     skippedFresh: null,
+    healCandidates: null,
+    healed: 0,
     ok: 0,
     unavailable: 0,
     deferred: 0,
@@ -268,6 +289,8 @@ function publicPhase(phase) {
     total: phase.total,
     selected: phase.selected,
     skippedFresh: phase.skippedFresh,
+    healCandidates: phase.healCandidates,
+    healed: phase.healed,
     ok: phase.ok,
     unavailable: phase.unavailable,
     deferred: phase.deferred,
@@ -458,14 +481,46 @@ async function runPhase(job, phaseName, scope, options) {
 
   const appids = uniqueAppids(library);
   const cached = spec.list(appids);
-  const stale = [];
+
+  // One-time heal (details): a TTL-fresh document that predates `headerImage`
+  // is still a candidate. The ledger makes it exactly once per appid; a failed
+  // request is not recorded, so the next run retries it.
+  let healState = null;
+  const healRecorded = new Set();
+  const healTargets = new Set();
+  const healList = [];
+  if (spec.heal) {
+    try {
+      healState = spec.heal.readState();
+    } catch (err) {
+      healState = { appids: {} };
+    }
+    for (const appid of Object.keys((healState && healState.appids) || {})) {
+      healRecorded.add(String(appid));
+    }
+  }
+
+  const ttlStale = [];
   for (const appid of appids) {
     const doc = cached[String(appid)];
-    if (job.force || !doc || !spec.fresh(doc, ttlMs)) stale.push(appid);
+    const key = String(appid);
+    if (
+      spec.heal &&
+      doc &&
+      spec.heal.missing(doc) &&
+      !healRecorded.has(key)
+    ) {
+      healTargets.add(appid);
+      healList.push(appid);
+    }
+    if (job.force || !doc || !spec.fresh(doc, ttlMs)) ttlStale.push(appid);
   }
+  const healSet = new Set(healList);
+  const stale = [...healList, ...ttlStale.filter((appid) => !healSet.has(appid))];
   phase.total = appids.length;
   phase.budgetLimit = budget.limit;
   phase.skippedFresh = appids.length - stale.length;
+  phase.healCandidates = healList.length;
 
   // Select at most one budget window, but spend a unit per *attempt* below:
   // an interrupted run must report the budget it did not use.
@@ -511,6 +566,34 @@ async function runPhase(job, phaseName, scope, options) {
         phase.unavailable++;
         unavailableAppids.push(appid);
       }
+      // Record the one-time heal outcome. `no_artwork` means the store itself
+      // answered without a header image: asking again would not help, the
+      // ledger keeps the document out of every future heal pass (normal TTL
+      // re-checks still happen every 180 days). The marker is also written for
+      // a first-time fetch without artwork, so the deploy that introduced the
+      // heal does not re-ask documents the same run just wrote.
+      if (
+        spec.heal &&
+        (healTargets.has(appid) || (doc.success && !doc.headerImage))
+      ) {
+        const wasHeal = healTargets.has(appid);
+        healTargets.delete(appid);
+        const result = doc.success
+          ? doc.headerImage
+            ? 'healed'
+            : 'no_artwork'
+          : 'unavailable';
+        healState.appids[String(appid)] = { at: nowIso(), appid, result };
+        healRecorded.add(String(appid));
+        if (wasHeal) phase.healed++;
+        try {
+          await spec.heal.saveState(healState);
+        } catch (err) {
+          console.warn(
+            `[games-enrich ${job.id}/${phaseName}] heal state save failed: ${err.message}`
+          );
+        }
+      }
     } catch (err) {
       const code = (err && err.code) || `${phaseName}_error`;
       phase.deferred++;
@@ -543,6 +626,8 @@ async function runPhase(job, phaseName, scope, options) {
       unavailable: phase.unavailable,
       deferred: phase.deferred,
       skippedFresh: phase.skippedFresh,
+      healCandidates: phase.healCandidates,
+      healed: phase.healed,
       budgetRemaining: budget.remaining,
       attempted: [...attempted],
       deferredAppids: [...deferredAppids],
@@ -578,6 +663,8 @@ async function runPhase(job, phaseName, scope, options) {
     total: phase.total,
     selected: phase.selected,
     skippedFresh: phase.skippedFresh,
+    healCandidates: phase.healCandidates,
+    healed: phase.healed,
     ok: phase.ok,
     unavailable: phase.unavailable,
     deferred: phase.deferred,
@@ -605,6 +692,8 @@ async function runPhase(job, phaseName, scope, options) {
     unavailable: phase.unavailable,
     deferred: phase.deferred,
     skippedFresh: phase.skippedFresh,
+    healCandidates: phase.healCandidates,
+    healed: phase.healed,
     budgetRemaining: budget.remaining,
     attempted: [...attempted],
     deferredAppids: [...deferredAppids],
