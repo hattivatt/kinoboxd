@@ -4,13 +4,9 @@ const path = require('path');
 const crypto = require('crypto');
 const AdmZip = require('adm-zip');
 
-class HttpError extends Error {
-  constructor(status, message, code) {
-    super(message);
-    this.status = status;
-    this.code = code || 'error';
-  }
-}
+// `HttpError` used to live here. It moved to `server/core/errors.js`; the
+// re-export keeps every existing importer working while they migrate.
+const { HttpError } = require('./core/errors');
 
 /* ------------------------------------------------------------------ */
 /* CSV parsing (RFC4180-ish: quotes, escaped quotes, CRLF, BOM)        */

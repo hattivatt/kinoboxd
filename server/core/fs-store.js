@@ -1,0 +1,158 @@
+'use strict';
+
+/**
+ * Durable JSON documents on disk: atomic writes and fingerprint-checked reads.
+ *
+ * Why a fingerprint and not just `JSON.parse`: a running server must notice a
+ * file written by another process (backfill, rematch, resolve timer) without a
+ * restart, and it must never pair parsed data with a fingerprint from another
+ * version of the file. `mtimeNs:size:ino` is cheap enough for the hot path.
+ *
+ * The code is lifted from `server/cache.js` and `server/books/book-cache.js`,
+ * which carried the same two functions. `label` only prefixes the corrupt-JSON
+ * warning so existing logs stay recognisable.
+ */
+
+const fs = require('fs');
+const fsp = fs.promises;
+const path = require('path');
+
+/** Same identity everywhere: inode + size + mtime(ns); null when absent. */
+function fingerprintOf(filePath) {
+  try {
+    const st = fs.statSync(filePath, { bigint: true });
+    return `${st.mtimeNs}:${st.size}:${st.ino}`;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Read + parse one JSON file together with the fingerprint of the exact bytes
+ * that were parsed. A writer replacing the file mid-read makes the fingerprints
+ * differ; retry once so data and fingerprint always describe the same version.
+ * Returns `{ data, fingerprint }` or `null` for missing/corrupt files.
+ */
+function readJsonWithFingerprint(filePath, options = {}) {
+  const label = options.label || 'fs-store';
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const before = fingerprintOf(filePath);
+      if (before === null) return null;
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const after = fingerprintOf(filePath);
+      if (after === null) return null;
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (err) {
+        console.warn(`[${label}] corrupt JSON in ${filePath}: ${err.message}`);
+        return null;
+      }
+      if (after === before) return { data: parsed, fingerprint: after };
+    }
+    return null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/** Parsed document or null (missing/corrupt). */
+function readJson(filePath, options = {}) {
+  const read = readJsonWithFingerprint(filePath, options);
+  return read ? read.data : null;
+}
+
+/** Atomic replace: write a sibling tmp file, then rename over the target. */
+async function writeJsonAtomic(filePath, data, options = {}) {
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await fsp.writeFile(tmp, JSON.stringify(data), options.encoding || 'utf8');
+  await fsp.rename(tmp, filePath);
+  return fingerprintOf(filePath);
+}
+
+function writeJsonAtomicSync(filePath, data, options = {}) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.flush.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data), options.encoding || 'utf8');
+  fs.renameSync(tmp, filePath);
+  return fingerprintOf(filePath);
+}
+
+/**
+ * Atomic write of a secret document: directory 0700, file 0600, tmp file
+ * created with the final mode so the payload is never world-readable, even
+ * for the moment between `open` and `rename`.
+ */
+function writeSecretAtomicSync(filePath, data) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(data), 'utf8');
+    fs.fchmodSync(fd, 0o600);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, filePath);
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch (err) {
+    /* best-effort */
+  }
+  return fingerprintOf(filePath);
+}
+
+function ensureDir(dir, options = {}) {
+  fs.mkdirSync(dir, { recursive: true, mode: options.mode });
+  return dir;
+}
+
+function ensureDirs(dirs) {
+  for (const dir of dirs) if (dir) ensureDir(dir);
+}
+
+function removeQuietly(filePath) {
+  try {
+    fs.unlinkSync(filePath);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/** JSON documents in one directory (names only, sorted, no subdirectories). */
+function listJsonFiles(dir) {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => entry.name)
+      .sort();
+  } catch (err) {
+    return [];
+  }
+}
+
+/** Make an arbitrary user key safe for a file name (no path traversal). */
+function safeKey(value) {
+  return String(value == null ? '' : value)
+    .trim()
+    .replace(/[^\w.-]/g, '_')
+    .slice(0, 120);
+}
+
+module.exports = {
+  fingerprintOf,
+  readJsonWithFingerprint,
+  readJson,
+  writeJsonAtomic,
+  writeJsonAtomicSync,
+  writeSecretAtomicSync,
+  ensureDir,
+  ensureDirs,
+  removeQuietly,
+  listJsonFiles,
+  safeKey,
+};
