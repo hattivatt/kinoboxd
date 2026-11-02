@@ -1365,12 +1365,12 @@ function writeCatalogState(state) {
   }
 }
 
-function readCatalogAttempt(ownerKey, catalogItemId) {
+function readCatalogAttempt(ownerKey, catalogItemId, state) {
   const key = String(ownerKey == null ? '' : ownerKey).trim();
   const id = String(catalogItemId == null ? '' : catalogItemId);
   if (!key || !id) return null;
-  const state = readCatalogState();
-  const owner = state.owners[key];
+  const source = state || readCatalogState();
+  const owner = source.owners[key];
   const entry = owner && owner[id];
   return entry && typeof entry === 'object' ? entry : null;
 }
@@ -1417,7 +1417,7 @@ function recordCatalogAttempt(ownerKey, catalogItemId, entry = {}) {
  * was never asked for this owner — due (a pre-deploy document, the heal case).
  */
 function catalogRetryDue(ownerKey, catalogItemId, options = {}) {
-  const entry = readCatalogAttempt(ownerKey, catalogItemId);
+  const entry = readCatalogAttempt(ownerKey, catalogItemId, options.catalogState);
   if (!entry) return true;
   const result = entry.lastResult || null;
   if (result === 'shape_ok') return false;
@@ -2683,6 +2683,14 @@ function targetsForOwner(ownerKey) {
 function coverageForOwner(ownerKey) {
   const targets = targetsForOwner(ownerKey);
   const epicHasToken = ownerHasCatalogToken(ownerKey);
+  // One ledger read for the whole pass: `/stats` is polled, and a 300-work
+  // Epic library must not re-read the same state file per target.
+  let catalogState = null;
+  try {
+    catalogState = readCatalogState();
+  } catch (err) {
+    catalogState = null;
+  }
   const phase = (source, list, idOf) => {
     let resolved = 0;
     let notFound = 0;
@@ -2734,6 +2742,7 @@ function coverageForOwner(ownerKey) {
         ownerKey,
         catalogItemId: target.catalogItemId,
         hasCatalogToken: epicHasToken,
+        catalogState,
       });
       if (completion === 'complete') resolved++;
       else if (completion === 'partial') partial++;
