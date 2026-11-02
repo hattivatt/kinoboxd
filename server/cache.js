@@ -1,7 +1,6 @@
 'use strict';
 
 const fs = require('fs');
-const fsp = fs.promises;
 const path = require('path');
 
 // KINOBOXD_CACHE_DIR lets tests / alternative deployments point the whole
@@ -34,7 +33,8 @@ fs.mkdirSync(DETAILS_DIR, { recursive: true });
  * Returns null when the file does not exist (or cannot be stat'ed).
  */
 // One implementation for every domain: `server/core/fs-store.js`.
-const { fingerprintOf } = require('./core/fs-store');
+const fsStore = require('./core/fs-store');
+const { fingerprintOf } = fsStore;
 
 /* ------------------------------------------------------------------ */
 /* Index: "normalized title|year" -> tmdbId (number) or false          */
@@ -186,11 +186,10 @@ async function writeIndexNow() {
   // replace the file; this keeps other processes' matches alive.
   refreshIndexIfChanged();
   dirty = false;
-  const tmp = `${INDEX_PATH}.${process.pid}.${Date.now()}.tmp`;
-  const data = JSON.stringify(index, null, 0);
-  await fsp.writeFile(tmp, data, 'utf8');
-  await fsp.rename(tmp, INDEX_PATH);
-  indexFingerprint = fingerprintOf(INDEX_PATH);
+  // One atomic-write implementation for the whole server (`core/fs-store`):
+  // a unique sibling tmp file, then rename; the return value is the new
+  // fingerprint of exactly the bytes that landed on disk.
+  indexFingerprint = await fsStore.writeJsonAtomic(INDEX_PATH, index);
   // Pending values that are still current are now on disk. Values changed
   // during the await stay pending and keep `dirty` set for the next write.
   for (const [key, value] of indexPending) {
@@ -222,10 +221,7 @@ function flushIndex() {
     // Merge a concurrently replaced file first so a flush never clobbers
     // keys learned by another process while this job was running.
     refreshIndexIfChanged();
-    const tmp = `${INDEX_PATH}.flush.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(index, null, 0), 'utf8');
-    fs.renameSync(tmp, INDEX_PATH);
-    indexFingerprint = fingerprintOf(INDEX_PATH);
+    indexFingerprint = fsStore.writeJsonAtomicSync(INDEX_PATH, index);
     dirty = false;
     indexPending.clear();
   } catch (err) {
@@ -397,10 +393,7 @@ let lbDirty = false;
 async function writeLbLinksNow() {
   refreshLbLinksIfChanged();
   lbDirty = false;
-  const tmp = `${LB_LINKS_PATH}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(lbLinks, null, 0), 'utf8');
-  await fsp.rename(tmp, LB_LINKS_PATH);
-  lbFingerprint = fingerprintOf(LB_LINKS_PATH);
+  lbFingerprint = await fsStore.writeJsonAtomic(LB_LINKS_PATH, lbLinks);
   for (const [key, value] of lbPending) {
     if (lbLinks[key] === value) lbPending.delete(key);
   }
@@ -427,10 +420,7 @@ function persistLbLinks() {
 function flushLbLinks() {
   try {
     refreshLbLinksIfChanged();
-    const tmp = `${LB_LINKS_PATH}.flush.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(lbLinks, null, 0), 'utf8');
-    fs.renameSync(tmp, LB_LINKS_PATH);
-    lbFingerprint = fingerprintOf(LB_LINKS_PATH);
+    lbFingerprint = fsStore.writeJsonAtomicSync(LB_LINKS_PATH, lbLinks);
     lbDirty = false;
     lbPending.clear();
   } catch (err) {
@@ -459,27 +449,17 @@ function tvCollisionPath(id) {
 
 /**
  * Read one details file together with the fingerprint of the exact version
- * that was parsed. If a writer replaces the file mid-read we retry once, so
- * the returned data and fingerprint always describe the same bytes.
- * Returns { data, fingerprint } or null for missing/corrupt files.
+ * that was parsed. `readJsonWithFingerprint` already retries once when a
+ * writer replaces the file mid-read, so the returned data and fingerprint
+ * always describe the same bytes. Returns `{ data, fingerprint }` or null for
+ * missing/corrupt files and for a document that is not a details entry.
  */
 function readDetailsFile(filePath) {
-  try {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const before = fingerprintOf(filePath);
-      if (before === null) return null;
-      const raw = fs.readFileSync(filePath, 'utf8');
-      const after = fingerprintOf(filePath);
-      if (after === null) return null;
-      const parsed = JSON.parse(raw);
-      if (!parsed || !parsed.details || !parsed.credits) return null;
-      if (after === before) return { data: parsed, fingerprint: after };
-      // The file changed while we were reading it; loop and read again.
-    }
-    return null;
-  } catch (err) {
-    return null;
-  }
+  const found = fsStore.readJsonWithFingerprint(filePath, { label: 'cache-details' });
+  if (!found) return null;
+  const parsed = found.data;
+  if (!parsed || !parsed.details || !parsed.credits) return null;
+  return { data: parsed, fingerprint: found.fingerprint };
 }
 
 /**
@@ -572,11 +552,9 @@ async function saveDetails(id, data) {
     }
   }
 
-  const tmp = `${target}.${process.pid}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(data), 'utf8');
-  await fsp.rename(tmp, target);
+  const fingerprint = await fsStore.writeJsonAtomic(target, data);
 
-  const entry = { data, path: target, fingerprint: fingerprintOf(target) };
+  const entry = { data, path: target, fingerprint };
   detailsMemory.set(`${kind}:${n}`, entry);
   if (kind === 'movie') detailsMemory.set(`any:${n}`, entry);
 }
