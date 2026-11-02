@@ -1,0 +1,13 @@
+{
+  "fetchedAt": "2026-11-01T00:00:00.000Z",
+  "achievements": [
+    {
+      "name": "ACH.SURVIVE_CONTAINER_RIDE",
+      "percent": 3.5
+    }
+  ],
+  "byName": {
+    "ach.survive_container_ride": 3.5,
+    "ACH.SURVIVE_CONTAINER_RIDE": 3.5
+  }
+}

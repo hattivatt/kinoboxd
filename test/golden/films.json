@@ -1,0 +1,114 @@
+{
+  "domain": "films",
+  "bytes": 11807,
+  "sha256": "364cb89b924adf56a72f8bc62547c96e823b3d41e52820095909c62a458bf66b",
+  "topLevelKeys": [
+    "decadeRatings",
+    "decades",
+    "filmsIndex",
+    "franchises",
+    "genres",
+    "origins",
+    "periods",
+    "persons",
+    "ratings",
+    "recentlyWatched",
+    "rewatches",
+    "runtimeHistogram",
+    "streaks",
+    "summary",
+    "timeline",
+    "unmatched",
+    "watchDays",
+    "years"
+  ],
+  "structure": {
+    "decadeRatings": {
+      "array": 4
+    },
+    "decades": {
+      "array": 4
+    },
+    "filmsIndex": [
+      "chernobyl",
+      "obscure-film",
+      "spirited-away",
+      "the-dark-knight",
+      "the-matrix",
+      "the-matrix-reloaded",
+      "toy-story"
+    ],
+    "franchises": {
+      "array": 1
+    },
+    "genres": {
+      "array": 8
+    },
+    "origins": {
+      "array": 1
+    },
+    "periods": {
+      "array": 0
+    },
+    "persons": [
+      "actor",
+      "composer",
+      "director",
+      "studio",
+      "writer"
+    ],
+    "ratings": {
+      "array": 11
+    },
+    "recentlyWatched": {
+      "array": 8
+    },
+    "rewatches": {
+      "array": 0
+    },
+    "runtimeHistogram": {
+      "array": 4
+    },
+    "streaks": [
+      "best",
+      "bestDates",
+      "current",
+      "lastWatchDate"
+    ],
+    "summary": [
+      "auteurIndex",
+      "avgRuntime",
+      "dateFrom",
+      "dateTo",
+      "filmCount",
+      "ratedCount",
+      "source",
+      "totalMinutes",
+      "unmatchedCount",
+      "viewCount"
+    ],
+    "timeline": {
+      "array": 5
+    },
+    "unmatched": {
+      "array": 1
+    },
+    "watchDays": {
+      "array": 7
+    },
+    "years": {
+      "array": 7
+    }
+  },
+  "summaryNumbers": {
+    "summary.filmCount": 7,
+    "summary.ratedCount": 6,
+    "summary.viewCount": 8,
+    "summary.totalMinutes": 697,
+    "summary.avgRuntime": 116,
+    "summary.unmatchedCount": 1,
+    "persons.director.length": 6,
+    "genres.length": 8,
+    "franchises.length": 1
+  }
+}

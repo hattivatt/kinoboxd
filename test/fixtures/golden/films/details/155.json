@@ -1,0 +1,42 @@
+{
+  "kind": "movie",
+  "details": {
+    "id": 155,
+    "imdb_id": "tt0468569",
+    "title": "The Dark Knight",
+    "original_language": "en",
+    "release_date": "2008-07-16",
+    "runtime": 152,
+    "vote_average": 8.5,
+    "poster_path": "/dark-knight.jpg",
+    "genres": [
+      { "id": 28, "name": "Action" },
+      { "id": 80, "name": "Crime" },
+      { "id": 18, "name": "Drama" }
+    ],
+    "keywords": [{ "id": 849, "name": "dc comics" }],
+    "production_countries": [
+      { "iso_3166_1": "US", "name": "United States of America" },
+      { "iso_3166_1": "GB", "name": "United Kingdom" }
+    ],
+    "production_companies": [{ "id": 923, "name": "Legendary Pictures" }],
+    "belongs_to_collection": {
+      "id": 263,
+      "name": "The Dark Knight Collection",
+      "poster_path": "/dark-knight-collection.jpg"
+    }
+  },
+  "credits": {
+    "cast": [
+      { "id": 3894, "name": "Christian Bale", "order": 0, "character": "Bruce Wayne" },
+      { "id": 3895, "name": "Heath Ledger", "order": 1, "character": "Joker" },
+      { "id": 3896, "name": "Aaron Eckhart", "order": 2, "character": "Harvey Dent" },
+      { "id": 3897, "name": "Michael Caine", "order": 3, "character": "Alfred" }
+    ],
+    "crew": [
+      { "id": 525, "name": "Christopher Nolan", "job": "Director", "department": "Directing" },
+      { "id": 525, "name": "Christopher Nolan", "job": "Screenplay", "department": "Writing" },
+      { "id": 1234, "name": "Hans Zimmer", "job": "Original Music Composer", "department": "Sound" }
+    ]
+  }
+}

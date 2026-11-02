@@ -1,0 +1,37 @@
+{
+  "kind": "movie",
+  "details": {
+    "id": 862,
+    "imdb_id": "tt0114709",
+    "title": "Toy Story",
+    "original_language": "en",
+    "release_date": "1995-10-30",
+    "runtime": 81,
+    "vote_average": 7.9,
+    "poster_path": "/toy-story.jpg",
+    "genres": [
+      { "id": 16, "name": "Animation" },
+      { "id": 10751, "name": "Family" },
+      { "id": 35, "name": "Comedy" }
+    ],
+    "keywords": [{ "id": 1581, "name": "friendship" }],
+    "production_countries": [{ "iso_3166_1": "US", "name": "United States of America" }],
+    "production_companies": [{ "id": 3, "name": "Pixar" }],
+    "belongs_to_collection": {
+      "id": 10194,
+      "name": "Toy Story Collection",
+      "poster_path": "/toy-story-collection.jpg"
+    }
+  },
+  "credits": {
+    "cast": [
+      { "id": 31, "name": "Tom Hanks", "order": 0, "character": "Woody (voice)" },
+      { "id": 32, "name": "Tim Allen", "order": 1, "character": "Buzz Lightyear (voice)" }
+    ],
+    "crew": [
+      { "id": 7879, "name": "John Lasseter", "job": "Director", "department": "Directing" },
+      { "id": 7879, "name": "John Lasseter", "job": "Writer", "department": "Writing" },
+      { "id": 787, "name": "Randy Newman", "job": "Original Music Composer", "department": "Sound" }
+    ]
+  }
+}

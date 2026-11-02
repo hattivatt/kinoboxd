@@ -1,0 +1,97 @@
+{
+  "appid": 292030,
+  "success": true,
+  "unavailable": false,
+  "name": "The Witcher 3: Wild Hunt — Remastered",
+  "developer": "CD PROJEKT RED",
+  "publisher": "CD PROJEKT RED",
+  "positive": 802993,
+  "negative": 32356,
+  "owners": "20,000,000 .. 50,000,000",
+  "ccu": 15893,
+  "averageForever": 0,
+  "genre": "RPG",
+  "tags": [
+    {
+      "name": "Open World",
+      "weight": 12801
+    },
+    {
+      "name": "RPG",
+      "weight": 10801
+    },
+    {
+      "name": "Story Rich",
+      "weight": 10011
+    },
+    {
+      "name": "Atmospheric",
+      "weight": 6881
+    },
+    {
+      "name": "Mature",
+      "weight": 6825
+    },
+    {
+      "name": "Fantasy",
+      "weight": 6585
+    },
+    {
+      "name": "Adventure",
+      "weight": 6454
+    },
+    {
+      "name": "Singleplayer",
+      "weight": 6287
+    },
+    {
+      "name": "Nudity",
+      "weight": 6129
+    },
+    {
+      "name": "Choices Matter",
+      "weight": 5788
+    },
+    {
+      "name": "Great Soundtrack",
+      "weight": 4732
+    },
+    {
+      "name": "Third Person",
+      "weight": 4702
+    },
+    {
+      "name": "Medieval",
+      "weight": 4576
+    },
+    {
+      "name": "Action",
+      "weight": 4412
+    },
+    {
+      "name": "Multiple Endings",
+      "weight": 3967
+    },
+    {
+      "name": "Action RPG",
+      "weight": 3905
+    },
+    {
+      "name": "Dark Fantasy",
+      "weight": 3734
+    },
+    {
+      "name": "Magic",
+      "weight": 3717
+    },
+    {
+      "name": "Dark",
+      "weight": 2220
+    },
+    {
+      "name": "Sandbox",
+      "weight": 1335
+    }
+  ],
+  "metadataSource": "steamspy"
+}

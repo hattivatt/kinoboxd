@@ -1,0 +1,150 @@
+{
+  "domain": "books",
+  "bytes": 12545,
+  "sha256": "a412ea7a9caec13177aa64def626c6a9750e12a2c8ed845129e740c627cb058b",
+  "topLevelKeys": [
+    "authors",
+    "booksIndex",
+    "decades",
+    "genres",
+    "meta",
+    "pagesHistogram",
+    "publishers",
+    "ratings",
+    "readDays",
+    "recentlyFinished",
+    "recentlyReading",
+    "series",
+    "sources",
+    "streaks",
+    "summary",
+    "timeline",
+    "unmatched",
+    "unmatchedCount",
+    "years"
+  ],
+  "structure": {
+    "authors": {
+      "array": 6
+    },
+    "booksIndex": [
+      "hc:100",
+      "hc:101",
+      "hc:102",
+      "hc:103",
+      "ll:9004",
+      "ll:9005"
+    ],
+    "decades": {
+      "array": 2
+    },
+    "genres": {
+      "array": 6
+    },
+    "meta": [
+      "buildMs",
+      "deepScan",
+      "profiles",
+      "statusFilter"
+    ],
+    "pagesHistogram": {
+      "array": 8
+    },
+    "publishers": {
+      "array": 4
+    },
+    "ratings": [
+      "merged",
+      "scale"
+    ],
+    "readDays": {
+      "array": 5
+    },
+    "recentlyFinished": {
+      "array": 5
+    },
+    "recentlyReading": {
+      "array": 1
+    },
+    "series": {
+      "array": 1
+    },
+    "sources": [
+      "connected",
+      "profile",
+      "profiles",
+      "selected"
+    ],
+    "streaks": [
+      "best",
+      "bestDates",
+      "current",
+      "lastReadDate"
+    ],
+    "summary": [
+      "ancientBookCount",
+      "authorsCount",
+      "authorsMergedCount",
+      "avgPages",
+      "avgRating",
+      "bookCount",
+      "canonicalResolvedCount",
+      "collections",
+      "dateFrom",
+      "dateTo",
+      "eventCount",
+      "finishedCount",
+      "hardcoverStatusExcluded",
+      "includeMangaComics",
+      "mangaExcluded",
+      "mangaManualExcluded",
+      "mangaManualRestored",
+      "mangaOverrides",
+      "mangaSeriesExcluded",
+      "mangaSeriesPropagated",
+      "metadata",
+      "monthOnlyEventCount",
+      "pageCount",
+      "pagesTotal",
+      "reReadCount",
+      "readCount",
+      "readingNowCount",
+      "resolvedCount",
+      "seriesCount",
+      "seriesTagsFiltered",
+      "shelfExcluded",
+      "shelves",
+      "sources",
+      "undatedEventCount",
+      "unresolvedCount",
+      "yearBackfill",
+      "yearEditionCount",
+      "yearFirstCount",
+      "yearManualCount",
+      "yearUnknownCount",
+      "yearsSpan"
+    ],
+    "timeline": {
+      "array": 4
+    },
+    "unmatched": {
+      "array": 2
+    },
+    "unmatchedCount": "number",
+    "years": {
+      "array": 4
+    }
+  },
+  "summaryNumbers": {
+    "summary.bookCount": 6,
+    "summary.eventCount": 6,
+    "summary.finishedCount": 5,
+    "summary.resolvedCount": 4,
+    "summary.unresolvedCount": 2,
+    "summary.readingNowCount": 1,
+    "summary.metadata.resolved": 4,
+    "summary.metadata.total": 6,
+    "authors.length": 6,
+    "series.length": 1
+  }
+}

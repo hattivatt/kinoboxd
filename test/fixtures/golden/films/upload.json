@@ -1,0 +1,86 @@
+{
+  "summary": {
+    "source": { "type": "letterboxd" },
+    "diaryEntries": 8,
+    "watchedEntries": 7,
+    "films": 7,
+    "ratedFilms": 6,
+    "dateFrom": "2024-03-02",
+    "dateTo": "2024-07-07"
+  },
+  "films": [
+    {
+      "slug": "the-matrix",
+      "title": "The Matrix",
+      "year": 1999,
+      "rating": 4.5,
+      "watchedDate": "2024-03-05",
+      "lbUri": "https://boxd.it/the-matrix"
+    },
+    {
+      "slug": "the-matrix-reloaded",
+      "title": "The Matrix Reloaded",
+      "year": 2003,
+      "rating": 3.5,
+      "watchedDate": "2024-03-03",
+      "lbUri": "https://boxd.it/the-matrix-reloaded"
+    },
+    {
+      "slug": "the-dark-knight",
+      "title": "The Dark Knight",
+      "year": 2008,
+      "rating": 5,
+      "watchedDate": "2024-04-10",
+      "lbUri": "https://boxd.it/the-dark-knight"
+    },
+    {
+      "slug": "spirited-away",
+      "title": "Spirited Away",
+      "year": 2001,
+      "rating": 4,
+      "watchedDate": "2024-05-01",
+      "lbUri": "https://boxd.it/spirited-away"
+    },
+    {
+      "slug": "toy-story",
+      "title": "Toy Story",
+      "year": 1995,
+      "rating": null,
+      "watchedDate": null,
+      "lbUri": "https://boxd.it/toy-story"
+    },
+    {
+      "slug": "chernobyl",
+      "title": "Chernobyl",
+      "year": 2019,
+      "rating": 4.5,
+      "watchedDate": "2024-06-01",
+      "lbUri": "https://boxd.it/chernobyl"
+    },
+    {
+      "slug": "obscure-film",
+      "title": "Obscure Film",
+      "year": 1977,
+      "rating": 2.5,
+      "watchedDate": "2024-07-07",
+      "lbUri": "https://boxd.it/obscure-film"
+    }
+  ],
+  "events": [
+    { "date": "2024-03-02", "slug": "the-matrix", "rewatch": false, "rating": 4.5, "source": "diary" },
+    { "date": "2024-03-05", "slug": "the-matrix", "rewatch": true, "rating": 4.5, "source": "diary" },
+    { "date": "2024-03-03", "slug": "the-matrix-reloaded", "rewatch": false, "rating": 3.5, "source": "diary" },
+    { "date": "2024-04-10", "slug": "the-dark-knight", "rewatch": false, "rating": 5, "source": "diary" },
+    { "date": "2024-05-01", "slug": "spirited-away", "rewatch": false, "rating": 4, "source": "diary" },
+    { "date": "2024-06-01", "slug": "chernobyl", "rewatch": false, "rating": 4.5, "source": "diary" },
+    { "date": "2024-07-07", "slug": "obscure-film", "rewatch": false, "rating": 2.5, "source": "diary" },
+    { "date": "2024-03-02", "slug": "the-matrix", "rewatch": false, "rating": 4.5, "source": "diary" }
+  ],
+  "watchlist": [],
+  "files": {
+    "diary": true,
+    "watched": true,
+    "ratings": true,
+    "watchlist": false
+  }
+}

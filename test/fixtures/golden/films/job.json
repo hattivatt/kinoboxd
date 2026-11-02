@@ -1,0 +1,13 @@
+{
+  "total": 7,
+  "matched": 6,
+  "failed": 1,
+  "films": {
+    "the-matrix": { "tmdbId": 603, "kind": "movie" },
+    "the-matrix-reloaded": { "tmdbId": 604, "kind": "movie" },
+    "the-dark-knight": { "tmdbId": 155, "kind": "movie" },
+    "spirited-away": { "tmdbId": 129, "kind": "movie" },
+    "toy-story": { "tmdbId": 862, "kind": "movie" },
+    "chernobyl": { "tmdbId": 87108, "kind": "tv" }
+  }
+}

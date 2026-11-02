@@ -1,0 +1,34 @@
+{
+  "kind": "tv",
+  "details": {
+    "id": 87108,
+    "imdb_id": "tt7366338",
+    "title": "Chernobyl",
+    "original_language": "en",
+    "release_date": "2019-05-06",
+    "runtime": 65,
+    "vote_average": 8.7,
+    "poster_path": "/chernobyl.jpg",
+    "genres": [
+      { "id": 18, "name": "Drama" },
+      { "id": 36, "name": "History" }
+    ],
+    "keywords": [{ "id": 6075, "name": "nuclear disaster" }],
+    "production_countries": [
+      { "iso_3166_1": "US", "name": "United States of America" },
+      { "iso_3166_1": "GB", "name": "United Kingdom" }
+    ],
+    "production_companies": [{ "id": 11073, "name": "HBO" }]
+  },
+  "credits": {
+    "cast": [
+      { "id": 7001, "name": "Jared Harris", "order": 0, "character": "Valery Legasov" },
+      { "id": 7002, "name": "Stellan Skarsgård", "order": 1, "character": "Boris Shcherbina" },
+      { "id": 7003, "name": "Emily Watson", "order": 2, "character": "Ulana Khomyuk" }
+    ],
+    "crew": [
+      { "id": 7009, "name": "Johan Renck", "job": "Director", "department": "Directing" },
+      { "id": 7010, "name": "Craig Mazin", "job": "Writer", "department": "Writing" }
+    ]
+  }
+}

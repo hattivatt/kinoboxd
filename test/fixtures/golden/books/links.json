@@ -1,0 +1,14 @@
+{
+  "links": [
+    { "livelibBookId": "9001", "workId": "hc:100", "method": "isbn", "score": 1, "evidence": { "isbn": "9780441013593" } },
+    { "livelibBookId": "9002", "workId": "hc:101", "method": "title_author", "score": 0.95, "evidence": { "title": "Мартин Иден" } },
+    { "livelibBookId": "9003", "workId": "hc:102", "method": "title_author", "score": 0.95, "evidence": { "title": "Солярис" } },
+    { "livelibBookId": "9006", "workId": "hc:103", "method": "title_author", "score": 0.9, "evidence": { "title": "Мастер и Маргарита" } }
+  ],
+  "workLinks": [
+    { "workId": "hc:100", "livelib": ["9001"] },
+    { "workId": "hc:101", "livelib": ["9002"] },
+    { "workId": "hc:102", "livelib": ["9003"] },
+    { "workId": "hc:103", "livelib": ["9006"] }
+  ]
+}

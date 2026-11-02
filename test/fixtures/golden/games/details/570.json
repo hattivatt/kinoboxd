@@ -1,0 +1,112 @@
+{
+  "appid": 570,
+  "success": true,
+  "type": "game",
+  "name": "Dota 2",
+  "is_free": true,
+  "developers": [
+    "Valve"
+  ],
+  "publishers": [
+    "Valve"
+  ],
+  "genres": [
+    {
+      "id": "1",
+      "description": "Action"
+    },
+    {
+      "id": "2",
+      "description": "Strategy"
+    },
+    {
+      "id": "37",
+      "description": "Free To Play"
+    }
+  ],
+  "categories": [
+    {
+      "id": "1",
+      "description": "Multi-player"
+    },
+    {
+      "id": "9",
+      "description": "Co-op"
+    },
+    {
+      "id": "29",
+      "description": "Steam Trading Cards"
+    },
+    {
+      "id": "30",
+      "description": "Steam Workshop"
+    },
+    {
+      "id": "40",
+      "description": "SteamVR Collectibles"
+    },
+    {
+      "id": "35",
+      "description": "In-App Purchases"
+    },
+    {
+      "id": "67",
+      "description": "Camera Comfort"
+    },
+    {
+      "id": "66",
+      "description": "Color Alternatives"
+    },
+    {
+      "id": "68",
+      "description": "Custom Volume Controls"
+    },
+    {
+      "id": "8",
+      "description": "Valve Anti-Cheat enabled"
+    },
+    {
+      "id": "63",
+      "description": "Steam Timeline"
+    }
+  ],
+  "release_date": {
+    "date": "9 Jul, 2013",
+    "coming_soon": false,
+    "year": 2013,
+    "month": 7,
+    "day": 9,
+    "precision": "day"
+  },
+  "releaseYear": 2013,
+  "releasePrecision": "day",
+  "dlc": [
+    1241930,
+    652720
+  ],
+  "dlcCount": 2,
+  "metacritic": {
+    "score": 90,
+    "url": "https://www.metacritic.com/game/pc/dota-2?ftag=MCD-06-10aaa1f"
+  },
+  "recommendations": {
+    "total": 14371
+  },
+  "achievements": null,
+  "platforms": {
+    "windows": true,
+    "mac": true,
+    "linux": true
+  },
+  "headerImage": null,
+  "capsuleImage": null,
+  "screenshots": [
+    "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/570/ss_ad8eee787704745ccdecdfde3a5cd2733704898d.1920x1080.jpg?t=1791407503",
+    "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/570/ss_7ab506679d42bfc0c0e40639887176494e0466d9.1920x1080.jpg?t=1791407503",
+    "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/570/ss_c9118375a2400278590f29a3537769c986ef6e39.1920x1080.jpg?t=1791407503"
+  ],
+  "earlyAccess": false,
+  "metadataSource": "steam-store",
+  "fetchedAt": "2026-11-01T00:00:00.000Z",
+  "source": "steam-store"
+}

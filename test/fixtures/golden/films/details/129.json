@@ -1,0 +1,33 @@
+{
+  "kind": "movie",
+  "details": {
+    "id": 129,
+    "imdb_id": "tt0245429",
+    "title": "Spirited Away",
+    "original_language": "ja",
+    "release_date": "2001-07-20",
+    "runtime": 125,
+    "vote_average": 8.5,
+    "poster_path": "/spirited-away.jpg",
+    "genres": [
+      { "id": 16, "name": "Animation" },
+      { "id": 14, "name": "Fantasy" },
+      { "id": 10751, "name": "Family" }
+    ],
+    "keywords": [{ "id": 9715, "name": "supernatural" }],
+    "production_countries": [{ "iso_3166_1": "JP", "name": "Japan" }],
+    "production_companies": [{ "id": 10342, "name": "Studio Ghibli" }]
+  },
+  "credits": {
+    "cast": [
+      { "id": 5001, "name": "Rumi Hiiragi", "order": 0, "character": "Chihiro (voice)" },
+      { "id": 5002, "name": "Miyu Irino", "order": 1, "character": "Haku (voice)" },
+      { "id": 5003, "name": "Mari Natsuki", "order": 2, "character": "Yubaba (voice)" }
+    ],
+    "crew": [
+      { "id": 608, "name": "Hayao Miyazaki", "job": "Director", "department": "Directing" },
+      { "id": 608, "name": "Hayao Miyazaki", "job": "Writer", "department": "Writing" },
+      { "id": 6081, "name": "Joe Hisaishi", "job": "Original Music Composer", "department": "Sound" }
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "hcWorkId": 100,
+  "title": "Дюна",
+  "titleRu": "Дюна",
+  "slug": "dune",
+  "authors": [{ "hcId": 1, "name": "Фрэнк Герберт" }],
+  "genres": ["Science Fiction", "Adventure"],
+  "series": [{ "hcId": 5, "name": "Дюны", "position": 1 }],
+  "pages": 512,
+  "publicationYear": 1965,
+  "publisher": "Chilton",
+  "coverUrl": "https://example.test/dune.jpg",
+  "ratingsCount": 5000,
+  "partial": false,
+  "metadataSources": ["hardcover"]
+}

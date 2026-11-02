@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "hcWorkId": 101,
+  "title": "Мартин Иден",
+  "titleRu": "Мартин Иден",
+  "slug": "martin-eden",
+  "authors": [{ "hcId": 2, "name": "Джек Лондон" }],
+  "genres": ["Classics", "Fiction"],
+  "series": [],
+  "pages": 400,
+  "publicationYear": 1909,
+  "publisher": "Penguin",
+  "coverUrl": "https://example.test/martin-eden.jpg",
+  "ratingsCount": 1200,
+  "partial": false,
+  "metadataSources": ["hardcover"]
+}

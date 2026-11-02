@@ -1,0 +1,37 @@
+{
+  "kind": "movie",
+  "details": {
+    "id": 604,
+    "imdb_id": "tt0234215",
+    "title": "The Matrix Reloaded",
+    "original_language": "en",
+    "release_date": "2003-05-15",
+    "runtime": 138,
+    "vote_average": 7.0,
+    "poster_path": "/matrix-reloaded.jpg",
+    "genres": [
+      { "id": 28, "name": "Action" },
+      { "id": 878, "name": "Science Fiction" }
+    ],
+    "keywords": [{ "id": 4565, "name": "dystopia" }],
+    "production_countries": [{ "iso_3166_1": "US", "name": "United States of America" }],
+    "production_companies": [{ "id": 79, "name": "Village Roadshow Pictures" }],
+    "belongs_to_collection": {
+      "id": 2344,
+      "name": "The Matrix Collection",
+      "poster_path": "/matrix-collection.jpg"
+    }
+  },
+  "credits": {
+    "cast": [
+      { "id": 6384, "name": "Keanu Reeves", "order": 0, "character": "Neo" },
+      { "id": 2975, "name": "Laurence Fishburne", "order": 1, "character": "Morpheus" },
+      { "id": 530, "name": "Carrie-Anne Moss", "order": 2, "character": "Trinity" }
+    ],
+    "crew": [
+      { "id": 9340, "name": "Lana Wachowski", "job": "Director", "department": "Directing" },
+      { "id": 9341, "name": "Lilly Wachowski", "job": "Director", "department": "Directing" },
+      { "id": 2071, "name": "Dane A. Davis", "job": "Original Music Composer", "department": "Sound" }
+    ]
+  }
+}

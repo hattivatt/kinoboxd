@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "hcWorkId": 103,
+  "title": "Мастер и Маргарита",
+  "titleRu": "Мастер и Маргарита",
+  "slug": "master-i-margarita",
+  "authors": [{ "hcId": 4, "name": "Михаил Булгаков" }],
+  "genres": ["Classics", "Fantasy"],
+  "series": [],
+  "pages": 480,
+  "publicationYear": 1967,
+  "publisher": "YMCA Press",
+  "coverUrl": "https://example.test/master.jpg",
+  "ratingsCount": 7800,
+  "partial": false,
+  "metadataSources": ["hardcover"]
+}

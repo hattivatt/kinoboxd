@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "hcWorkId": 102,
+  "title": "Солярис",
+  "titleRu": "Солярис",
+  "slug": "solaris",
+  "authors": [{ "hcId": 3, "name": "Станислав Лем" }],
+  "genres": ["Science Fiction", "Philosophy"],
+  "series": [],
+  "pages": 224,
+  "publicationYear": 1961,
+  "publisher": "MONO",
+  "coverUrl": "https://example.test/solaris.jpg",
+  "ratingsCount": 3400,
+  "partial": false,
+  "metadataSources": ["hardcover"]
+}

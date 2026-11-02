@@ -1,0 +1,97 @@
+{
+  "appid": 570,
+  "success": true,
+  "unavailable": false,
+  "name": "Dota 2",
+  "developer": "Valve",
+  "publisher": "Valve",
+  "positive": 2037143,
+  "negative": 461826,
+  "owners": "100,000,000 .. 200,000,000",
+  "ccu": 623941,
+  "averageForever": 0,
+  "genre": "Action, Strategy, Free To Play",
+  "tags": [
+    {
+      "name": "Free to Play",
+      "weight": 60040
+    },
+    {
+      "name": "MOBA",
+      "weight": 20225
+    },
+    {
+      "name": "Multiplayer",
+      "weight": 15411
+    },
+    {
+      "name": "Strategy",
+      "weight": 14289
+    },
+    {
+      "name": "e-sports",
+      "weight": 11816
+    },
+    {
+      "name": "Team-Based",
+      "weight": 10989
+    },
+    {
+      "name": "Competitive",
+      "weight": 8324
+    },
+    {
+      "name": "Action",
+      "weight": 7939
+    },
+    {
+      "name": "Online Co-Op",
+      "weight": 7495
+    },
+    {
+      "name": "PvP",
+      "weight": 6073
+    },
+    {
+      "name": "Difficult",
+      "weight": 5376
+    },
+    {
+      "name": "Co-op",
+      "weight": 4338
+    },
+    {
+      "name": "RTS",
+      "weight": 4127
+    },
+    {
+      "name": "RPG",
+      "weight": 3807
+    },
+    {
+      "name": "Tower Defense",
+      "weight": 3796
+    },
+    {
+      "name": "Fantasy",
+      "weight": 3764
+    },
+    {
+      "name": "Character Customization",
+      "weight": 2944
+    },
+    {
+      "name": "Replay Value",
+      "weight": 2766
+    },
+    {
+      "name": "Action RPG",
+      "weight": 2471
+    },
+    {
+      "name": "Simulation",
+      "weight": 1987
+    }
+  ],
+  "metadataSource": "steamspy"
+}

@@ -1,0 +1,97 @@
+{
+  "appid": 620,
+  "success": true,
+  "unavailable": false,
+  "name": "Portal 2",
+  "developer": "Valve",
+  "publisher": "Valve",
+  "positive": 427835,
+  "negative": 5675,
+  "owners": "5,000,000 .. 10,000,000",
+  "ccu": 1959,
+  "averageForever": 0,
+  "genre": "Action, Adventure",
+  "tags": [
+    {
+      "name": "Platformer",
+      "weight": 7477
+    },
+    {
+      "name": "Puzzle",
+      "weight": 7394
+    },
+    {
+      "name": "First-Person",
+      "weight": 7096
+    },
+    {
+      "name": "Dark Humor",
+      "weight": 7075
+    },
+    {
+      "name": "Story Rich",
+      "weight": 7053
+    },
+    {
+      "name": "Puzzle-Platformer",
+      "weight": 6970
+    },
+    {
+      "name": "Funny",
+      "weight": 6885
+    },
+    {
+      "name": "Female Protagonist",
+      "weight": 6850
+    },
+    {
+      "name": "3D Platformer",
+      "weight": 6782
+    },
+    {
+      "name": "Action-Adventure",
+      "weight": 6611
+    },
+    {
+      "name": "Action",
+      "weight": 6574
+    },
+    {
+      "name": "FPS",
+      "weight": 6559
+    },
+    {
+      "name": "Co-op",
+      "weight": 6260
+    },
+    {
+      "name": "Physics",
+      "weight": 5106
+    },
+    {
+      "name": "Sci-fi",
+      "weight": 4953
+    },
+    {
+      "name": "Level Editor",
+      "weight": 4911
+    },
+    {
+      "name": "Science",
+      "weight": 4842
+    },
+    {
+      "name": "Comedy",
+      "weight": 4824
+    },
+    {
+      "name": "Atmospheric",
+      "weight": 4798
+    },
+    {
+      "name": "Adventure",
+      "weight": 4741
+    }
+  ],
+  "metadataSource": "steamspy"
+}

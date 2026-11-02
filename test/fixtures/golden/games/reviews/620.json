@@ -1,0 +1,11 @@
+{
+  "appid": 620,
+  "success": true,
+  "unavailable": false,
+  "score": 9,
+  "desc": "Overwhelmingly Positive",
+  "positive": 463131,
+  "negative": 6066,
+  "total": 469197,
+  "metadataSource": "steam-reviews"
+}

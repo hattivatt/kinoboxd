@@ -1,0 +1,186 @@
+{
+  "domain": "games",
+  "bytes": 25058,
+  "sha256": "bfb54f6d347a0af6be6917bf355c86c1480c4753d83f5673a68d34a645524d83",
+  "topLevelKeys": [
+    "achievementDays",
+    "backlog",
+    "decades",
+    "epic",
+    "franchises",
+    "gamesIndex",
+    "genres",
+    "gog",
+    "hoursHistogram",
+    "libraryPartial",
+    "meta",
+    "personnelTop",
+    "recently2w",
+    "recentlyPlayed",
+    "scores",
+    "secondaryWorks",
+    "sources",
+    "streaks",
+    "studios",
+    "summary",
+    "tags",
+    "timeline",
+    "topGames",
+    "unmatchedCount",
+    "years"
+  ],
+  "structure": {
+    "achievementDays": {
+      "array": 1
+    },
+    "backlog": [
+      "count",
+      "items",
+      "share",
+      "truncated"
+    ],
+    "decades": {
+      "array": 3
+    },
+    "epic": null,
+    "franchises": {
+      "array": 0
+    },
+    "gamesIndex": [
+      "1091500",
+      "211420",
+      "220",
+      "320",
+      "360",
+      "400",
+      "500",
+      "570",
+      "620",
+      "70"
+    ],
+    "genres": {
+      "array": 5
+    },
+    "gog": null,
+    "hoursHistogram": {
+      "array": 8
+    },
+    "libraryPartial": "boolean",
+    "meta": [
+      "achievementsCachedGames",
+      "buildMs",
+      "calendarAvailable",
+      "details",
+      "editions",
+      "excluded",
+      "filters",
+      "franchises",
+      "keyConfigured",
+      "keySource",
+      "libraryFetchedAt",
+      "libraryFingerprint",
+      "libraryStale",
+      "libraryTtlHours",
+      "pending",
+      "reviews",
+      "secondaryDetails",
+      "tags"
+    ],
+    "personnelTop": null,
+    "recently2w": {
+      "array": 1
+    },
+    "recentlyPlayed": {
+      "array": 8
+    },
+    "scores": {
+      "array": 9
+    },
+    "secondaryWorks": {
+      "array": 0
+    },
+    "sources": [
+      "connected",
+      "epic",
+      "gog",
+      "profile",
+      "profiles",
+      "selected",
+      "steam"
+    ],
+    "streaks": [
+      "best",
+      "bestDates",
+      "current",
+      "lastUnlockDate"
+    ],
+    "studios": {
+      "array": 0
+    },
+    "summary": [
+      "achievements",
+      "backlogShare",
+      "chartsIncludeSecondary",
+      "completion",
+      "dlc",
+      "earlyAccess",
+      "epicSecondaryGames",
+      "freeToPlay",
+      "gameCount",
+      "gameCountEstimated",
+      "hoursBySource",
+      "hoursUnknownCount",
+      "lastPlayedAt",
+      "meanHours",
+      "medianHours",
+      "metadata",
+      "modes",
+      "ownedBySource",
+      "ownedCount",
+      "platformHours",
+      "platforms",
+      "playedCount",
+      "recent2wHours",
+      "releaseYearFrom",
+      "releaseYearTo",
+      "reviewScore",
+      "secondaryHours",
+      "secondaryHoursUnknown",
+      "secondaryOnlyWorks",
+      "secondaryWorksInCharts",
+      "secondaryWorksTotal",
+      "secondaryWorksVisible",
+      "top10Count",
+      "top10HoursShare",
+      "totalHours",
+      "totalHoursSteam",
+      "unplayedCount",
+      "worksTotal"
+    ],
+    "tags": {
+      "array": 38
+    },
+    "timeline": {
+      "array": 1
+    },
+    "topGames": {
+      "array": 10
+    },
+    "unmatchedCount": "number",
+    "years": {
+      "array": 4
+    }
+  },
+  "summaryNumbers": {
+    "summary.ownedCount": 10,
+    "summary.gameCount": 10,
+    "summary.playedCount": 8,
+    "summary.unplayedCount": 2,
+    "summary.totalHours": 616.2,
+    "summary.achievements.unlocked": 3,
+    "summary.achievements.total": 5,
+    "summary.completion.gamesWithStats": 1,
+    "backlog.count": 2,
+    "genres.length": 5
+  }
+}

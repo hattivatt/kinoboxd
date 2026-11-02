@@ -1,0 +1,39 @@
+{
+  "kind": "movie",
+  "details": {
+    "id": 603,
+    "imdb_id": "tt0133093",
+    "title": "The Matrix",
+    "original_language": "en",
+    "release_date": "1999-03-31",
+    "runtime": 136,
+    "vote_average": 8.2,
+    "poster_path": "/matrix.jpg",
+    "genres": [
+      { "id": 28, "name": "Action" },
+      { "id": 878, "name": "Science Fiction" }
+    ],
+    "keywords": [{ "id": 4565, "name": "dystopia" }],
+    "production_countries": [{ "iso_3166_1": "US", "name": "United States of America" }],
+    "production_companies": [{ "id": 79, "name": "Village Roadshow Pictures" }],
+    "belongs_to_collection": {
+      "id": 2344,
+      "name": "The Matrix Collection",
+      "poster_path": "/matrix-collection.jpg"
+    }
+  },
+  "credits": {
+    "cast": [
+      { "id": 6384, "name": "Keanu Reeves", "order": 0, "character": "Neo" },
+      { "id": 2975, "name": "Laurence Fishburne", "order": 1, "character": "Morpheus" },
+      { "id": 530, "name": "Carrie-Anne Moss", "order": 2, "character": "Trinity" },
+      { "id": 1331, "name": "Hugo Weaving", "order": 3, "character": "Agent Smith" }
+    ],
+    "crew": [
+      { "id": 9340, "name": "Lana Wachowski", "job": "Director", "department": "Directing" },
+      { "id": 9341, "name": "Lilly Wachowski", "job": "Director", "department": "Directing" },
+      { "id": 9340, "name": "Lana Wachowski", "job": "Writer", "department": "Writing" },
+      { "id": 2071, "name": "Dane A. Davis", "job": "Original Music Composer", "department": "Sound" }
+    ]
+  }
+}
