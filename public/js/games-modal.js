@@ -156,7 +156,7 @@ function fallbackStyle(name) {
 /** Steam capsule icon (46/88 px) with a deterministic initials fallback. */
 export function gameIconEl(game, { className = 'game-icon' } = {}) {
   const name = game && game.name ? game.name : '';
-  const url = game && /^https?:\/\//i.test(String(game.iconUrl || '')) ? game.iconUrl : '';
+  const url = game && game.iconUrl ? steamArtOrOriginal(game.iconUrl) : '';
   if (!url) {
     return el('div', {
       class: `${className} game-icon-fallback`,
@@ -184,15 +184,94 @@ export function gameIconEl(game, { className = 'game-icon' } = {}) {
   return img;
 }
 
-const STEAM_CDN = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+const STEAM_ART_PATH = '/api/games/steam-art';
+const STEAM_ART_FILE_TYPES = {
+  'header.jpg': 'header',
+  'capsule_231x87.jpg': 'capsule',
+  'library_600x900.jpg': 'library',
+};
+const STEAM_CDN_HOST = /(^|\.)(?:steamstatic\.com|steampowered\.com)$/i;
 
 function httpUrl(value) {
   const url = value == null ? '' : String(value).trim();
   return /^https?:\/\//i.test(url) ? url : '';
 }
 
-function pushUrl(urls, value) {
+function artHash(value) {
+  const hash = String(value == null ? '' : value).trim();
+  return /^[A-Za-z0-9]{1,64}$/.test(hash) ? hash : '';
+}
+
+/**
+ * Same-origin URL for one Steam CDN asset. The owner's ISP blocks the CDN
+ * hosts in Vietnam, so the browser must load artwork through the server
+ * (`GET /api/games/steam-art/<type>/<appid>`); the route assembles the
+ * upstream URL itself from the allowlist.
+ */
+export function steamArtProxyUrl(type, appid, hash) {
+  const id = positiveId(appid);
+  if (!id || !type) return '';
+  const suffix = hash ? `?h=${encodeURIComponent(hash)}` : '';
+  return `${STEAM_ART_PATH}/${type}/${id}${suffix}`;
+}
+
+/**
+ * Rewrite a Steam CDN URL to the local proxy URL. Returns `''` for anything
+ * that is not Steam art (GOG/Epic posters, screenshots with an unsupported
+ * filename, relative URLs) — callers keep those untouched.
+ *
+ * Recognised shapes:
+ *   `<cdn>/steam/apps/<appid>/<file>` — legacy header/capsule/library paths;
+ *   `<cdn>/store_item_assets/steam/apps/<appid>/<asset-hash>/<file>` — the
+ *     post-2024 schema stored in `appdetails.header_image`;
+ *   `media.steampowered.com/steamcommunity/public/images/apps/<appid>/<hash>.jpg`.
+ */
+export function proxySteamArtUrl(value) {
   const url = httpUrl(value);
+  if (!url) return '';
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (err) {
+    return '';
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+  if (!STEAM_CDN_HOST.test(parsed.hostname)) return '';
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  if (
+    parts.length >= 6 &&
+    parts[0] === 'store_item_assets' &&
+    parts[1] === 'steam' &&
+    parts[2] === 'apps'
+  ) {
+    const type = STEAM_ART_FILE_TYPES[parts[5].toLowerCase()];
+    const hash = artHash(parts[4]);
+    return type && hash ? steamArtProxyUrl(type, parts[3], hash) : '';
+  }
+  if (parts.length >= 4 && parts[0] === 'steam' && parts[1] === 'apps') {
+    const type = STEAM_ART_FILE_TYPES[parts[3].toLowerCase()];
+    return type ? steamArtProxyUrl(type, parts[2]) : '';
+  }
+  if (
+    parts.length >= 6 &&
+    parts[0] === 'steamcommunity' &&
+    parts[1] === 'public' &&
+    parts[2] === 'images' &&
+    parts[3] === 'apps'
+  ) {
+    const hash = artHash(parts[5].replace(/\.(?:jpg|jpeg|png)$/i, ''));
+    return hash ? steamArtProxyUrl('icon', parts[4], hash) : '';
+  }
+  return '';
+}
+
+/** Steam art goes through the proxy; every other URL stays as it was. */
+function steamArtOrOriginal(value) {
+  return proxySteamArtUrl(value) || httpUrl(value);
+}
+
+function pushUrl(urls, value) {
+  const url = steamArtOrOriginal(value);
   if (url && !urls.includes(url)) urls.push(url);
 }
 
@@ -256,8 +335,8 @@ export function gameCoverUrls(game) {
   pushUrl(urls, providedHeaderImage(game));
   pushUrl(urls, providedCapsuleImage(game));
   if (appid) {
-    urls.push(`${STEAM_CDN}/${appid}/header.jpg`);
-    urls.push(`${STEAM_CDN}/${appid}/capsule_231x87.jpg`);
+    urls.push(steamArtProxyUrl('header', appid));
+    urls.push(steamArtProxyUrl('capsule', appid));
   }
   pushUrl(urls, game && game.iconUrl);
   return urls;
@@ -293,15 +372,15 @@ export function gameVerticalCoverUrls(game) {
   const urls = [];
   const header = providedHeaderImage(game);
   const headerFirst = header && isStoreItemAsset(header);
-  if (headerFirst) urls.push(header);
+  if (headerFirst) pushUrl(urls, header);
   if (appid) {
-    urls.push(`${STEAM_CDN}/${appid}/library_600x900.jpg`);
-    urls.push(`${STEAM_CDN}/${appid}/header.jpg`);
+    urls.push(steamArtProxyUrl('library', appid));
+    urls.push(steamArtProxyUrl('header', appid));
   }
   if (header && !headerFirst) pushUrl(urls, header);
   pushUrl(urls, providedCapsuleImage(game));
   pushUrl(urls, providedScreenshot(game));
-  if (appid) urls.push(`${STEAM_CDN}/${appid}/capsule_231x87.jpg`);
+  if (appid) urls.push(steamArtProxyUrl('capsule', appid));
   // M6c: a cross-store row may bring its own poster (GOG/Epic art is not on
   // the Steam CDN). Steam rows keep the Steam chain first; the provided URL is
   // the only art when there is no appid at all.
