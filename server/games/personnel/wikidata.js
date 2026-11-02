@@ -47,6 +47,8 @@
  */
 
 const gameCache = require('../game-cache');
+const { fetchOnce, responseFacade } = require('../../core/http');
+const sources = require('../../core/sources');
 
 const WDQS = 'https://query.wikidata.org/sparql';
 const BATCH_SIZE = 450;
@@ -216,26 +218,25 @@ ${SELECT_TAIL}`;
 }
 
 function sparql(query, options = {}) {
-  const fetchImpl = options.fetchImpl || (typeof fetch === 'function' ? fetch : null);
-  if (!fetchImpl) {
+  const fetchImpl = options.fetchImpl;
+  if (!fetchImpl && typeof globalThis.fetch !== 'function') {
     return Promise.reject(new WikidataError('fetch is not available', 'wikidata_unavailable'));
   }
   const timeoutMs =
     options.timeoutMs == null ? DEFAULT_TIMEOUT_MS : Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS;
-  const init = {
+  // POST, not GET: 450 QIDs do not fit an URL (WDQS answers 414 around 8 KB).
+  return fetchOnce(options.endpoint || process.env.KINOBOXD_WDQS_ENDPOINT || WDQS, {
+    fetchImpl,
     method: 'POST',
     headers: {
       accept: 'application/sparql-results+json',
       'content-type': 'application/x-www-form-urlencoded',
       'user-agent': USER_AGENT,
     },
-    // POST, not GET: 450 QIDs do not fit an URL (WDQS answers 414 around 8 KB).
     body: new URLSearchParams({ query, format: 'json' }).toString(),
-  };
-  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-    init.signal = AbortSignal.timeout(timeoutMs);
-  }
-  return fetchImpl(options.endpoint || process.env.KINOBOXD_WDQS_ENDPOINT || WDQS, init);
+    timeoutMs,
+    label: 'games-personnel-wikidata',
+  }).then(responseFacade);
 }
 
 /* ------------------------------------------------------------------ */

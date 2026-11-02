@@ -39,6 +39,7 @@ const path = require('path');
 
 const gameCache = require('./game-cache');
 const { safeKey } = require('../core/fs-store');
+const { fetchBinary } = require('../core/http');
 const { HttpError } = require('../upload');
 
 const ART_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'art');
@@ -261,20 +262,13 @@ function contentTypeFor(url, headerValue) {
   return '';
 }
 
-function timeoutSignal(ms) {
-  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-    return AbortSignal.timeout(ms);
-  }
-  return undefined;
-}
-
 /**
  * Ask the candidate hosts until one answers 200 with a usable body. A
  * 404/403/5xx/network error moves on; the last HTTP status is reported when
  * every host failed, so «not found» stays distinguishable from «unreachable».
  */
 async function fetchUpstream(candidates, options = {}) {
-  const fetchImpl = options.fetch || (typeof fetch === 'function' ? fetch : null);
+  const fetchImpl = options.fetch || (typeof globalThis.fetch === 'function' ? globalThis.fetch : null);
   if (!fetchImpl) return { ok: false, status: 0, error: 'fetch_unavailable', tried: [] };
   const timeout = options.timeoutMs == null ? FETCH_TIMEOUT_MS : Number(options.timeoutMs);
   const tried = [];
@@ -288,11 +282,11 @@ async function fetchUpstream(candidates, options = {}) {
     }
     let response;
     try {
-      response = await fetchImpl(url, {
-        method: 'GET',
-        redirect: 'follow',
+      response = await fetchBinary(url, {
+        fetchImpl: options.fetch,
         headers: { Accept: 'image/avif,image/webp,image/jpeg,image/png,image/*' },
-        signal: timeout > 0 ? timeoutSignal(timeout) : undefined,
+        timeoutMs: timeout > 0 ? timeout : undefined,
+        label: 'steam-art',
       });
     } catch (err) {
       tried.push({ url, status: 0, error: (err && err.name) || 'network_error' });
@@ -302,13 +296,7 @@ async function fetchUpstream(candidates, options = {}) {
     const status = Number(response && response.status) || 0;
     tried.push({ url, status });
     if (status === 200) {
-      let buffer;
-      try {
-        buffer = Buffer.from(await response.arrayBuffer());
-      } catch (err) {
-        lastError = 'body_read_error';
-        continue;
-      }
+      const buffer = Buffer.from(response.buffer || Buffer.alloc(0));
       if (!buffer.length || buffer.length > MAX_ART_ENTRY_BYTES) {
         lastError = buffer.length ? 'too_large' : 'empty_body';
         continue;

@@ -18,6 +18,7 @@
  */
 
 const { normalizeAuthorName, hasCyrillic, hasLatin, groupAuthors } = require('./authors');
+const { fetchOnce, responseFacade } = require('../core/http');
 
 const WDQS = 'https://query.wikidata.org/sparql';
 const BATCH_SIZE = 450;
@@ -25,12 +26,15 @@ const DEFAULT_PAUSE_MS = 1100;
 const USER_AGENT = 'kinoboxd/1.0 (books author alias backfill)';
 
 function sparql(query, options = {}) {
-  const fetchImpl = options.fetchImpl || (typeof fetch === 'function' ? fetch : null);
-  if (!fetchImpl) return Promise.reject(new Error('fetch is not available'));
+  const fetchImpl = options.fetchImpl;
+  if (!fetchImpl && typeof globalThis.fetch !== 'function') {
+    return Promise.reject(new Error('fetch is not available'));
+  }
   // POST, not GET: a batch of 450 labels does not fit an URL (WDQS answers
   // `414 URI Too Long` around ~8 KB). The endpoint accepts a form-encoded
   // `query=` body for exactly this case.
-  return fetchImpl(options.endpoint || process.env.KINOBOXD_WDQS_ENDPOINT || WDQS, {
+  return fetchOnce(options.endpoint || process.env.KINOBOXD_WDQS_ENDPOINT || WDQS, {
+    fetchImpl,
     method: 'POST',
     headers: {
       accept: 'application/sparql-results+json',
@@ -38,7 +42,8 @@ function sparql(query, options = {}) {
       'user-agent': USER_AGENT,
     },
     body: new URLSearchParams({ query, format: 'json' }).toString(),
-  });
+    label: 'authors-wikidata',
+  }).then(responseFacade);
 }
 
 function valuesClause(names) {

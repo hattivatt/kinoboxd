@@ -2,13 +2,18 @@
 
 const { normalizeTitle } = require('./cache');
 const { getTmdbToken } = require('./config');
+const { fetchOnce } = require('./core/http');
+const sources = require('./core/sources');
 
 // `TMDB_API_BASE` lets a local backfill use TMDB's alternate API host when
 // the canonical `api.themoviedb.org` endpoint is blocked by the network.
 // Production keeps the documented default.
 const API_BASE = String(process.env.TMDB_API_BASE || 'https://api.themoviedb.org/3')
   .replace(/\/+$/, '');
-const MAX_CONCURRENCY = 12;
+const MAX_CONCURRENCY = sources.SOURCES.tmdb.concurrency;
+const REQUEST_TIMEOUT_MS = sources.SOURCES.tmdb.timeoutMs;
+const RETRY_DELAYS = sources.SOURCES.tmdb.retryDelaysMs;
+const MAX_RATE_LIMIT_RETRIES = sources.SOURCES.tmdb.rateLimitRetries;
 
 function readToken() {
   return getTmdbToken();
@@ -79,8 +84,7 @@ function parseRetryAfter(value) {
 // (`fetch failed`, ECONNRESET/ETIMEDOUT/EAI_*). Four retries with a 1/2/4/8 s
 // exponential backoff turn those transient failures into ordinary successes;
 // a persistent outage still fails fast enough for the caller to report it.
-const RETRY_DELAYS = [1000, 2000, 4000, 8000];
-const MAX_RATE_LIMIT_RETRIES = 5;
+// (The values live in `core/sources.js` — `tmdb`.)
 
 /**
  * GET a TMDB endpoint with Bearer auth, global 12-request limit, four
@@ -105,13 +109,14 @@ async function tmdbGet(pathname, params) {
     try {
       response = await limiter.run(() => {
         counters.requests++;
-        return fetch(url, {
+        return fetchOnce(url, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${readToken()}`,
             Accept: 'application/json',
           },
-          signal: AbortSignal.timeout(20000),
+          timeoutMs: REQUEST_TIMEOUT_MS,
+          label: 'tmdb',
         });
       });
     } catch (err) {
@@ -155,8 +160,9 @@ async function tmdbGet(pathname, params) {
 
     if (response.status === 404) return null;
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
+    const ok = response.status >= 200 && response.status < 300;
+    if (!ok) {
+      const body = String(response.body || '');
       lastError = new Error(`TMDB HTTP ${response.status} (${pathname}): ${body.slice(0, 200)}`);
       counters.errors++;
       if (response.status >= 500 && transportAttempt < RETRY_DELAYS.length) {
@@ -175,7 +181,11 @@ async function tmdbGet(pathname, params) {
       throw lastError;
     }
 
-    return response.json();
+    try {
+      return JSON.parse(response.body);
+    } catch (err) {
+      throw new Error(`TMDB returned non-JSON (${pathname})`);
+    }
   }
 }
 

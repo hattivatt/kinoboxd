@@ -85,7 +85,7 @@ const SOURCES = Object.freeze({
     budgetEnv: null,
     breakerMs: null,
     ttlMs: null,
-    userAgent: 'kinoboxd/1.0 (film metadata; https://github.com/hattivatt/kinoboxd)',
+    userAgent: 'kinoboxd/1.0 (https://github.com/hattivatt/kinoboxd); contact: github issue',
     note: 'POST SPARQL, batches of 450, Retry-After honoured; during an outage no more than 1 request/min.',
   },
   wikidataLabels: {
@@ -98,7 +98,7 @@ const SOURCES = Object.freeze({
     budgetEnv: null,
     breakerMs: null,
     ttlMs: null,
-    userAgent: 'kinoboxd/1.0 (film metadata; https://github.com/hattivatt/kinoboxd)',
+    userAgent: 'kinoboxd/1.0 (https://github.com/hattivatt/kinoboxd); contact: github issue',
     note: 'P144 type labels, batches of 50.',
   },
   wikidataPersonnel: {

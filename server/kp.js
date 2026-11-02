@@ -52,17 +52,17 @@ try {
 const { HttpError, createUpload } = require('./upload');
 const cache = require('./cache');
 const enrich = require('./enrich');
+const { fetchOnce, defaultSleep } = require('./core/http');
+const sources = require('./core/sources');
 
 const KP_ORIGIN = 'https://www.kinopoisk.ru';
 const KP_DIR = path.join(cache.CACHE_DIR, 'kp');
 
-const USER_AGENT =
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
-  'Chrome/128.0.0.0 Safari/537.36';
+const USER_AGENT = sources.userAgent('kinopoisk');
 
-const REQUEST_TIMEOUT_MS = 30000;
-const MIN_PAGE_DELAY_MS = 1500;
-const MAX_PAGE_DELAY_MS = 2500;
+const REQUEST_TIMEOUT_MS = sources.timeoutMs('kinopoisk');
+const MIN_PAGE_DELAY_MS = sources.SOURCES.kinopoisk.pauseMs;
+const MAX_PAGE_DELAY_MS = sources.SOURCES.kinopoisk.pauseMaxMs;
 const MAX_SCOPE = 60; // hard stop for pagination loops
 
 // A delta refresh normally needs exactly one page: the votes list is sorted by
@@ -103,7 +103,7 @@ function blockedError() {
 /* Small helpers                                                       */
 /* ------------------------------------------------------------------ */
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = defaultSleep;
 
 function randomPageDelay() {
   return MIN_PAGE_DELAY_MS + Math.floor(Math.random() * (MAX_PAGE_DELAY_MS - MIN_PAGE_DELAY_MS + 1));
@@ -208,11 +208,12 @@ async function kpRequest(url, jar) {
 
   let response;
   try {
-    response = await fetch(url, {
+    response = await fetchOnce(url, {
       method: 'GET',
       headers,
       redirect: 'manual',
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      label: 'kp',
     });
   } catch (err) {
     throw new KpError(
@@ -221,13 +222,7 @@ async function kpRequest(url, jar) {
     );
   }
   storeCookies(jar, response);
-  let body = '';
-  try {
-    body = await response.text();
-  } catch (err) {
-    body = '';
-  }
-  return { status: response.status, headers: response.headers, body, url };
+  return { status: response.status, headers: response.headers, body: response.body, url };
 }
 
 /** Follow redirects manually so cookies from every hop are collected. */

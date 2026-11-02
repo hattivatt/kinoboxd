@@ -43,6 +43,7 @@
 const path = require('path');
 
 const gameCache = require('./game-cache');
+const { fetchOnce, responseFacade } = require('../core/http');
 // The P577 statement parser/picker is shared with the Steam franchise pass so
 // both WD readers agree on precision and on «earliest year» selection.
 const { parseWbDate, pickDate } = require('./franchise');
@@ -230,8 +231,8 @@ function writeCache(entries, extra = {}) {
 }
 
 function sparqlRequest(query, options = {}) {
-  const fetchImpl = options.fetchImpl || (typeof fetch === 'function' ? fetch : null);
-  if (!fetchImpl) {
+  const fetchImpl = options.fetchImpl;
+  if (!fetchImpl && typeof globalThis.fetch !== 'function') {
     return Promise.reject(
       new SecondaryIdentityError('fetch is not available', 'secondary_identity_unavailable')
     );
@@ -240,7 +241,8 @@ function sparqlRequest(query, options = {}) {
     options.timeoutMs == null
       ? DEFAULT_TIMEOUT_MS
       : Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS;
-  const init = {
+  return fetchOnce(options.endpoint || process.env.KINOBOXD_WDQS_ENDPOINT || WDQS, {
+    fetchImpl,
     method: 'POST',
     headers: {
       accept: 'application/sparql-results+json',
@@ -248,11 +250,9 @@ function sparqlRequest(query, options = {}) {
       'user-agent': USER_AGENT,
     },
     body: new URLSearchParams({ query, format: 'json' }).toString(),
-  };
-  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-    init.signal = AbortSignal.timeout(timeoutMs);
-  }
-  return fetchImpl(options.endpoint || process.env.KINOBOXD_WDQS_ENDPOINT || WDQS, init);
+    timeoutMs,
+    label: 'secondary-identity',
+  }).then(responseFacade);
 }
 
 function chunk(list, size) {

@@ -118,7 +118,15 @@ async function fetchOnce(url, options = {}) {
 
   let body;
   try {
-    body = await response.text();
+    if (typeof response.text === 'function') {
+      body = await response.text();
+    } else if (typeof response.json === 'function') {
+      // Test doubles in the tree expose `json()` only; normalise them here so
+      // the transport stays the single reader of a response.
+      body = JSON.stringify(await response.json());
+    } else {
+      body = '';
+    }
   } catch (err) {
     throw new HttpTransportError(
       `${label} could not read the response body (HTTP ${response.status})`,
@@ -462,6 +470,88 @@ function createHttpClient(defaults = {}) {
   };
 }
 
+/**
+ * One `fetch` request whose body is read as bytes (art relays, binary
+ * downloads). Returns `{ status, headers, buffer, url, response }`.
+ */
+async function fetchBinary(url, options = {}) {
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const label = options.label || 'provider';
+  if (typeof fetchImpl !== 'function') {
+    throw new HttpTransportError(`${label} fetch is not available`, 'provider_unavailable');
+  }
+  const headers = {
+    'user-agent': options.userAgent || DEFAULT_USER_AGENT,
+    ...(options.headers || {}),
+  };
+  const init = {
+    method: options.method || 'GET',
+    headers,
+    redirect: options.redirect === 'manual' ? 'manual' : 'follow',
+  };
+  if (options.body != null) init.body = options.body;
+  if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
+    init.signal = AbortSignal.timeout(options.timeoutMs || DEFAULT_TIMEOUT_MS);
+  }
+  let response;
+  try {
+    response = await fetchImpl(url, init);
+  } catch (err) {
+    throw new HttpTransportError(`${label} network error: ${err.message}`, 'provider_network_error', null, null, err);
+  }
+  let buffer;
+  try {
+    if (typeof response.arrayBuffer === 'function') {
+      buffer = Buffer.from(await response.arrayBuffer());
+    } else if (typeof response.text === 'function') {
+      buffer = Buffer.from(await response.text(), 'utf8');
+    } else {
+      buffer = Buffer.alloc(0);
+    }
+  } catch (err) {
+    throw new HttpTransportError(
+      `${label} could not read the response body (HTTP ${response.status})`,
+      'provider_bad_response',
+      response.status,
+      null,
+      err
+    );
+  }
+  const maxBytes = options.maxBytes == null ? null : Number(options.maxBytes);
+  if (maxBytes != null && buffer.length > maxBytes) {
+    throw new HttpTransportError(
+      `${label} response is larger than ${maxBytes} bytes`,
+      'response_too_large',
+      response.status
+    );
+  }
+  return {
+    status: Number(response.status) || 0,
+    headers: response.headers,
+    buffer,
+    url: response.url || url,
+    response,
+  };
+}
+
+/**
+ * Adapt a `fetchOnce` result to the small `Response` surface the legacy
+ * SPARQL clients pass to their callers (`ok`, `status`, `headers`,
+ * `text()`, `json()`). Used where a module owns its own retry loop but must
+ * stop opening sockets itself.
+ */
+function responseFacade(result) {
+  return {
+    ok: result.status >= 200 && result.status < 300,
+    status: result.status,
+    headers: result.headers,
+    url: result.url,
+    body: result.body,
+    text: async () => result.body,
+    json: async () => JSON.parse(result.body),
+  };
+}
+
 module.exports = {
   HttpTransportError,
   DEFAULT_TIMEOUT_MS,
@@ -476,7 +566,9 @@ module.exports = {
   fetchJson,
   fetchText,
   postJson,
+  fetchBinary,
   createHttpClient,
   defaultSleep,
   headerOf,
+  responseFacade,
 };

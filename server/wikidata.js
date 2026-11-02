@@ -43,19 +43,20 @@ const fs = require('fs');
 const path = require('path');
 
 const cache = require('./cache');
+const { fetchOnce, defaultSleep } = require('./core/http');
+const sources = require('./core/sources');
 
 const TAGS_PATH = path.join(cache.CACHE_DIR, 'wd-tags.json');
 const SPARQL_ENDPOINT = 'https://query.wikidata.org/sparql';
 const LABEL_ENDPOINT = 'https://www.wikidata.org/w/api.php';
-const USER_AGENT =
-  'kinoboxd/1.0 (https://github.com/hattivatt/kinoboxd); contact: github issue';
+const USER_AGENT = sources.userAgent('wdqs');
 
-const BATCH_SIZE = 450;
-const LABEL_BATCH_SIZE = 50;
-const MAX_ATTEMPTS = 8;
-const BASE_BACKOFF_MS = 2000;
-const MAX_BACKOFF_MS = 60000;
-const REQUEST_TIMEOUT_MS = 120000;
+const BATCH_SIZE = sources.SOURCES.wdqs.batchSize;
+const LABEL_BATCH_SIZE = sources.SOURCES.wikidataLabels.batchSize;
+const MAX_ATTEMPTS = sources.SOURCES.wdqs.maxAttempts;
+const BASE_BACKOFF_MS = sources.SOURCES.wdqs.baseBackoffMs;
+const MAX_BACKOFF_MS = sources.SOURCES.wdqs.maxBackoffMs;
+const REQUEST_TIMEOUT_MS = sources.SOURCES.wdqs.timeoutMs;
 
 const counters = {
   requests: 0,
@@ -363,7 +364,7 @@ function stats() {
 /* HTTP                                                                */
 /* ------------------------------------------------------------------ */
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = defaultSleep;
 
 function retryAfterMs(response) {
   const raw = response && response.headers ? response.headers.get('retry-after') : null;
@@ -394,7 +395,7 @@ async function querySparql(query, log = console.log) {
     counters.requests++;
     let response = null;
     try {
-      response = await fetch(SPARQL_ENDPOINT, {
+      response = await fetchOnce(SPARQL_ENDPOINT, {
         method: 'POST',
         headers: {
           'User-Agent': USER_AGENT,
@@ -402,7 +403,8 @@ async function querySparql(query, log = console.log) {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: new URLSearchParams({ query, format: 'json' }).toString(),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        label: 'wikidata',
       });
     } catch (err) {
       lastError = err;
@@ -417,8 +419,8 @@ async function querySparql(query, log = console.log) {
       continue;
     }
 
-    const text = await response.text();
-    if (response.ok) {
+    const text = response.body;
+    if (response.status >= 200 && response.status < 300) {
       try {
         return JSON.parse(text);
       } catch (err) {
@@ -624,12 +626,15 @@ async function fetchTypeLabels(typeIds, log = console.log) {
     for (let attempt = 1; attempt <= 3; attempt++) {
       counters.labelRequests++;
       try {
-        const response = await fetch(url, {
+        const response = await fetchOnce(url, {
           headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          timeoutMs: REQUEST_TIMEOUT_MS,
+          label: 'wikidata-labels',
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = await response.json();
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = JSON.parse(response.body);
         for (const [qid, entity] of Object.entries(payload.entities || {})) {
           const labels = (entity && entity.labels) || {};
           const label = (labels.en && labels.en.value) || (labels.ru && labels.ru.value);
