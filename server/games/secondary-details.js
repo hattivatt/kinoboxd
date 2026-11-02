@@ -133,6 +133,10 @@ const path = require('path');
 const { URL } = require('url');
 
 const gameCache = require('./game-cache');
+// One key sanitiser for every cache (`core/fs-store`); `game-cache.safeKey`
+// has always been an alias of this function.
+const { safeKey } = require('../core/fs-store');
+const { envMs } = require('../core/env');
 // The identity bridge (`links/secondary.json`) is the only source of a
 // Wikidata P577 year for a store slug; this module reads it, never WDQS.
 const secondaryIdentity = require('./secondary-identity');
@@ -230,11 +234,6 @@ function maskSecrets(value) {
 /* ------------------------------------------------------------------ */
 /* env / time helpers                                                  */
 /* ------------------------------------------------------------------ */
-
-function envMs(name, fallback) {
-  const raw = Number(process.env[name]);
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-}
 
 function envInt(name, fallback) {
   const raw = Number(process.env[name]);
@@ -1376,10 +1375,6 @@ function parseJson(body, status) {
 /* ------------------------------------------------------------------ */
 /* cache                                                               */
 /* ------------------------------------------------------------------ */
-
-function safeKey(value) {
-  return gameCache.safeKey(value);
-}
 
 function cachePath(source, id) {
   return path.join(CACHE_DIR, `${safeKey(source)}-${safeKey(id)}.json`);

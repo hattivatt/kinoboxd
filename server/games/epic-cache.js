@@ -28,6 +28,7 @@ const fs = require('fs');
 const path = require('path');
 
 const gameCache = require('./game-cache');
+const { envTtl } = require('../core/env');
 
 const CACHE_DIR = gameCache.GAMES_CACHE_DIR;
 const PROFILES_DIR = path.join(CACHE_DIR, 'profiles');
@@ -507,11 +508,6 @@ function saveEpicSlugOverride(catalogItemId, slug, extra = {}) {
 /* ------------------------------------------------------------------ */
 /* TTLs                                                                */
 /* ------------------------------------------------------------------ */
-
-function envTtl(name, fallback) {
-  const raw = Number(process.env[name]);
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-}
 
 function epicLibraryTtlMs() {
   return envTtl('GAMES_EPIC_LIBRARY_TTL_MS', LIBRARY_TTL_MS);

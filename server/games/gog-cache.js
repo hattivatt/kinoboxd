@@ -38,6 +38,7 @@ const fs = require('fs');
 const path = require('path');
 
 const gameCache = require('./game-cache');
+const { envMs } = require('../core/env');
 
 const CACHE_DIR = gameCache.GAMES_CACHE_DIR;
 const PROFILES_DIR = path.join(CACHE_DIR, 'profiles');
@@ -121,11 +122,6 @@ function playtimePath(userKey) {
 
 function debugPath(name) {
   return path.join(DEBUG_DIR, `${safeKey(name)}.json`);
-}
-
-function envMs(name, fallback) {
-  const raw = Number(process.env[name]);
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
 function libraryTtlMs() {

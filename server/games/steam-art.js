@@ -38,6 +38,7 @@ const fs = require('fs');
 const path = require('path');
 
 const gameCache = require('./game-cache');
+const { safeKey } = require('../core/fs-store');
 const { HttpError } = require('../upload');
 
 const ART_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'art');
@@ -83,10 +84,9 @@ const HASH_RE = /^[A-Za-z0-9]{1,64}$/;
 
 fs.mkdirSync(ART_DIR, { recursive: true });
 
-function safeKey(value) {
-  return String(value == null ? '' : value).replace(/[^a-zA-Z0-9._-]/g, '_');
-}
-
+// One key sanitiser for every cache (`core/fs-store`); art keys are built from
+// already-validated `type`/`appid`/`hash` tokens, so the shared rules (trim,
+// `[^\w.-]` -> `_`, 120-char cap) never change an existing file name here.
 function artCacheKey(type, appid, hash) {
   return safeKey(`${type}-${appid}${hash ? `-${hash}` : ''}`);
 }
