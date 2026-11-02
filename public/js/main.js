@@ -1692,6 +1692,20 @@ function bindUi() {
   initBooks({ onActivate: () => showView('books') });
   initGames({ onActivate: () => showView('games') });
 
+  // Films: the Letterboxd archive is a connection of the current profile,
+  // so it lives on its own screen instead of the topbar.
+  const filmsConnections = document.getElementById('films-connections-btn');
+  if (filmsConnections) {
+    filmsConnections.addEventListener('click', () => {
+      closeAllModals();
+      showView('films-connections');
+    });
+  }
+  const filmsConnectionsBack = document.getElementById('films-connections-back');
+  if (filmsConnectionsBack) {
+    filmsConnectionsBack.addEventListener('click', () => showView('dashboard'));
+  }
+
   document.addEventListener('click', (event) => {
     const button = event.target.closest('.tab-btn[data-tab]');
     if (!button) return;

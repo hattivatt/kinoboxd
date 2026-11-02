@@ -230,11 +230,11 @@
               </svg>
               <span>Заменить выгрузку</span>
             </button>
-            <button type="button" class="btn btn-ghost attach-lb" id="attach-lb" hidden title="Прикрепить ZIP-архив Letterboxd к профилю Кинопоиска" aria-label="Прикрепить Letterboxd-архив">
+            <button type="button" class="btn btn-ghost" id="films-connections-btn" title="Подключения: архив Letterboxd" aria-label="Подключения">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+                <path d="M9 15l6-6"/><path d="M11 6l1-1a4 4 0 0 1 6 6l-1 1"/><path d="M13 18l-1 1a4 4 0 0 1-6-6l1-1"/>
               </svg>
-              <span id="attach-lb-label">Прикрепить Letterboxd</span>
+              <span>Подключения</span>
             </button>
             <button type="button" class="btn btn-ghost profile-refresh" id="profile-refresh" hidden title="Проверить новые оценки на Кинопоиске" aria-label="Обновить профиль Кинопоиска">
               <span class="spinner spinner-sm profile-refresh-spinner" id="profile-refresh-spinner" hidden aria-hidden="true"></span>
@@ -329,6 +329,44 @@
       </div>
     </header>
 
+    <!-- Films: the archive enriches the CURRENT KinoPoisk profile. It is a
+         connection of that profile, not a profile of its own. -->
+    <section class="view" data-view="films-connections" hidden>
+      <header class="topbar">
+        <div class="topbar-inner">
+          <button type="button" class="btn btn-ghost" id="films-connections-back">← к статистике фильмов</button>
+          <div class="topbar-actions">
+            <span class="kicker">подключения</span>
+          </div>
+        </div>
+      </header>
+      <div class="dash books-dash">
+        <div class="dash-hero books-import-hero">
+          <div class="kicker dash-kicker">подключения</div>
+          <h1>Архив Letterboxd</h1>
+          <p class="dash-sub">Архив обогащает текущий профиль Кинопоиска: реальные даты просмотра из дневника, пересмотры и watchlist. Отдельного профиля он не создаёт.</p>
+        </div>
+        <div class="games-import-grid games-connections-grid">
+          <article class="book-source-card" data-source="letterboxd">
+            <div class="book-source-head">
+              <span class="book-source-logo" aria-hidden="true">LB</span>
+              <span class="book-source-copy">
+                <span class="book-source-title">Letterboxd</span>
+                <span class="book-source-hint">архив к текущему профилю · даты и пересмотры</span>
+              </span>
+            </div>
+            <p class="games-gog-status" id="films-attach-status">архив не прикреплён</p>
+<button type="button" class="btn btn-ghost attach-lb" id="attach-lb" hidden title="Прикрепить ZIP-архив Letterboxd к профилю Кинопоиска" aria-label="Прикрепить Letterboxd-архив">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+              </svg>
+              <span id="attach-lb-label">Прикрепить Letterboxd</span>
+            </button>
+            <p class="book-source-note">ZIP из Letterboxd → Settings → Data. Даты из <code>diary.csv</code> заменят прокси-даты оценок Кинопоиска, пересмотры попадут в статистику, watchlist сохранится на сервере.</p>
+          </article>
+        </div>
+      </div>
+    </section>
     <section class="view" data-view="dashboard" hidden>
       
 
