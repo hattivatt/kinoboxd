@@ -367,9 +367,12 @@ test('an unbound single token is adopted by the owner and the catalog is asked',
 
   const catalog = fakeCatalog({}, catalogItemId);
   const cms = unexpectedCms('unbound adoption');
+  // `/stats` reports the union built without the Epic layer (the binding is
+  // missing), so its meta can look «covered». The adoptable token itself must
+  // still produce a kick — otherwise the self-heal is unreachable.
   details.kickFromStats(
     owner,
-    { resolved: 0, total: 1, partial: 1, noSlug: 0 },
+    { resolved: 1, total: 1, partial: 0, noSlug: 0 },
     { client: cms, epicClient: catalog, tokenStore, pauseMs: 0 }
   );
   await waitForJob(owner);

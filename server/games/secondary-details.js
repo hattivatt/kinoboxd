@@ -3140,7 +3140,24 @@ function kickFromStats(ownerKey, meta, options = {}) {
   if (String(process.env.GAMES_SECONDARY_LAZY_KICK || '').trim() === '0') {
     return { skipped: 'disabled' };
   }
-  if (!coverageNeedsKick(meta)) return { skipped: 'covered' };
+  // An adoptable token (exactly one unbound/old-format token) is not visible to
+  // the Epic read layer yet, so `/stats` may report no Epic works at all. The
+  // binding must still reach the job that adopts it — otherwise the self-heal
+  // would only ever run from an import kick.
+  const bindingForKick = (() => {
+    try {
+      const epicCache = require('./epic-cache');
+      return typeof epicCache.epicBindingForOwnerSync === 'function'
+        ? epicCache.epicBindingForOwnerSync(key)
+        : null;
+    } catch (err) {
+      return null;
+    }
+  })();
+  const adoptableBinding =
+    bindingForKick &&
+    (bindingForKick.state === 'unbound' || bindingForKick.state === 'profile_missing');
+  if (!coverageNeedsKick(meta) && !adoptableBinding) return { skipped: 'covered' };
   // Refine with the cache: a product whose slug 404'd (or whose title probe
   // already failed) is *attempted*, not pending. Without this a no-op job would
   // start every cooldown window for a work that cannot be resolved. A negative
