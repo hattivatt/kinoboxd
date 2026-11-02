@@ -15,7 +15,7 @@ for access»). Это и есть прод-симптом «400 на
 `account-public-service-prod03` и `…-prod` резолвятся в один и тот же
 weighted-сервис — дрейф хоста тут ни при чём.
 
-Источник фактов — `ИГРЫ-АРХИТЕКТУРА.md` §14 (research 01.11.2026) +
+Источник фактов — `АРХИТЕКТУРА.md` §7 (research 01.11.2026) +
 EpicResearch (device_code.md, auth_clients.md) и Legendary/Heroic:
 `library/api/public/items` (cursor), `playtime/account/{id}/all`
 (**секунды**, без `lastPlayed`), catalog bulk (нужен токен), публичный
