@@ -78,7 +78,8 @@ const PHASE_SPECS = {
     fresh: (doc, ttlMs) => store.detailsFresh(doc, ttlMs),
     save: (appid, doc) => gameCache.saveDetails(appid, doc),
     ttlMs: () => gameCache.detailsTtlMs(),
-    budgetEnv: 'GAMES_STORE_BUDGET',
+    sourceId: 'steamStore',
+    budgetEnv: sources.SOURCES.steamStore.budgetEnv,
     recheckEnv: 'GAMES_STORE_RECHECK_DAYS',
     defaultRecheckDays: DEFAULT_RECHECK_DAYS,
     readState: () => gameCache.readEnrichState(),
@@ -104,7 +105,8 @@ const PHASE_SPECS = {
     fresh: (doc, ttlMs) => spy.spyFresh(doc, ttlMs),
     save: (appid, doc) => gameCache.saveSpy(appid, doc),
     ttlMs: () => gameCache.spyTtlMs(),
-    budgetEnv: 'GAMES_SPY_BUDGET',
+    sourceId: 'steamSpy',
+    budgetEnv: sources.SOURCES.steamSpy.budgetEnv,
     recheckEnv: 'GAMES_SPY_RECHECK_DAYS',
     defaultRecheckDays: DEFAULT_PHASE_RECHECK_DAYS,
     readState: () => gameCache.readSpyState(),
@@ -121,7 +123,8 @@ const PHASE_SPECS = {
     fresh: (doc, ttlMs) => store.reviewsFresh(doc, ttlMs),
     save: (appid, doc) => gameCache.saveReviews(appid, doc),
     ttlMs: () => gameCache.reviewsTtlMs(),
-    budgetEnv: 'GAMES_REVIEWS_BUDGET',
+    sourceId: 'steamReviews',
+    budgetEnv: sources.SOURCES.steamReviews.budgetEnv,
     recheckEnv: 'GAMES_REVIEWS_RECHECK_DAYS',
     defaultRecheckDays: DEFAULT_PHASE_RECHECK_DAYS,
     readState: () => gameCache.readReviewsState(),
@@ -167,7 +170,8 @@ function findRunningJob(profileKey) {
 
 function budgetLimitFromEnv(phaseName) {
   const spec = PHASE_SPECS[phaseName] || PHASE_SPECS.details;
-  return budgetLimitFromEnvImpl(spec.budgetEnv, DEFAULT_BUDGET);
+  const fallback = sources.SOURCES[spec.sourceId].budgetDefault;
+  return budgetLimitFromEnvImpl(spec.budgetEnv, fallback);
 }
 
 function recheckDaysFromEnv(phaseName) {
