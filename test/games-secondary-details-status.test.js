@@ -247,6 +247,11 @@ test('secondary details status + lazy kick', async (t) => {
       retryablePartial: 0,
       missingSlug: 1,
       pending: 2,
+      // Diagnostics added by the 02.11.2026 silent-skip fix: the profile is
+      // bound to the account, but no token file exists (hasAccessToken false),
+      // and no catalog step has skipped yet.
+      lastSkip: null,
+      binding: { state: 'bound', accountId: EPIC_ACCOUNT, hasAccessToken: false },
     });
     assert.equal(body.bySource.gog.total, 0);
     // Alan Wake 2 cannot be addressed by slug; its catalog title is reported.

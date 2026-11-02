@@ -648,6 +648,8 @@ test('kick targets come from the cached libraries', async (t) => {
       gog: [],
       epic: [],
       epicNoSlug: 0,
+      // Added by the binding self-heal: «no book» is stated as a state.
+      epicBinding: { state: 'none', accountId: null, hasAccessToken: false },
     });
   });
 
