@@ -232,9 +232,23 @@ function writeEntry(key, fetched) {
     bytes: fetched.buffer.length,
     fetchedAt: new Date().toISOString(),
   });
-  const tmp = `${binPath(key)}.${process.pid}.tmp`;
+  // A unique temp name: two concurrent misses for the same key must not
+  // rename each other's file away.
+  const tmp = `${binPath(key)}.${process.pid}.${Date.now()}.${Math.random()
+    .toString(36)
+    .slice(2, 8)}.tmp`;
   fs.writeFileSync(tmp, fetched.buffer);
   fs.renameSync(tmp, binPath(key));
+}
+
+/** Slide the LRU clock of a served entry (the meta mtime is the key order). */
+function touchEntry(key) {
+  try {
+    const now = new Date();
+    fs.utimesSync(metaPath(key), now, now);
+  } catch (err) {
+    /* a read-only cache must not break the relay */
+  }
 }
 
 function contentTypeFor(url, headerValue) {
@@ -385,6 +399,7 @@ function createSteamArtHandler(options = {}) {
       const key = artCacheKey(type, appid, hash);
       const cached = readEntry(key);
       if (cached && cached.fresh) {
+        touchEntry(key);
         sendEntry(res, cached, 'hit');
         return;
       }
