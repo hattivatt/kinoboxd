@@ -43,6 +43,7 @@
 
 const cheerio = require('cheerio');
 
+const { fetchOnce, defaultSleep } = require('../core/http');
 const { parseCookieHeader } = require('./cookie-header');
 
 const LIVELIB_ORIGIN = 'https://www.livelib.ru';
@@ -95,7 +96,7 @@ class LivelibError extends Error {
   }
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = defaultSleep;
 
 function randomDelay() {
   return MIN_DELAY_MS + Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS + 1));
@@ -219,22 +220,19 @@ async function request(url, options = {}, label = url) {
     let currentUrl = url;
     try {
       for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-        response = await fetchImpl(currentUrl, {
+        response = await fetchOnce(currentUrl, {
+          fetchImpl,
           method,
           headers: withCookies(options.headers, jar),
           body: options.body,
           redirect: 'manual',
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          timeoutMs: REQUEST_TIMEOUT_MS,
+          label: `livelib ${label}`,
         });
         storeCookies(jar, response);
         const location = headerValue(response.headers, 'location');
         if (followRedirects && response.status >= 300 && response.status < 400 && location) {
           currentUrl = new URL(location, currentUrl).toString();
-          try {
-            await response.text();
-          } catch (err) {
-            // A 3xx body is irrelevant; ignoring it must not break the hop.
-          }
           continue;
         }
         break;
@@ -266,12 +264,11 @@ async function request(url, options = {}, label = url) {
         'livelib_http_error'
       );
     }
-    const text = await response.text();
     return {
       status: response.status,
       url: response.url || currentUrl,
       headers: response.headers,
-      text,
+      text: response.body,
     };
   }
   throw lastError;
@@ -316,7 +313,7 @@ function pageTitleOf(html) {
  * cookie values never leave this module.
  */
 async function bootstrapSession(username, options = {}) {
-  const fetchImpl = options.fetchImpl || fetch;
+  const fetchImpl = options.fetchImpl;
   const jar = options.jar || makeJar(options.cookieHeader);
   const url = `${LIVELIB_ORIGIN}/reader/${encodeURIComponent(username)}/read`;
   const hops = [];
@@ -340,11 +337,13 @@ async function bootstrapSession(username, options = {}) {
   }
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    response = await fetchImpl(currentUrl, {
+    response = await fetchOnce(currentUrl, {
+      fetchImpl,
       method: 'GET',
       headers: withCookies(BROWSER_HEADERS, jar),
       redirect: 'manual',
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      label: 'livelib bootstrap',
     });
     storeCookies(jar, response);
     status = response.status;
@@ -355,11 +354,7 @@ async function bootstrapSession(username, options = {}) {
       currentUrl = new URL(location, currentUrl).toString();
       continue;
     }
-    try {
-      html = await response.text();
-    } catch (err) {
-      html = '';
-    }
+    html = response.body == null ? '' : String(response.body);
     break;
   }
 

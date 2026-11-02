@@ -13,6 +13,7 @@ const {
   DEFAULT_TIMEOUT_MS,
   fetchJson,
   parseRetryAfter,
+  defaultSleep,
 } = require('../../core/http');
 
 module.exports = {
@@ -20,4 +21,5 @@ module.exports = {
   DEFAULT_TIMEOUT_MS,
   fetchJson,
   parseRetryAfter,
+  defaultSleep,
 };

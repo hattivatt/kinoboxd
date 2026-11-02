@@ -16,45 +16,38 @@
 const cheerio = require('cheerio');
 
 const livelib = require('../livelib');
+const { createBudget: createBudgetImpl, budgetFromEnv: budgetFromEnvOf } = require('../../core/budget');
+const { createBreaker } = require('../../core/breaker');
+const { defaultSleep } = require('../../core/http');
+const sources = require('../../core/sources');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { cleanText, normalizeIsbn, isbn10Of } = require('../normalize');
 
 const NAME = 'livelib-card';
-const DEFAULT_PAUSE_MS = 2000;
-const DEFAULT_BUDGET = 300;
-const BLOCK_BREAKER_MS = 30 * 60 * 1000;
+const DEFAULT_PAUSE_MS = sources.pauseMs('livelib');
+const DEFAULT_BUDGET = sources.budgetLimit('livelib');
+const BLOCK_BREAKER_MS = sources.breakerMs('livelib');
 
-let blockedUntil = 0;
-
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const breaker = createBreaker({ cooldownMs: BLOCK_BREAKER_MS });
 
 function isBreakerOpen(now = Date.now()) {
-  return now < blockedUntil;
+  return breaker.isOpen(NAME, now);
+}
+
+function tripBreaker(ms = BLOCK_BREAKER_MS) {
+  breaker.trip(NAME, { untilMs: ms });
 }
 
 function resetBreaker() {
-  blockedUntil = 0;
+  breaker.reset(NAME);
 }
 
 function createBudget(limit) {
-  const parsed = Number(limit);
-  const max = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_BUDGET;
-  return {
-    limit: max,
-    used: 0,
-    get remaining() {
-      return Math.max(max - this.used, 0);
-    },
-    take() {
-      if (this.used >= max) return false;
-      this.used++;
-      return true;
-    },
-  };
+  return createBudgetImpl(limit, DEFAULT_BUDGET);
 }
 
 function budgetFromEnv() {
-  return createBudget(process.env.BOOKS_LIVELIB_CARD_BUDGET);
+  return budgetFromEnvOf('BOOKS_LIVELIB_CARD_BUDGET', DEFAULT_BUDGET);
 }
 
 function readDetailRows($) {
@@ -204,7 +197,7 @@ async function getWork(input = {}, options = {}) {
     // DDoS-Guard answers 403 the same way as a real rate limit: stop the whole
     // run instead of retrying 900+ cards against a blocked IP.
     if (err && (err.code === 'livelib_blocked' || err.code === 'livelib_http_error')) {
-      blockedUntil = Date.now() + BLOCK_BREAKER_MS;
+      tripBreaker();
     }
     throw err;
   }

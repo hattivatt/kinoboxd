@@ -14,7 +14,10 @@
  * include response bodies, only masked query/status/counters.
  */
 
-const { fetchJson } = require('./http');
+const { fetchJson, defaultSleep } = require('./http');
+const { createBudget: createBudgetImpl, budgetFromEnv: budgetFromEnvOf } = require('../../core/budget');
+const { createBreaker } = require('../../core/breaker');
+const sources = require('../../core/sources');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
 const { normalizeIsbn, isbn10Of } = require('../normalize');
@@ -22,10 +25,10 @@ const { normalizeIsbn, isbn10Of } = require('../normalize');
 const NAME = 'litres';
 const ORIGIN = 'https://www.litres.ru';
 const API_BASE = 'https://api.litres.ru/foundation/api';
-const DEFAULT_BUDGET = 200;
-const DEFAULT_PAUSE_MS = 2000;
-const BLOCK_BREAKER_MS = 30 * 60 * 1000;
-const REQUEST_TIMEOUT_MS = 15000;
+const DEFAULT_BUDGET = sources.budgetLimit(NAME);
+const DEFAULT_PAUSE_MS = sources.pauseMs(NAME);
+const BLOCK_BREAKER_MS = sources.breakerMs(NAME);
+const REQUEST_TIMEOUT_MS = sources.timeoutMs(NAME);
 const SEARCH_LIMIT = 5;
 const SEARCH_TYPES = ['text_book', 'audiobook'];
 
@@ -36,41 +39,26 @@ const HEADERS = {
   'ui-language-code': 'ru',
 };
 
-let blockedUntil = 0;
-
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const breaker = createBreaker({ cooldownMs: BLOCK_BREAKER_MS });
 
 function isBreakerOpen(now = Date.now()) {
-  return now < blockedUntil;
+  return breaker.isOpen(NAME, now);
 }
 
 function tripBreaker(ms = BLOCK_BREAKER_MS) {
-  blockedUntil = Date.now() + ms;
+  breaker.trip(NAME, { untilMs: ms });
 }
 
 function resetBreaker() {
-  blockedUntil = 0;
+  breaker.reset(NAME);
 }
 
 function createBudget(limit) {
-  const parsed = Number(limit);
-  const max = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_BUDGET;
-  return {
-    limit: max,
-    used: 0,
-    get remaining() {
-      return Math.max(max - this.used, 0);
-    },
-    take() {
-      if (this.used >= max) return false;
-      this.used++;
-      return true;
-    },
-  };
+  return createBudgetImpl(limit, DEFAULT_BUDGET);
 }
 
 function budgetFromEnv() {
-  return createBudget(process.env.BOOKS_LITRES_BUDGET);
+  return budgetFromEnvOf('BOOKS_LITRES_BUDGET', DEFAULT_BUDGET);
 }
 
 /* ------------------------------------------------------------------ */

@@ -32,7 +32,10 @@
  * cover, infoLink -> links.pageUrl.
  */
 
-const { fetchJson } = require('./http');
+const { fetchJson, defaultSleep } = require('./http');
+const { createBudget: createBudgetImpl, budgetFromEnv: budgetFromEnvOf } = require('../../core/budget');
+const { createBreaker } = require('../../core/breaker');
+const sources = require('../../core/sources');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
 const { normalizeIsbn, isbn10Of, normalizeTitle, surnameOf } = require('../normalize');
@@ -40,47 +43,32 @@ const config = require('../../config');
 
 const NAME = 'googlebooks';
 const API_URL = 'https://www.googleapis.com/books/v1/volumes';
-const BREAKER_MS = 30 * 60 * 1000;
-const DEFAULT_REQUEST_DELAY_MS = 400;
-const DEFAULT_BUDGET = 300;
+const BREAKER_MS = sources.breakerMs(NAME);
+const DEFAULT_REQUEST_DELAY_MS = sources.pauseMs(NAME);
+const DEFAULT_BUDGET = sources.budgetLimit(NAME);
 const YEAR_MIN = -3000;
 const YEAR_MAX = 2100;
 
-let breakerUntil = 0;
-
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const breaker = createBreaker({ cooldownMs: BREAKER_MS });
 
 function isBreakerOpen(now = Date.now()) {
-  return now < breakerUntil;
+  return breaker.isOpen(NAME, now);
 }
 
 function tripBreaker(ms = BREAKER_MS) {
-  breakerUntil = Date.now() + ms;
+  breaker.trip(NAME, { untilMs: ms });
 }
 
 function resetBreaker() {
-  breakerUntil = 0;
+  breaker.reset(NAME);
 }
 
 function createBudget(limit) {
-  const parsed = Number(limit);
-  const max = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_BUDGET;
-  return {
-    limit: max,
-    used: 0,
-    get remaining() {
-      return Math.max(max - this.used, 0);
-    },
-    take() {
-      if (this.used >= max) return false;
-      this.used++;
-      return true;
-    },
-  };
+  return createBudgetImpl(limit, DEFAULT_BUDGET);
 }
 
 function budgetFromEnv() {
-  return createBudget(process.env.BOOKS_GB_BUDGET);
+  return budgetFromEnvOf('BOOKS_GB_BUDGET', DEFAULT_BUDGET);
 }
 
 /**

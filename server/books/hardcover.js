@@ -32,15 +32,17 @@
 
 const config = require('../config');
 const bookCache = require('./book-cache');
+const { fetchOnce, defaultSleep } = require('../core/http');
+const sources = require('../core/sources');
 const { collectMangaTexts } = require('./providers/manga');
 
 const HARDCOVER_URL = 'https://api.hardcover.app/v1/graphql';
 
-const DEFAULT_TIMEOUT_MS = 30000;
-const MAX_PER_MINUTE = 55;
-const WINDOW_MS = 60000;
-const MIN_INTERVAL_MS = 1100;
-const MAX_TRANSPORT_ATTEMPTS = 3;
+const DEFAULT_TIMEOUT_MS = sources.timeoutMs('hardcover');
+const MAX_PER_MINUTE = sources.SOURCES.hardcover.maxPerMinute;
+const WINDOW_MS = sources.SOURCES.hardcover.windowMs;
+const MIN_INTERVAL_MS = sources.SOURCES.hardcover.minIntervalMs;
+const MAX_TRANSPORT_ATTEMPTS = sources.SOURCES.hardcover.maxTransportAttempts;
 
 const GENRE_TAG_CATEGORY_ID = 1; // Hardcover "Genre" tag category (confirmed live)
 
@@ -71,7 +73,7 @@ function maskToken(token) {
 /* Local rate gate                                                     */
 /* ------------------------------------------------------------------ */
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = defaultSleep;
 
 class RateGate {
   constructor(options = {}) {
@@ -171,7 +173,7 @@ async function graphql(query, variables, options = {}) {
     await gate.acquire();
     let response;
     try {
-      response = await fetch(HARDCOVER_URL, {
+      response = await fetchOnce(HARDCOVER_URL, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -179,7 +181,8 @@ async function graphql(query, variables, options = {}) {
           authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ query, variables: variables || {} }),
-        signal: AbortSignal.timeout(options.timeoutMs || DEFAULT_TIMEOUT_MS),
+        timeoutMs: options.timeoutMs || DEFAULT_TIMEOUT_MS,
+        label: `hardcover ${label}`,
       });
     } catch (err) {
       lastError = err;
@@ -216,7 +219,7 @@ async function graphql(query, variables, options = {}) {
 
     let body;
     try {
-      body = await response.json();
+      body = JSON.parse(response.body);
     } catch (err) {
       lastError = new HardcoverError(
         `Hardcover вернул не-JSON ответ (${label}, HTTP ${response.status}).`,
@@ -226,7 +229,8 @@ async function graphql(query, variables, options = {}) {
       continue;
     }
 
-    if (!response.ok) {
+    const ok = response.status >= 200 && response.status < 300;
+    if (!ok) {
       const message =
         body && body.error ? String(body.error) : `HTTP ${response.status}`;
       throw new HardcoverError(`Hardcover: ${message} (${label})`, 'hardcover_http_error');
