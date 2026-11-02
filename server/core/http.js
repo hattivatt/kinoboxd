@@ -77,6 +77,14 @@ function backoffFor(attempt) {
   return BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
 }
 
+/** Default UA only when the caller did not supply one under any casing. */
+function withUserAgent(headers, userAgent) {
+  const out = { ...(headers || {}) };
+  const has = Object.keys(out).some((name) => name.toLowerCase() === 'user-agent');
+  if (!has) out['user-agent'] = userAgent || DEFAULT_USER_AGENT;
+  return out;
+}
+
 function byteLength(text) {
   return Buffer.byteLength(String(text == null ? '' : text), 'utf8');
 }
@@ -95,10 +103,7 @@ async function fetchOnce(url, options = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new HttpTransportError(`${label} fetch is not available`, 'provider_unavailable');
   }
-  const headers = {
-    'user-agent': options.userAgent || DEFAULT_USER_AGENT,
-    ...(options.headers || {}),
-  };
+  const headers = withUserAgent(options.headers, options.userAgent);
   const init = {
     method: options.method || 'GET',
     headers,
@@ -180,12 +185,14 @@ function nodeRequest(target, options = {}) {
       return;
     }
     const lib = parsed.protocol === 'http:' ? http : https;
-    const headers = {
-      'User-Agent': DEFAULT_USER_AGENT,
-      Accept: 'application/json, text/xml, application/xml, */*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      ...(options.headers || {}),
-    };
+    const headers = withUserAgent(
+      {
+        Accept: 'application/json, text/xml, application/xml, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        ...(options.headers || {}),
+      },
+      options.userAgent
+    );
     const requestOptions = { method, headers };
     if (options.lookup) requestOptions.lookup = options.lookup;
     if (timeoutMs) requestOptions.timeout = timeoutMs;
@@ -272,11 +279,13 @@ async function fetchJson(url, options = {}) {
   const sleep = options.sleep || defaultSleep;
   const retries = Number.isInteger(options.retries) ? options.retries : DEFAULT_RETRIES;
   const label = options.label || 'provider';
-  const headers = {
-    accept: 'application/json',
-    'user-agent': options.userAgent || DEFAULT_USER_AGENT,
-    ...(options.headers || {}),
-  };
+  const headers = withUserAgent(
+    {
+      accept: 'application/json',
+      ...(options.headers || {}),
+    },
+    options.userAgent
+  );
   let lastError = null;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -339,11 +348,13 @@ async function fetchText(url, options = {}) {
   const sleep = options.sleep || defaultSleep;
   const retries = Number.isInteger(options.retries) ? options.retries : DEFAULT_RETRIES;
   const label = options.label || 'provider';
-  const headers = {
-    accept: options.accept || 'text/html, application/xml, text/xml, */*',
-    'user-agent': options.userAgent || DEFAULT_USER_AGENT,
-    ...(options.headers || {}),
-  };
+  const headers = withUserAgent(
+    {
+      accept: options.accept || 'text/html, application/xml, text/xml, */*',
+      ...(options.headers || {}),
+    },
+    options.userAgent
+  );
   let lastError = null;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -394,12 +405,14 @@ async function postJson(url, payload, options = {}) {
   const retries = Number.isInteger(options.retries) ? options.retries : DEFAULT_RETRIES;
   const label = options.label || 'provider';
   const body = typeof payload === 'string' ? payload : JSON.stringify(payload == null ? {} : payload);
-  const headers = {
-    accept: 'application/json',
-    'content-type': 'application/json',
-    'user-agent': options.userAgent || DEFAULT_USER_AGENT,
-    ...(options.headers || {}),
-  };
+  const headers = withUserAgent(
+    {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...(options.headers || {}),
+    },
+    options.userAgent
+  );
   let lastError = null;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -480,10 +493,7 @@ async function fetchBinary(url, options = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new HttpTransportError(`${label} fetch is not available`, 'provider_unavailable');
   }
-  const headers = {
-    'user-agent': options.userAgent || DEFAULT_USER_AGENT,
-    ...(options.headers || {}),
-  };
+  const headers = withUserAgent(options.headers, options.userAgent);
   const init = {
     method: options.method || 'GET',
     headers,
