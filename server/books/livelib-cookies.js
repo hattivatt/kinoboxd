@@ -31,6 +31,7 @@ const fsp = fs.promises;
 const path = require('path');
 
 const bookCache = require('./book-cache');
+const fsStore = require('../core/fs-store');
 const {
   MAX_HEADER_LENGTH,
   CookieError,
@@ -111,14 +112,9 @@ async function saveCookies(source, userKey, rawHeader, options = {}) {
   };
   const filePath = cookiePath(source, key);
   await ensureDir();
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  // mode is applied at open() time, so the secret never exists world-readable
-  // even for a moment; chmod again in case of an odd umask.
-  await fsp.writeFile(tmp, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
-  await fsp.chmod(tmp, 0o600);
-  await fsp.rename(tmp, filePath);
-  await fsp.chmod(filePath, 0o600).catch(() => {});
-  const fingerprint = bookCache.fingerprintOf(filePath);
+  // 0600 file in a 0700 directory, tmp created with the final mode so the
+  // secret is never world-readable: `core/fs-store.writeSecretAtomicSync`.
+  const fingerprint = fsStore.writeSecretAtomicSync(filePath, data);
   memory.set(memoryKey(source, key), { data, path: filePath, fingerprint });
   return {
     present: true,

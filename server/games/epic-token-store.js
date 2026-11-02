@@ -6,9 +6,8 @@
  * `cache-games/tokens/epic-<accountId>.json`, directory `0700`, file `0600`.
  * The token is **equivalent to a password** (ИГРЫ-АРХИТЕКТУРА §14.5): a
  * refresh token / device-auth secret grants access to the account, not just to
- * the library. Therefore this module deliberately does NOT use the generic
- * `game-cache.writeJsonAtomic` (which creates a temp file with the process
- * umask and only then renames it):
+ * the library. The atomic 0600 write itself lives in `core/fs-store.js`
+ * (`writeSecretAtomicSync`, one implementation for every secret cache):
  *
  *   - the temp file is created with `O_CREAT|O_EXCL|O_NOFOLLOW` and mode 0600,
  *     so there is no window where the secret is world-readable (TOCTOU);
@@ -18,6 +17,10 @@
  *     next read (and the repair is logged without the value);
  *   - a symlink at the token path is never read (lstat + regular-file check).
  *
+ * This module still owns the Epic-specific guards: the account-id gate, the
+ * `tokens/` directory check (a symlinked leaf is refused) and the stable
+ * `epic_token_store_error` without a token value in the message.
+ *
  * The value of a token is never logged, never returned from a public view and
  * never put into an error message. `redactTokens()` is the only shape allowed
  * outside this module (routes/status/UI).
@@ -26,9 +29,9 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
-const crypto = require('crypto');
 
 const gameCache = require('./game-cache');
+const fsStore = require('../core/fs-store');
 
 const ACCOUNT_RE = /^[A-Za-z0-9._-]{1,80}$/;
 
@@ -81,51 +84,17 @@ function ensureTokensDirSync() {
 /**
  * Atomic secret write. Never throws with a token value in the message; the
  * caller gets a stable `epic_token_store_error`.
+ *
+ * The 0600 file / 0700 directory mechanics are `core/fs-store`
+ * (`writeSecretAtomicSync`); this wrapper only adds the Epic directory guard
+ * and the stable error code. `ensureTokensDir()` stays async because its
+ * symlink refusal runs before the write.
  */
 async function writeSecretAtomic(filePath, data) {
   await ensureTokensDir();
-  const dir = path.dirname(filePath);
-  const tmp = path.join(
-    dir,
-    `.${path.basename(filePath)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`
-  );
-  let handle = null;
   try {
-    handle = await fsp.open(
-      tmp,
-      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
-      TOKEN_MODE
-    );
-    await handle.writeFile(JSON.stringify(data), 'utf8');
-    await handle.sync();
-    await handle.close();
-    handle = null;
-    // `rename` replaces a symlink entry instead of following it, so a planted
-    // symlink cannot redirect the secret into an arbitrary file.
-    await fsp.rename(tmp, filePath);
-    await fsp.chmod(filePath, TOKEN_MODE);
-    const stat = await fsp.lstat(filePath);
-    if (stat.isSymbolicLink() || !stat.isFile()) {
-      throw new Error('not a regular file after rename');
-    }
-    if ((stat.mode & 0o077) !== 0) {
-      await fsp.chmod(filePath, TOKEN_MODE);
-      const repaired = await fsp.lstat(filePath);
-      if ((repaired.mode & 0o077) !== 0) throw new Error('mode is still not 0600');
-    }
+    fsStore.writeSecretAtomicSync(filePath, data);
   } catch (err) {
-    if (handle) {
-      try {
-        await handle.close();
-      } catch (_) {
-        /* best-effort */
-      }
-    }
-    try {
-      await fsp.unlink(tmp);
-    } catch (_) {
-      /* best-effort */
-    }
     throw Object.assign(new Error('Не удалось сохранить Epic-токен (0600).'), {
       code: 'epic_token_store_error',
       cause: err && err.code ? err.code : undefined,
