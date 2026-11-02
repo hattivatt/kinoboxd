@@ -17,6 +17,10 @@
  *        minHours: -1 = all games (0-hour backlog), 0 = played only (default), N>=1 = N+ hours
  *   GET  /api/games/achievements?profile=…&appid=…&refresh=0|1
  *   GET  /api/games/game/:appid?profile=…
+ *   GET  /api/games/steam-art/<type>/<appid>[?h=<hash>]
+ *        type: header|capsule|library|small_capsule|icon
+ *        The Steam CDN proxy for the owner's ISP-blocked client; the upstream
+ *        URL is assembled server-side (allowlisted hosts only).
  *
  * Query contract is strict: an unknown parameter is a 400
  * `unexpected_parameter`, never a silent ignore (same rule as books).
@@ -38,6 +42,7 @@ const personnelJobs = require('./personnel/jobs');
 const franchiseJobs = require('./franchise-jobs');
 const franchise = require('./franchise');
 const secondaryDetails = require('./secondary-details');
+const steamArt = require('./steam-art');
 const { personnelForGame } = require('./personnel/personnel');
 const {
   buildGamesStatsFromCache,
@@ -204,6 +209,9 @@ function createRouter(deps = {}) {
   const importer = deps.importer || importJobs;
   const storeClient = deps.storeClient || null;
   const router = express.Router();
+  const artHandler = steamArt.createSteamArtHandler({
+    fetch: deps.steamArtFetch || deps.fetch,
+  });
 
   /* ------------------------- profiles ------------------------- */
 
@@ -639,6 +647,22 @@ function createRouter(deps = {}) {
   });
 
   /* ------------------------ game card ------------------------- */
+
+  // Steam art CDN proxy (fix-round 02.11.2026, ИГРЫ §8.2 artwork). The owner's
+  // ISP blocks the Steam CDN in Vietnam; the server relays the public asset.
+  // The upstream URL is built from type/appid/hash, never from client input.
+  // The global `/api` auth gate in `server/index.js` already protects it.
+  router.get(
+    '/steam-art/:type/:appid',
+    (req, res, next) => {
+      try {
+        assertOnlyParams(req, ['h'], 'GET /api/games/steam-art/:type/:appid');
+      } catch (err) {
+        return next(err);
+      }
+      return artHandler(req, res, next);
+    }
+  );
 
   router.get('/game/:appid', (req, res, next) => {
     try {
