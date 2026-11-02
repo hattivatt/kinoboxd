@@ -956,6 +956,7 @@ test('stats use the store metadata', async (t) => {
     assert.deepEqual(payload.meta.secondaryDetails, {
       resolved: 1,
       total: 1,
+      partial: 0,
       noSlug: 0,
       running: false,
     });

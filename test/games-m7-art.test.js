@@ -178,12 +178,12 @@ test('/stats gamesIndex: the primary edition header wins for every edition', asy
 test('vertical chain: a new-schema header_image is requested first', async () => {
   const { configureGamesModals, gameVerticalCoverUrls } = await import('../public/js/games-modal.js');
   configureGamesModals({ gamesIndex: {}, secondaryWorks: [] });
-  const cdn = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+  const art = '/api/games/steam-art';
   assert.deepEqual(gameVerticalCoverUrls({ appid: 3669870, headerImage: NEW_HEADER }), [
-    NEW_HEADER,
-    `${cdn}/3669870/library_600x900.jpg`,
-    `${cdn}/3669870/header.jpg`,
-    `${cdn}/3669870/capsule_231x87.jpg`,
+    `${art}/header/3669870?h=1e0c76e4253d347bb1304c3f213570251d924edf`,
+    `${art}/library/3669870`,
+    `${art}/header/3669870`,
+    `${art}/capsule/3669870`,
   ]);
 });
 
@@ -200,7 +200,7 @@ test('vertical chain: gamesIndex[primaryAppid].headerImage wins over the row', a
   });
   assert.equal(
     gameVerticalCoverUrls({ appid: 462780, primaryAppid: 937 })[0],
-    'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/937/a/header.jpg'
+    '/api/games/steam-art/header/937?h=a'
   );
 });
 
@@ -208,6 +208,7 @@ test('vertical chain: a legacy header stays behind the vertical library capsule'
   const { configureGamesModals, gameVerticalCoverUrls } = await import('../public/js/games-modal.js');
   configureGamesModals({ gamesIndex: {}, secondaryWorks: [] });
   const cdn = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+  const art = '/api/games/steam-art';
   assert.deepEqual(
     gameVerticalCoverUrls({
       appid: 70,
@@ -216,11 +217,11 @@ test('vertical chain: a legacy header stays behind the vertical library capsule'
       screenshot: 'https://shared.akamai.steamstatic.com/70/ss.jpg',
     }),
     [
-      `${cdn}/70/library_600x900.jpg`,
-      `${cdn}/70/header.jpg`,
+      `${art}/library/70`,
+      `${art}/header/70`,
       'https://shared.akamai.steamstatic.com/70/capsule.jpg',
       'https://shared.akamai.steamstatic.com/70/ss.jpg',
-      `${cdn}/70/capsule_231x87.jpg`,
+      `${art}/capsule/70`,
     ]
   );
 });
@@ -228,10 +229,15 @@ test('vertical chain: a legacy header stays behind the vertical library capsule'
 test('landscape chain: header_image, capsule, then the legacy CDN path', async () => {
   const { configureGamesModals, gameCoverUrls } = await import('../public/js/games-modal.js');
   configureGamesModals({ gamesIndex: {}, secondaryWorks: [] });
-  const cdn = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+  const art = '/api/games/steam-art';
   assert.deepEqual(
     gameCoverUrls({ appid: 3669870, headerImage: NEW_HEADER, capsuleImage: NEW_CAPSULE }),
-    [NEW_HEADER, NEW_CAPSULE, `${cdn}/3669870/header.jpg`, `${cdn}/3669870/capsule_231x87.jpg`]
+    [
+      `${art}/header/3669870?h=1e0c76e4253d347bb1304c3f213570251d924edf`,
+      `${art}/capsule/3669870?h=867a73afa5f21c28aaa14e9b0a4d895c540d4a0c`,
+      `${art}/header/3669870`,
+      `${art}/capsule/3669870`,
+    ]
   );
 });
 
@@ -306,7 +312,12 @@ test('card modal: paints the appdetails header_image, not the dead legacy URL', 
     const cover = findCover(nodeFor('modal-root'));
     assert.ok(cover, 'the card head has a cover');
     assert.equal(cover.tagName, 'IMG');
-    assert.equal(cover.getAttribute('src'), NEW_HEADER);
+    // The card must ask the local proxy, never the blocked CDN host: the
+    // new-schema asset hash becomes `?h=`.
+    assert.equal(
+      cover.getAttribute('src'),
+      '/api/games/steam-art/header/3669870?h=1e0c76e4253d347bb1304c3f213570251d924edf'
+    );
   } finally {
     delete globalThis.fetch;
   }

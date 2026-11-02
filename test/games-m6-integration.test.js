@@ -294,7 +294,9 @@ test('M6 integration', async (t) => {
   await t.test('vertical cover chain prefers the Steam CDN, then a provided poster', async () => {
     const { gameVerticalCoverUrls } = await import('../public/js/games-modal.js');
     const steam = gameVerticalCoverUrls({ appid: 292030, coverUrl: 'https://img/gog.jpg' });
-    assert.match(steam[0], /292030\/library_600x900\.jpg$/);
+    // Steam art goes through the local proxy (ISP-blocked CDN), GOG art does
+    // not: it is not a Steam host and stays exactly as the payload sent it.
+    assert.equal(steam[0], '/api/games/steam-art/library/292030');
     assert.ok(steam.includes('https://img/gog.jpg'));
     // A row that is not on the Steam CDN has only its own art.
     assert.deepEqual(

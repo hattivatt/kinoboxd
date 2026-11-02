@@ -244,6 +244,7 @@ test('secondary details status + lazy kick', async (t) => {
       notFound: 0,
       unavailable: 0,
       partial: 0,
+      retryablePartial: 0,
       missingSlug: 1,
       pending: 2,
     });
@@ -306,6 +307,7 @@ test('secondary details status + lazy kick', async (t) => {
     assert.deepEqual(stats.meta.secondaryDetails, {
       resolved: 2,
       total: 2,
+      partial: 0,
       noSlug: 0,
       running: false,
     });

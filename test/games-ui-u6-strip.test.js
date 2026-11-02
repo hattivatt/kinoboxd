@@ -198,12 +198,13 @@ test('strip: two editions of one work paint one card with a vertical poster', as
   const srcs = images(strip);
   assert.equal(srcs.length, 2);
   assert.deepEqual(srcs, [
-    'https://cdn.cloudflare.steamstatic.com/steam/apps/937/library_600x900.jpg',
-    'https://cdn.cloudflare.steamstatic.com/steam/apps/70/library_600x900.jpg',
+    '/api/games/steam-art/library/937',
+    '/api/games/steam-art/library/70',
   ]);
   for (const src of srcs) {
     assert.doesNotMatch(src, /steamcommunity\/public\/images/, '32×32 icon не должен быть обложкой');
     assert.doesNotMatch(src, /\/header\.jpg$/, 'вертикальный capsule важнее ландшафтного header');
+    assert.match(src, /^\/api\/games\/steam-art\//, 'Steam-арт идёт через CDN-прокси');
   }
   // The art frame and the image carry the classes the CSS sizes to 2:3.
   for (const card of strip.children) {
@@ -219,6 +220,6 @@ test('strip: two editions of one work paint one card with a vertical poster', as
   const modal = nodeFor('modal-root');
   const modalImages = images(modal);
   assert.ok(modalImages.length >= 1, 'в карточке нет обложки');
-  assert.equal(modalImages[0], 'https://cdn.cloudflare.steamstatic.com/steam/apps/937/library_600x900.jpg');
+  assert.equal(modalImages[0], '/api/games/steam-art/library/937');
   assert.match(textOf(modal).replace(/\s+/g, ' '), /Darksiders Warmastered Edition/);
 });

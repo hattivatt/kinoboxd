@@ -244,20 +244,21 @@ test('profile switch resets the decade selection (a6c5d48 regression guard)', { 
    ========================================================= */
 test('cover chain: header.jpg first, capsule second, 32×32 icon last', async () => {
   const { gameCoverUrls } = await import('../public/js/games-modal.js');
+  const art = '/api/games/steam-art';
 
   assert.deepEqual(gameCoverUrls({
     appid: 292030,
     iconUrl: 'https://media.steampowered.com/steamcommunity/public/images/apps/292030/abc.jpg',
   }), [
-    'https://cdn.cloudflare.steamstatic.com/steam/apps/292030/header.jpg',
-    'https://cdn.cloudflare.steamstatic.com/steam/apps/292030/capsule_231x87.jpg',
-    'https://media.steampowered.com/steamcommunity/public/images/apps/292030/abc.jpg',
+    `${art}/header/292030`,
+    `${art}/capsule/292030`,
+    `${art}/icon/292030?h=abc`,
   ]);
 
   // The canonical primary edition wins: two editions of one work share a cover.
   assert.deepEqual(gameCoverUrls({ appid: 462780, primaryAppid: 937 }).slice(0, 2), [
-    'https://cdn.cloudflare.steamstatic.com/steam/apps/937/header.jpg',
-    'https://cdn.cloudflare.steamstatic.com/steam/apps/937/capsule_231x87.jpg',
+    `${art}/header/937`,
+    `${art}/capsule/937`,
   ]);
 
   // No appid and no icon: nothing to request, the caller paints initials.
@@ -272,12 +273,12 @@ test('cover element: an error walks the chain and ends in the initials block', a
   const img = gameCoverEl({ appid: 70, name: 'Half-Life' }, { className: 'games-recent-icon' });
   host.append(img);
   assert.equal(img.tagName, 'IMG');
-  assert.equal(img.getAttribute('src'), 'https://cdn.cloudflare.steamstatic.com/steam/apps/70/header.jpg');
+  assert.equal(img.getAttribute('src'), '/api/games/steam-art/header/70');
   assert.equal(img.className, 'games-recent-icon');
 
   // 404 on the header → capsule.
   img.dispatch('error');
-  assert.equal(img.getAttribute('src'), 'https://cdn.cloudflare.steamstatic.com/steam/apps/70/capsule_231x87.jpg');
+  assert.equal(img.getAttribute('src'), '/api/games/steam-art/capsule/70');
   // 404 on the capsule → the 32×32 icon (absent here) → initials.
   img.dispatch('error');
   assert.equal(host.children.length, 1, 'the <img> is replaced by one initials block');
@@ -296,12 +297,15 @@ test('cover element: an error walks the chain and ends in the initials block', a
 test('cover element: a 32×32 icon is the last Steam step, then initials', async () => {
   const { gameCoverEl } = await import('../public/js/games-modal.js');
   const host = document.createElement('div');
-  const icon = 'https://media.steampowered.com/steamcommunity/public/images/apps/70/abc.jpg';
-  const img = gameCoverEl({ appid: 70, name: 'Half-Life', iconUrl: icon });
+  const img = gameCoverEl({
+    appid: 70,
+    name: 'Half-Life',
+    iconUrl: 'https://media.steampowered.com/steamcommunity/public/images/apps/70/abc.jpg',
+  });
   host.append(img);
   img.dispatch('error');
   img.dispatch('error');
-  assert.equal(img.getAttribute('src'), icon);
+  assert.equal(img.getAttribute('src'), '/api/games/steam-art/icon/70?h=abc');
   img.dispatch('error');
   assert.equal(host.children[0].tagName, 'DIV');
 });
@@ -312,21 +316,21 @@ test('cover element: a 32×32 icon is the last Steam step, then initials', async
 
 test('vertical cover chain: library_600x900 first, landscape header only as fallback', async () => {
   const { gameVerticalCoverUrls } = await import('../public/js/games-modal.js');
-  const cdn = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+  const art = '/api/games/steam-art';
 
   assert.deepEqual(gameVerticalCoverUrls({
     appid: 292030,
     iconUrl: 'https://media.steampowered.com/steamcommunity/public/images/apps/292030/abc.jpg',
   }), [
-    `${cdn}/292030/library_600x900.jpg`,
-    `${cdn}/292030/header.jpg`,
-    `${cdn}/292030/capsule_231x87.jpg`,
-    'https://media.steampowered.com/steamcommunity/public/images/apps/292030/abc.jpg',
+    `${art}/library/292030`,
+    `${art}/header/292030`,
+    `${art}/capsule/292030`,
+    `${art}/icon/292030?h=abc`,
   ]);
 
   // The canonical primary edition wins: two editions of one work share a poster.
   assert.deepEqual(gameVerticalCoverUrls({ appid: 462780, primaryAppid: 937 }).slice(0, 1), [
-    `${cdn}/937/library_600x900.jpg`,
+    `${art}/library/937`,
   ]);
 
   // No appid and no icon: nothing to request, the caller paints initials.
@@ -343,7 +347,7 @@ test('vertical cover chain: library_600x900 first, landscape header only as fall
 
 test('vertical cover element: error walks header → capsule → icon → initials', async () => {
   const { gameCoverVerticalEl } = await import('../public/js/games-modal.js');
-  const cdn = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+  const art = '/api/games/steam-art';
   const icon = 'https://media.steampowered.com/steamcommunity/public/images/apps/70/abc.jpg';
   const host = document.createElement('div');
 
@@ -354,14 +358,14 @@ test('vertical cover element: error walks header → capsule → icon → initia
   host.append(img);
   assert.equal(img.tagName, 'IMG');
   assert.equal(img.className, 'games-recent-icon');
-  assert.equal(img.getAttribute('src'), `${cdn}/70/library_600x900.jpg`);
+  assert.equal(img.getAttribute('src'), `${art}/library/70`);
 
   img.dispatch('error'); // no vertical capsule for this SKU → landscape header
-  assert.equal(img.getAttribute('src'), `${cdn}/70/header.jpg`);
+  assert.equal(img.getAttribute('src'), `${art}/header/70`);
   img.dispatch('error'); // → old capsule
-  assert.equal(img.getAttribute('src'), `${cdn}/70/capsule_231x87.jpg`);
+  assert.equal(img.getAttribute('src'), `${art}/capsule/70`);
   img.dispatch('error'); // → 32×32 community icon
-  assert.equal(img.getAttribute('src'), icon);
+  assert.equal(img.getAttribute('src'), `${art}/icon/70?h=abc`);
   img.dispatch('error'); // → initials
   assert.equal(host.children.length, 1);
   const fallback = host.children[0];
@@ -397,7 +401,7 @@ test('CSS: strip cards and the card-modal head use a 2:3 vertical poster frame',
 
 test('recent strip paints vertical Steam posters and keeps the card click', async () => {
   const games = await import('../public/js/games.js');
-  const cdn = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
+  const artPath = '/api/games/steam-art';
   const payload = {
     sources: {
       connected: [KEY],
@@ -464,7 +468,7 @@ test('recent strip paints vertical Steam posters and keeps the card click', asyn
       assert.ok(img, 'в арте должна быть картинка-постер');
       assert.equal(img.className, 'games-recent-icon');
       const appid = index === 0 ? 70 : 620;
-      assert.equal(img.getAttribute('src'), `${cdn}/${appid}/library_600x900.jpg`);
+      assert.equal(img.getAttribute('src'), `${artPath}/library/${appid}`);
       imgs += 1;
     }
     assert.equal(imgs, 2, 'обе карточки просят вертикальный capsule');
@@ -483,7 +487,7 @@ test('recent strip paints vertical Steam posters and keeps the card click', asyn
     });
     assert.equal(cover.length, 1, 'в шапке карточки должен быть один вертикальный постер');
     assert.equal(cover[0].tagName, 'IMG');
-    assert.equal(cover[0].getAttribute('src'), `${cdn}/70/library_600x900.jpg`);
+    assert.equal(cover[0].getAttribute('src'), `${artPath}/library/70`);
   } finally {
     globalThis.fetch = previousFetch;
   }
