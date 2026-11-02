@@ -19,6 +19,12 @@ function sandbox({ tokenFile } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-hc-config-'));
   fs.mkdirSync(path.join(dir, 'server'), { recursive: true });
   fs.copyFileSync(SOURCE, path.join(dir, 'server', 'config.js'));
+  // config.js delegates the loading itself to server/core/secrets.js.
+  fs.mkdirSync(path.join(dir, 'server', 'core'), { recursive: true });
+  fs.copyFileSync(
+    path.join(__dirname, '..', 'server', 'core', 'secrets.js'),
+    path.join(dir, 'server', 'core', 'secrets.js')
+  );
   if (tokenFile !== undefined) {
     fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'config', 'hardcover-token'), tokenFile);
