@@ -805,6 +805,34 @@ test('union enrichment', async (t) => {
     });
     assert.deepEqual(entry.genres, ['RPG']);
   });
+
+  await t.test('a pre-catalog Epic detail is flagged for one completion attempt', () => {
+    const union = buildSecondaryUnion({
+      works: [],
+      gogSnapshots: [],
+      epicLayer: {
+        accountId: 'epic-a',
+        games: [{ catalogItemId: 'c1', name: 'Alan Wake 2', slug: 'alan-wake-2' }],
+      },
+      links: {},
+      secondaryLinks: {},
+    });
+    const entry = union.works[0];
+    const base = { source: 'epic', id: 'alan-wake-2', genres: [], releaseYear: null };
+    details.enrichUnionWithDetails(union, { 'epic:alan-wake-2': base });
+    assert.equal(entry.secondaryDetails.needsCatalog, true);
+    // After one attempt the marker settles the question — no endless kicks.
+    details.enrichUnionWithDetails(union, {
+      'epic:alan-wake-2': { ...base, catalogChecked: true },
+    });
+    assert.equal(entry.secondaryDetails.needsCatalog, false);
+    // A deferred catalog step is pending, not a needs-catalog retry.
+    details.enrichUnionWithDetails(union, {
+      'epic:alan-wake-2': { ...base, catalogPending: true },
+    });
+    assert.equal(entry.secondaryDetails.needsCatalog, false);
+    assert.equal(entry.secondaryDetails.catalogPending, true);
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -1033,6 +1061,7 @@ test('Epic catalog refetch', async (t) => {
     assert.deepEqual(doc.data.genres, ['Action', 'Horror']);
     assert.equal(doc.data.releaseYear, 2023);
     assert.equal(doc.data.releaseDateSource, 'epic-catalog');
+    assert.equal(doc.data.catalogChecked, true);
     assert.match(doc.data.verticalCover, /1200x1600/);
   });
 

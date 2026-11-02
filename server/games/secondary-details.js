@@ -637,6 +637,30 @@ function detailNeedsCatalog(data) {
   return noGenres && data.releaseYear == null;
 }
 
+/**
+ * A detail written **before** the catalog fallback existed has neither genres
+ * nor a year and no `catalogChecked` marker. It is retried once; every outcome
+ * (filled, definitive negative, not connected) writes the marker, so a polled
+ * `/stats` cannot kick the same work forever.
+ */
+function needsCatalogCompletion(data) {
+  if (!detailNeedsCatalog(data)) return false;
+  if (data.catalogChecked === true) return false;
+  if (data.catalogPending === true) return false;
+  return true;
+}
+
+/**
+ * Should the job spend a catalog attempt on this cached detail? Yes for a
+ * pre-catalog document (one-time heal) and for a document whose catalog step
+ * was deferred (retry on every kick until the token works).
+ */
+function shouldAttemptCatalog(data) {
+  if (!detailNeedsCatalog(data)) return false;
+  if (data.catalogPending === true) return true;
+  return data.catalogChecked !== true;
+}
+
 function catalogHasMeta(catalog) {
   if (!catalog || typeof catalog !== 'object') return false;
   return Boolean(catalog.releaseDate) ||
@@ -1238,6 +1262,11 @@ function enrichUnionWithDetails(union, index) {
       // poster is real, but year/genres are still pending — coverage must not
       // count this as resolved.
       catalogPending: detail.catalogPending === true,
+      // A pre-catalog detail (poster only, no `catalogChecked`) is retried once
+      // so the deployed fix heals an already written document.
+      needsCatalog:
+        Boolean(entry.epic && entry.epic.catalogItemId) &&
+        needsCatalogCompletion(detail),
     };
     if (changed) touched++;
   }
@@ -1714,17 +1743,22 @@ async function resolveEpic(slug, options = {}) {
     // A detail cached before the catalog existed (Alan Wake 2: poster only)
     // is completed in place: the raw CMS payload is not cached, so the catalog
     // fields are merged additively. No catalog item → nothing to do.
-    if (data && detailNeedsCatalog(data) && options.catalogItemId) {
+    if (data && shouldAttemptCatalog(data) && options.catalogItemId) {
       const ensured = await ensureEpicCatalog(options);
       noteCatalogResult(ensured, options);
       let next = data;
       if (ensured.catalog) next = applyCatalogToDetail(next, ensured.catalog);
       if (ensured.pending) {
         next = { ...next, catalogPending: true };
-      } else if (next.catalogPending) {
-        // A later successful (or definitively negative) catalog answer clears
-        // the pending marker: coverage is resolved, not retried forever.
-        next = { ...next };
+        if (next.catalogChecked) {
+          next = { ...next };
+          delete next.catalogChecked;
+        }
+      } else {
+        // Filled, definitively empty, or «not connected»: the one-time
+        // completion attempt is over. A later connect still re-imports and the
+        // run-phase `completingCatalog` path retries regardless of this marker.
+        next = { ...next, catalogChecked: true };
         delete next.catalogPending;
       }
       if (next !== data) {
@@ -1807,7 +1841,15 @@ async function resolveEpic(slug, options = {}) {
     title: options.title,
     catalog,
   });
-  if (catalogPending) data.catalogPending = true;
+  if (catalogPending) {
+    data.catalogPending = true;
+  } else {
+    // The catalog question is settled for this detail: either the CMS page
+    // carried its own meta, the catalog filled it, or the answer was
+    // definitively empty. This is what keeps a polled `/stats` from re-kicking
+    // a work whose store metadata is as complete as the stores allow.
+    data.catalogChecked = true;
+  }
   writeDetail('epic', id, 'ok', data);
   // Persist a discovered slug so the read model (`epic-layer.joinGames`) can
   // key the union entry `epic:<slug>` and attach this detail next request.
@@ -1905,7 +1947,7 @@ async function runPhase(job, source, targets, resolveOne) {
       cached.doc &&
       cached.doc.status === 'ok' &&
       target.catalogItemId &&
-      detailNeedsCatalog(cached.doc.data);
+      shouldAttemptCatalog(cached.doc.data);
     if (cached.fresh && !job.force && !completingCatalog) {
       if (cached.doc.status === 'ok') phase.resolved++;
       else phase.notFound++;
@@ -2243,6 +2285,16 @@ function coverageForOwner(ownerKey) {
         // A detail written while the catalog refetch was deferred (owner token
         // expired/rate-limited) is not coverage: the next kick retries it.
         if (source === 'epic' && doc.data && doc.data.catalogPending === true) continue;
+        // A detail written before the catalog fallback existed (poster only,
+        // no `catalogChecked`) is retried once too.
+        if (
+          source === 'epic' &&
+          target.catalogItemId &&
+          doc.data &&
+          needsCatalogCompletion(doc.data)
+        ) {
+          continue;
+        }
         resolved++;
       } else if (doc.status === 'not_found') notFound++;
     }
@@ -2418,6 +2470,8 @@ module.exports = {
   epicGenresFromCategories,
   epicPageNeedsCatalog,
   detailNeedsCatalog,
+  needsCatalogCompletion,
+  shouldAttemptCatalog,
   catalogHasMeta,
   applyCatalogToDetail,
   refetchEpicCatalog,

@@ -544,7 +544,9 @@ function buildGamesStats(input = {}) {
   ).length;
   const secondaryDetailResolved = union.works.filter(
     (entry) =>
-      entry.secondaryDetails && entry.secondaryDetails.catalogPending !== true
+      entry.secondaryDetails &&
+      entry.secondaryDetails.catalogPending !== true &&
+      entry.secondaryDetails.needsCatalog !== true
   ).length;
   // Epic works that have no store slug at all (`productmapping`, catalog and
   // the validated title probe all failed): «library-only» — title + hours, no
