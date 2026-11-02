@@ -25,8 +25,8 @@
 
 const express = require('express');
 
-const { HttpError } = require('../core/errors');
-const { assertOnlyParams } = require('../core/params');
+const { HttpError } = require('../../core/errors');
+const { assertOnlyParams } = require('../../core/params');
 const gameCache = require('../game-cache');
 const enrichJobs = require('../enrich');
 const personnel = require('./personnel');
