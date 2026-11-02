@@ -672,6 +672,7 @@ function mergeLibrary({ entitlements = [], libraryItems = [] } = {}) {
       namespace: record.namespace,
       catalogItemId: record.catalogItemId,
       productId: null,
+      productSlug: null,
       sandboxType: null,
       platforms: [],
       acquisitionDate: null,
@@ -684,6 +685,7 @@ function mergeLibrary({ entitlements = [], libraryItems = [] } = {}) {
     entry.namespace = entry.namespace || record.namespace;
     entry.catalogItemId = entry.catalogItemId || record.catalogItemId;
     entry.productId = entry.productId || record.productId;
+    entry.productSlug = entry.productSlug || record.productSlug;
     entry.sandboxType = entry.sandboxType || record.sandboxType;
     entry.platforms = unique([...(entry.platforms || []), ...record.platforms]);
     entry.acquisitionDate = entry.acquisitionDate || record.acquisitionDate;
@@ -698,7 +700,10 @@ function mergeLibrary({ entitlements = [], libraryItems = [] } = {}) {
     // `name` is filled by the catalog/productmapping step; `appName` is the
     // launcher id and is never a human title.
     name: entry.appName || entry.entitlementName || null,
-    slug: null,
+    // The library-service record sometimes carries `productSlug`; when it does
+    // it is the same store slug as the catalog's `productSlug`. A later step
+    // (`mergeCatalogSlugs`) may fill this from the catalog/productmapping.
+    slug: normalizeSlug(entry.productSlug),
   }));
 
   return {

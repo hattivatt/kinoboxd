@@ -78,11 +78,23 @@ function libraryStatus(tokenStatusValue, library) {
 
 function joinGames(library, playtime, catalog) {
   const games = Array.isArray(library && library.games) ? library.games : [];
+  // One file read for the whole library: a slug discovered by the store-metadata
+  // job (validated CMS title probe) is the last resort before `null`.
+  let slugOverrides = {};
+  try {
+    slugOverrides = epicCache.readSlugOverrides();
+  } catch (err) {
+    slugOverrides = {};
+  }
   return games.map((game) => {
     const meta = (game.catalogItemId && catalog[game.catalogItemId]) || null;
     const tracked = epic.playtimeForGame(game, playtime);
     const name =
       (meta && meta.title) || game.name || game.appName || game.entitlementName || null;
+    const discovered =
+      game.catalogItemId && slugOverrides[game.catalogItemId]
+        ? slugOverrides[game.catalogItemId].slug || null
+        : null;
     return {
       source: 'epic',
       appName: game.appName || null,
@@ -99,11 +111,17 @@ function joinGames(library, playtime, catalog) {
       // the importer; `null` means "not fetched", never a fabricated title.
       name,
       title: meta ? meta.title || null : null,
-      slug: (meta && meta.slug) || game.slug || null,
+      slug: (meta && meta.slug) || game.slug || discovered || null,
       developer: meta ? meta.developer || null : null,
       publisher: meta ? meta.publisher || null : null,
       releaseDate: meta ? meta.releaseDate || null : null,
-      metadataSource: meta ? 'epic-catalog' : game.slug ? 'epic-productmapping' : null,
+      metadataSource: meta
+        ? 'epic-catalog'
+        : game.slug
+          ? 'epic-productmapping'
+          : discovered
+            ? 'epic-slug-probe'
+            : null,
       // Seconds stay available for the integration; minutes/hours are the
       // normalized units (Epic `totalTime` is seconds, §14.2).
       totalTimeSec: tracked ? tracked.totalTimeSec : null,

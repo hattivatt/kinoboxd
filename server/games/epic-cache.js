@@ -308,6 +308,64 @@ function getProductMapping() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Slug overrides (store slug discovered for a catalogItemId)          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `productmapping` covers only ~1 283 appNames, so an Epic exclusive can be
+ * absent from it *and* from the catalog's `productSlug`/`urlSlug`. When the
+ * secondary-details job discovers the CMS slug by a validated title probe
+ * (`Alan Wake 2` → `alan-wake-2`, checked against `productName`), it stores it
+ * here. Both the read model (`epic-layer.joinGames`) and the job targets read
+ * this file, so one discovery is enough and a re-import does not lose it.
+ *
+ * It is deliberately **not** written into the catalog document: that document
+ * means "catalog bulk metadata", and fabricating a slug there would also mark
+ * the game as `metadataSource: 'epic-catalog'`.
+ */
+function slugOverridesPath() {
+  return path.join(CATALOG_DIR, 'slug-overrides.json');
+}
+
+function readSlugOverrides() {
+  const hit = gameCache.readJsonWithFingerprint(slugOverridesPath());
+  const data = (hit && hit.data) || null;
+  return data && data.slugs && typeof data.slugs === 'object' ? data.slugs : {};
+}
+
+/** `null` when nothing was discovered for this catalog item. */
+function getEpicSlugOverride(catalogItemId) {
+  const id = String(catalogItemId == null ? '' : catalogItemId);
+  if (!id) return null;
+  const entry = readSlugOverrides()[id];
+  return entry && entry.slug ? String(entry.slug) : null;
+}
+
+/** Remember a validated `catalogItemId → store slug`. Idempotent. */
+function saveEpicSlugOverride(catalogItemId, slug, extra = {}) {
+  const id = String(catalogItemId == null ? '' : catalogItemId);
+  const value = String(slug == null ? '' : slug).trim();
+  if (!id || !value) return null;
+  const slugs = readSlugOverrides();
+  const previous = slugs[id] || null;
+  if (previous && previous.slug === value) return previous;
+  const entry = {
+    slug: value,
+    title: extra.title || (previous && previous.title) || null,
+    source: extra.source || 'cms-title-probe',
+    at: new Date().toISOString(),
+  };
+  slugs[id] = entry;
+  gameCache.writeJsonAtomicSync(slugOverridesPath(), {
+    schemaVersion: 1,
+    source: 'epic-slug-overrides',
+    updatedAt: new Date().toISOString(),
+    slugs,
+  });
+  return entry;
+}
+
+/* ------------------------------------------------------------------ */
 /* TTLs                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -365,6 +423,10 @@ module.exports = {
   listEpicCatalogItems,
   saveProductMapping,
   getProductMapping,
+  slugOverridesPath,
+  readSlugOverrides,
+  getEpicSlugOverride,
+  saveEpicSlugOverride,
   epicLibraryTtlMs,
   epicPlaytimeTtlMs,
   epicCatalogTtlMs,

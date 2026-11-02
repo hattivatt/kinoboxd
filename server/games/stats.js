@@ -543,6 +543,12 @@ function buildGamesStats(input = {}) {
     (entry) => (entry.gog && entry.gog.gogGameId) || (entry.epic && entry.epic.slug)
   ).length;
   const secondaryDetailResolved = union.works.filter((entry) => entry.secondaryDetails).length;
+  // Epic works that have no store slug at all (`productmapping`, catalog and
+  // the validated title probe all failed): «library-only» — title + hours, no
+  // genres/year/poster. Reported honestly instead of being silently dropped.
+  const secondaryDetailNoSlug = union.works.filter(
+    (entry) => entry.epic && !entry.epic.slug
+  ).length;
   // Legacy alias: the GOG block below and the per-appid annotations read the
   // same union object (it exposes `byAppid`/`secondaryWorks`/`summary`).
   // Annotate Steam rows with cross-store fields only when a secondary library
@@ -1947,6 +1953,9 @@ function buildGamesStats(input = {}) {
       secondaryDetails: {
         resolved: secondaryDetailResolved,
         total: secondaryDetailTotal,
+        // Epic works with no store slug: «library-only» (title + hours), the
+        // store metadata job cannot address them at all.
+        noSlug: secondaryDetailNoSlug,
         running:
           input.secondaryDetailsRunning === true
             ? true

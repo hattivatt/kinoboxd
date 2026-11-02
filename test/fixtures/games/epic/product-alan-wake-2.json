@@ -1,0 +1,81 @@
+{
+  "productName": "Alan Wake 2",
+  "_slug": "alan-wake-2",
+  "_id": "ecccb1e5-95da-486f-b57d-b602832c8a75",
+  "namespace": "c4763f236d08423eb47b4c3008779c84",
+  "_urlPattern": "/productv2/alan-wake-2",
+  "_locale": "en-US",
+  "lastModified": "2024-02-06T19:55:55.208Z",
+  "pages": [
+    {
+      "type": "productHome",
+      "productName": "Alan Wake 2",
+      "_slug": "home",
+      "data": {
+        "meta": {
+          "_type": "Epic Store Meta",
+          "logo": {
+            "_type": "Epic Store Image"
+          },
+          "customReleaseDate": "Coming Soon"
+        },
+        "hero": {
+          "logoImage": {
+            "src": "https://cdn2.unrealengine.com/egs-alanwake2-remedyentertainment-ic1-400x400-5366b10d0f67.png",
+            "_type": "Diesel Image"
+          },
+          "portraitBackgroundImageUrl": "https://cdn2.unrealengine.com/egs-alanwake2-remedyentertainment-s2-1200x1600-0ebb9a566b72.jpg",
+          "backgroundImageUrl": "https://cdn2.unrealengine.com/egs-alanwake2-remedyentertainment-s1-2560x1440-309c7412b7bc.jpg",
+          "_type": "Diesel Hero",
+          "isFullBleed": false
+        },
+        "about": {
+          "developerAttribution": "Remedy Entertainment",
+          "publisherAttribution": "Epic Games Publishing",
+          "image": {
+            "src": "https://cdn2.unrealengine.com/egs-alanwake2-remedyentertainment-s2-1200x1600-0ebb9a566b72.jpg",
+            "_type": "Diesel Image"
+          },
+          "description": "A string of ritualistic murders threatens Bright Falls, a small-town community surrounded by Pacific Northwest wilderness. Saga Anderson, an accomplished FBI agent with a reputatio…"
+        }
+      }
+    },
+    {
+      "type": "offer",
+      "productName": "Alan Wake 2",
+      "tag": "edition",
+      "offer": {
+        "type": "edition",
+        "id": "b63b6cc6b0034612bf676797a1b431c7",
+        "hasOffer": true
+      },
+      "data": {
+        "meta": {
+          "_type": "Epic Store Meta",
+          "logo": {
+            "_type": "Epic Store Image"
+          }
+        },
+        "hero": {
+          "logoImage": {
+            "src": "https://cdn2.unrealengine.com/egs-alanwake2-remedyentertainment-ic1-400x400-5366b10d0f67.png",
+            "_type": "Diesel Image"
+          },
+          "portraitBackgroundImageUrl": "https://cdn2.unrealengine.com/egs-alanwake2deluxeedition-remedyentertainment-editions-s2-1200x1600-fde9ea5b88a2.jpg",
+          "backgroundImageUrl": "https://cdn2.unrealengine.com/egs-alanwake2deluxeedition-remedyentertainment-editions-s1-2560x1440-ddf9b1f255e9.jpg",
+          "_type": "Diesel Hero",
+          "isFullBleed": false
+        },
+        "about": {
+          "developerAttribution": "Remedy Entertainment",
+          "publisherAttribution": "Epic Games Publishing",
+          "image": {
+            "src": "https://cdn2.unrealengine.com/egs-alanwake2deluxeedition-remedyentertainment-editions-s2-1200x1600-fde9ea5b88a2.jpg",
+            "_type": "Diesel Image"
+          }
+        }
+      }
+    }
+  ],
+  "_note": "Trimmed from the live store-content response (200, 45 723 B) of 2026-11-02. The real page has no meta.tags/releaseDate/developer — only customReleaseDate: \"Coming Soon\" — which is the whole point of this fixture."
+}

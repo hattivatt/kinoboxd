@@ -407,6 +407,51 @@ function epicLandscapeFromImages(images) {
   return wide ? absoluteUrl(wide) : null;
 }
 
+/**
+ * Epic's catalog `categories` are product buckets (`games`, `freegames`, …) and
+ * sometimes a genre segment (`games/action`, `games/horror`). Only the genre
+ * segment is used, and only when the CMS page has no `meta.tags` at all — the
+ * case of a **stale CMS page** (Alan Wake 2: `meta` has only
+ * `customReleaseDate: "Coming Soon"`, no tags/releaseDate/developer).
+ */
+const EPIC_NON_GENRE_CATEGORIES = new Set([
+  'GAMES',
+  'APPLICATIONS',
+  'FREEGAMES',
+  'ADDONS',
+  'DLC',
+  'EDITIONS',
+  'PLUGINS',
+  'ASSETS',
+  'PROJECTS',
+  'SANDBOX',
+  'AUDIENCE',
+  'ENGINE',
+  'MODS',
+  'BUNDLES',
+  'DEMOS',
+]);
+
+function epicGenresFromCategories(categories) {
+  const out = [];
+  for (const entry of Array.isArray(categories) ? categories : []) {
+    const path =
+      typeof entry === 'string'
+        ? entry
+        : entry && (entry.path || entry.name)
+          ? entry.path || entry.name
+          : null;
+    if (!path) continue;
+    const segments = String(path).split('/').filter(Boolean);
+    if (!segments.length) continue;
+    const code = epicTagCodeOf(segments[segments.length - 1]);
+    if (!code || EPIC_NON_GENRE_CATEGORIES.has(code)) continue;
+    const name = EPIC_TAG_NAMES[code] || epicTagName(code);
+    if (name && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
 function normalizeEpicProduct(payload, options = {}) {
   const page = pickEpicPage(payload);
   if (!page) {
@@ -417,20 +462,55 @@ function normalizeEpicProduct(payload, options = {}) {
   }
   const data = page.data || {};
   const meta = data.meta || {};
+  const about = data.about && typeof data.about === 'object' ? data.about : {};
   const hero = data.hero || {};
+  const catalog =
+    options.catalog && typeof options.catalog === 'object' ? options.catalog : null;
   const tagsRaw = uniqueStrings(Array.isArray(meta.tags) ? meta.tags : []);
   const tags = tagsRaw.map(epicTagName).filter(Boolean);
-  const genres = tagsRaw
+  let genres = tagsRaw
     .filter((code) => !EPIC_FEATURE_TAGS.has(epicTagCodeOf(code)))
     .map(epicTagName)
     .filter(Boolean);
-  const releaseDate = meta.releaseDate || null;
+  let genresSource = genres.length ? 'epic-store' : null;
+  // Stale CMS page: no tag line at all → the catalog's own category buckets are
+  // the only store-owned genre hint left. Never invented from the title.
+  if (!genres.length && catalog) {
+    const fromCatalog = epicGenresFromCategories(catalog.categories);
+    if (fromCatalog.length) {
+      genres = fromCatalog;
+      genresSource = 'epic-catalog';
+    }
+  }
+  const releaseDate = meta.releaseDate || (catalog && catalog.releaseDate) || null;
+  const releaseDateSource = meta.releaseDate
+    ? 'epic-store'
+    : catalog && catalog.releaseDate
+      ? 'epic-catalog'
+      : null;
   const slug = options.slug || (payload && payload._slug) || null;
   const title =
     (page.productName && String(page.productName).trim()) ||
     (payload && payload.productName) ||
-    (data.about && data.about.title) ||
+    about.title ||
+    (catalog && catalog.title) ||
     null;
+  // `about.*Attribution` is present on pages whose `meta.developer` is empty
+  // (Alan Wake 2: Remedy Entertainment / Epic Games Publishing).
+  const developers = uniqueStrings(Array.isArray(meta.developer) ? meta.developer : []);
+  const publishers = uniqueStrings(Array.isArray(meta.publisher) ? meta.publisher : []);
+  if (!developers.length && about.developerAttribution) {
+    developers.push(String(about.developerAttribution));
+  }
+  if (!publishers.length && about.publisherAttribution) {
+    publishers.push(String(about.publisherAttribution));
+  }
+  if (!developers.length && catalog && catalog.developer) {
+    developers.push(String(catalog.developer));
+  }
+  if (!publishers.length && catalog && catalog.publisher) {
+    publishers.push(String(catalog.publisher));
+  }
   return {
     schemaVersion: SCHEMA_VERSION,
     source: 'epic',
@@ -438,18 +518,19 @@ function normalizeEpicProduct(payload, options = {}) {
     title,
     slug,
     genres: uniqueStrings(genres),
+    genresSource,
     tags: uniqueStrings(tags),
     releaseDate,
     releaseYear: yearOfDate(releaseDate),
-    releaseDateSource: releaseDate ? 'epic-store' : null,
+    releaseDateSource,
     globalReleaseDate: null,
     storeReleaseDate: releaseDate,
     verticalCover:
       absoluteUrl(hero.portraitBackgroundImageUrl) || epicPortraitFromImages(payload._images_),
     image: absoluteUrl(hero.backgroundImageUrl) || epicLandscapeFromImages(payload._images_),
     logo: absoluteUrl(hero.logoImage && hero.logoImage.src),
-    developers: uniqueStrings(Array.isArray(meta.developer) ? meta.developer : []),
-    publishers: uniqueStrings(Array.isArray(meta.publisher) ? meta.publisher : []),
+    developers: uniqueStrings(developers),
+    publishers: uniqueStrings(publishers),
     series: null,
     platforms: uniqueStrings(Array.isArray(meta.platform) ? meta.platform : []),
     fetchedAt: isoOf(nowMs()),
@@ -680,7 +761,8 @@ function enrichUnionWithDetails(union, index) {
       (!(entry.genres && entry.genres.length) || libraryGenreSource)
     ) {
       entry.genres = [...detail.genres];
-      entry.genresSource = detail.source === 'epic' ? 'epic-store' : 'gog-store';
+      entry.genresSource =
+        detail.genresSource || (detail.source === 'epic' ? 'epic-store' : 'gog-store');
       changed = true;
     }
     const libraryYearSource =
@@ -850,9 +932,76 @@ async function resolveGog(gogGameId, options = {}) {
   return { data, status: 'ok', cached: false };
 }
 
+/**
+ * `"Alan Wake 2"` → `"alan-wake-2"`. ASCII-only on purpose: a title that cannot
+ * be represented is not guessed (the CMS slug is English in practice).
+ */
+function slugFromTitle(title) {
+  return String(title == null ? '' : title)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+function comparableTitle(value) {
+  return String(value == null ? '' : value)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Last-resort slug discovery for an Epic exclusive that is in neither
+ * `productmapping` (~1 283 records) nor the catalog's `productSlug`/`urlSlug`:
+ * the store slug of a game is almost always its title in kebab-case, and the
+ * public CMS answers `200`/`404` without a token. The guess is **validated** —
+ * the page's own `productName` must equal the library title, so a wrong slug
+ * can never attach another game's poster/genres.
+ */
+async function discoverEpicSlug(options = {}) {
+  const title = options.title ? String(options.title).trim() : '';
+  const guess = slugFromTitle(title);
+  if (!guess || guess.length < 3) return null;
+  if (comparableTitle(title).length < 3) return null;
+  let payload;
+  try {
+    if (typeof options.onRequest === 'function') options.onRequest();
+    payload = await fetchJson(options.client, epicUrl(guess));
+  } catch (err) {
+    if (err && err.code === 'secondary_details_not_found') return null;
+    throw err;
+  }
+  const name =
+    (payload && (payload.productName || payload._title)) ||
+    (payload && payload.pages && payload.pages[0] && payload.pages[0].productName) ||
+    null;
+  if (!name || comparableTitle(name) !== comparableTitle(title)) return null;
+  // The validated page is the product page itself — no second request.
+  return { slug: guess, payload };
+}
+
 async function resolveEpic(slug, options = {}) {
-  const id = String(slug == null ? '' : slug);
-  if (!id) throw new SecondaryDetailsError('Нет Epic slug.', 'secondary_details_bad_target');
+  let id = String(slug == null ? '' : slug).trim();
+  let probedPayload = null;
+  if (!id) {
+    // Two requests are needed (probe + product page): only try when the job
+    // still has that much budget left. Without a title there is nothing to
+    // guess — the caller reports the work as `library-only`.
+    if (!options.title || (options.probeBudget != null && options.probeBudget < 2)) {
+      return { data: null, status: 'not_found', cached: false, reason: 'no_slug' };
+    }
+    const discovered = await discoverEpicSlug(options);
+    if (!discovered) {
+      return { data: null, status: 'not_found', cached: false, reason: 'no_slug' };
+    }
+    id = discovered.slug;
+    probedPayload = discovered.payload;
+  }
   const { doc, fresh } = readDetail('epic', id);
   if (fresh && doc && !options.force) {
     return {
@@ -871,7 +1020,7 @@ async function resolveEpic(slug, options = {}) {
   }
   let payload;
   try {
-    payload = await fetchJson(options.client, epicUrl(id));
+    payload = probedPayload || (await fetchJson(options.client, epicUrl(id)));
   } catch (err) {
     if (err && err.code === 'secondary_details_not_found') {
       writeDetail('epic', id, 'not_found', null);
@@ -882,8 +1031,24 @@ async function resolveEpic(slug, options = {}) {
     }
     throw err;
   }
-  const data = normalizeEpicProduct(payload, { slug: id, title: options.title });
+  const data = normalizeEpicProduct(payload, {
+    slug: id,
+    title: options.title,
+    catalog: options.catalog,
+  });
   writeDetail('epic', id, 'ok', data);
+  // Persist a discovered slug so the read model (`epic-layer.joinGames`) can
+  // key the union entry `epic:<slug>` and attach this detail next request.
+  if (options.catalogItemId && data.slug) {
+    try {
+      require('./epic-cache').saveEpicSlugOverride(options.catalogItemId, data.slug, {
+        title: data.title || options.title || null,
+        source: 'cms-title-probe',
+      });
+    } catch (err) {
+      /* a read-only cache must not fail the fetch */
+    }
+  }
   return { data, status: 'ok', cached: false };
 }
 
@@ -900,7 +1065,18 @@ function sleep(ms) {
 }
 
 function emptyPhase() {
-  return { total: 0, resolved: 0, fetched: 0, notFound: 0, cached: 0, failed: 0, deferred: 0 };
+  return {
+    total: 0,
+    resolved: 0,
+    fetched: 0,
+    notFound: 0,
+    cached: 0,
+    failed: 0,
+    deferred: 0,
+    // Works with no store slug at all: «library-only» (title + hours), never a
+    // silent drop and never a fake `not_found`.
+    missingSlug: 0,
+  };
 }
 
 function publicJob(job) {
@@ -951,13 +1127,25 @@ async function runPhase(job, source, targets, resolveOne) {
     }
     try {
       job.requests++;
-      const result = await resolveOne(target, { client: job.client, force: job.force });
+      const result = await resolveOne(target, {
+        client: job.client,
+        force: job.force,
+        // A no-slug target needs a probe + a product page; both count.
+        probeBudget: job.budget - job.requests + 1,
+        onRequest: () => {
+          job.requests++;
+        },
+      });
       if (result.status === 'ok') {
         phase.resolved++;
         phase.fetched++;
       } else if (result.status === 'not_found') {
-        phase.notFound++;
-        phase.fetched++;
+        // `no_slug` is not a verdict about the product (it was never
+        // addressed): it is already counted in `phase.missingSlug`.
+        if (result.reason !== 'no_slug') {
+          phase.notFound++;
+          phase.fetched++;
+        }
       }
     } catch (err) {
       const code = (err && err.code) || 'secondary_details_error';
@@ -973,6 +1161,11 @@ async function runPhase(job, source, targets, resolveOne) {
       }
     }
     if (job.requests < job.budget) await sleep(job.pauseMs);
+  }
+  if (source === 'epic' && phase.missingSlug > 0) {
+    // Honest diagnostic: these works stay «library-only» (title + hours) —
+    // not a `not_found` verdict about a product we never addressed.
+    job.warnings.push('epic_no_slug');
   }
   job.stage = source === 'gog' ? 'epic' : 'done';
 }
@@ -1016,7 +1209,8 @@ function startSecondaryDetails(options = {}) {
   };
   // Counters are visible in the immediate response, before the first await.
   job.gog.total = gog.filter((entry) => entry && entry.id).length;
-  job.epic.total = epic.filter((entry) => entry && entry.slug).length;
+  job.epic.total = epic.filter((entry) => entry && (entry.slug || entry.title)).length;
+  job.epic.missingSlug = epic.filter((entry) => entry && !entry.slug).length;
   jobs.set(ownerKey, job);
   lastKick.set(ownerKey, nowMs());
 
@@ -1037,9 +1231,21 @@ function startSecondaryDetails(options = {}) {
         job,
         'epic',
         epic
-          .filter((entry) => entry && entry.slug)
-          .map((entry) => ({ id: String(entry.slug), slug: entry.slug, title: entry.title || null })),
-        (target, opts) => resolveEpic(target.slug, { ...opts, title: target.title })
+          .filter((entry) => entry && (entry.slug || entry.title))
+          .map((entry) => ({
+            id: String(entry.slug || entry.id || `catalog:${entry.catalogItemId || ''}`),
+            slug: entry.slug || null,
+            title: entry.title || null,
+            catalogItemId: entry.catalogItemId || null,
+            catalog: entry.catalog || null,
+          })),
+        (target, opts) =>
+          resolveEpic(target.slug, {
+            ...opts,
+            title: target.title,
+            catalog: target.catalog,
+            catalogItemId: target.catalogItemId,
+          })
       );
       job.status = job.budgetExceeded ? 'partial' : 'done';
     } catch (err) {
@@ -1098,7 +1304,7 @@ function targetsForOwner(ownerKey) {
   const key = String(ownerKey == null ? '' : ownerKey).trim();
   const gog = [];
   const epic = [];
-  if (!key) return { gog, epic };
+  if (!key) return { gog, epic, epicNoSlug: 0 };
   const gogCache = require('./gog-cache');
   const epicCache = require('./epic-cache');
   // Both a bound token and a dated snapshot carry the owner: a restored
@@ -1115,19 +1321,38 @@ function targetsForOwner(ownerKey) {
       gog.push({ id, slug: product.slug || null, title: product.title || null });
     }
   }
+  let epicNoSlug = 0;
   const epicAccount = epicCache.epicAccountForOwner(key);
   if (epicAccount) {
     const library = epicCache.getEpicLibrary(epicAccount);
-    for (const game of (library && library.games) || []) {
-      if (!game || !game.slug) continue;
+    const games = (library && library.games) || [];
+    // The library snapshot's own `slug` is only the productmapping fallback
+    // (~1 283 appNames). The catalog bulk (`productSlug`/`urlSlug`) and a
+    // previously discovered slug override cover Epic exclusives such as
+    // Alan Wake 2, which `productmapping` does not list at all.
+    const catalog = epicCache.listEpicCatalogItems(
+      games.map((game) => game && game.catalogItemId).filter(Boolean)
+    );
+    for (const game of games) {
+      if (!game) continue;
+      const meta = (game.catalogItemId && catalog[game.catalogItemId]) || null;
+      const slug =
+        (meta && meta.slug) ||
+        game.slug ||
+        (game.catalogItemId ? epicCache.getEpicSlugOverride(game.catalogItemId) : null) ||
+        null;
+      const title = (meta && meta.title) || game.name || game.appName || null;
+      if (!slug) epicNoSlug++;
       epic.push({
-        slug: game.slug,
-        id: game.catalogItemId || game.appName || game.slug,
-        title: game.name || null,
+        slug: slug || null,
+        id: String(game.catalogItemId || game.appName || slug || ''),
+        catalogItemId: game.catalogItemId || null,
+        title,
+        catalog: meta,
       });
     }
   }
-  return { gog, epic };
+  return { gog, epic, epicNoSlug };
 }
 
 /** Test helper: forget job/cooldown state between cases. */
@@ -1152,6 +1377,9 @@ module.exports = {
   normalizeEpicProduct,
   pickEpicPage,
   epicTagName,
+  epicGenresFromCategories,
+  slugFromTitle,
+  discoverEpicSlug,
   gogUrl,
   epicUrl,
   readDetail,

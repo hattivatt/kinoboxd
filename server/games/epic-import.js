@@ -174,12 +174,34 @@ function totalsOf(games, playtime) {
   };
 }
 
-function mergeCatalogSlugs(games, productMapping) {
+/**
+ * Fill `game.slug` for the games the store metadata job can address, strongest
+ * source first:
+ *
+ *   1. `catalog/<catalogItemId>.json` `slug` (catalog `productSlug`/`urlSlug`) —
+ *      this is the source that covers **Epic exclusives** absent from
+ *      `productmapping` (Alan Wake 2, §14.2/§14.7);
+ *   2. the public `productmapping` appName → slug list (~1 283 records);
+ *   3. a previously discovered slug override (`slug-overrides.json`).
+ */
+function mergeCatalogSlugs(games, productMapping, catalogDocs) {
   const byAppName = (productMapping && productMapping.byAppName) || {};
+  const catalog = catalogDocs && typeof catalogDocs === 'object' ? catalogDocs : {};
   for (const game of games) {
-    if (!game.slug && game.appName && byAppName[game.appName]) {
-      game.slug = byAppName[game.appName];
+    if (game.slug) continue;
+    const meta = game.catalogItemId ? catalog[game.catalogItemId] : null;
+    if (meta && meta.slug) {
+      game.slug = meta.slug;
+      continue;
     }
+    if (game.appName && byAppName[game.appName]) {
+      game.slug = byAppName[game.appName];
+      continue;
+    }
+    const known = game.catalogItemId
+      ? epicCache.getEpicSlugOverride(game.catalogItemId)
+      : null;
+    if (known) game.slug = known;
   }
 }
 
@@ -241,7 +263,7 @@ async function fetchCatalog(job, client, games, options) {
       // A stale mapping is still usable; a missing one just means no fallback.
     }
   }
-  mergeCatalogSlugs(games, mapping);
+  mergeCatalogSlugs(games, mapping, epicCache.listEpicCatalogItems(ids));
 
   return { catalogCount, catalogCached: Object.keys(cached).length };
 }

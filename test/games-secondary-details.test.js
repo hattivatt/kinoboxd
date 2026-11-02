@@ -31,6 +31,7 @@ const gameCache = require('../server/games/game-cache');
 const gogCache = require('../server/games/gog-cache');
 const epicCache = require('../server/games/epic-cache');
 const details = require('../server/games/secondary-details');
+const epicLayer = require('../server/games/epic-layer');
 const { buildSecondaryUnion } = require('../server/games/secondary-union');
 const { buildGamesStatsFromCache } = require('../server/games/stats');
 
@@ -42,6 +43,19 @@ function fixture(relative) {
 const GOG_WITCHER = fixture('gog/product-1207658924.json');
 const GOG_HEROES = fixture('gog/product-1207658787.json');
 const EPIC_WITCHER = fixture('epic/product-the-witcher-3-wild-hunt.json');
+// Alan Wake 2: an Epic exclusive whose CMS page is stale (`meta` has only
+// `customReleaseDate: "Coming Soon"`, no tags/releaseDate/developer) and whose
+// appName is absent from `productmapping` (~1 283 records). Live 02.11.2026.
+const EPIC_AW2 = fixture('epic/product-alan-wake-2.json');
+const AW2_CATALOG = {
+  catalogItemId: 'aw2-catalog',
+  title: 'Alan Wake 2',
+  slug: 'alan-wake-2',
+  developer: 'Remedy Entertainment',
+  publisher: 'Epic Games Publishing',
+  releaseDate: '2023-10-27T00:00:00.000Z',
+  categories: [{ path: 'games' }, { path: 'games/action' }, { path: 'games/horror' }],
+};
 
 function cacheFile(source, id) {
   return path.join(details.CACHE_DIR, `${source}-${id}.json`);
@@ -53,6 +67,12 @@ function clearCache() {
     if (name.endsWith('.json')) fs.unlinkSync(path.join(details.CACHE_DIR, name));
   }
   details.writeBreaker({});
+  // Slug overrides live in the Epic catalog dir (global, like the details).
+  try {
+    fs.rmSync(epicCache.slugOverridesPath(), { force: true });
+  } catch (err) {
+    /* nothing to clean */
+  }
 }
 
 function fakeClient(handlers = {}) {
@@ -192,6 +212,61 @@ test('secondary details', async (t) => {
   await t.test('Epic CMS: an unknown tag code is prettified, not dropped', () => {
     assert.equal(details.epicTagName('SOME_NEW_TAG'), 'Some New Tag');
     assert.equal(details.epicTagName('RPG'), 'Role-Playing');
+  });
+
+  /* ---- Alan Wake 2: Epic exclusive with a stale CMS page (02.11.2026) ---- */
+
+  await t.test('Epic CMS: stale page (Alan Wake 2) — poster + attribution survive', () => {
+    const data = details.normalizeEpicProduct(EPIC_AW2, { slug: 'alan-wake-2' });
+    assert.equal(data.title, 'Alan Wake 2');
+    assert.equal(data.slug, 'alan-wake-2');
+    // The CMS page has no meta.tags/releaseDate/developer at all.
+    assert.deepEqual(data.genres, []);
+    assert.equal(data.genresSource, null);
+    assert.equal(data.releaseDate, null);
+    assert.equal(data.releaseDateSource, null);
+    // `about.*Attribution` is the only developer/publisher source on such a page.
+    assert.deepEqual(data.developers, ['Remedy Entertainment']);
+    assert.deepEqual(data.publishers, ['Epic Games Publishing']);
+    assert.match(data.verticalCover, /1200x1600/);
+    assert.match(data.verticalCover, /egs-alanwake2-remedyentertainment-s2/);
+    assert.match(data.image, /2560x1440/);
+  });
+
+  await t.test('Epic CMS: stale page + catalog fallback fills year/genres/dev', () => {
+    const data = details.normalizeEpicProduct(EPIC_AW2, {
+      slug: 'alan-wake-2',
+      catalog: AW2_CATALOG,
+    });
+    assert.equal(data.releaseDate, '2023-10-27T00:00:00.000Z');
+    assert.equal(data.releaseYear, 2023);
+    assert.equal(data.releaseDateSource, 'epic-catalog');
+    assert.deepEqual(data.genres, ['Action', 'Horror']);
+    assert.equal(data.genresSource, 'epic-catalog');
+    // The CMS tag line, when present, always wins over the catalog buckets.
+    const fresh = JSON.parse(JSON.stringify(EPIC_AW2));
+    fresh.pages[0].data.meta.tags = ['HORROR', 'ADVENTURE'];
+    fresh.pages[0].data.meta.releaseDate = '2023-10-27T00:00:00.000Z';
+    const fromCms = details.normalizeEpicProduct(fresh, { catalog: AW2_CATALOG });
+    assert.deepEqual(fromCms.genres, ['Horror', 'Adventure']);
+    assert.equal(fromCms.genresSource, 'epic-store');
+    assert.equal(fromCms.releaseDateSource, 'epic-store');
+  });
+
+  await t.test('Epic catalog categories: only genre segments, never buckets', () => {
+    assert.deepEqual(details.epicGenresFromCategories(['games', 'freegames']), []);
+    assert.deepEqual(details.epicGenresFromCategories([{ path: 'games/action' }]), ['Action']);
+    assert.deepEqual(
+      details.epicGenresFromCategories([{ path: 'games' }, { path: 'games/action' }, { path: 'games/action' }]),
+      ['Action']
+    );
+  });
+
+  await t.test('slugFromTitle: kebab-case, ASCII only, no invented transliteration', () => {
+    assert.equal(details.slugFromTitle('Alan Wake 2'), 'alan-wake-2');
+    assert.equal(details.slugFromTitle('The Witcher 3: Wild Hunt'), 'the-witcher-3-wild-hunt');
+    assert.equal(details.slugFromTitle('  '), '');
+    assert.equal(details.slugFromTitle('Ведьмак 3'), '3');
   });
 });
 
@@ -357,6 +432,75 @@ test('secondary details job', async (t) => {
     assert.ok(job.warnings.includes('gog_budget'));
   });
 
+  await t.test('Epic exclusive without a slug: validated title probe resolves it', async () => {
+    details.resetJobs();
+    clearCache();
+    const client = fakeClient({ '/products/alan-wake-2': EPIC_AW2 });
+    details.startSecondaryDetails({
+      ownerKey: 'steam-test-aw2',
+      gog: [],
+      epic: [
+        {
+          slug: null,
+          id: 'aw2-catalog',
+          catalogItemId: 'aw2-catalog',
+          title: 'Alan Wake 2',
+          catalog: AW2_CATALOG,
+        },
+      ],
+      client,
+      pauseMs: 0,
+    });
+    const job = await waitForJob('steam-test-aw2');
+    assert.equal(job.status, 'done');
+    assert.equal(job.epic.total, 1);
+    // No slug in productmapping — the job says so instead of hiding it.
+    assert.equal(job.epic.missingSlug, 1);
+    assert.equal(job.epic.resolved, 1);
+    assert.equal(job.epic.notFound, 0);
+    // One HTTP call (the probe payload is reused), counted conservatively.
+    assert.equal(client.calls.length, 1);
+    assert.equal(job.requests, 2);
+    assert.match(client.calls[0], /store-content\.ak\.epicgames\.com\/api\/en-US\/content\/products\/alan-wake-2$/);
+    // The probe result is cached under the discovered slug…
+    const doc = details.readDetail('epic', 'alan-wake-2');
+    assert.equal(doc.doc.status, 'ok');
+    assert.equal(doc.doc.data.releaseYear, 2023);
+    assert.deepEqual(doc.doc.data.genres, ['Action', 'Horror']);
+    assert.deepEqual(doc.doc.data.developers, ['Remedy Entertainment']);
+    // …and remembered per catalogItemId, so the read model can key the union.
+    assert.equal(epicCache.getEpicSlugOverride('aw2-catalog'), 'alan-wake-2');
+  });
+
+  await t.test('Epic exclusive: a failed probe is library-only, not not_found', async () => {
+    details.resetJobs();
+    clearCache();
+    const notFound = Object.assign(new Error('404'), {
+      code: 'secondary_details_not_found',
+      status: 404,
+    });
+    const client = fakeClient({ '/products/': notFound });
+    details.startSecondaryDetails({
+      ownerKey: 'steam-test-noslug',
+      gog: [],
+      epic: [
+        { slug: null, id: 'x-catalog', catalogItemId: 'x-catalog', title: 'Some Exclusive' },
+      ],
+      client,
+      pauseMs: 0,
+    });
+    const job = await waitForJob('steam-test-noslug');
+    assert.equal(job.status, 'done');
+    assert.equal(job.epic.total, 1);
+    assert.equal(job.epic.missingSlug, 1);
+    assert.equal(job.epic.resolved, 0);
+    // A guessed slug that 404s is NOT a verdict about the product.
+    assert.equal(job.epic.notFound, 0);
+    assert.ok(job.warnings.includes('epic_no_slug'));
+    assert.equal(fs.existsSync(cacheFile('epic', 'some-exclusive')), false);
+    assert.equal(epicCache.getEpicSlugOverride('x-catalog'), null);
+  });
+
   await t.test('a running job is reused, not duplicated; kick honours the cooldown', async () => {
     details.resetJobs();
     clearCache();
@@ -425,7 +569,56 @@ test('kick targets come from the cached libraries', async (t) => {
     const targets = details.targetsForOwner(owner);
     assert.deepEqual(targets.gog.map((entry) => entry.id).sort(), ['1207658787', '1207658924']);
     assert.deepEqual(targets.epic.map((entry) => entry.slug), ['the-witcher-3-wild-hunt']);
-    assert.deepEqual(details.targetsForOwner('steam-unknown'), { gog: [], epic: [] });
+    assert.equal(targets.epicNoSlug, 0);
+    assert.deepEqual(details.targetsForOwner('steam-unknown'), {
+      gog: [],
+      epic: [],
+      epicNoSlug: 0,
+    });
+  });
+
+  await t.test('Epic exclusives: catalog slug and discovered override address the slot', async () => {
+    clearCache();
+    const owner = 'steam-76561198000000042';
+    const nowIso = new Date().toISOString();
+    await epicCache.saveEpicProfile({ accountId: 'epic-aw2', ownerKey: owner, connectedAt: nowIso });
+    await epicCache.saveEpicLibrary('epic-aw2', {
+      accountId: 'epic-aw2',
+      fetchedAt: nowIso,
+      games: [
+        // Alan Wake 2: absent from `productmapping`, but the catalog bulk knows
+        // the store slug.
+        { appName: 'Ginger', catalogItemId: 'aw2-cat', name: 'Alan Wake 2' },
+        // No catalog doc, no productmapping, no override → library-only.
+        { appName: 'OtherExclusive', catalogItemId: 'other-cat', name: 'Other Exclusive' },
+      ],
+    });
+    await epicCache.saveEpicCatalogItem('aw2-cat', {
+      title: 'Alan Wake 2',
+      slug: 'alan-wake-2',
+      releaseDate: '2023-10-27T00:00:00.000Z',
+      categories: [{ path: 'games' }, { path: 'games/action' }],
+    });
+
+    const targets = details.targetsForOwner(owner);
+    assert.deepEqual(targets.epic.map((entry) => entry.slug), ['alan-wake-2', null]);
+    assert.equal(targets.epicNoSlug, 1);
+    assert.equal(targets.epic[0].title, 'Alan Wake 2');
+    assert.equal(targets.epic[0].catalog.releaseDate, '2023-10-27T00:00:00.000Z');
+
+    // The probe's discovery is remembered, so the next kick addresses it too.
+    epicCache.saveEpicSlugOverride('other-cat', 'other-exclusive', { title: 'Other Exclusive' });
+    const again = details.targetsForOwner(owner);
+    assert.deepEqual(again.epic.map((entry) => entry.slug), ['alan-wake-2', 'other-exclusive']);
+    assert.equal(again.epicNoSlug, 0);
+
+    // The read model (union key `epic:<slug>`) sees the same discovered slug.
+    const layer = epicLayer.buildEpicLayerSync({ ownerKey: owner });
+    const games = layer.games.map((game) => [game.name, game.slug, game.metadataSource]);
+    assert.deepEqual(games, [
+      ['Alan Wake 2', 'alan-wake-2', 'epic-catalog'],
+      ['Other Exclusive', 'other-exclusive', 'epic-slug-probe'],
+    ]);
   });
 });
 
@@ -661,6 +854,7 @@ test('stats use the store metadata', async (t) => {
     assert.deepEqual(payload.meta.secondaryDetails, {
       resolved: 1,
       total: 1,
+      noSlug: 0,
       running: false,
     });
   });
