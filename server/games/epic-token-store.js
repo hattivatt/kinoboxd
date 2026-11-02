@@ -253,6 +253,29 @@ function readTokenSummarySync(accountId) {
   return redactTokens(doc);
 }
 
+/**
+ * Synchronous, redacted list of every token document. Read-only paths (the
+ * owner-binding scan behind `/secondary-details/status` and the kick rule)
+ * cannot await, and must never see a token value. Broken/symlinked files are
+ * simply absent.
+ */
+function listTokenSummariesSync() {
+  let names = [];
+  try {
+    names = fs.readdirSync(TOKENS_DIR);
+  } catch (err) {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    const match = /^epic-(.+)\.json$/.exec(name);
+    if (!match) continue;
+    const summary = readTokenSummarySync(match[1]);
+    if (summary) out.push(summary);
+  }
+  return out;
+}
+
 /** All token documents, newest first. Internal use only (refresh/import). */
 async function listTokenDocs() {
   let names = [];
@@ -296,6 +319,10 @@ function redactTokens(doc) {
     accountId: doc.accountId || null,
     displayName: doc.displayName || null,
     ownerKey: doc.ownerKey || null,
+    // Old-format binding (pre-«ownerKey»): kept so the owner-binding self-heal
+    // can recognise a token that was adopted by the GOG-style `ownerProfile`
+    // field instead of silently treating it as unbound.
+    ownerProfile: doc.ownerProfile || null,
     authMethod: doc.authMethod || null,
     hasAccessToken: Boolean(doc.accessToken),
     hasRefreshToken: Boolean(doc.refreshToken),
@@ -324,6 +351,7 @@ module.exports = {
   saveTokens,
   getTokens,
   readTokenSummarySync,
+  listTokenSummariesSync,
   listTokenDocs,
   listTokenAccounts,
   deleteTokens,

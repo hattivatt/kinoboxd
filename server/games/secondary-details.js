@@ -745,6 +745,14 @@ function ownerHasCatalogToken(ownerKey) {
   if (!key) return false;
   try {
     const epicCache = require('./epic-cache');
+    // The binding scan also sees a token the *profile* never adopted: exactly
+    // one unbound token is an owner-addressable account (the job adopts it),
+    // so coverage and the kick rule must not pretend there is no token.
+    const binding =
+      typeof epicCache.epicBindingForOwnerSync === 'function'
+        ? epicCache.epicBindingForOwnerSync(key)
+        : null;
+    if (binding) return Boolean(binding.accountId && binding.hasAccessToken);
     const accountId = epicCache.epicAccountForOwner(key);
     if (!accountId) return false;
     const store = require('./epic-token-store');
@@ -771,6 +779,30 @@ function catalogIsFresh(catalog) {
   } catch (err) {
     return false;
   }
+}
+
+/**
+ * Can this cached catalog document actually supply the fact the detail is
+ * missing? (fix 02.11.2026 — the silent skip that kept AW2 «partial» forever)
+ *
+ * `epic-import.js` writes `catalog/<id>.json` from the same bulk endpoint the
+ * details phase uses, but **without** a per-owner attempt in the ledger. The
+ * document can carry a release date and only bucket categories («games»), so
+ * `catalogHasMeta` was true while the detail still had no genre. The phase then
+ * returned the cached document before `getCatalogBulk` forever: the kick ran,
+ * the job finished in a second, `catalogAttempts.total` stayed 0 and nothing
+ * was recorded as an error.
+ *
+ * A cached document is a reason to skip the request only when it fills every
+ * missing axis. `detail == null` (a CMS page with no meta at all) means *both*
+ * axes are missing, so a date-only document is not enough either.
+ */
+function catalogAnswersMissing(detail, catalog) {
+  if (!catalogHasMeta(catalog)) return false;
+  const flags = catalogMetaFlags(detail);
+  if (!flags.yearHas && !catalog.releaseDate) return false;
+  if (!flags.genresOk && epicGenresFromCategories(catalog.categories).length === 0) return false;
+  return true;
 }
 
 /**
@@ -870,12 +902,65 @@ async function trySilentTokenRefresh(options, accountId) {
  */
 async function refetchEpicCatalog(options = {}) {
   const catalogItemId = options.catalogItemId ? String(options.catalogItemId) : '';
-  if (!catalogItemId) return { catalog: null, skipped: 'no_catalog_id' };
-  const epicCache = require('./epic-cache');
   const ownerKey = options.ownerKey ? String(options.ownerKey) : '';
-  const accountId =
+  // Every early exit is recorded: `bySource.epic.lastSkip` must be able to say
+  // «not_connected because the token was unbound», «probe», «budget», … — a
+  // silent return is what made the production symptom undiagnosable.
+  const skip = (reason, entry = {}) => {
+    recordSkip(ownerKey, {
+      source: 'epic',
+      reason,
+      catalogItemId: catalogItemId || null,
+      ...entry,
+    });
+    return reason;
+  };
+  if (!catalogItemId) {
+    return { catalog: null, skipped: 'no_catalog_id', skipReason: skip('no_catalog_id') };
+  }
+  const epicCache = require('./epic-cache');
+  let accountId =
     options.epicAccountId || (ownerKey ? epicCache.epicAccountForOwner(ownerKey) : null);
-  if (!accountId) return { catalog: null, skipped: 'not_connected' };
+  if (!accountId && ownerKey) {
+    // Self-heal an unbound/old-format token (one token, no other owner claims
+    // it). A mismatch/ambiguity is *not* guessed at: the reason goes to the
+    // status ledger instead.
+    const binding =
+      typeof epicCache.ensureEpicOwnerBinding === 'function'
+        ? await epicCache.ensureEpicOwnerBinding(ownerKey, {
+            tokenStore: options.tokenStore || null,
+          })
+        : null;
+    if (binding && binding.accountId) accountId = binding.accountId;
+    if (!accountId) {
+      const state = (binding && binding.state) || 'none';
+      const reason =
+        state === 'owner_mismatch'
+          ? 'owner_mismatch'
+          : state === 'ambiguous'
+            ? 'binding_ambiguous'
+            : state === 'none' || state === 'no_owner'
+              ? 'no_token'
+              : 'not_connected';
+      return {
+        catalog: null,
+        skipped: 'not_connected',
+        skipReason: skip(reason, {
+          detail: state,
+          otherOwner: binding && binding.otherOwner ? binding.otherOwner : null,
+        }),
+        binding: binding || null,
+      };
+    }
+  }
+  if (!accountId) {
+    return {
+      catalog: null,
+      skipped: 'not_connected',
+      skipReason: skip('no_owner'),
+      binding: null,
+    };
+  }
   const store = options.tokenStore || require('./epic-token-store');
   let token = null;
   try {
@@ -885,12 +970,22 @@ async function refetchEpicCatalog(options = {}) {
   } catch (err) {
     token = null;
   }
-  if (!token || !token.hasAccessToken) return { catalog: null, skipped: 'not_connected' };
+  if (!token || !token.hasAccessToken) {
+    return {
+      catalog: null,
+      skipped: 'not_connected',
+      skipReason: skip('no_access_token', { accountId }),
+    };
+  }
   const namespace = options.namespace || DEFAULT_EPIC_NAMESPACE;
   if (options.force !== true && options.forceCatalog !== true) {
     const probe = readCatalogProbe(catalogItemId);
     if (probe.fresh && probe.doc && probe.doc.status && probe.doc.status !== 'ok') {
-      return { catalog: null, skipped: 'probe' };
+      return {
+        catalog: null,
+        skipped: 'probe',
+        skipReason: skip('probe', { accountId, detail: probe.doc.status }),
+      };
     }
   }
   if (typeof options.canRequest === 'function' && !options.canRequest()) {
@@ -900,12 +995,21 @@ async function refetchEpicCatalog(options = {}) {
       code: 'catalog_budget',
       reason: 'budget',
     });
-    return { catalog: null, skipped: 'budget', warning: 'catalog_budget' };
+    return {
+      catalog: null,
+      skipped: 'budget',
+      warning: 'catalog_budget',
+      skipReason: skip('budget', { accountId }),
+    };
   }
   const client =
     options.epicClient || options.catalogClient || createCatalogClient(options);
   if (!client || typeof client.getCatalogBulk !== 'function') {
-    return { catalog: null, skipped: 'no_client' };
+    return {
+      catalog: null,
+      skipped: 'no_client',
+      skipReason: skip('no_client', { accountId }),
+    };
   }
 
   const record = (entry) => {
@@ -1730,6 +1834,9 @@ function readStatusState() {
     lastErrors: Array.isArray(doc.lastErrors) ? doc.lastErrors.slice(-MAX_STATUS_ERRORS) : [],
     kicks: Array.isArray(doc.kicks) ? doc.kicks.slice(-MAX_KICK_HISTORY) : [],
     lastRunAt: doc.lastRunAt || null,
+    // Why the last catalog step exited without asking: `{ [owner]: { epic: { reason, at } } }`.
+    // This is the field that turns a silent no-op into a copy-paste diagnosis.
+    skips: doc.skips && typeof doc.skips === 'object' ? doc.skips : {},
   };
 }
 
@@ -1760,6 +1867,50 @@ function recordKick(entry) {
     writeStatusState(state);
   } catch (err) {
     /* ignore */
+  }
+}
+
+/**
+ * Remember **why the catalog step did not ask** (fix 02.11.2026).
+ *
+ * Production symptom: a partial Epic detail was re-kicked every cooldown,
+ * every job finished in ~1 s, and `/secondary-details/status` reported
+ * `catalogAttempts.total: 0`, `lastErrors: []`, no breaker — a silent no-op.
+ * Every early exit of the catalog step now lands here, so the answer is
+ * `bySource.epic.lastSkip = { reason, at, … }`.
+ *
+ * Polled paths (`/stats` kick) can call this often; an identical reason within
+ * a minute is not rewritten, so the state file is not churned by the poll.
+ */
+function recordSkip(ownerKey, entry = {}) {
+  const key = String(ownerKey == null ? '' : ownerKey).trim();
+  if (!key) return null;
+  const source = entry.source || 'epic';
+  try {
+    const state = readStatusState();
+    const ownerSkips = (state.skips && state.skips[key]) || {};
+    const previous = ownerSkips[source] || null;
+    const next = { source, reason: entry.reason || 'skipped', at: isoOf(nowMs()) };
+    for (const field of ['catalogItemId', 'accountId', 'detail', 'otherOwner', 'trigger']) {
+      if (entry[field] != null) next[field] = entry[field];
+    }
+    const at = previous ? Date.parse(previous.at || '') : NaN;
+    if (
+      previous &&
+      previous.reason === next.reason &&
+      previous.catalogItemId === next.catalogItemId &&
+      Number.isFinite(at) &&
+      nowMs() - at < 60_000
+    ) {
+      return previous;
+    }
+    if (!state.skips || typeof state.skips !== 'object') state.skips = {};
+    if (!state.skips[key] || typeof state.skips[key] !== 'object') state.skips[key] = {};
+    state.skips[key][source] = next;
+    writeStatusState(state);
+    return next;
+  } catch (err) {
+    return null;
   }
 }
 
@@ -2088,8 +2239,16 @@ async function discoverEpicSlug(options = {}) {
  */
 async function ensureEpicCatalog(options = {}) {
   const catalog = options.catalog;
-  if (catalogHasMeta(catalog) && catalogIsFresh(catalog)) {
-    return { catalog, pending: false, deferred: false, warning: null };
+  const detail = options.detail || null;
+  // Reuse is justified only by a document that answers the missing fact: a
+  // freshly imported catalog with a date but no genre must not silence the
+  // request (see `catalogAnswersMissing`).
+  if (
+    catalogHasMeta(catalog) &&
+    catalogIsFresh(catalog) &&
+    catalogAnswersMissing(detail, catalog)
+  ) {
+    return { catalog, pending: false, deferred: false, warning: null, reused: true };
   }
   const result = await refetchEpicCatalog(options);
   if (result.catalog) return result;
@@ -2147,6 +2306,8 @@ async function resolveEpic(slug, options = {}) {
   );
   if (fresh && doc && !options.force && !(probeOnlyNegative && !probedPayload)) {
     let data = doc.status === 'ok' ? doc.data : null;
+    let catalogSkipped = null;
+    let catalogSkipReason = null;
     // A detail cached before the catalog existed (Alan Wake 2: poster only)
     // is completed in place: the raw CMS payload is not cached, so the catalog
     // fields are merged additively. No catalog item → nothing to do.
@@ -2158,8 +2319,12 @@ async function resolveEpic(slug, options = {}) {
         catalogItemId: options.catalogItemId,
       })
     ) {
-      const ensured = await ensureEpicCatalog(options);
+      // `detail: data` is what keeps a cached-but-unhelpful catalog document
+      // from silencing the request (the import writes one without a ledger).
+      const ensured = await ensureEpicCatalog({ ...options, detail: data });
       noteCatalogResult(ensured, options);
+      catalogSkipped = ensured.skipped || null;
+      catalogSkipReason = ensured.skipReason || null;
       let next = data;
       if (ensured.catalog) next = applyCatalogToDetail(next, ensured.catalog);
       if (ensured.skipped === 'not_connected') {
@@ -2202,6 +2367,8 @@ async function resolveEpic(slug, options = {}) {
       data,
       status: doc.status,
       cached: true,
+      catalogSkipped,
+      catalogSkipReason,
     };
   }
   const blocked = breakerBlock('epic');
@@ -2263,12 +2430,16 @@ async function resolveEpic(slug, options = {}) {
   // the catalog bulk is the only store-owned source left. It needs the
   // owner's token and is bounded by the same budget/breaker as this phase.
   let catalogSkipped = null;
+  let catalogSkipReason = null;
   if (epicPageNeedsCatalog(payload)) {
-    const ensured = await ensureEpicCatalog(options);
+    // No detail document yet: both year and genres are missing, so a date-only
+    // cached catalog is not enough to skip the request.
+    const ensured = await ensureEpicCatalog({ ...options, detail: null });
     noteCatalogResult(ensured, options);
     if (ensured.catalog) catalog = ensured.catalog;
     catalogPending = Boolean(ensured.pending);
     if (ensured.skipped === 'not_connected') catalogSkipped = 'not_connected';
+    catalogSkipReason = ensured.skipReason || null;
   }
   const data = normalizeEpicProduct(payload, {
     slug: id,
@@ -2303,7 +2474,14 @@ async function resolveEpic(slug, options = {}) {
       /* a read-only cache must not fail the fetch */
     }
   }
-  return { data, status: 'ok', cached: false, host: host || null };
+  return {
+    data,
+    status: 'ok',
+    cached: false,
+    host: host || null,
+    catalogSkipped,
+    catalogSkipReason,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -2330,6 +2508,9 @@ function emptyPhase() {
     cached: 0,
     failed: 0,
     deferred: 0,
+    // Works whose catalog step exited without asking (token binding, probe,
+    // budget, no client). Visible so a «done in 1 s» job can explain itself.
+    catalogSkipped: 0,
     // Works with no store slug at all: «library-only» (title + hours), never a
     // silent drop and never a fake `not_found`.
     missingSlug: 0,
@@ -2426,6 +2607,13 @@ async function runPhase(job, source, targets, resolveOne) {
           phase.notFound++;
           phase.fetched++;
         }
+      }
+      if (result.catalogSkipped) {
+        // «The phase found the work, saw the catalog could help and did not
+        // ask» must be a visible fact, not a fast `done`.
+        phase.catalogSkipped++;
+        const warning = `epic_catalog_${result.catalogSkipReason || result.catalogSkipped}`;
+        if (!job.warnings.includes(warning)) job.warnings.push(warning);
       }
     } catch (err) {
       const code = (err && err.code) || 'secondary_details_error';
@@ -2651,7 +2839,14 @@ function targetsForOwner(ownerKey) {
     }
   }
   let epicNoSlug = 0;
-  const epicAccount = epicCache.epicAccountForOwner(key);
+  // Read-only binding scan: a token the profile has not adopted yet (exactly
+  // one, no other owner) still addresses this owner's library. The job adopts
+  // it; enumeration here must not report «no Epic» while the games exist.
+  const epicBinding =
+    typeof epicCache.epicBindingForOwnerSync === 'function'
+      ? epicCache.epicBindingForOwnerSync(key)
+      : { state: 'none', accountId: epicCache.epicAccountForOwner(key) };
+  const epicAccount = epicBinding.accountId || null;
   if (epicAccount) {
     const library = epicCache.getEpicLibrary(epicAccount);
     const games = (library && library.games) || [];
@@ -2683,7 +2878,7 @@ function targetsForOwner(ownerKey) {
       });
     }
   }
-  return { gog, epic, epicNoSlug };
+  return { gog, epic, epicNoSlug, epicBinding };
 }
 
 /* ------------------------------------------------------------------ */
@@ -2699,7 +2894,10 @@ function targetsForOwner(ownerKey) {
  */
 function coverageForOwner(ownerKey) {
   const targets = targetsForOwner(ownerKey);
-  const epicHasToken = ownerHasCatalogToken(ownerKey);
+  const epicBinding = targets.epicBinding || { state: 'none', accountId: null };
+  const epicHasToken = Boolean(
+    epicBinding.accountId && epicBinding.hasAccessToken !== false
+  );
   // One ledger read for the whole pass: `/stats` is polled, and a 300-work
   // Epic library must not re-read the same state file per target.
   let catalogState = null;
@@ -2809,6 +3007,10 @@ function coverageForOwner(ownerKey) {
     gog,
     epic,
     slugless,
+    // Where the Epic binding actually stands (`bound`/`unbound`/`profile_missing`/
+    // `owner_mismatch`/`ambiguous`/`none`) plus the account it resolves to, so a
+    // missing/foreign token is a stated fact rather than an empty card.
+    epicBinding,
     resolved: gog.resolved + epic.resolved,
     total: gog.total + epic.total,
     pending: gog.pending + epic.pending,
@@ -2838,6 +3040,7 @@ function statusForOwner(ownerKey) {
   const last = kicks.length ? kicks[kicks.length - 1] : null;
   const gogBreaker = breakerBlock('gog');
   const epicBreaker = breakerBlock('epic');
+  const ownerSkips = (state.skips && state.skips[key]) || {};
   const cooldownUntil = lastKick ? isoOf(lastKick + kickCooldownMs()) : null;
   const kickCooldownActive = Boolean(
     lastKick && nowMs() - lastKick < kickCooldownMs()
@@ -2856,7 +3059,16 @@ function statusForOwner(ownerKey) {
     running: runningFor(key),
     bySource: {
       gog: { ...coverage.gog },
-      epic: { ...coverage.epic },
+      epic: {
+        ...coverage.epic,
+        // Why the last catalog step did not ask (`not_connected`, `no_token`,
+        // `owner_mismatch`, `binding_ambiguous`, `probe`, `budget`,
+        // `no_client`, `no_access_token`, …) — `null` when every due work was
+        // actually asked. The owner can paste this text back.
+        lastSkip: ownerSkips.epic || null,
+        // Where the owner→account binding stands, independent of a job run.
+        binding: coverage.epicBinding || { state: 'none', accountId: null },
+      },
     },
     // The per-owner catalog ledger: which `catalogItemId`s were asked, what
     // the token answered, HTTP status/bytes and whether year/genres arrived.
@@ -2944,6 +3156,19 @@ function kickFromStats(ownerKey, meta, options = {}) {
     return { skipped: 'attempted' };
   }
   const coverage = coverageForOwner(key);
+  // A token that names another owner (or several candidates) is never adopted:
+  // it is stated in the status ledger and blocks the job instead of silently
+  // pretending the owner has no Epic library.
+  const binding = coverage.epicBinding || null;
+  if (binding && (binding.state === 'owner_mismatch' || binding.state === 'ambiguous')) {
+    recordSkip(key, {
+      source: 'epic',
+      reason: binding.state,
+      detail: 'binding',
+      otherOwner: binding.otherOwner || null,
+      trigger: 'stats',
+    });
+  }
   // `partial` is kickable (fix 02.11.2026): the detail exists, but year/genres
   // are incomplete — the catalog is re-asked when no attempt is recorded yet
   // or its 30-day probe window expired. A settled `shape_ok` partial stays
@@ -3018,6 +3243,7 @@ module.exports = {
   needsCatalogCompletion,
   shouldAttemptCatalog,
   catalogHasMeta,
+  catalogAnswersMissing,
   applyCatalogToDetail,
   refetchEpicCatalog,
   ensureEpicCatalog,
@@ -3052,6 +3278,7 @@ module.exports = {
   tripBreaker,
   readStatusState,
   writeStatusState,
+  recordSkip,
   resolveGog,
   resolveEpic,
   startSecondaryDetails,

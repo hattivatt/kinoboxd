@@ -184,6 +184,145 @@ function epicAccountForOwner(ownerKey) {
   return entry ? entry.accountId : null;
 }
 
+/**
+ * Owner-binding self-heal, **read-only** half (fix 02.11.2026).
+ *
+ * The catalog phase can only address an Epic library when `epicAccountForOwner`
+ * finds the binding. A token file written before the «one owner» rule — or one
+ * whose profile was lost — has no `ownerKey`, so the phase used to exit with
+ * `not_connected` while a perfectly usable token sat in `tokens/`. This helper
+ * decides, synchronously, what the binding actually is:
+ *
+ *   { state: 'bound',         accountId, hasAccessToken }
+ *   { state: 'profile_missing', accountId, hasAccessToken } — token names the
+ *        owner (old `ownerProfile` accepted), the profile file does not;
+ *   { state: 'unbound',       accountId, hasAccessToken }  — exactly one token
+ *        without any binding: it may be adopted by the owner **if** the owner
+ *        has no other account and no token names another owner;
+ *   { state: 'owner_mismatch', otherOwner }               — a token names a
+ *        different owner: visible, never a silent reassignment;
+ *   { state: 'ambiguous',     candidates[] }              — several candidate
+ *        tokens without an unambiguous owner;
+ *   { state: 'none' }                                     — no token at all.
+ *
+ * It never reads a token value into the result (only presence), never writes.
+ * The write half is `ensureEpicOwnerBinding`.
+ */
+function epicBindingForOwnerSync(ownerKey) {
+  const wanted = String(ownerKey == null ? '' : ownerKey).trim();
+  if (!wanted) return { state: 'no_owner', accountId: null, hasAccessToken: false };
+  const bound = epicAccountForOwner(wanted);
+  const summaries = () => {
+    try {
+      const store = require('./epic-token-store');
+      return typeof store.listTokenSummariesSync === 'function'
+        ? store.listTokenSummariesSync()
+        : [];
+    } catch (err) {
+      return [];
+    }
+  };
+  if (bound) {
+    const token = summaries().find((entry) => entry.accountId === bound) || null;
+    return {
+      state: 'bound',
+      accountId: bound,
+      hasAccessToken: Boolean(token && token.hasAccessToken),
+    };
+  }
+  const ownerOf = (entry) =>
+    String((entry && (entry.ownerKey || entry.ownerProfile)) || '').trim();
+  const docs = summaries();
+  if (!docs.length) return { state: 'none', accountId: null, hasAccessToken: false };
+  const mine = docs.filter((entry) => ownerOf(entry) === wanted);
+  const foreign = docs.filter((entry) => ownerOf(entry) && ownerOf(entry) !== wanted);
+  const unbound = docs.filter((entry) => !ownerOf(entry));
+  const withToken = (state, entry, extra = {}) => ({
+    state,
+    accountId: entry ? String(entry.accountId) : null,
+    hasAccessToken: Boolean(entry && entry.hasAccessToken),
+    ...extra,
+  });
+  if (docs.length === 1) {
+    const only = docs[0];
+    if (!ownerOf(only)) return withToken('unbound', only);
+    if (ownerOf(only) === wanted) return withToken('profile_missing', only);
+    return withToken('owner_mismatch', null, { otherOwner: ownerOf(only) });
+  }
+  // Several token files: adoption is ambiguous by construction. The owner is
+  // told *why* (one of the candidates names another owner) instead of the job
+  // silently picking a person.
+  if (foreign.length) {
+    return {
+      state: 'owner_mismatch',
+      accountId: null,
+      hasAccessToken: false,
+      otherOwner: ownerOf(foreign[0]) || null,
+      accounts: docs.map((entry) => entry.accountId).slice(0, 5),
+    };
+  }
+  if (mine.length === 1 && unbound.length === 0) {
+    return withToken('profile_missing', mine[0]);
+  }
+  return {
+    state: 'ambiguous',
+    accountId: null,
+    hasAccessToken: false,
+    candidates: docs.map((entry) => entry.accountId).slice(0, 5),
+  };
+}
+
+/**
+ * Owner-binding self-heal, **write** half. Called from the catalog job (never
+ * from a polled read path): when the binding is missing but unambiguous, the
+ * single token is adopted by the owner and both files are updated. A token that
+ * names another owner, or several candidate tokens, is **never** reassigned —
+ * the caller gets the reason and reports it in `/secondary-details/status`.
+ */
+async function ensureEpicOwnerBinding(ownerKey, options = {}) {
+  const wanted = String(ownerKey == null ? '' : ownerKey).trim();
+  const state = epicBindingForOwnerSync(wanted);
+  if (state.state !== 'unbound' && state.state !== 'profile_missing') return state;
+  const accountId = state.accountId;
+  if (!accountId) return state;
+  const store = options.tokenStore || require('./epic-token-store');
+  const nowIso = new Date().toISOString();
+  if (state.state === 'unbound') {
+    let doc = null;
+    try {
+      doc = typeof store.getTokens === 'function' ? await store.getTokens(accountId) : null;
+    } catch (err) {
+      doc = null;
+    }
+    if (!doc) return { ...state, state: 'unbound', adopted: false };
+    try {
+      // Reuse the secret-safe writer: it re-normalizes the document and keeps
+      // the 0600/mode guarantees. The token value is passed through, never
+      // logged, never returned.
+      await store.saveTokens({ ...doc, ownerKey: wanted });
+    } catch (err) {
+      return { ...state, state: 'unbound', adopted: false, code: 'bind_write_failed' };
+    }
+  }
+  const profile = getEpicProfile(accountId);
+  try {
+    await saveEpicProfile({
+      ...(profile || {}),
+      accountId,
+      ownerKey: wanted,
+      connectedAt: (profile && profile.connectedAt) || nowIso,
+      ownerBinding: {
+        adoptedAt: nowIso,
+        source: state.state === 'profile_missing' ? 'token' : 'self-heal',
+      },
+    });
+  } catch (err) {
+    return { ...state, state: 'unbound', adopted: false, code: 'profile_write_failed' };
+  }
+  return { ...state, state: 'bound', accountId, adopted: true };
+}
+
+
 async function markEpicDisconnected(accountId) {
   const profile = getEpicProfile(accountId);
   if (!profile) return null;
@@ -412,6 +551,8 @@ module.exports = {
   listEpicProfiles,
   librariesForOwner,
   epicAccountForOwner,
+  epicBindingForOwnerSync,
+  ensureEpicOwnerBinding,
   markEpicDisconnected,
   saveEpicLibrary,
   getEpicLibrary,
