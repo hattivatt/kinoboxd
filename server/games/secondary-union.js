@@ -13,11 +13,18 @@
  * Identity (`workKey`) resolution, strongest first:
  *   1. **Wikidata bridge** — a store slug resolved to a Steam appid by the
  *      `P2725`/`P6278` → `P1733` batch (`secondary-identity.js`), then
- *      `appid → workKey` through the canonical edition index;
+ *      `appid → workKey` through the canonical edition index. `P1733` names
+ *      the **base** game, while the owner's Steam row may be a regional SKU
+ *      (`Fallout: New Vegas PCR` 22490 is the base card `22380` / `Q753749`),
+ *      so the bridge appid is also resolved through the base identity that
+ *      `links/<appid>.json` already carries (`wikidata.baseQid/baseAppid`,
+ *      B6) — otherwise a base-game slug never joins the SKU the owner owns;
  *   2. **`links/<appid>.json` `P2725`** — the GOG slug of a Steam work
  *      (`gog-union.js` already reads it);
  *   3. **exact normalised title** — unique among Steam works, confidence
- *      `medium`;
+ *      `medium`; the canonical `editions.coreTitle` key is tried after the
+ *      plain `normalizeTitle` key, so edition/region wrappers («Ultimate
+ *      Edition», `PCR`, `RHCP`, `(RU)`) do not hide the same work;
  *   4. **own work** — `gog:<gogGameId>` / `epic:<catalogItemId>`, confidence
  *      `single`.
  *
@@ -36,6 +43,7 @@ const {
   normalizeSlug,
   slugsOfLink,
 } = require('./gog-union');
+const editions = require('./editions');
 
 /** `2023-09-26` / `2023.09.26` / `2023` → 2023 (or null). */
 function yearOfDate(value) {
@@ -151,10 +159,25 @@ function buildSecondaryUnion({
   const epicGames = Array.isArray(epicLayer && epicLayer.games) ? epicLayer.games : [];
 
   const appidToWork = new Map();
+  const qidToWork = new Map();
+  const baseAppidToWork = new Map();
   const slugToWork = new Map();
   const titleToWork = new Map();
+  const coreTitleToWork = new Map();
   const ambiguousTitles = new Set();
+  const ambiguousCoreTitles = new Set();
+  const ambiguousQids = new Set();
+  const ambiguousBaseAppids = new Set();
   const byWorkKey = new Map();
+
+  // A QID (or a base appid) must name exactly one work: two works claiming the
+  // same identity is a data conflict, not a match, so the key is dropped.
+  const registerIdentity = (map, ambiguous, key, workKey) => {
+    if (key == null || key === '') return;
+    const value = String(key);
+    if (map.has(value) && map.get(value) !== workKey) ambiguous.add(value);
+    else map.set(value, workKey);
+  };
 
   for (const work of steamWorks) {
     const name =
@@ -170,13 +193,37 @@ function buildSecondaryUnion({
           titleToWork.set(normalized, work.workKey);
         }
       }
+      // The canonical edition key (`editions.coreTitle`) drops edition and
+      // region wrappers, so a GOG «… Ultimate Edition» still finds the Steam
+      // row that is a regional SKU («… PCR», «… RHCP», «… (RU)»).
+      const core = editions.coreTitle(name);
+      if (core) {
+        if (coreTitleToWork.has(core) && coreTitleToWork.get(core) !== work.workKey) {
+          ambiguousCoreTitles.add(core);
+        } else {
+          coreTitleToWork.set(core, work.workKey);
+        }
+      }
     }
     for (const game of Array.isArray(work.games) ? work.games : []) {
       const appid = String(game.appid);
       appidToWork.set(appid, work.workKey);
-      for (const slug of slugsOfLink(linkMap[appid])) {
+      const link = linkMap[appid];
+      for (const slug of slugsOfLink(link)) {
         if (!slugToWork.has(slug)) slugToWork.set(slug, work.workKey);
       }
+      // B6 identity of a regional SKU: its own QID is absent, the base card's
+      // QID/appid is recorded next to it by the franchise pass. The Wikidata
+      // bridge names the **base** game, so these keys are what let a base-game
+      // GOG slug join the SKU the owner actually owns.
+      registerIdentity(qidToWork, ambiguousQids, editions.qidOf(link), work.workKey);
+      registerIdentity(qidToWork, ambiguousQids, editions.baseQidOf(link), work.workKey);
+      registerIdentity(
+        baseAppidToWork,
+        ambiguousBaseAppids,
+        editions.baseAppidOf(link),
+        work.workKey
+      );
     }
     byWorkKey.set(work.workKey, {
       workKey: work.workKey,
@@ -203,15 +250,55 @@ function buildSecondaryUnion({
     });
   }
   for (const title of ambiguousTitles) titleToWork.delete(title);
+  for (const title of ambiguousCoreTitles) coreTitleToWork.delete(title);
+  for (const qid of ambiguousQids) qidToWork.delete(qid);
+  for (const appid of ambiguousBaseAppids) baseAppidToWork.delete(appid);
 
   /* ------------------------------ bridge ------------------------------ */
   const resolveBridged = (prefix, slug) => {
     const key = normalizeSlug(slug);
     if (!key) return null;
     const hit = bridge[`${prefix}:${key}`] || bridge[`${prefix}:${slug}`] || null;
-    const appid = hit && hit.appid != null ? String(hit.appid) : null;
-    if (!appid) return null;
-    return appidToWork.get(appid) || null;
+    if (!hit) return null;
+    const appid = hit.appid != null ? String(hit.appid) : null;
+    // 1. The owner's library contains exactly the appid `P1733` names.
+    if (appid) {
+      const direct = appidToWork.get(appid);
+      if (direct) return direct;
+    }
+    // 2. Same Wikidata item, different Steam card (regional SKU): the link
+    //    document names the base item of the SKU the owner owns.
+    if (hit.qid) {
+      const viaQid = qidToWork.get(String(hit.qid));
+      if (viaQid) return viaQid;
+    }
+    // 3. `P1733` is the base appid; the link document records it as the SKU's
+    //    base (`wikidata.baseAppid`) even when the base card itself is not
+    //    owned.
+    if (appid) {
+      const viaBaseAppid = baseAppidToWork.get(appid);
+      if (viaBaseAppid) return viaBaseAppid;
+    }
+    return null;
+  };
+
+  /**
+   * Title fallback: the plain normalised key first (existing behaviour), then
+   * the canonical edition key, which drops edition and region wrappers. A
+   * `GOG`/`Epic` copy titled «… Ultimate Edition» therefore finds a Steam row
+   * that is a regional SKU («… PCR»), and vice versa. Both maps are built from
+   * the same set of works and drop ambiguous keys, so the fallback can never
+   * pick between two Steam works with the same normalised title.
+   */
+  const resolveByTitle = (name) => {
+    const titleKey = normalizeTitle(name);
+    if (titleKey) {
+      const hit = titleToWork.get(titleKey);
+      if (hit) return hit;
+    }
+    const core = editions.coreTitle(name);
+    if (core) return coreTitleToWork.get(core) || null;
+    return null;
   };
 
   const ensureEntry = (workKey, fallbackName) => {
@@ -259,10 +346,8 @@ function buildSecondaryUnion({
     let workKey = resolveBridged('gog', product.slug);
     let matchedBy = workKey ? 'wikidata' : null;
     if (!workKey && slug) workKey = slugToWork.get(slug) || null;
-    if (!workKey && slug && bridge[`gog:${slug}`]) matchedBy = 'wikidata';
     if (!workKey) {
-      const titleKey = normalizeTitle(product.title);
-      workKey = titleKey ? titleToWork.get(titleKey) || null : null;
+      workKey = resolveByTitle(product.title);
       if (workKey) matchedBy = 'title';
     }
     if (!workKey) {
@@ -340,8 +425,7 @@ function buildSecondaryUnion({
     let workKey = resolveBridged('epic', game.slug);
     let matchedBy = workKey ? 'wikidata' : null;
     if (!workKey) {
-      const titleKey = normalizeTitle(game.name);
-      workKey = titleKey ? titleToWork.get(titleKey) || null : null;
+      workKey = resolveByTitle(game.name);
       if (workKey) matchedBy = 'title';
     }
     if (!workKey) {

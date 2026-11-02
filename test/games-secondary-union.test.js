@@ -97,6 +97,162 @@ test('secondary union', async (t) => {
     assert.equal(union.summary.matchedWorks, 1);
   });
 
+  // Regression 02.11.2026 (live WDQS): `Q753749` (Fallout: New Vegas) carries
+  // `P2725 game/fallout_new_vegas_ultimate_edition` and `P1733 22380`. The
+  // owner's Steam row is the regional SKU `22490` («Fallout: New Vegas PCR»),
+  // so the bridge appid is not in the library at all: the join must go through
+  // the base identity (`wikidata.baseQid/baseAppid`) the SKU's link doc holds.
+  await t.test('the bridge joins a base-game slug to the owned regional SKU', () => {
+    const union = buildSecondaryUnion({
+      works: [steamWork(22490, 'Fallout: New Vegas PCR', 120)],
+      gogSnapshots: [
+        {
+          library: {
+            products: [
+              {
+                gogGameId: '1440000010',
+                title: 'Fallout: New Vegas Ultimate Edition',
+                slug: 'fallout_new_vegas_ultimate_edition',
+                releaseDate: '2012-02-01',
+              },
+            ],
+          },
+          playtime: { minutes: { 1440000010: 600 } },
+        },
+      ],
+      epicLayer: null,
+      links: {
+        22490: { wikidata: { qid: null, baseQid: 'Q753749', baseAppid: 22380 } },
+      },
+      secondaryLinks: {
+        'gog:fallout_new_vegas_ultimate_edition': {
+          qid: 'Q753749',
+          appid: '22380',
+          store: 'gog',
+        },
+      },
+    });
+    assert.equal(union.works.length, 1, 'one work, not a GOG duplicate row');
+    const entry = union.works[0];
+    assert.equal(entry.workKey, 'steam:22490');
+    assert.deepEqual(entry.sources, ['steam', 'gog']);
+    assert.equal(entry.matchedBy, 'wikidata');
+    assert.equal(entry.confidence, 'high');
+    assert.equal(entry.storeIds.steam, 22490);
+    assert.equal(entry.storeIds.gog, '1440000010');
+    assert.deepEqual(entry.hoursBySource, { steam: 120, gog: 600, epic: null });
+    assert.equal(entry.displayMinutes, 720);
+    assert.equal(union.summary.secondaryOnlyWorks, 0);
+    assert.equal(union.summary.matchedByWikidata, 1);
+    assert.equal(union.summary.unmatched, 0);
+  });
+
+  await t.test('a bridge QID alone joins the SKU when the link doc has no base appid', () => {
+    const union = buildSecondaryUnion({
+      works: [steamWork(22490, 'Fallout: New Vegas PCR', 120)],
+      gogSnapshots: [
+        {
+          library: {
+            products: [
+              {
+                gogGameId: '1440000011',
+                title: 'Fallout: New Vegas Ultimate Edition',
+                slug: 'fallout_new_vegas_ultimate_edition',
+              },
+            ],
+          },
+        },
+      ],
+      epicLayer: null,
+      links: { 22490: { wikidata: { qid: null, baseQid: 'Q753749' } } },
+      secondaryLinks: {
+        'gog:fallout_new_vegas_ultimate_edition': { qid: 'Q753749', appid: '22380' },
+      },
+    });
+    assert.equal(union.works.length, 1);
+    assert.equal(union.works[0].matchedBy, 'wikidata');
+  });
+
+  await t.test('without the bridge, the edition key joins UE to a regional SKU', () => {
+    const union = buildSecondaryUnion({
+      works: [steamWork(22490, 'Fallout: New Vegas PCR', 120)],
+      gogSnapshots: [
+        {
+          library: {
+            products: [
+              {
+                gogGameId: '1440000012',
+                title: 'Fallout: New Vegas Ultimate Edition',
+                slug: 'fallout_new_vegas_ultimate_edition',
+              },
+            ],
+          },
+          playtime: { minutes: { 1440000012: 60 } },
+        },
+      ],
+      epicLayer: null,
+      links: {},
+      secondaryLinks: {},
+    });
+    assert.equal(union.works.length, 1, '«Ultimate Edition» vs «PCR» is the same work');
+    assert.equal(union.works[0].matchedBy, 'title');
+    assert.equal(union.works[0].confidence, 'medium');
+  });
+
+  await t.test('the edition fallback keeps the numeric signature apart', () => {
+    const union = buildSecondaryUnion({
+      works: [steamWork(22490, 'Fallout: New Vegas PCR', 120)],
+      gogSnapshots: [
+        {
+          library: {
+            products: [
+              {
+                gogGameId: '1440000013',
+                title: 'Fallout: New Vegas 2 Ultimate Edition',
+                slug: 'fallout_new_vegas_2_ultimate_edition',
+              },
+            ],
+          },
+        },
+      ],
+      epicLayer: null,
+      links: {},
+      secondaryLinks: {},
+    });
+    assert.equal(union.works.length, 2, 'a different number is a different game');
+    assert.equal(union.summary.secondaryOnlyWorks, 1);
+  });
+
+  await t.test('two Steam works with the same edition key are ambiguous, not matched', () => {
+    const union = buildSecondaryUnion({
+      works: [
+        steamWork(22490, 'Fallout: New Vegas PCR', 120),
+        steamWork(217980, 'Fallout: New Vegas RHCP', 0),
+      ],
+      gogSnapshots: [
+        {
+          library: {
+            products: [
+              {
+                gogGameId: '1440000014',
+                title: 'Fallout: New Vegas Ultimate Edition',
+                slug: 'fallout_new_vegas_ultimate_edition',
+              },
+            ],
+          },
+        },
+      ],
+      epicLayer: null,
+      links: {},
+      secondaryLinks: {},
+    });
+    // Both Steam rows collapse to «fallout new vegas» under the edition key
+    // but keep different plain keys (`… pcr` / `… rhcp`): the guard drops the
+    // edition key instead of picking one, so the GOG copy stays its own row.
+    assert.equal(union.summary.secondaryOnlyWorks, 1);
+    assert.equal(union.summary.matchedByTitle, 0);
+  });
+
   await t.test('an Epic slug joins the same work; unknown playtime stays null', () => {
     const union = buildSecondaryUnion({
       works: [steamWork(292030, 'The Witcher 3: Wild Hunt', 600)],
