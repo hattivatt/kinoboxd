@@ -678,6 +678,8 @@ function createRouter(deps = {}) {
               dlc: Array.isArray(detailsDoc.dlc) ? detailsDoc.dlc : [],
               dlcCount: detailsDoc.dlcCount == null ? null : detailsDoc.dlcCount,
               platforms: detailsDoc.platforms || null,
+              headerImage: detailsDoc.headerImage || null,
+              capsuleImage: detailsDoc.capsuleImage || null,
               screenshots: Array.isArray(detailsDoc.screenshots) ? detailsDoc.screenshots : [],
               fetchedAt: detailsDoc.fetchedAt || null,
               metadataSource: detailsDoc.metadataSource || 'steam-store',

@@ -53,6 +53,8 @@ function detailDoc(appid) {
     dlcCount: 0,
     metacritic: { score: 90 },
     platforms: { windows: true, mac: false, linux: true },
+    headerImage: `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${appid}/h/header.jpg`,
+    capsuleImage: `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${appid}/c/capsule_231x87.jpg`,
     screenshots: ['https://example.test/shot.jpg'],
     earlyAccess: false,
     metadataSource: 'steam-store',
@@ -183,6 +185,10 @@ test('import → enrich → stats with applied filters and details on the card',
   assert.ok(card.details);
   assert.equal(card.details.releaseYear, 2011);
   assert.equal(card.details.metacritic, 90);
+  assert.equal(
+    card.details.headerImage,
+    'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/620/h/header.jpg'
+  );
   assert.deepEqual(card.details.genres, ['Action']);
   assert.equal(card.meta.detailsCached, true);
   assert.ok(!card.meta.pending.includes('details'));

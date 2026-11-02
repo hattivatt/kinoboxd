@@ -263,6 +263,17 @@ function iconUrlOf(appid, hash) {
   );
 }
 
+/**
+ * Store artwork URL from an `appdetails` cache document (M7). Only an absolute
+ * http(s) string is accepted; a missing/unavailable document has no art, and
+ * the card falls back to the old CDN chain instead of inventing a URL.
+ */
+function headerImageOf(doc) {
+  if (!doc || typeof doc !== 'object') return null;
+  const url = doc.headerImage;
+  return typeof url === 'string' && /^https?:\/\//i.test(url) ? url : null;
+}
+
 const HISTOGRAM_BUCKETS = [
   { bucket: '0', test: (hours) => hours === 0 },
   { bucket: '<1', test: (hours) => hours > 0 && hours < 1 },
@@ -1055,6 +1066,10 @@ function buildGamesStats(input = {}) {
     const reviewDoc = reviewsOf(reviewDocs, appid);
     const linkDoc = linksOf(linkDocs, appid);
     const work = workByAppid.get(appid) || null;
+    // M7 artwork: the canonical (primary) edition's `header_image` wins so two
+    // editions of one work paint the same cover; an unavailable primary doc
+    // falls back to this edition's own document, never to a guessed URL.
+    const primaryDoc = work ? detailOf(details, work.primary.appid) : null;
     const genres = genreNamesOf(doc);
     const developers = doc && Array.isArray(doc.developers) ? [...doc.developers] : [];
     const publishers = doc && Array.isArray(doc.publishers) ? [...doc.publishers] : [];
@@ -1067,6 +1082,10 @@ function buildGamesStats(input = {}) {
       rtime: Number(game.rtime_last_played) || 0,
       lastPlayed: isoOfSeconds(game.rtime_last_played),
       iconUrl: iconUrlOf(appid, game.img_icon_url),
+      // M7 (additive): the store header from `appdetails`, primary edition
+      // first. `null` means «details not fetched yet» — the client then walks
+      // the legacy CDN chain (header.jpg → capsule → icon → initials).
+      headerImage: headerImageOf(primaryDoc) || headerImageOf(doc) || null,
       // M5-B: edition identity (additive; `hours` above is still this row's).
       canonicalWorkKey: work ? work.workKey : `steam:${appid}`,
       primaryAppid: work ? work.primary.appid : appid,
@@ -1261,6 +1280,7 @@ function buildGamesStats(input = {}) {
       completion: work.completion ? work.completion.percent : null,
       cover: null,
       iconUrl: iconUrlOf(game.appid, game.img_icon_url),
+      headerImage: headerImageOf(doc),
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
     };
@@ -1303,6 +1323,7 @@ function buildGamesStats(input = {}) {
       hoursTotal: round1(work.hours),
       lastPlayed: isoOfSeconds(work.rtime),
       iconUrl: iconUrlOf(work.primary.appid, work.primary.img_icon_url),
+      headerImage: headerImageOf(detailOf(details, work.primary.appid)),
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
       // M6c: when the same work is owned outside Steam, the strip card can say
@@ -1326,6 +1347,7 @@ function buildGamesStats(input = {}) {
       hoursTotal: round1(work.hours),
       lastPlayed: isoOfSeconds(work.rtime),
       iconUrl: iconUrlOf(work.primary.appid, work.primary.img_icon_url),
+      headerImage: headerImageOf(detailOf(details, work.primary.appid)),
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
     }));

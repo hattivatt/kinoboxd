@@ -777,6 +777,9 @@ function normalizeGameIndexEntry(entry, appid) {
     hours2w: normalizeHours2w(item),
     lastPlayed: item.lastPlayed ?? item.rtime_last_played ?? null,
     iconUrl: /^https?:\/\//i.test(text(item.iconUrl)) ? text(item.iconUrl) : '',
+    // M7: the real store header from `appdetails` (new SKUs live under a
+    // per-asset `store_item_assets/.../<hash>/` path, so it cannot be guessed).
+    headerImage: /^https?:\/\//i.test(text(item.headerImage)) ? text(item.headerImage) : '',
     type: text(item.type).toLowerCase(),
     releaseYear,
     year: releaseYear,
@@ -1814,6 +1817,16 @@ function normalizeCardDetails(raw) {
     releaseYear: numOrNull(raw.releaseYear),
     metacritic: numOrNull(raw.metacritic),
     dlcCount: numOrNull(raw.dlcCount),
+    // M7 store artwork: the card prefers the real `header_image` (and the
+    // capsule as a secondary fallback) over a guessed legacy CDN path.
+    headerImage: /^https?:\/\//i.test(text(raw.headerImage)) ? text(raw.headerImage) : '',
+    capsuleImage: /^https?:\/\//i.test(text(raw.capsuleImage)) ? text(raw.capsuleImage) : '',
+    // First store screenshot (1920×1080): a late landscape fallback when both
+    // the header and the capsule are gone. Never the first choice — it is not
+    // artwork.
+    screenshot: /^https?:\/\//i.test(text(arr(raw.screenshots)[0]))
+      ? text(arr(raw.screenshots)[0])
+      : '',
     // M4 card extras: tag strip, review badge, franchise label.
     tags: normalizeTagsList(raw.tags),
     reviewScore: normalizeCardReview(raw.reviewScore ?? raw.review),
@@ -1949,6 +1962,12 @@ export function normalizeGameCard(raw) {
     typeLabel: gameTypeLabel(details && details.type || source.type),
     releaseYear: numOrNull(details && details.releaseYear),
     releaseDate: text(details && details.releaseDate),
+    headerImage: (details && details.headerImage) || (
+      /^https?:\/\//i.test(text(source.headerImage)) ? text(source.headerImage) : ''
+    ),
+    capsuleImage: (details && details.capsuleImage) || (
+      /^https?:\/\//i.test(text(source.capsuleImage)) ? text(source.capsuleImage) : ''
+    ),
     completion: numOrNull(source.completion) ?? (achievements && achievements.percent != null
       ? achievements.percent
       : null),

@@ -209,6 +209,17 @@ function idDescriptionList(value) {
   return out;
 }
 
+/**
+ * Absolute http(s) asset URL or null. `appdetails` already returns absolute
+ * `header_image`/`capsule_image` URLs, but the parser stays defensive: a
+ * relative or non-http value would make the browser paint a broken image.
+ */
+function absoluteAssetUrl(value) {
+  if (typeof value !== 'string') return null;
+  const url = value.trim();
+  return /^https?:\/\//i.test(url) ? url : null;
+}
+
 function screenshotList(value) {
   if (!Array.isArray(value)) return [];
   const out = [];
@@ -296,6 +307,13 @@ function parseAppDetails(data, appid) {
         ? { total: Number(source.achievements.total) }
         : null,
     platforms,
+    // Store artwork (M7): the real URLs Valve ships in `appdetails`. New SKUs
+    // live under `store_item_assets/steam/apps/<appid>/<hash>/…`, so the old
+    // `<cdn>/steam/apps/<appid>/header.jpg` path 404s for them (live 02.11.2026,
+    // CONTROL Resonant appid 3669870). Saving the URL is the honest fix: no
+    // guessing of the per-asset hash directory.
+    headerImage: absoluteAssetUrl(source.header_image),
+    capsuleImage: absoluteAssetUrl(source.capsule_image),
     screenshots: screenshotList(source.screenshots),
     earlyAccess: isEarlyAccessOf(categories, genres),
     metadataSource: 'steam-store',

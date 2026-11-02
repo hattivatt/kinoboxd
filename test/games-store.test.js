@@ -85,11 +85,38 @@ test('parseAppDetailsResponse: real Portal 2 fragment', () => {
   assert.equal(doc.metacritic.score, 95);
   assert.deepEqual(doc.platforms, { windows: true, mac: false, linux: true });
   assert.equal(doc.screenshots.length, 3);
+  // M7: the real store artwork is kept as absolute URLs (new SKUs live under
+  // `store_item_assets/.../<hash>/`, so the old path cannot be guessed).
+  assert.equal(
+    doc.headerImage,
+    'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/620/aaa111/header.jpg?t=1700000000'
+  );
+  assert.equal(
+    doc.capsuleImage,
+    'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/620/bbb222/capsule_231x87.jpg?t=1700000000'
+  );
   assert.equal(doc.earlyAccess, false);
   assert.equal(doc.metadataSource, 'steam-store');
   // Heavy store fields are not carried into the cache document.
   assert.equal(doc.detailed_description, undefined);
   assert.equal(doc.price_overview, undefined);
+});
+
+test('parseAppDetailsResponse: artwork URLs are absolute or null, never guessed', () => {
+  const doc = store.parseAppDetailsResponse({
+    123: {
+      success: true,
+      data: {
+        name: 'Relative art',
+        header_image: '/steam/apps/123/header.jpg',
+        capsule_image: 'javascript:alert(1)',
+        screenshots: [{ path_full: 'https://shared.akamai.steamstatic.com/ss/1.jpg' }],
+      },
+    },
+  }, 123).doc;
+  assert.equal(doc.headerImage, null);
+  assert.equal(doc.capsuleImage, null);
+  assert.deepEqual(doc.screenshots, ["https://shared.akamai.steamstatic.com/ss/1.jpg"]);
 });
 
 test('parseAppDetailsResponse: DLC type and a success:false answer', () => {

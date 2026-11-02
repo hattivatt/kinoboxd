@@ -248,6 +248,9 @@ test('gamesIndex carries the full details entry; top/backlog are enriched', () =
     rtime: 0,
     lastPlayed: null,
     iconUrl: null,
+    // M7 (additive): no `header_image` in this fixture — the card falls back
+    // to the legacy CDN chain instead of inventing a URL.
+    headerImage: null,
     // M5-B (additive): edition identity; `hours` above stays this row's own.
     canonicalWorkKey: 'steam:1001',
     primaryAppid: 1001,

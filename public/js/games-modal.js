@@ -186,13 +186,59 @@ export function gameIconEl(game, { className = 'game-icon' } = {}) {
 
 const STEAM_CDN = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
 
+function httpUrl(value) {
+  const url = value == null ? '' : String(value).trim();
+  return /^https?:\/\//i.test(url) ? url : '';
+}
+
+function pushUrl(urls, value) {
+  const url = httpUrl(value);
+  if (url && !urls.includes(url)) urls.push(url);
+}
+
+/**
+ * The real store header (`appdetails.header_image`), saved per appid by the
+ * server. This is the honest fix for new SKUs: Valve puts their assets under
+ * `store_item_assets/steam/apps/<appid>/<asset-hash>/…`, so the legacy
+ * `<cdn>/steam/apps/<appid>/header.jpg` path 404s and the hash cannot be
+ * guessed. The canonical `primaryAppid` row wins (two editions → one cover);
+ * the payload's own `headerImage` is the second source for older payloads.
+ */
+function providedHeaderImage(game) {
+  const appid = positiveId(game && (game.primaryAppid ?? game.appid));
+  const index = context.gamesIndex || {};
+  const entry = appid != null ? index[appid] || index[String(appid)] : null;
+  return httpUrl(entry && entry.headerImage)
+    || httpUrl(game && (game.headerImage || (game.details && game.details.headerImage)));
+}
+
+function providedCapsuleImage(game) {
+  return httpUrl(game && (game.capsuleImage || (game.details && game.details.capsuleImage)));
+}
+
+function providedScreenshot(game) {
+  return httpUrl(game && (game.screenshot || (game.details && game.details.screenshot)));
+}
+
+/**
+ * New-asset games have no legacy `library_600x900.jpg`; their `header_image`
+ * must be requested first. For legacy games the vertical library capsule stays
+ * the best poster and `header_image` (a landscape `header.jpg` on the old CDN)
+ * is only a fallback, so quality does not regress.
+ */
+function isStoreItemAsset(url) {
+  return /\/store_item_assets\//i.test(String(url || ''));
+}
+
 /**
  * Landscape cover URLs for one game, best first. No network probe happens
  * here: the browser walks the chain through `error` listeners in
  * `gameCoverEl`.
  *
- *   header.jpg (460×215)     — the store header of the SKU, the real artwork;
- *   capsule_231x87.jpg       — the older capsule, same CDN;
+ *   `appdetails.header_image` — the real store artwork (any asset schema);
+ *   `appdetails.capsule_image` — the small store capsule, same schema;
+ *   header.jpg (460×215)     — legacy CDN path of the SKU, real artwork;
+ *   capsule_231x87.jpg       — older capsule, same CDN;
  *   the 32×32 community icon — last Steam-side step;
  *   initials                 — client-side fallback (no request at all).
  *
@@ -207,12 +253,13 @@ const STEAM_CDN = 'https://cdn.cloudflare.steamstatic.com/steam/apps';
 export function gameCoverUrls(game) {
   const appid = positiveId(game && (game.primaryAppid ?? game.appid));
   const urls = [];
+  pushUrl(urls, providedHeaderImage(game));
+  pushUrl(urls, providedCapsuleImage(game));
   if (appid) {
     urls.push(`${STEAM_CDN}/${appid}/header.jpg`);
     urls.push(`${STEAM_CDN}/${appid}/capsule_231x87.jpg`);
   }
-  const icon = game && /^https?:\/\//i.test(String(game.iconUrl || '')) ? String(game.iconUrl) : '';
-  if (icon) urls.push(icon);
+  pushUrl(urls, game && game.iconUrl);
   return urls;
 }
 
@@ -224,8 +271,14 @@ export function gameCoverUrls(game) {
  * landscape `header.jpg` still exists, so it is the first fallback and CSS
  * centre-crops it into the 2:3 frame (`object-fit: cover`).
  *
+ *   `appdetails.header_image` — first only for the new `store_item_assets`
+ *                               schema, where the legacy vertical capsule is
+ *                               dead (02.11.2026: CONTROL Resonant 3669870);
  *   library_600x900.jpg (600×900, 2:3) — the official vertical library capsule;
  *   header.jpg (460×215)              — landscape header, cropped vertically;
+ *   `appdetails.header_image`         — legacy-schema header (fallback only);
+ *   `appdetails.capsule_image`        — small store capsule, same schema;
+ *   `appdetails.screenshots[0]`       — last real artwork before the icon;
  *   capsule_231x87.jpg                — older capsule, same CDN;
  *   the 32×32 community icon          — last Steam-side step;
  *   initials                          — client-side fallback (no request).
@@ -238,18 +291,22 @@ export function gameCoverUrls(game) {
 export function gameVerticalCoverUrls(game) {
   const appid = positiveId(game && (game.primaryAppid ?? game.appid));
   const urls = [];
+  const header = providedHeaderImage(game);
+  const headerFirst = header && isStoreItemAsset(header);
+  if (headerFirst) urls.push(header);
   if (appid) {
     urls.push(`${STEAM_CDN}/${appid}/library_600x900.jpg`);
     urls.push(`${STEAM_CDN}/${appid}/header.jpg`);
-    urls.push(`${STEAM_CDN}/${appid}/capsule_231x87.jpg`);
   }
+  if (header && !headerFirst) pushUrl(urls, header);
+  pushUrl(urls, providedCapsuleImage(game));
+  pushUrl(urls, providedScreenshot(game));
+  if (appid) urls.push(`${STEAM_CDN}/${appid}/capsule_231x87.jpg`);
   // M6c: a cross-store row may bring its own poster (GOG/Epic art is not on
   // the Steam CDN). Steam rows keep the Steam chain first; the provided URL is
   // the only art when there is no appid at all.
-  const provided = game && (game.verticalCoverUrl || game.coverUrl);
-  if (/^https?:\/\//i.test(String(provided || ''))) urls.push(String(provided));
-  const icon = game && /^https?:\/\//i.test(String(game.iconUrl || '')) ? String(game.iconUrl) : '';
-  if (icon) urls.push(icon);
+  pushUrl(urls, game && (game.verticalCoverUrl || game.coverUrl));
+  pushUrl(urls, game && game.iconUrl);
   return urls;
 }
 
@@ -747,6 +804,19 @@ function detailRow(label, value) {
   return row;
 }
 
+/**
+ * Append a detail row only when it has a value. A browser's `Node.append(null)`
+ * stringifies `null` into a text node — that is where the «nullnull» garbage
+ * in the card's DLC / release-date block came from (two empty rows appended
+ * back to back). `el()` guards its own children, a direct `grid.append()` does
+ * not, so the guard lives here.
+ */
+function appendDetailRow(grid, label, value) {
+  if (value == null || value === '') return;
+  const row = detailRow(label, value);
+  if (row) grid.append(row);
+}
+
 function section(title, ...children) {
   const box = el('section', { class: 'game-section' });
   box.append(el('h3', { class: 'game-section-title', text: title }));
@@ -960,18 +1030,18 @@ function fillGameCard({ head, copy, body, game }) {
     const categories = details.categories.length > 8
       ? `${details.categories.slice(0, 8).join(', ')} и ещё ${details.categories.length - 8}`
       : details.categories.join(', ');
-    grid.append(detailRow('жанры', genres));
-    grid.append(detailRow('категории', categories));
-    grid.append(detailRow('разработчики', details.developers.join(', ')));
-    grid.append(detailRow('издатели', details.publishers.join(', ')));
-    grid.append(detailRow('платформы', platformText(details.platforms)));
-    grid.append(detailRow('доступ', [
+    appendDetailRow(grid, 'жанры', genres);
+    appendDetailRow(grid, 'категории', categories);
+    appendDetailRow(grid, 'разработчики', details.developers.join(', '));
+    appendDetailRow(grid, 'издатели', details.publishers.join(', '));
+    appendDetailRow(grid, 'платформы', platformText(details.platforms));
+    appendDetailRow(grid, 'доступ', [
       details.isFree === true ? 'бесплатная (F2P)' : '',
       details.earlyAccess === true ? 'Early Access' : '',
-    ].filter(Boolean).join(' · ')));
-    grid.append(detailRow('метакритик', details.metacritic != null ? String(details.metacritic) : ''));
-    grid.append(detailRow('DLC', details.dlcCount != null ? `${fmtInt(details.dlcCount)}` : ''));
-    grid.append(detailRow('дата релиза', details.releaseDate));
+    ].filter(Boolean).join(' · '));
+    appendDetailRow(grid, 'метакритик', details.metacritic != null ? String(details.metacritic) : '');
+    appendDetailRow(grid, 'DLC', details.dlcCount != null ? `${fmtInt(details.dlcCount)}` : '');
+    appendDetailRow(grid, 'дата релиза', details.releaseDate);
     body.append(section('Что это за игра', grid));
   } else {
     body.append(section('Что это за игра', el('p', {
