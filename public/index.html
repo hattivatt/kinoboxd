@@ -194,10 +194,11 @@
     </section>
 
     <!-- ───────────────────────── dashboard ───────────────────────── -->
-    <section class="view" data-view="dashboard" hidden>
-      <header class="topbar">
-        <div class="topbar-inner has-tabs">
-          <div class="topbar-left">
+    <!-- One header for the whole app: the tabs never move, the actions follow
+         the active tab. The dashboard screens keep only their content. -->
+    <header class="topbar" id="app-topbar">
+      <div class="topbar-inner has-tabs">
+<div class="topbar-left">
             <div class="brand" aria-label="kinoboxd">
               <span class="brand-name">kino<span class="accent">boxd</span></span>
             </div>
@@ -222,8 +223,8 @@
               </button>
             </nav>
           </div>
-          <div class="topbar-actions">
-            <button type="button" class="btn btn-ghost" id="replace-upload" aria-label="Заменить выгрузку" title="Заменить выгрузку">
+        <div class="topbar-actions" data-actions="films">
+<button type="button" class="btn btn-ghost" id="replace-upload" aria-label="Заменить выгрузку" title="Заменить выгрузку">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
               </svg>
@@ -276,9 +277,60 @@
               </svg>
               <span>Выйти</span>
             </button>
-          </div>
         </div>
-      </header>
+        <div class="topbar-actions" data-actions="books" hidden>
+<button type="button" class="btn btn-ghost books-refresh" id="books-refresh" hidden title="Обновить профиль: Hardcover — журнал (~10 с), LiveLib — новая выгрузка файла">
+              <span class="spinner spinner-sm" id="books-refresh-spinner" hidden aria-hidden="true"></span>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/>
+              </svg>
+              <span id="books-refresh-label">Обновить профиль</span>
+            </button>
+            <button type="button" class="btn btn-ghost" id="books-reimport" hidden title="Переимпортировать профиль чтения" aria-label="Переимпортировать профиль чтения">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+              </svg>
+              <span>Импорт</span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-logout" id="books-logout-btn" hidden title="Выйти из аккаунта" aria-label="Выйти">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h9"/>
+              </svg>
+              <span>Выйти</span>
+            </button>
+        </div>
+        <div class="topbar-actions" data-actions="games" hidden>
+<button type="button" class="btn btn-ghost" id="games-connections-btn" hidden title="Подключения: GOG, Epic и другие библиотеки" aria-label="Подключения">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 7H7a5 5 0 0 0 0 10h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><path d="M8 12h8"/>
+              </svg>
+              <span>Подключения</span>
+            </button>
+            <button type="button" class="btn btn-ghost games-refresh" id="games-refresh" hidden title="Перечитать библиотеку и достижения этого профиля Steam">
+              <span class="spinner spinner-sm" id="games-refresh-spinner" hidden aria-hidden="true"></span>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/>
+              </svg>
+              <span>Обновить профиль</span>
+            </button>
+            <button type="button" class="btn btn-ghost" id="games-reimport" hidden title="Загрузить новый профиль Steam" aria-label="Загрузить новый профиль Steam">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+              </svg>
+              <span>Загрузить новый</span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-logout" id="games-logout-btn" hidden title="Выйти из аккаунта" aria-label="Выйти">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h9"/>
+              </svg>
+              <span>Выйти</span>
+            </button>
+        </div>
+      </div>
+    </header>
+
+    <section class="view" data-view="dashboard" hidden>
+      
 
       <div class="dash" id="dash">
         <div class="dash-hero">
@@ -511,56 +563,7 @@
     </section>
     <!-- ───────────────────────── books ───────────────────────── -->
     <section class="view" data-view="books" hidden>
-      <header class="topbar">
-        <div class="topbar-inner has-tabs">
-          <div class="topbar-left">
-            <div class="brand" aria-label="kinoboxd">
-              <span class="brand-name">kino<span class="accent">boxd</span></span>
-            </div>
-            <nav class="tab-switch" role="tablist" aria-label="Разделы">
-              <button type="button" class="tab-btn" data-tab="films" role="tab" aria-selected="false" title="Киностатистика">
-                <span class="tab-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>
-                </span>
-                <span class="tab-label">Фильмы</span>
-              </button>
-              <button type="button" class="tab-btn is-active" data-tab="books" role="tab" aria-selected="true" title="Книжная статистика">
-                <span class="tab-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.2A2.2 2.2 0 0 1 6.2 3H20v15.4H6.5A2.5 2.5 0 0 0 4 20.9z"/><path d="M4 5.2v15.7"/><path d="M8.5 7.5h7"/></svg>
-                </span>
-                <span class="tab-label">Книги</span>
-              </button>
-              <button type="button" class="tab-btn" data-tab="games" role="tab" aria-selected="false" title="Статистика по играм Steam">
-                <span class="tab-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="7" width="19" height="10" rx="5"/><path d="M7.5 12h3M9 10.5v3"/><circle cx="15.6" cy="11" r="1"/><circle cx="17.6" cy="13.2" r="1"/></svg>
-                </span>
-                <span class="tab-label">Игры</span>
-              </button>
-            </nav>
-          </div>
-          <div class="topbar-actions">
-            <button type="button" class="btn btn-ghost books-refresh" id="books-refresh" hidden title="Обновить профиль: Hardcover — журнал (~10 с), LiveLib — новая выгрузка файла">
-              <span class="spinner spinner-sm" id="books-refresh-spinner" hidden aria-hidden="true"></span>
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/>
-              </svg>
-              <span id="books-refresh-label">Обновить профиль</span>
-            </button>
-            <button type="button" class="btn btn-ghost" id="books-reimport" hidden title="Переимпортировать профиль чтения" aria-label="Переимпортировать профиль чтения">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
-              </svg>
-              <span>Импорт</span>
-            </button>
-            <button type="button" class="btn btn-ghost btn-logout" id="books-logout-btn" hidden title="Выйти из аккаунта" aria-label="Выйти">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h9"/>
-              </svg>
-              <span>Выйти</span>
-            </button>
-          </div>
-        </div>
-      </header>
+      
 
       <div class="dash books-dash" id="books-app">
         <div class="books-loading" id="books-loading" hidden>
@@ -920,62 +923,7 @@
     </section>
     <!-- ───────────────────────── games ───────────────────────── -->
     <section class="view" data-view="games" hidden>
-      <header class="topbar">
-        <div class="topbar-inner has-tabs">
-          <div class="topbar-left">
-            <div class="brand" aria-label="kinoboxd">
-              <span class="brand-name">kino<span class="accent">boxd</span></span>
-            </div>
-            <nav class="tab-switch" role="tablist" aria-label="Разделы">
-              <button type="button" class="tab-btn" data-tab="films" role="tab" aria-selected="false" title="Киностатистика">
-                <span class="tab-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>
-                </span>
-                <span class="tab-label">Фильмы</span>
-              </button>
-              <button type="button" class="tab-btn" data-tab="books" role="tab" aria-selected="false" title="Книжная статистика">
-                <span class="tab-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.2A2.2 2.2 0 0 1 6.2 3H20v15.4H6.5A2.5 2.5 0 0 0 4 20.9z"/><path d="M4 5.2v15.7"/><path d="M8.5 7.5h7"/></svg>
-                </span>
-                <span class="tab-label">Книги</span>
-              </button>
-              <button type="button" class="tab-btn is-active" data-tab="games" role="tab" aria-selected="true" title="Статистика по играм Steam">
-                <span class="tab-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="7" width="19" height="10" rx="5"/><path d="M7.5 12h3M9 10.5v3"/><circle cx="15.6" cy="11" r="1"/><circle cx="17.6" cy="13.2" r="1"/></svg>
-                </span>
-                <span class="tab-label">Игры</span>
-              </button>
-            </nav>
-          </div>
-          <div class="topbar-actions">
-            <button type="button" class="btn btn-ghost" id="games-connections-btn" hidden title="Подключения: GOG, Epic и другие библиотеки" aria-label="Подключения">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M9 7H7a5 5 0 0 0 0 10h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><path d="M8 12h8"/>
-              </svg>
-              <span>Подключения</span>
-            </button>
-            <button type="button" class="btn btn-ghost games-refresh" id="games-refresh" hidden title="Перечитать библиотеку и достижения этого профиля Steam">
-              <span class="spinner spinner-sm" id="games-refresh-spinner" hidden aria-hidden="true"></span>
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M20 11a8 8 0 1 0-2.3 6.1"/><path d="M20 5v6h-6"/>
-              </svg>
-              <span>Обновить профиль</span>
-            </button>
-            <button type="button" class="btn btn-ghost" id="games-reimport" hidden title="Загрузить новый профиль Steam" aria-label="Загрузить новый профиль Steam">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
-              </svg>
-              <span>Загрузить новый</span>
-            </button>
-            <button type="button" class="btn btn-ghost btn-logout" id="games-logout-btn" hidden title="Выйти из аккаунта" aria-label="Выйти">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h9"/>
-              </svg>
-              <span>Выйти</span>
-            </button>
-          </div>
-        </div>
-      </header>
+      
 
       <div class="dash games-dash" id="games-app">
         <div class="books-loading" id="games-loading" hidden>

@@ -125,17 +125,20 @@ function statsPayload() {
    markup: the third tab, the import form, the M1 widgets
    ========================================================= */
 
-test('index.html carries the third «Игры» tab in every topbar', () => {
+test('index.html carries one shared topbar with the three tabs and per-tab actions', () => {
   const html = readPublic('index.html');
-  const gamesTabs = html.match(/data-tab="games"/g) || [];
-  // Films, books and games views each render the shared tab bar.
-  assert.equal(gamesTabs.length, 3, 'каждый таб-бар (films, books, games) должен иметь третий таб');
-  assert.equal((html.match(/data-tab="films"/g) || []).length, 3);
-  assert.equal((html.match(/data-tab="books"/g) || []).length, 3);
+  // One header for the whole app; the compare screen keeps its own.
+  assert.equal((html.match(/<header class="topbar" id="app-topbar">/g) || []).length, 1);
+  for (const tab of ['films', 'books', 'games']) {
+    assert.equal((html.match(new RegExp(`data-tab="${tab}"`, 'g')) || []).length, 1, `таб ${tab}`);
+    assert.equal(
+      (html.match(new RegExp(`data-actions="${tab}"`, 'g')) || []).length,
+      1,
+      `группа действий ${tab}`
+    );
+  }
   assert.match(html, /<span class="tab-label">Игры<\/span>/);
-  // The games view itself is a first-class view with the active tab.
   assert.match(html, /<section class="view" data-view="games" hidden>/);
-  assert.match(html, /class="tab-btn is-active" data-tab="games" role="tab" aria-selected="true"/);
 });
 
 test('empty state: vanity/steamid64 form with an always-active import button', () => {

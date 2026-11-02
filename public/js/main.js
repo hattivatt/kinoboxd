@@ -144,7 +144,12 @@ function writeTabUrl(tab, { push = true } = {}) {
 
 function paintTabs() {
   document.title = TAB_TITLE[activeTab] || TAB_TITLE.films;
-  for (const button of document.querySelectorAll('.tab-btn[data-tab]')) {
+
+  // The shared topbar carries one action group per tab; only the active one
+  // is visible (the groups keep their ids, so every controller still binds).
+  for (const group of document.querySelectorAll('.topbar-actions[data-actions]')) {
+    group.hidden = group.dataset.actions !== activeTab;
+  }  for (const button of document.querySelectorAll('.tab-btn[data-tab]')) {
     const isActive = button.dataset.tab === activeTab;
     button.classList.toggle('is-active', isActive);
     button.setAttribute('aria-selected', isActive ? 'true' : 'false');

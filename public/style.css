@@ -881,6 +881,12 @@ img { display: block; }
 }
 .brand-name .accent { color: var(--green); }
 .topbar-actions { display: flex; align-items: center; gap: 10px; }
+/* One header for the whole app: the tabs never move, the actions follow the
+   active tab. Boot/login/upload/enrich/compare screens hide it entirely. */
+body:not([data-view="dashboard"]):not([data-view="books"]):not([data-view="games"]) #app-topbar {
+  display: none;
+}
+.topbar-actions[hidden] { display: none; }
 
 /* ---------------- profile refresher ---------------- */
 .profile-refresh { gap: 7px; }
