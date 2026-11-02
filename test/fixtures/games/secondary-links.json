@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 2,
+  "source": "wikidata",
+  "note": "Shape of cache-games/links/secondary.json after the P577 column (02.11.2026). Keys are `store:<normalizeSlug(slug)>`. Values for Alan Wake 2 are the live WDQS answer of 02.11.2026 (P6278 alan-wake-2 -> Q108417001, P577 2023-10-27, precision 11). The test re-stamps `fetchedAt` via writeCache, so this file is a data fixture, not a TTL claim.",
+  "fetchedAt": "2026-11-01T00:00:00.000Z",
+  "entries": {
+    "epic:alan_wake_2": {
+      "qid": "Q108417001",
+      "appid": null,
+      "store": "epic",
+      "releaseYear": 2023,
+      "releasePrecision": "day",
+      "releaseDate": "2023-10-27",
+      "releaseDateSource": "wikidata"
+    },
+    "epic:undated_game": {
+      "qid": "Q1000001",
+      "appid": null,
+      "store": "epic",
+      "releaseYear": null,
+      "releasePrecision": null,
+      "releaseDate": null,
+      "releaseDateSource": null
+    },
+    "gog:the_witcher": {
+      "qid": "Q270054",
+      "appid": "20900",
+      "store": "gog",
+      "releaseYear": 2007,
+      "releasePrecision": "day",
+      "releaseDate": "2007-10-26",
+      "releaseDateSource": "wikidata"
+    },
+    "epic:no_qid_game": {
+      "qid": null,
+      "appid": null,
+      "store": "epic",
+      "slug": "no-qid-game",
+      "releaseYear": null,
+      "releasePrecision": null,
+      "releaseDate": null,
+      "releaseDateSource": null
+    }
+  }
+}

@@ -1206,6 +1206,7 @@ module.exports = {
   matchBaseFor,
   needsBaseBridge,
   parseWbDate,
+  pickDate,
   parseFranchiseResponse,
   isLinksFresh,
   budgetFromEnv,

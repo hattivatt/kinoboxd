@@ -105,6 +105,12 @@ test('secondary identity bridge', async (t) => {
       appid: null,
       store: 'gog',
       slug: 'no_such_game',
+      // The P577 column is part of the settled shape: a miss has no date and
+      // must not be re-asked by the schema heal (`isSettledEntry`).
+      releaseYear: null,
+      releasePrecision: null,
+      releaseDate: null,
+      releaseDateSource: null,
     });
   });
 

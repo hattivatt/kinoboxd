@@ -340,16 +340,26 @@ test('secondary union', async (t) => {
         ],
       },
     });
+    // No P577 statement in this answer: the identity is still recorded and the
+    // date is an explicit `null` (a settled «WD knows no date»), never a fake.
     assert.deepEqual(entries['gog:the_witcher_3_wild_hunt'], {
       qid: 'Q4267401',
       appid: '292030',
       store: 'gog',
+      releaseYear: null,
+      releasePrecision: null,
+      releaseDate: null,
+      releaseDateSource: null,
     });
     // A row without an appid still records the QID (honest partial answer).
     assert.deepEqual(entries['gog:the_witcher_3_wild_hunt_expansion'], {
       qid: 'Q4267401',
       appid: null,
       store: 'gog',
+      releaseYear: null,
+      releasePrecision: null,
+      releaseDate: null,
+      releaseDateSource: null,
     });
   });
 });

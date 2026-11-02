@@ -91,6 +91,22 @@
  *      settled, so a polled `/stats` cannot loop on a store that simply has no
  *      second field.
  *
+ *      **Wikidata P577 year (02.11.2026 fix-round).** A store answer may carry
+ *      genres but no date (Alan Wake 2 catalog: `genresOk true,
+ *      yearHas false`) — the detail then stays `partial` forever, because the
+ *      CMS/catalog simply do not know the release date. The identity bridge
+ *      (`secondary-identity.js`) now also asks `P577` and caches
+ *      `releaseYear` / `releasePrecision` / `releaseDate` +
+ *      `releaseDateSource: 'wikidata'` per `(source, slug)` in
+ *      `links/secondary.json`. After the catalog pass, `applyWikidataYear()`
+ *      fills an **empty** year from that cache (day precision only for the
+ *      date; the store's own `storeReleaseDate` is untouched; a store/catalog
+ *      year is never replaced). It is a cache read, never a WDQS request: no
+ *      bridged QID or no P577 → the detail stays honestly partial and the
+ *      coverage says so. The same rule applies to a GOG product whose v2 page
+ *      has no `globalReleaseDate`/`gogReleaseDate`, and to an already cached
+ *      detail (the heals happen in `resolveGog`/`resolveEpic` on a cache hit).
+ *
  * Politeness (§14.5): one request per product, pause `GAMES_SECONDARY_PAUSE_MS`
  * (default **2 s**, GOG's undocumented ~200 req/h/IP limit is the reference),
  * budget `GAMES_SECONDARY_BUDGET` (default **200** requests/run, GOG first then
@@ -117,6 +133,9 @@ const path = require('path');
 const { URL } = require('url');
 
 const gameCache = require('./game-cache');
+// The identity bridge (`links/secondary.json`) is the only source of a
+// Wikidata P577 year for a store slug; this module reads it, never WDQS.
+const secondaryIdentity = require('./secondary-identity');
 
 const GOG_API_HOST = 'api.gog.com';
 const EPIC_CONTENT_HOST = 'store-content.ak.epicgames.com';
@@ -1562,6 +1581,54 @@ function catalogMetaFlags(data) {
   };
 }
 
+/* ------------------- Wikidata P577 year (identity bridge) ---------- */
+
+/**
+ * Last-resort release year for a GOG/Epic detail whose store — and, for Epic,
+ * catalog — answer carried no date (Alan Wake 2: `genresOk true`,
+ * `yearHas false`). The value is the `P577` of the item the store slug resolves
+ * to in the identity bridge (`cache-games/links/secondary.json`, written by
+ * `secondary-identity.js`); this function only **reads** that cache and never
+ * calls WDQS.
+ *
+ * Rules, all hard:
+ *   - only an **empty** `releaseYear` is filled — a store/catalog year is never
+ *     replaced;
+ *   - `releaseDate` is taken only for a **day**-precision statement, so a
+ *     month/year precision cannot become a fake day;
+ *   - provenance is `releaseDateSource: 'wikidata'` (the union exposes it as
+ *     `releaseYearSource`); the store's own `storeReleaseDate` is untouched;
+ *   - no cached entry / no QID / no P577 → the document is returned unchanged,
+ *     i.e. the work stays honestly `partial` (no invented year, no extra
+ *     request loop).
+ */
+function applyWikidataYear(data, options = {}) {
+  if (!data || data.releaseYear != null) return data;
+  const store = options.store;
+  const slug = options.slug || data.slug;
+  if (!store || !slug) return data;
+  let entry = null;
+  try {
+    entry = secondaryIdentity.readSecondaryLink(store, slug, options);
+  } catch (err) {
+    return data;
+  }
+  if (
+    !entry ||
+    !entry.qid ||
+    entry.releaseDateSource !== 'wikidata' ||
+    entry.releaseYear == null
+  ) {
+    return data;
+  }
+  return {
+    ...data,
+    releaseYear: entry.releaseYear,
+    releaseDate: entry.releaseDate || null,
+    releaseDateSource: 'wikidata',
+  };
+}
+
 /**
  * Keep a ≤2 KB diagnostic dump of a failed catalog attempt for the owner to
  * send back. Written for every result except `shape_ok` — including an `empty`
@@ -2110,8 +2177,25 @@ async function resolveGog(gogGameId, options = {}) {
   if (!id) throw new SecondaryDetailsError('Нет GOG id.', 'secondary_details_bad_target');
   const { doc, fresh } = readDetail('gog', id);
   if (fresh && doc && !options.force) {
+    let data = doc.status === 'ok' ? doc.data : null;
+    // A cached store answer without a year is completed from the identity
+    // bridge (same rule as the Epic path): additive, never replaced.
+    if (data) {
+      const withYear = applyWikidataYear(data, {
+        store: 'gog',
+        slug: options.slug || data.slug,
+      });
+      if (withYear !== data) {
+        try {
+          writeDetail('gog', id, 'ok', withYear);
+        } catch (err) {
+          /* a read-only cache must not fail the read model */
+        }
+        data = withYear;
+      }
+    }
     return {
-      data: doc.status === 'ok' ? doc.data : null,
+      data,
       status: doc.status,
       cached: true,
     };
@@ -2144,6 +2228,9 @@ async function resolveGog(gogGameId, options = {}) {
     // A 200 that does not parse is not a verdict about the product.
     throw err;
   }
+  // No date on the product page (a partial): the bridged Wikidata item's P577
+  // may still know the year. Genres/tags from the store are untouched.
+  data = applyWikidataYear(data, { store: 'gog', slug: options.slug || data.slug });
   writeDetail('gog', id, 'ok', data);
   return { data, status: 'ok', cached: false };
 }
@@ -2363,6 +2450,23 @@ async function resolveEpic(slug, options = {}) {
         data = next;
       }
     }
+    // A partial document whose year is still empty is completed from the
+    // identity bridge (`links/secondary.json`). Additive: a catalog/store year
+    // always wins; no bridge entry → the document stays honestly partial.
+    if (data) {
+      const withYear = applyWikidataYear(data, { store: 'epic', slug: id });
+      if (withYear !== data) {
+        const flags = catalogMetaFlags(withYear);
+        data = {
+          ...withYear,
+          metaStatus: flags.metaStatus,
+          metaYearHas: flags.yearHas,
+          metaGenresOk: flags.genresOk,
+          metaCheckedAt: isoOf(nowMs()),
+        };
+        writeDetail('epic', id, 'ok', data);
+      }
+    }
     return {
       data,
       status: doc.status,
@@ -2441,10 +2545,17 @@ async function resolveEpic(slug, options = {}) {
     if (ensured.skipped === 'not_connected') catalogSkipped = 'not_connected';
     catalogSkipReason = ensured.skipReason || null;
   }
-  const data = normalizeEpicProduct(payload, {
+  const normalized = normalizeEpicProduct(payload, {
     slug: id,
     title: options.title,
     catalog,
+  });
+  // After the catalog pass: if neither the CMS page nor the catalog carried a
+  // release date, the bridged Wikidata item (P6278 slug → QID → P577) may know
+  // it. Genres/developers/poster are untouched; no bridge entry → partial.
+  const data = applyWikidataYear(normalized, {
+    store: 'epic',
+    slug: normalized.slug || id,
   });
   if (catalogPending) {
     data.catalogPending = true;
@@ -3273,6 +3384,7 @@ module.exports = {
   recordCatalogAttempt,
   catalogRetryDue,
   catalogMetaFlags,
+  applyWikidataYear,
   catalogCompletionState,
   ownerHasCatalogToken,
   catalogTransportFacts,

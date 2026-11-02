@@ -25,11 +25,27 @@
  * three ids — `P1733 292030`, `P2725 game/the_witcher_3_wild_hunt`,
  * `P6278 the-witcher-3-wild-hunt` — so the bridge is the right tool for
  * exactly the case the user reported (a GOG/Epic copy of a Steam game).
+ *
+ * **P577 release date (02.11.2026).** The same batch now also asks
+ * `P577` («publication date») with its statement precision, so one query
+ * answers *identity + year* for the slugs. The entry carries
+ * `releaseYear` / `releasePrecision` / `releaseDate` and the provenance mark
+ * `releaseDateSource: 'wikidata'` (`null` when the item has no P577 at all —
+ * an honest «Wikidata does not know the date», not a retry loop). An entry
+ * written by the old schema (a QID but no `releaseDateSource` key) is re-asked
+ * once, so a deploy heals `secondary.json` without `force` over the library.
+ * `secondary-details.js` consumes this as the last-resort year for a GOG/Epic
+ * partial whose store/catalog answer had no release date (Alan Wake 2:
+ * `genresOk true, yearHas false`), and the union reports the same mark as
+ * `releaseYearSource: 'wikidata'`.
  */
 
 const path = require('path');
 
 const gameCache = require('./game-cache');
+// The P577 statement parser/picker is shared with the Steam franchise pass so
+// both WD readers agree on precision and on «earliest year» selection.
+const { parseWbDate, pickDate } = require('./franchise');
 
 const WDQS = 'https://query.wikidata.org/sparql';
 const USER_AGENT = 'kinoboxd/1.0 (games secondary identity; https://github.com/hattivatt/kinoboxd)';
@@ -74,7 +90,9 @@ function escapeLiteral(value) {
 
 /**
  * One SPARQL query for both stores. GOG values are written as `game/<slug>`
- * (the P2725 literal form), Epic values as the bare slug (P6278).
+ * (the P2725 literal form), Epic values as the bare slug (P6278). The
+ * publication date is `OPTIONAL` so a QID without P577 still answers identity
+ * (and is cached as a settled «no date», not as a failure).
  */
 function buildBridgeQuery({ gogSlugs = [], epicSlugs = [] } = {}) {
   const gog = gogSlugs.map((slug) => `"game/${escapeLiteral(slug)}"`);
@@ -90,31 +108,81 @@ function buildBridgeQuery({ gogSlugs = [], epicSlugs = [] } = {}) {
       `  { VALUES ?epicSlug { ${epic.join(' ')} }\n    ?item wdt:P6278 ?epicSlug .\n    BIND(?epicSlug AS ?slug)\n    BIND("epic" AS ?store) }`
     );
   }
-  return `SELECT ?item ?store ?slug ?appid WHERE {
+  return `SELECT ?item ?store ?slug ?appid ?date ?precision WHERE {
 ${branches.join('\n  UNION\n')}
   OPTIONAL { ?item wdt:P1733 ?appid . }
+  OPTIONAL {
+    ?item p:P577 ?st .
+    ?st psv:P577 ?val .
+    ?val wikibase:timeValue ?date .
+    ?val wikibase:timePrecision ?precision .
+  }
 }`;
 }
 
-/** `{ 'gog:slug': {qid, appid}, 'epic:slug': {qid, appid} }` from one response. */
+/**
+ * One entry per `store:slug`. A date is only ever *added*: several P577
+ * statements (regional releases) are reduced by the shared `pickDate` rule
+ * (earliest year, then the most precise statement). `releaseDate` stays `null`
+ * unless the statement is day-precision — a month/year precision must not
+ * become a fake day.
+ */
 function parseBridgeResponse(data) {
   const bindings =
     data && data.results && Array.isArray(data.results.bindings) ? data.results.bindings : [];
-  const entries = {};
+  const acc = {};
   for (const row of bindings) {
     const item = row && row.item && row.item.value ? String(row.item.value) : null;
     const qid = item ? item.slice(item.lastIndexOf('/') + 1) : null;
     const store = row && row.store && row.store.value ? String(row.store.value) : null;
     const slug = row && row.slug && row.slug.value ? normalizeSlug(row.slug.value) : null;
     if (!qid || !store || !slug) continue;
-    const appid = row.appid && row.appid.value ? String(row.appid.value) : null;
     const key = `${store}:${slug}`;
-    const previous = entries[key];
+    let entry = acc[key];
+    if (!entry) {
+      entry = { qid, appid: null, store, dates: [] };
+      acc[key] = entry;
+    }
+    const appid = row.appid && row.appid.value ? String(row.appid.value) : null;
     // Several rows per item (base + expansion pass): keep the one with an appid.
-    if (previous && previous.appid && !appid) continue;
-    entries[key] = { qid, appid, store };
+    if (appid && !entry.appid) entry.appid = appid;
+    if (row.date && row.date.value) {
+      const date = parseWbDate(row.date.value, row.precision && row.precision.value);
+      if (
+        date &&
+        !entry.dates.some((known) => known.iso === date.iso && known.precision === date.precision)
+      ) {
+        entry.dates.push(date);
+      }
+    }
+  }
+  const entries = {};
+  for (const [key, entry] of Object.entries(acc)) {
+    const date = pickDate(entry.dates);
+    entries[key] = {
+      qid: entry.qid,
+      appid: entry.appid,
+      store: entry.store,
+      releaseYear: date ? date.year : null,
+      releasePrecision: date ? date.precision : null,
+      releaseDate: date && date.precision === 'day' ? date.iso : null,
+      releaseDateSource: date ? 'wikidata' : null,
+    };
   }
   return entries;
+}
+
+/**
+ * Is this cached entry a settled answer for the current schema? A miss
+ * (`qid: null`) is settled — there is nothing to date. An entry with a QID but
+ * no `releaseDateSource` **key** was written before the P577 column existed, so
+ * its year is unknown: it is re-asked once (the deploy heal), which costs one
+ * batch and no `force` over the whole library.
+ */
+function isSettledEntry(entry) {
+  if (!entry || typeof entry !== 'object') return false;
+  if (!entry.qid) return true;
+  return entry.releaseDateSource !== undefined;
 }
 
 function readCache() {
@@ -130,9 +198,24 @@ function readSecondaryLinks({ allowStale = false } = {}) {
   return doc.entries;
 }
 
+/**
+ * One cached entry (`{qid, appid, store, releaseYear, releasePrecision,
+ * releaseDate, releaseDateSource}`) for a store slug — a cache read, never a
+ * request. The key is the normalised slug, exactly like the writer.
+ */
+function readSecondaryLink(store, slug, options = {}) {
+  const key = normalizeSlug(slug);
+  const prefix = String(store == null ? '' : store).trim().toLowerCase();
+  if (!key || !prefix) return null;
+  const links = options.links && typeof options.links === 'object'
+    ? options.links
+    : readSecondaryLinks(options);
+  return links[`${prefix}:${key}`] || null;
+}
+
 function writeCache(entries, extra = {}) {
   const doc = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: 'wikidata',
     fetchedAt: new Date().toISOString(),
     entries,
@@ -199,6 +282,20 @@ function uniqueSlugs(values) {
   return out;
 }
 
+/** A cached miss: the QID is unknown, so there is no date either. */
+function emptyEntry(store, slug) {
+  return {
+    qid: null,
+    appid: null,
+    store,
+    slug,
+    releaseYear: null,
+    releasePrecision: null,
+    releaseDate: null,
+    releaseDateSource: null,
+  };
+}
+
 /**
  * Resolve GOG/Epic slugs to Wikidata items and Steam appids, merging into the
  * cached document.
@@ -218,7 +315,7 @@ async function fetchSecondaryLinks(input = {}, options = {}) {
     ? cached.entries
     : {};
   const fresh = cached && gameCache.isFresh(cached, options.ttlMs || ttlMs());
-  const known = (store, slug) => Boolean(cachedEntries[`${store}:${normalizeSlug(slug)}`]);
+  const known = (store, slug) => isSettledEntry(cachedEntries[`${store}:${normalizeSlug(slug)}`]);
   const pendingGog = fresh && options.force !== true
     ? rawGog.filter((slug) => !known('gog', slug))
     : rawGog;
@@ -276,14 +373,14 @@ async function fetchSecondaryLinks(input = {}, options = {}) {
       const key = `gog:${normalizeSlug(slug)}`;
       if (parsed[key]) result.entries[key] = parsed[key];
       else if (!result.entries[key]) {
-        result.entries[key] = { qid: null, appid: null, store: 'gog', slug };
+        result.entries[key] = emptyEntry('gog', slug);
       }
     }
     for (const slug of batch.epicSlugs) {
       const key = `epic:${normalizeSlug(slug)}`;
       if (parsed[key]) result.entries[key] = parsed[key];
       else if (!result.entries[key]) {
-        result.entries[key] = { qid: null, appid: null, store: 'epic', slug };
+        result.entries[key] = emptyEntry('epic', slug);
       }
     }
     result.resolved += Object.values(parsed).filter((entry) => entry.qid).length;
@@ -352,7 +449,10 @@ module.exports = {
   normalizeSlug,
   buildBridgeQuery,
   parseBridgeResponse,
+  isSettledEntry,
+  emptyEntry,
   readSecondaryLinks,
+  readSecondaryLink,
   readCache,
   writeCache,
   fetchSecondaryLinks,
