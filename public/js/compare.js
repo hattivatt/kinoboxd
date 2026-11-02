@@ -58,7 +58,7 @@ function setSelectOptions(select, list, selectedId) {
 export function renderCompareAvailability(list) {
   if (Array.isArray(list)) profiles = list;
   const available = profiles.length >= 2;
-  const buttons = [$('compare-open'), $('compare-menu')];
+  const buttons = [$('compare-open')];
   for (const button of buttons) {
     if (button) button.hidden = !available;
   }
@@ -392,8 +392,4 @@ export function initCompare(nextHandlers = {}) {
     if (typeof handlers.onOpen === 'function') handlers.onOpen();
   });
 
-  const menu = $('compare-menu');
-  if (menu) menu.addEventListener('click', () => {
-    if (typeof handlers.onMenuOpen === 'function') handlers.onMenuOpen();
-  });
 }

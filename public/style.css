@@ -881,6 +881,9 @@ img { display: block; }
 }
 .brand-name .accent { color: var(--green); }
 .topbar-actions { display: flex; align-items: center; gap: 10px; }
+/* The tabs keep their width; a long action row wraps instead of overlapping. */
+.topbar-inner > .topbar-left { flex: none; }
+.topbar-inner > .topbar-actions { flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
 /* One header for the whole app: the tabs never move, the actions follow the
    active tab. Boot/login/upload/enrich/compare screens hide it entirely. */
 body:not([data-view="dashboard"]):not([data-view="books"]):not([data-view="games"]) #app-topbar {

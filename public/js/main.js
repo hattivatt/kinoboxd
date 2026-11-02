@@ -1762,8 +1762,6 @@ function bindUi() {
     },
   });
 
-  const replace = $('replace-upload');
-  if (replace) replace.addEventListener('click', openUploadScreen);
 
   const refresh = $('profile-refresh');
   if (refresh) refresh.addEventListener('click', () => { refreshActiveProfile(); });
