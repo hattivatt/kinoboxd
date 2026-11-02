@@ -63,39 +63,78 @@ function readJson(filePath, options = {}) {
   return read ? read.data : null;
 }
 
+/** Unique sibling name: two concurrent writers must not share a tmp file. */
+function tmpNameFor(filePath, tag) {
+  const unique = Math.random().toString(36).slice(2, 8);
+  return `${filePath}.${process.pid}.${Date.now()}.${tag ? `${tag}.` : ''}${unique}.tmp`;
+}
+
 /** Atomic replace: write a sibling tmp file, then rename over the target. */
 async function writeJsonAtomic(filePath, data, options = {}) {
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(data), options.encoding || 'utf8');
-  await fsp.rename(tmp, filePath);
+  const tmp = tmpNameFor(filePath);
+  try {
+    await fsp.writeFile(tmp, JSON.stringify(data), options.encoding || 'utf8');
+    await fsp.rename(tmp, filePath);
+  } catch (err) {
+    removeQuietly(tmp);
+    throw err;
+  }
   return fingerprintOf(filePath);
 }
 
 function writeJsonAtomicSync(filePath, data, options = {}) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.flush.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data), options.encoding || 'utf8');
-  fs.renameSync(tmp, filePath);
+  const tmp = tmpNameFor(filePath, 'flush');
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data), options.encoding || 'utf8');
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    removeQuietly(tmp);
+    throw err;
+  }
   return fingerprintOf(filePath);
 }
 
 /**
- * Atomic write of a secret document: directory 0700, file 0600, tmp file
- * created with the final mode so the payload is never world-readable, even
- * for the moment between `open` and `rename`.
+ * Atomic write of a secret document: directory 0700, file 0600.
+ *
+ * The tmp file is created with `O_CREAT|O_EXCL|O_NOFOLLOW` and the final mode,
+ * so (a) the payload is never world-readable, even between `open` and
+ * `rename`, and (b) a symlink planted at the tmp name is not followed.
+ * `rename` replaces a symlink at the target instead of following it, so a
+ * planted target link cannot redirect the secret either. A failed write leaves
+ * no tmp file behind.
  */
 function writeSecretAtomicSync(filePath, data) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const fd = fs.openSync(tmp, 'w', 0o600);
+  const tmp = tmpNameFor(filePath);
+  let fd = null;
   try {
+    fd = fs.openSync(
+      tmp,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+      0o600
+    );
     fs.writeFileSync(fd, JSON.stringify(data), 'utf8');
     fs.fchmodSync(fd, 0o600);
-  } finally {
+    // Same durability the Epic writer had before U1: the bytes are on disk
+    // before the rename makes them visible under the final name.
+    fs.fsyncSync(fd);
     fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch (closeErr) {
+        /* best-effort */
+      }
+    }
+    removeQuietly(tmp);
+    throw err;
   }
-  fs.renameSync(tmp, filePath);
   try {
     fs.chmodSync(filePath, 0o600);
   } catch (err) {
