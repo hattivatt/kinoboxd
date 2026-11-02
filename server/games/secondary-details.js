@@ -37,13 +37,27 @@
  *      `addon`/`offer` pages are skipped: their release date belongs to a DLC or
  *      an edition, not to the base game.
  *
+ *      **Production hardening (02.11.2026).** The production server reaches the
+ *      CMS from a different IP than the dev box; a Cloudflare edge can answer
+ *      `403` there while the same page is `200` elsewhere. The request now
+ *      carries a browser `User-Agent` (a `kinoboxd/1.0` bot string is the first
+ *      thing an edge challenge looks at), and a failed primary host is retried
+ *      once against the IPv4 mirror `store-content-ipv4.ak.epicgames.com`.
+ *      A `403`/`429` from either host trips the 30-minute breaker with
+ *      `code: 'cms_blocked'` — the status endpoint reports that reason, so a
+ *      blocked edge is never mistaken for «the game has no metadata». The first
+ *      three failed CMS answers are dumped (status + ≤2 KB body, tokens masked)
+ *      to `cache-games/debug/epic/<slug>.json` for the owner to send back.
+ *
  * Politeness (§14.5): one request per product, pause `GAMES_SECONDARY_PAUSE_MS`
  * (default **2 s**, GOG's undocumented ~200 req/h/IP limit is the reference),
  * budget `GAMES_SECONDARY_BUDGET` (default **200** requests/run, GOG first then
  * Epic), 30-minute breaker on `403`/`429`. A network/5xx answer is **deferred**
  * (nothing is cached, the previous detail stays), a `404` is a negative cache
  * entry (`not_found`, 30 days) — the same «unknown ≠ empty» rule as everywhere
- * else in the games tab.
+ * else in the games tab. A **guessed** slug (title probe) that 404s is cached
+ * with `probe: true` for `GAMES_SECONDARY_PROBE_TTL_MS` (7 days) so a «library
+ * only» work is not probed on every kick.
  *
  * Cache: `cache-games/secondary-details/<source>-<id>.json`, TTL 30 days,
  * resumable by construction (each product is its own file, so an interrupted
@@ -64,15 +78,28 @@ const gameCache = require('./game-cache');
 
 const GOG_API_HOST = 'api.gog.com';
 const EPIC_CONTENT_HOST = 'store-content.ak.epicgames.com';
+// Cloudflare fronts the store CMS; the IPv4-only name is the same origin and
+// is the documented workaround for an edge that rejects a network's IPv6 path.
+const EPIC_CONTENT_MIRROR_HOST = 'store-content-ipv4.ak.epicgames.com';
+const EPIC_HOSTS = [EPIC_CONTENT_HOST, EPIC_CONTENT_MIRROR_HOST];
+// A browser UA: the CMS (and its CDN) answers a bot string with a challenge on
+// some edges. The value is a plain desktop Chrome string, no cookies, no token.
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 const CACHE_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'secondary-details');
 const STATE_DIR = gameCache.STATE_DIR;
 const BREAKER_PATH = path.join(STATE_DIR, 'secondary-details-breaker.json');
+const STATUS_PATH = path.join(STATE_DIR, 'secondary-details-status.json');
+// Failed CMS answers kept for the owner to send back (diagnostics only).
+const DEBUG_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'debug', 'epic');
 
 const SCHEMA_VERSION = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_TTL_MS = 30 * DAY_MS;
 const DEFAULT_NOT_FOUND_TTL_MS = 30 * DAY_MS;
+const DEFAULT_PROBE_TTL_MS = 7 * DAY_MS;
 const DEFAULT_BUDGET = 200;
 const DEFAULT_PAUSE_MS = 2000;
 const DEFAULT_EPIC_PAUSE_MS = 1500;
@@ -80,6 +107,11 @@ const DEFAULT_BREAKER_MS = 30 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_KICK_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const MAX_DEBUG_FILES = 3;
+const DEBUG_BODY_LIMIT = 2048;
+const MAX_STATUS_ERRORS = 5;
+const MAX_KICK_HISTORY = 10;
+const MAX_SLUGLESS = 50;
 
 try {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -100,6 +132,13 @@ class SecondaryDetailsError extends Error {
     if (details.status != null) this.status = details.status;
     if (details.retryAt != null) this.retryAt = details.retryAt;
     if (details.host != null) this.host = details.host;
+    // Diagnostics for the CMS debug dump (never a token; masked on write).
+    if (details.url != null) this.url = details.url;
+    if (details.body != null) this.body = details.body;
+    if (details.contentType != null) this.contentType = details.contentType;
+    if (details.bodyBytes != null) this.bodyBytes = details.bodyBytes;
+    if (details.reason != null) this.reason = details.reason;
+    if (details.breakerCode != null) this.breakerCode = details.breakerCode;
     // A deferred answer must never become a negative cache entry.
     this.deferred = details.deferred === true;
   }
@@ -132,6 +171,11 @@ function ttlMs() {
 
 function notFoundTtlMs() {
   return envMs('GAMES_SECONDARY_NOT_FOUND_TTL_MS', DEFAULT_NOT_FOUND_TTL_MS);
+}
+
+/** Shorter TTL for a *guessed* slug that 404s (the guess may become valid). */
+function probeTtlMs() {
+  return envMs('GAMES_SECONDARY_PROBE_TTL_MS', DEFAULT_PROBE_TTL_MS);
 }
 
 function budgetDefault() {
@@ -369,10 +413,8 @@ function normalizeGogProduct(payload, options = {}) {
 
 /* ------------------------------- Epic ------------------------------ */
 
-function epicUrl(slug) {
-  return `https://${EPIC_CONTENT_HOST}/api/en-US/content/products/${encodeURIComponent(
-    String(slug)
-  )}`;
+function epicUrl(slug, host = EPIC_CONTENT_HOST) {
+  return `https://${host}/api/en-US/content/products/${encodeURIComponent(String(slug))}`;
 }
 
 /**
@@ -543,6 +585,7 @@ function normalizeEpicProduct(payload, options = {}) {
 
 function httpGetJson(target, options = {}) {
   const timeout = options.timeoutMs || timeoutMs();
+  const userAgent = options.userAgent || 'kinoboxd/1.0 (+games-tab; secondary-details)';
   return new Promise((resolve, reject) => {
     let parsed;
     try {
@@ -559,7 +602,7 @@ function httpGetJson(target, options = {}) {
         {
           method: 'GET',
           headers: {
-            'User-Agent': 'kinoboxd/1.0 (+games-tab; secondary-details)',
+            'User-Agent': userAgent,
             Accept: 'application/json, */*',
             'Accept-Language': 'en-US,en;q=0.9',
           },
@@ -654,7 +697,11 @@ function cachePath(source, id) {
 function isFresh(doc, atMs) {
   const fetchedAt = doc && doc.fetchedAt ? Date.parse(doc.fetchedAt) : NaN;
   if (!Number.isFinite(fetchedAt)) return false;
-  const ttl = doc.status === 'not_found' ? notFoundTtlMs() : ttlMs();
+  let ttl = ttlMs();
+  if (doc.status === 'not_found') {
+    // A guessed slug is not a verdict about the product: shorter memory.
+    ttl = doc.probe === true ? probeTtlMs() : notFoundTtlMs();
+  }
   return atMs - fetchedAt < ttl;
 }
 
@@ -848,6 +895,83 @@ function tripBreaker(source, code, status) {
 }
 
 /* ------------------------------------------------------------------ */
+/* status state (diagnostics the owner can paste back)                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A small persisted ledger behind `GET /api/games/secondary-details/status`:
+ * the last 5 failures (so a `cms_blocked` survives a restart) and the last 10
+ * kicks. Never a token, never a response body — only codes, hosts, dates.
+ */
+function readStatusState() {
+  const hit = gameCache.readJsonWithFingerprint(STATUS_PATH);
+  const doc = (hit && hit.data) || {};
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    lastErrors: Array.isArray(doc.lastErrors) ? doc.lastErrors.slice(-MAX_STATUS_ERRORS) : [],
+    kicks: Array.isArray(doc.kicks) ? doc.kicks.slice(-MAX_KICK_HISTORY) : [],
+    lastRunAt: doc.lastRunAt || null,
+  };
+}
+
+function writeStatusState(state) {
+  try {
+    gameCache.writeJsonAtomicSync(STATUS_PATH, { schemaVersion: SCHEMA_VERSION, ...state });
+  } catch (err) {
+    /* diagnostics must never break the job */
+  }
+}
+
+function recordError(entry) {
+  try {
+    const state = readStatusState();
+    state.lastErrors.push({ at: isoOf(nowMs()), ...entry });
+    state.lastErrors = state.lastErrors.slice(-MAX_STATUS_ERRORS);
+    writeStatusState(state);
+  } catch (err) {
+    /* ignore */
+  }
+}
+
+function recordKick(entry) {
+  try {
+    const state = readStatusState();
+    state.kicks.push({ at: isoOf(nowMs()), ...entry });
+    state.kicks = state.kicks.slice(-MAX_KICK_HISTORY);
+    writeStatusState(state);
+  } catch (err) {
+    /* ignore */
+  }
+}
+
+function recordRunFinished(job) {
+  try {
+    const state = readStatusState();
+    state.lastRunAt = job.finishedAt || isoOf(nowMs());
+    writeStatusState(state);
+  } catch (err) {
+    /* ignore */
+  }
+}
+
+/** Latest kick of one owner, memory first, then the persisted ledger. */
+function lastKickAtFor(ownerKey) {
+  const key = String(ownerKey == null ? '' : ownerKey);
+  const memory = lastKick.get(key);
+  if (memory) return memory;
+  const state = readStatusState();
+  let latest = 0;
+  for (const kick of state.kicks) {
+    if (!kick || kick.ownerKey !== key) continue;
+    if (kick.result === 'skipped') continue;
+    const at = Date.parse(kick.at || '');
+    if (Number.isFinite(at) && at > latest) latest = at;
+  }
+  if (latest) lastKick.set(key, latest);
+  return latest || null;
+}
+
+/* ------------------------------------------------------------------ */
 /* resolver                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -855,32 +979,152 @@ function tripBreaker(source, code, status) {
  * One product → normalized detail. The injected `client` (tests) may expose
  * `getJson(url)`; otherwise a minimal HTTPS GET is used. `client` is also
  * allowed to be a plain function `(url) => Promise<payload>`.
+ *
+ * `options.headers`/`options.userAgent` only affect the built-in HTTPS path —
+ * an injected client owns its own request shape.
  */
-async function fetchJson(client, url) {
+async function fetchJson(client, url, options = {}) {
   if (client && typeof client.getJson === 'function') return client.getJson(url);
   if (typeof client === 'function') return client(url);
-  const response = await httpGetJson(url);
+  const response = await httpGetJson(url, { userAgent: options.userAgent });
+  const meta = {
+    url,
+    host: (() => {
+      try {
+        return new URL(url).host;
+      } catch (err) {
+        return null;
+      }
+    })(),
+    body: response.body,
+    contentType: response.headers && response.headers['content-type'],
+    bodyBytes: Buffer.byteLength(String(response.body == null ? '' : response.body), 'utf8'),
+  };
   if (response.status === 404) {
-    const err = new SecondaryDetailsError('Продукт не найден.', 'secondary_details_not_found', {
+    throw new SecondaryDetailsError('Продукт не найден.', 'secondary_details_not_found', {
+      ...meta,
       status: 404,
+      reason: 'not_found',
     });
-    throw err;
   }
   if (response.status === 403 || response.status === 429) {
     throw new SecondaryDetailsError(
       `Источник ограничил запросы (${response.status}).`,
       'secondary_details_blocked',
-      { status: response.status, deferred: true }
+      { ...meta, status: response.status, deferred: true, reason: 'blocked' }
     );
   }
   if (response.status < 200 || response.status >= 300) {
     throw new SecondaryDetailsError(
       `Источник ответил ${response.status}.`,
       'secondary_details_http_error',
-      { status: response.status, deferred: response.status >= 500 }
+      {
+        ...meta,
+        status: response.status,
+        deferred: response.status >= 500,
+        reason: 'http_error',
+      }
     );
   }
-  return parseJson(response.body, response.status);
+  try {
+    return parseJson(response.body, response.status);
+  } catch (err) {
+    if (err && typeof err === 'object') {
+      Object.assign(err, meta);
+      err.reason = err.reason || 'unparsed';
+    }
+    throw err;
+  }
+}
+
+/* ------------------------- Epic CMS transport ---------------------- */
+
+/**
+ * Keep the first `MAX_DEBUG_FILES` failed CMS answers for the owner to send
+ * back. The body is truncated to 2 KB and secrets are masked; the file name is
+ * the slug, so a re-run overwrites its own dump instead of growing the folder.
+ * Diagnostics must never fail the request.
+ */
+function dumpEpicFailure(slug, info = {}) {
+  try {
+    fs.mkdirSync(DEBUG_DIR, { recursive: true });
+    const file = path.join(DEBUG_DIR, `${safeKey(slug)}.json`);
+    if (!fs.existsSync(file)) {
+      let count = 0;
+      for (const name of fs.readdirSync(DEBUG_DIR)) {
+        if (name.endsWith('.json')) count++;
+      }
+      if (count >= MAX_DEBUG_FILES) return null;
+    }
+    const body = info.body == null ? null : maskSecrets(String(info.body)).slice(0, DEBUG_BODY_LIMIT);
+    const doc = {
+      schemaVersion: SCHEMA_VERSION,
+      source: 'epic',
+      slug: String(slug),
+      at: isoOf(nowMs()),
+      host: info.host || null,
+      url: info.url ? maskSecrets(String(info.url)) : null,
+      status: info.status == null ? null : Number(info.status),
+      reason: info.reason || null,
+      contentType: info.contentType || null,
+      bodyBytes: info.bodyBytes == null ? null : Number(info.bodyBytes),
+      body,
+      note: 'Диагностика CMS Epic: только статус и первые 2 KB ответа, секреты замаскированы.',
+    };
+    gameCache.writeJsonAtomicSync(file, doc);
+    return file;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Fetch one Epic CMS product page: primary host first, then the IPv4 mirror
+ * when the primary fails for a reason that may be edge-specific (network,
+ * `403`, `5xx`, a non-JSON challenge page). A `404` is the product's own
+ * verdict and is **not** retried against the mirror; `429` is an account/IP
+ * rate limit and is not retried either.
+ *
+ * Returns `{ payload, host, url }`. Every failed answer is dumped (capped).
+ * `onExtraRequest` is called for the mirror attempt so the job budget counts
+ * the real request count.
+ */
+async function fetchEpicProduct(slug, options = {}) {
+  const hosts = Array.isArray(options.hosts) && options.hosts.length
+    ? options.hosts
+    : EPIC_HOSTS;
+  const urlOf = typeof options.urlOf === 'function' ? options.urlOf : epicUrl;
+  let lastError = null;
+  for (let index = 0; index < hosts.length; index++) {
+    const host = hosts[index];
+    const url = urlOf(slug, host);
+    if (index > 0 && typeof options.onExtraRequest === 'function') {
+      try {
+        options.onExtraRequest();
+      } catch (err) {
+        /* a counting hook must never break the fetch */
+      }
+    }
+    try {
+      const payload = await fetchJson(options.client, url, { userAgent: BROWSER_UA });
+      return { payload, host, url };
+    } catch (err) {
+      lastError = err || lastError;
+      const code = (err && err.code) || 'secondary_details_error';
+      dumpEpicFailure(slug, {
+        host,
+        url,
+        status: err && err.status,
+        reason: (err && err.reason) || code,
+        body: err && err.body,
+        contentType: err && err.contentType,
+        bodyBytes: err && err.bodyBytes,
+      });
+      if (code === 'secondary_details_not_found') throw err;
+      if (err && err.status === 429) throw err;
+    }
+  }
+  throw lastError || new SecondaryDetailsError('CMS Epic недоступна.', 'secondary_details_unreachable');
 }
 
 /**
@@ -968,31 +1212,68 @@ async function discoverEpicSlug(options = {}) {
   const guess = slugFromTitle(title);
   if (!guess || guess.length < 3) return null;
   if (comparableTitle(title).length < 3) return null;
-  let payload;
+  // A previous probe of this guess 404'd. It is a short-lived memory (7 days),
+  // not a verdict: the same guess is retried later, and an explicit slug from
+  // the catalog always bypasses it.
+  if (!options.force) {
+    const known = readDetail('epic', guess);
+    if (
+      known.fresh &&
+      known.doc &&
+      known.doc.status === 'not_found' &&
+      known.doc.probe === true
+    ) {
+      return null;
+    }
+  }
+  let fetched;
   try {
     if (typeof options.onRequest === 'function') options.onRequest();
-    payload = await fetchJson(options.client, epicUrl(guess));
+    fetched = await fetchEpicProduct(guess, {
+      client: options.client,
+      onExtraRequest: options.onRequest,
+      hosts: options.hosts,
+      urlOf: options.urlOf,
+    });
   } catch (err) {
-    if (err && err.code === 'secondary_details_not_found') return null;
+    if (err && err.code === 'secondary_details_not_found') {
+      // The guess is not a verdict about the product: remember it briefly so
+      // the next kick does not probe again, and stay «library-only».
+      writeDetail('epic', guess, 'not_found', null, { probe: true, title: title || null });
+      return null;
+    }
+    if (err && (err.status === 403 || err.status === 429)) {
+      tripBreaker('epic', 'cms_blocked', err.status);
+      // The reason travels with the error: the job warning and the status
+      // ledger must say «blocked by the CMS», not «no metadata».
+      err.breakerCode = 'cms_blocked';
+    }
     throw err;
   }
+  const payload = fetched.payload;
   const name =
     (payload && (payload.productName || payload._title)) ||
     (payload && payload.pages && payload.pages[0] && payload.pages[0].productName) ||
     null;
   if (!name || comparableTitle(name) !== comparableTitle(title)) return null;
   // The validated page is the product page itself — no second request.
-  return { slug: guess, payload };
+  return { slug: guess, payload, host: fetched.host || null };
 }
 
 async function resolveEpic(slug, options = {}) {
   let id = String(slug == null ? '' : slug).trim();
   let probedPayload = null;
+  let probedHost = null;
+  const title = options.title ? String(options.title).trim() : '';
+  const canProbe =
+    Boolean(title) &&
+    comparableTitle(title).length >= 3 &&
+    (options.probeBudget == null || options.probeBudget >= 2);
   if (!id) {
     // Two requests are needed (probe + product page): only try when the job
     // still has that much budget left. Without a title there is nothing to
     // guess — the caller reports the work as `library-only`.
-    if (!options.title || (options.probeBudget != null && options.probeBudget < 2)) {
+    if (!canProbe) {
       return { data: null, status: 'not_found', cached: false, reason: 'no_slug' };
     }
     const discovered = await discoverEpicSlug(options);
@@ -1001,9 +1282,15 @@ async function resolveEpic(slug, options = {}) {
     }
     id = discovered.slug;
     probedPayload = discovered.payload;
+    probedHost = discovered.host;
   }
   const { doc, fresh } = readDetail('epic', id);
-  if (fresh && doc && !options.force) {
+  // A probe negative cache (`probe: true`) is a memory about a *guess*, not a
+  // verdict about this id — an explicitly addressed product is re-fetched.
+  const probeOnlyNegative = Boolean(
+    doc && doc.status === 'not_found' && doc.probe === true
+  );
+  if (fresh && doc && !options.force && !(probeOnlyNegative && !probedPayload)) {
     return {
       data: doc.status === 'ok' ? doc.data : null,
       status: doc.status,
@@ -1015,21 +1302,53 @@ async function resolveEpic(slug, options = {}) {
     throw new SecondaryDetailsError(
       `Epic на паузе до ${blocked.until}.`,
       'secondary_details_blocked',
-      { deferred: true, retryAt: blocked.until }
+      {
+        deferred: true,
+        retryAt: blocked.until,
+        reason: blocked.code || 'blocked',
+        breakerCode: blocked.code || 'blocked',
+      }
     );
   }
-  let payload;
-  try {
-    payload = probedPayload || (await fetchJson(options.client, epicUrl(id)));
-  } catch (err) {
-    if (err && err.code === 'secondary_details_not_found') {
-      writeDetail('epic', id, 'not_found', null);
-      return { data: null, status: 'not_found', cached: false };
+  let payload = probedPayload;
+  let host = probedHost;
+  if (!payload) {
+    try {
+      const fetched = await fetchEpicProduct(id, {
+        client: options.client,
+        onExtraRequest: options.onRequest,
+        hosts: options.hosts,
+        urlOf: options.urlOf,
+      });
+      payload = fetched.payload;
+      host = fetched.host || null;
+    } catch (err) {
+      let recovered = null;
+      // A catalog/productmapping slug can be stale (the catalog knows the base
+      // game, the owned SKU has a different slug). A validated title probe is
+      // the only way to tell «removed product» from «wrong slug»; it runs once
+      // and must match the library title.
+      if (err && err.code === 'secondary_details_not_found' && canProbe) {
+        const guess = slugFromTitle(title);
+        if (guess && guess !== id) {
+          recovered = await discoverEpicSlug(options);
+        }
+      }
+      if (!recovered) {
+        if (err && err.code === 'secondary_details_not_found') {
+          writeDetail('epic', id, 'not_found', null);
+          return { data: null, status: 'not_found', cached: false };
+        }
+        if (err && (err.status === 403 || err.status === 429)) {
+          tripBreaker('epic', 'cms_blocked', err.status);
+          err.breakerCode = 'cms_blocked';
+        }
+        throw err;
+      }
+      id = recovered.slug;
+      payload = recovered.payload;
+      host = recovered.host || null;
     }
-    if (err && (err.status === 403 || err.status === 429)) {
-      tripBreaker('epic', 'blocked', err.status);
-    }
-    throw err;
   }
   const data = normalizeEpicProduct(payload, {
     slug: id,
@@ -1049,7 +1368,7 @@ async function resolveEpic(slug, options = {}) {
       /* a read-only cache must not fail the fetch */
     }
   }
-  return { data, status: 'ok', cached: false };
+  return { data, status: 'ok', cached: false, host: host || null };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1149,15 +1468,28 @@ async function runPhase(job, source, targets, resolveOne) {
       }
     } catch (err) {
       const code = (err && err.code) || 'secondary_details_error';
+      // `cms_blocked` is the reason an edge refused the CMS — it must not be
+      // reported as «no metadata» (ИГРЫ §14.5).
+      const reason = (err && (err.breakerCode || err.reason)) || code;
+      recordError({
+        ownerKey: job.ownerKey,
+        source,
+        id: String(target.id || target.slug || ''),
+        code,
+        reason,
+        status: err && err.status != null ? err.status : null,
+        host: err && err.host ? err.host : null,
+        message: maskSecrets((err && err.message) || '').slice(0, 200),
+      });
       if (err && err.deferred) {
         phase.deferred++;
-        job.warnings.push(`${source}_${code}`);
+        job.warnings.push(`${source}_${reason}`);
         // A blocked/unreachable host is not a per-product failure: stop this
         // phase instead of hammering it for every remaining product.
         if (code === 'secondary_details_blocked') break;
       } else {
         phase.failed++;
-        job.warnings.push(`${source}_${code}`);
+        job.warnings.push(`${source}_${reason}`);
       }
     }
     if (job.requests < job.budget) await sleep(job.pauseMs);
@@ -1254,6 +1586,7 @@ function startSecondaryDetails(options = {}) {
     } finally {
       job.finishedAt = isoOf(nowMs());
       job.stage = 'done';
+      recordRunFinished(job);
     }
   };
   Promise.resolve().then(run);
@@ -1267,7 +1600,7 @@ function kickGate(ownerKey, options = {}) {
   const job = jobs.get(key);
   if (job && job.status === 'running') return 'running';
   if (options.forceKick) return null;
-  const last = lastKick.get(key);
+  const last = lastKickAtFor(key);
   const cooldown =
     options.kickCooldownMs != null ? Number(options.kickCooldownMs) : kickCooldownMs();
   if (last && nowMs() - last < cooldown) return 'cooldown';
@@ -1278,20 +1611,39 @@ function kickGate(ownerKey, options = {}) {
  * Fire-and-forget kick after a GOG/Epic import (the `kickFranchiseQuietly`
  * pattern): a failure is a job warning, the import stays `done`. `forceKick`
  * is set for an explicit user import so the cooldown does not swallow it.
+ *
+ * `trigger` is recorded in the kick ledger (`import`, `refresh`, `stats`) —
+ * the status endpoint shows it, so «the fix did nothing on prod» can be told
+ * apart from «nobody asked».
  */
 function kickSecondaryDetailsQuietly(ownerKey, options = {}) {
-  const gate = kickGate(ownerKey, options);
-  if (gate) return { skipped: gate, ownerKey: ownerKey || null };
+  const key = String(ownerKey == null ? '' : ownerKey);
+  const trigger = options.trigger || 'import';
+  const gate = kickGate(key, options);
+  if (gate) {
+    if (trigger !== 'stats') {
+      recordKick({ ownerKey: key, result: 'skipped', skipped: gate, trigger });
+    }
+    return { skipped: gate, ownerKey: ownerKey || null };
+  }
   try {
     const job = startSecondaryDetails({ ...options, ownerKey });
+    recordKick({
+      ownerKey: key,
+      result: job.reused ? 'reused' : 'started',
+      jobId: job.id || null,
+      trigger,
+      budget: job.budget == null ? null : job.budget,
+    });
     console.log(
       `[games-secondary-details] kicked ${job.id} ` +
-        `(gog=${job.gog.total}, epic=${job.epic.total}, budget=${job.budget})`
+        `(gog=${job.gog.total}, epic=${job.epic.total}, budget=${job.budget}, trigger=${trigger})`
     );
     return job;
   } catch (err) {
     const message = maskSecrets((err && err.message) || 'secondary details failed');
     console.warn(`[games-secondary-details] kick failed (caller kept): ${message}`);
+    recordKick({ ownerKey: key, result: 'failed', trigger, code: (err && err.code) || 'kick_failed' });
     return { skipped: 'kick_failed', code: (err && err.code) || 'kick_failed' };
   }
 }
@@ -1347,6 +1699,7 @@ function targetsForOwner(ownerKey) {
         slug: slug || null,
         id: String(game.catalogItemId || game.appName || slug || ''),
         catalogItemId: game.catalogItemId || null,
+        appName: game.appName || null,
         title,
         catalog: meta,
       });
@@ -1355,21 +1708,196 @@ function targetsForOwner(ownerKey) {
   return { gog, epic, epicNoSlug };
 }
 
+/* ------------------------------------------------------------------ */
+/* coverage / status / lazy kick                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How many of the owner's secondary products already have a detail document.
+ * `total` includes **slugless** Epic works: the title probe is the only way to
+ * address them, and «resolved < total» must stay true until one of them is
+ * either resolved or explicitly given up (a probe negative is not resolved,
+ * but it stops the retry loop through the probe TTL).
+ */
+function coverageForOwner(ownerKey) {
+  const targets = targetsForOwner(ownerKey);
+  const phase = (source, list, idOf) => {
+    let resolved = 0;
+    let notFound = 0;
+    for (const target of list) {
+      const id = idOf(target);
+      if (!id) {
+        // A slugless Epic work is addressable only by its title guess. A fresh
+        // probe negative means «attempted, nothing found» — not pending.
+        if (source === 'epic' && target.title) {
+          const guess = slugFromTitle(target.title);
+          const hit = guess ? readDetail('epic', guess) : null;
+          if (
+            hit &&
+            hit.fresh &&
+            hit.doc &&
+            hit.doc.status === 'not_found' &&
+            hit.doc.probe === true
+          ) {
+            notFound++;
+          }
+        }
+        continue;
+      }
+      const { doc, fresh } = readDetail(source, id);
+      if (!fresh || !doc) continue;
+      if (doc.status === 'ok') resolved++;
+      else if (doc.status === 'not_found') notFound++;
+    }
+    return {
+      total: list.length,
+      resolved,
+      notFound,
+      missingSlug: 0,
+      pending: Math.max(0, list.length - resolved - notFound),
+    };
+  };
+  const gog = phase('gog', targets.gog, (target) => target.id);
+  const epic = phase('epic', targets.epic, (target) => target.slug);
+  epic.missingSlug = targets.epicNoSlug;
+  const slugless = targets.epic
+    .filter((target) => !target.slug)
+    .slice(0, MAX_SLUGLESS)
+    .map((target) => ({
+      name: target.title || null,
+      catalogItemId: target.catalogItemId || null,
+      appName: target.appName || null,
+    }));
+  return {
+    gog,
+    epic,
+    slugless,
+    resolved: gog.resolved + epic.resolved,
+    total: gog.total + epic.total,
+    pending: gog.pending + epic.pending,
+  };
+}
+
+/**
+ * The owner-facing diagnostic (`GET /api/games/secondary-details/status`).
+ * Contract: `{ resolved, total, running, bySource, slugless[], lastErrors[],
+ * cooldownUntil, kick, lastRunAt }`. Everything here is a cache/state read —
+ * the endpoint never makes a network request.
+ */
+function statusForOwner(ownerKey) {
+  const key = String(ownerKey == null ? '' : ownerKey).trim();
+  const coverage = coverageForOwner(key);
+  const state = readStatusState();
+  const lastKick = lastKickAtFor(key);
+  const kicks = state.kicks
+    .filter((kick) => kick && kick.ownerKey === key)
+    .slice(-MAX_KICK_HISTORY);
+  const last = kicks.length ? kicks[kicks.length - 1] : null;
+  const gogBreaker = breakerBlock('gog');
+  const epicBreaker = breakerBlock('epic');
+  const cooldownUntil = lastKick ? isoOf(lastKick + kickCooldownMs()) : null;
+  const kickCooldownActive = Boolean(
+    lastKick && nowMs() - lastKick < kickCooldownMs()
+  );
+  return {
+    profile: key || null,
+    resolved: coverage.resolved,
+    total: coverage.total,
+    pending: Math.max(0, coverage.total - coverage.resolved),
+    running: runningFor(key),
+    bySource: {
+      gog: { ...coverage.gog },
+      epic: { ...coverage.epic },
+    },
+    slugless: coverage.slugless,
+    lastErrors: state.lastErrors
+      .filter((entry) => entry && entry.ownerKey === key)
+      .slice(-MAX_STATUS_ERRORS),
+    // `null` when a kick is allowed right now (cooldown is advisory, the
+    // breaker is the hard stop and is reported separately).
+    cooldownUntil: kickCooldownActive ? cooldownUntil : null,
+    cooldownActive: kickCooldownActive,
+    breakers: {
+      gog: gogBreaker ? { until: gogBreaker.until, code: gogBreaker.code } : null,
+      epic: epicBreaker ? { until: epicBreaker.until, code: epicBreaker.code } : null,
+    },
+    kick: {
+      lastKickAt: lastKick ? isoOf(lastKick) : null,
+      lastJobId: last ? last.jobId || null : null,
+      lastResult: last ? last.result || null : null,
+      lastSkipped: last && last.result === 'skipped' ? last.skipped || null : null,
+      lastTrigger: last ? last.trigger || null : null,
+      history: kicks,
+    },
+    lastRunAt: state.lastRunAt || null,
+    checkedAt: isoOf(nowMs()),
+  };
+}
+
+/** `true` when at least one addressable work has no successful detail yet. */
+function coverageNeedsKick(meta) {
+  if (!meta || typeof meta !== 'object') return false;
+  const total = Number(meta.total) || 0;
+  const resolved = Number(meta.resolved) || 0;
+  const noSlug = Number(meta.noSlug) || 0;
+  return (total > 0 && resolved < total) || noSlug > 0;
+}
+
+/**
+ * Lazy kick from `GET /api/games/stats` (the missing piece after the 66c3d21
+ * deploy: an Epic library imported *before* the deploy never fired a kick, and
+ * nothing re-kicked it). Fire-and-forget, coalesced by `kickGate`, disabled
+ * with `GAMES_SECONDARY_LAZY_KICK=0`.
+ */
+function kickFromStats(ownerKey, meta, options = {}) {
+  const key = String(ownerKey == null ? '' : ownerKey).trim();
+  if (!key) return { skipped: 'no_owner' };
+  if (String(process.env.GAMES_SECONDARY_LAZY_KICK || '').trim() === '0') {
+    return { skipped: 'disabled' };
+  }
+  if (!coverageNeedsKick(meta)) return { skipped: 'covered' };
+  // Refine with the cache: a product whose slug 404'd (or whose title probe
+  // already failed) is *attempted*, not pending. Without this a no-op job would
+  // start every cooldown window for a work that cannot be resolved.
+  const coverage = coverageForOwner(key);
+  if (coverage.pending <= 0) return { skipped: 'attempted' };
+  const gate = kickGate(key, options);
+  if (gate) return { skipped: gate };
+  return kickSecondaryDetailsQuietly(key, {
+    trigger: 'stats',
+    client: options.client,
+    ...targetsForOwner(key),
+  });
+}
+
 /** Test helper: forget job/cooldown state between cases. */
 function resetJobs() {
   jobs.clear();
   lastKick.clear();
+  try {
+    fs.rmSync(STATUS_PATH, { force: true });
+  } catch (err) {
+    /* nothing to clean */
+  }
 }
 
 module.exports = {
   SecondaryDetailsError,
   GOG_API_HOST,
   EPIC_CONTENT_HOST,
+  EPIC_CONTENT_MIRROR_HOST,
+  EPIC_HOSTS,
+  BROWSER_UA,
   CACHE_DIR,
+  DEBUG_DIR,
+  STATE_DIR,
   BREAKER_PATH,
+  STATUS_PATH,
   DEFAULT_BUDGET,
   DEFAULT_PAUSE_MS,
   DEFAULT_BREAKER_MS,
+  DEFAULT_PROBE_TTL_MS,
+  MAX_DEBUG_FILES,
   EPIC_FEATURE_TAGS,
   yearOfDate,
   absoluteUrl,
@@ -1382,6 +1910,8 @@ module.exports = {
   discoverEpicSlug,
   gogUrl,
   epicUrl,
+  fetchEpicProduct,
+  dumpEpicFailure,
   readDetail,
   getDetail,
   writeDetail,
@@ -1391,11 +1921,17 @@ module.exports = {
   writeBreaker,
   breakerBlock,
   tripBreaker,
+  readStatusState,
+  writeStatusState,
   resolveGog,
   resolveEpic,
   startSecondaryDetails,
   kickSecondaryDetailsQuietly,
   kickGate,
+  kickFromStats,
+  coverageNeedsKick,
+  coverageForOwner,
+  statusForOwner,
   runningFor,
   jobFor,
   targetsForOwner,

@@ -497,8 +497,26 @@ test('secondary details job', async (t) => {
     // A guessed slug that 404s is NOT a verdict about the product.
     assert.equal(job.epic.notFound, 0);
     assert.ok(job.warnings.includes('epic_no_slug'));
-    assert.equal(fs.existsSync(cacheFile('epic', 'some-exclusive')), false);
+    // The guess is remembered for a short time (`probe: true`, 7 days) so the
+    // next kick does not spend a request on it again…
+    const probeDoc = JSON.parse(fs.readFileSync(cacheFile('epic', 'some-exclusive'), 'utf8'));
+    assert.equal(probeDoc.status, 'not_found');
+    assert.equal(probeDoc.probe, true);
     assert.equal(epicCache.getEpicSlugOverride('x-catalog'), null);
+    // …and the next kick is answered from that memory, no network.
+    details.resetJobs();
+    details.startSecondaryDetails({
+      ownerKey: 'steam-test-noslug',
+      gog: [],
+      epic: [
+        { slug: null, id: 'x-catalog', catalogItemId: 'x-catalog', title: 'Some Exclusive' },
+      ],
+      client,
+      pauseMs: 0,
+    });
+    const again = await waitForJob('steam-test-noslug');
+    assert.equal(again.epic.resolved, 0);
+    assert.equal(client.calls.length, 1);
   });
 
   await t.test('a running job is reused, not duplicated; kick honours the cooldown', async () => {
