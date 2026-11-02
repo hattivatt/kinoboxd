@@ -103,65 +103,23 @@ for (const dir of [
 /* Freshness + atomic writes                                           */
 /* ------------------------------------------------------------------ */
 
-/** Same identity as server/cache.js: inode + size + mtime(ns); null when absent. */
-function fingerprintOf(filePath) {
-  try {
-    const st = fs.statSync(filePath, { bigint: true });
-    return `${st.mtimeNs}:${st.size}:${st.ino}`;
-  } catch (err) {
-    return null;
-  }
-}
+// One implementation for every domain: `server/core/fs-store.js`. The local
+// names stay because the rest of this module (and its tests) calls them.
+const fsStore = require('../core/fs-store');
 
-/**
- * Read + parse one JSON file together with the fingerprint of the exact bytes
- * that were parsed. Returns { data, fingerprint } or null.
- */
+const fingerprintOf = fsStore.fingerprintOf;
+const safeKey = fsStore.safeKey;
+
 function readJsonWithFingerprint(filePath) {
-  try {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const before = fingerprintOf(filePath);
-      if (before === null) return null;
-      const raw = fs.readFileSync(filePath, 'utf8');
-      const after = fingerprintOf(filePath);
-      if (after === null) return null;
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-      } catch (err) {
-        console.warn(`[game-cache] corrupt JSON in ${filePath}: ${err.message}`);
-        return null;
-      }
-      if (after === before) return { data: parsed, fingerprint: after };
-    }
-    return null;
-  } catch (err) {
-    return null;
-  }
+  return fsStore.readJsonWithFingerprint(filePath, { label: 'game-cache' });
 }
 
 async function writeJsonAtomic(filePath, data) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(data), 'utf8');
-  await fsp.rename(tmp, filePath);
-  return fingerprintOf(filePath);
+  return fsStore.writeJsonAtomic(filePath, data);
 }
 
 function writeJsonAtomicSync(filePath, data) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.flush.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data), 'utf8');
-  fs.renameSync(tmp, filePath);
-  return fingerprintOf(filePath);
-}
-
-/** Make an arbitrary key safe for a file name (no path traversal). */
-function safeKey(value) {
-  return String(value == null ? '' : value)
-    .trim()
-    .replace(/[^\w.-]/g, '_')
-    .slice(0, 120);
+  return fsStore.writeJsonAtomicSync(filePath, data);
 }
 
 /* ------------------------------------------------------------------ */

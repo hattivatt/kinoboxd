@@ -273,22 +273,8 @@ function authStateOf(doc, options = {}) {
  * the following `chmodSync`, and `rename` preserves the inode mode.
  */
 function writeSecretAtomicSync(filePath, data) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const fd = fs.openSync(tmp, 'w', 0o600);
-  try {
-    fs.writeFileSync(fd, JSON.stringify(data), 'utf8');
-    fs.fchmodSync(fd, 0o600);
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.renameSync(tmp, filePath);
-  try {
-    fs.chmodSync(filePath, 0o600);
-  } catch (err) {
-    /* best-effort */
-  }
-  return gameCache.fingerprintOf(filePath);
+  // 0700 dir, 0600 file: one implementation in `server/core/fs-store.js`.
+  return require('../core/fs-store').writeSecretAtomicSync(filePath, data);
 }
 
 /**

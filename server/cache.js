@@ -33,14 +33,8 @@ fs.mkdirSync(DETAILS_DIR, { recursive: true });
  *
  * Returns null when the file does not exist (or cannot be stat'ed).
  */
-function fingerprintOf(filePath) {
-  try {
-    const st = fs.statSync(filePath, { bigint: true });
-    return `${st.mtimeNs}:${st.size}:${st.ino}`;
-  } catch (err) {
-    return null;
-  }
-}
+// One implementation for every domain: `server/core/fs-store.js`.
+const { fingerprintOf } = require('./core/fs-store');
 
 /* ------------------------------------------------------------------ */
 /* Index: "normalized title|year" -> tmdbId (number) or false          */
