@@ -15,11 +15,12 @@ const { fetchJson } = require('./http');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
 const { normalizeIsbn, isbn10Of, normalizeTitle, surnameOf } = require('../normalize');
+const sources = require('../../core/sources');
 
 const NAME = 'openlibrary';
 const BOOKS_URL = 'https://openlibrary.org/api/books';
 const SEARCH_URL = 'https://openlibrary.org/search.json';
-const DEFAULT_REQUEST_DELAY_MS = 250;
+const DEFAULT_REQUEST_DELAY_MS = sources.pauseMs('openlibrary');
 
 const SUBJECT_STOPLIST =
   /^(accessible book|protected daisy|in library|large type books|reading level-grade|open library staff picks|popular print disabled books|internet archive wishlist|browsing library|overdrive|libby|ebook|audiobook|fiction|nonfiction|general)$/i;

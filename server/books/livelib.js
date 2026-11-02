@@ -44,6 +44,7 @@
 const cheerio = require('cheerio');
 
 const { fetchOnce, defaultSleep } = require('../core/http');
+const sources = require('../core/sources');
 const { parseCookieHeader } = require('./cookie-header');
 
 const LIVELIB_ORIGIN = 'https://www.livelib.ru';
@@ -80,13 +81,13 @@ const BROWSER_HEADERS = {
   'Upgrade-Insecure-Requests': '1',
 };
 
-const REQUEST_TIMEOUT_MS = 45000;
-const MIN_DELAY_MS = 1500;
-const MAX_DELAY_MS = 2500;
+const REQUEST_TIMEOUT_MS = sources.timeoutMs('livelib');
+const MIN_DELAY_MS = sources.SOURCES.livelib.pauseMs;
+const MAX_DELAY_MS = sources.SOURCES.livelib.pauseMaxMs;
 const BULK_PER_PAGE = 1000;
 const MAX_RSC_PAGES = 200;
 const MAX_BULK_PAGES = 10;
-const MAX_REDIRECTS = 5;
+const MAX_REDIRECTS = sources.SOURCES.livelib.maxRedirects;
 
 class LivelibError extends Error {
   constructor(message, code) {
