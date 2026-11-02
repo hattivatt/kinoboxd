@@ -573,6 +573,17 @@ function buildGamesStats(input = {}) {
     }
     return true;
   }).length;
+  // Partial Epic details (only one of year/genres). The lazy kick treats this
+  // as «not finished» (fix 02.11.2026): the catalog is re-posted with the goal
+  // «complete» when an attempt is still due.
+  const secondaryDetailPartial = union.works.filter((entry) => {
+    const detail = entry.secondaryDetails;
+    if (!detail || detail.source !== 'epic') return false;
+    if (detail.catalogPending === true || detail.needsCatalog === true) return false;
+    const yearHas = detail.yearHas === true;
+    const genresOk = detail.genresOk === true;
+    return (yearHas && !genresOk) || (!yearHas && genresOk);
+  }).length;
   // Epic works that have no store slug at all (`productmapping`, catalog and
   // the validated title probe all failed): «library-only» — title + hours, no
   // genres/year/poster. Reported honestly instead of being silently dropped.
@@ -1994,6 +2005,9 @@ function buildGamesStats(input = {}) {
       secondaryDetails: {
         resolved: secondaryDetailResolved,
         total: secondaryDetailTotal,
+        // Present-but-incomplete Epic metadata (only year or only genres).
+        // Part of the kick rule: `resolved < total || partial > 0 || noSlug`.
+        partial: secondaryDetailPartial,
         // Epic works with no store slug: «library-only» (title + hours), the
         // store metadata job cannot address them at all.
         noSlug: secondaryDetailNoSlug,

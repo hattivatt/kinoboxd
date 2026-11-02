@@ -79,6 +79,18 @@
  *      success. A retry is due when the ledger is missing/unsuccessful, the
  *      negative TTL expired, or the job is forced.
  *
+ *      **Partial is kickable (02.11.2026 fix-round).** Alan Wake 2 sat at
+ *      `resolved 0/1, partial 1` with an empty `catalogAttempts` ledger and no
+ *      kick: `coverageForOwner` counted a partial detail as neither resolved
+ *      nor pending, so the lazy kick concluded «attempted» without ever asking
+ *      the catalog. The kick rule is now
+ *      `resolved < total || partial > 0 || noSlug > 0`, `partial` is part of
+ *      `stats.meta.secondaryDetails`, and the coverage snapshot exposes
+ *      `partial` / `retryablePartial` (the subset whose catalog answer is still
+ *      due). A partial with a settled `shape_ok`/fresh `ok` ledger stays
+ *      settled, so a polled `/stats` cannot loop on a store that simply has no
+ *      second field.
+ *
  * Politeness (§14.5): one request per product, pause `GAMES_SECONDARY_PAUSE_MS`
  * (default **2 s**, GOG's undocumented ~200 req/h/IP limit is the reference),
  * budget `GAMES_SECONDARY_BUDGET` (default **200** requests/run, GOG first then
@@ -654,11 +666,16 @@ function epicPageNeedsCatalog(payload) {
   return !meta.releaseDate && !hasTags;
 }
 
-/** A cached detail with neither genres nor a year is a candidate. */
+/**
+ * A cached detail that is not **complete** is a candidate for the catalog
+ * step: neither genres nor a year (the original Alan Wake 2 case), or only one
+ * of the two (partial). `shouldAttemptCatalog` still keeps a settled partial
+ * from being re-asked on every poll — the attempt ledger/`catalogChecked`
+ * marker decides whether another request is due.
+ */
 function detailNeedsCatalog(data) {
   if (!data || data.source !== 'epic') return false;
-  const noGenres = !(Array.isArray(data.genres) && data.genres.length);
-  return noGenres && data.releaseYear == null;
+  return catalogMetaFlags(data).metaStatus !== 'complete';
 }
 
 /**
@@ -2696,6 +2713,7 @@ function coverageForOwner(ownerKey) {
     let notFound = 0;
     let unavailable = 0;
     let partial = 0;
+    let retryablePartial = 0;
     let pending = 0;
     for (const target of list) {
       const id = idOf(target);
@@ -2745,8 +2763,24 @@ function coverageForOwner(ownerKey) {
         catalogState,
       });
       if (completion === 'complete') resolved++;
-      else if (completion === 'partial') partial++;
-      else if (completion === 'pending') pending++;
+      else if (completion === 'partial') {
+        // One fact arrived, the other did not. It is still a work the catalog
+        // can complete, so it must reach the kick (fix 02.11.2026: `partial`
+        // used to be counted as neither `resolved` nor `pending`, so the lazy
+        // kick returned `attempted` and AW2 stayed poster-only forever).
+        // A partial whose catalog answer is already settled (`shape_ok`, or
+        // `ok` inside its 30-day probe TTL) is not re-asked on every poll, and
+        // without an owner token there is nothing to ask — the next connect
+        // makes it retryable again.
+        partial++;
+        if (
+          epicHasToken &&
+          target.catalogItemId &&
+          catalogRetryDue(ownerKey, target.catalogItemId, { catalogState })
+        ) {
+          retryablePartial++;
+        }
+      } else if (completion === 'pending') pending++;
       else unavailable++;
     }
     return {
@@ -2755,6 +2789,7 @@ function coverageForOwner(ownerKey) {
       notFound,
       unavailable,
       partial,
+      retryablePartial,
       missingSlug: 0,
       pending,
     };
@@ -2777,14 +2812,20 @@ function coverageForOwner(ownerKey) {
     resolved: gog.resolved + epic.resolved,
     total: gog.total + epic.total,
     pending: gog.pending + epic.pending,
+    // `partial` is a first-class state: the work has a detail document but one
+    // of year/genres is missing. `retryablePartial` is the subset the catalog
+    // can still answer for (no attempt yet, or the 30-day window expired).
+    partial: gog.partial + epic.partial,
+    retryablePartial: gog.retryablePartial + epic.retryablePartial,
   };
 }
 
 /**
  * The owner-facing diagnostic (`GET /api/games/secondary-details/status`).
- * Contract: `{ resolved, total, running, bySource, slugless[], lastErrors[],
- * cooldownUntil, kick, lastRunAt }`. Everything here is a cache/state read —
- * the endpoint never makes a network request.
+ * Contract: `{ resolved, total, pending, partial, retryablePartial, running,
+ * bySource, slugless[], lastErrors[], cooldownUntil, kick, lastRunAt }`.
+ * Everything here is a cache/state read — the endpoint never makes a network
+ * request.
  */
 function statusForOwner(ownerKey) {
   const key = String(ownerKey == null ? '' : ownerKey).trim();
@@ -2806,6 +2847,12 @@ function statusForOwner(ownerKey) {
     resolved: coverage.resolved,
     total: coverage.total,
     pending: coverage.pending,
+    // Degraded-but-present metadata: a detail document exists, but only one of
+    // year/genres arrived. `retryablePartial` is the subset the catalog can
+    // still complete (no attempt yet / probe TTL expired) — that subset, not
+    // every partial, is what a lazy kick will address.
+    partial: coverage.partial,
+    retryablePartial: coverage.retryablePartial,
     running: runningFor(key),
     bySource: {
       gog: { ...coverage.gog },
@@ -2840,13 +2887,28 @@ function statusForOwner(ownerKey) {
   };
 }
 
-/** `true` when at least one addressable work has no successful detail yet. */
+/**
+ * The single kick rule (fix 02.11.2026): a secondary library needs the store
+ * metadata job when **any** of these holds:
+ *
+ *   - `resolved < total` — an addressable work has no detail yet;
+ *   - `partial > 0`      — a detail exists but only one of year/genres
+ *                          arrived; the time-based rule used to let this work
+ *                          sit forever (the AW2 symptom), so it is now
+ *                          re-posted with the goal «complete»;
+ *   - `noSlug > 0`       — an Epic work has no store slug and can only be
+ *                          addressed by the title probe.
+ *
+ * Callers pass either `stats.meta.secondaryDetails` (cheap, no cache reads) or
+ * a refined `coverageForOwner()` snapshot; the predicate is identical.
+ */
 function coverageNeedsKick(meta) {
   if (!meta || typeof meta !== 'object') return false;
   const total = Number(meta.total) || 0;
   const resolved = Number(meta.resolved) || 0;
+  const partial = Number(meta.partial) || 0;
   const noSlug = Number(meta.noSlug) || 0;
-  return (total > 0 && resolved < total) || noSlug > 0;
+  return (total > 0 && resolved < total) || partial > 0 || noSlug > 0;
 }
 
 /**
@@ -2854,6 +2916,11 @@ function coverageNeedsKick(meta) {
  * deploy: an Epic library imported *before* the deploy never fired a kick, and
  * nothing re-kicked it). Fire-and-forget, coalesced by `kickGate`, disabled
  * with `GAMES_SECONDARY_LAZY_KICK=0`.
+ *
+ * Kick rule (fix 02.11.2026): `resolved < total || partial > 0 || noSlug > 0`
+ * — see `coverageNeedsKick`. The cache refinement then drops works that were
+ * already attempted (404/settled negative), while a `partial` whose catalog
+ * answer is still due stays kickable.
  */
 function kickFromStats(ownerKey, meta, options = {}) {
   const key = String(ownerKey == null ? '' : ownerKey).trim();
@@ -2868,12 +2935,22 @@ function kickFromStats(ownerKey, meta, options = {}) {
   // verdict is memoized for a minute: `/stats` is polled, and the refinement
   // re-reads the library/catalog.
   const memo = coverageMemo.get(key);
-  if (memo && memo.pending <= 0 && nowMs() - memo.at < COVERAGE_MEMO_MS) {
+  if (
+    memo &&
+    memo.pending <= 0 &&
+    memo.retryablePartial <= 0 &&
+    nowMs() - memo.at < COVERAGE_MEMO_MS
+  ) {
     return { skipped: 'attempted' };
   }
   const coverage = coverageForOwner(key);
-  if (coverage.pending <= 0) {
-    coverageMemo.set(key, { at: nowMs(), pending: 0 });
+  // `partial` is kickable (fix 02.11.2026): the detail exists, but year/genres
+  // are incomplete — the catalog is re-asked when no attempt is recorded yet
+  // or its 30-day probe window expired. A settled `shape_ok` partial stays
+  // settled and must not burn a request on every poll.
+  const retryablePartial = coverage.retryablePartial;
+  if (coverage.pending <= 0 && retryablePartial <= 0) {
+    coverageMemo.set(key, { at: nowMs(), pending: 0, retryablePartial: 0 });
     return { skipped: 'attempted' };
   }
   coverageMemo.delete(key);
@@ -2882,6 +2959,14 @@ function kickFromStats(ownerKey, meta, options = {}) {
   return kickSecondaryDetailsQuietly(key, {
     trigger: 'stats',
     client: options.client,
+    // Catalog refetch injection for tests (and for a caller that already owns
+    // a client): the lazy kick must use the same token-bound client as an
+    // explicit run.
+    epicClient: options.epicClient,
+    catalogClient: options.catalogClient,
+    tokenStore: options.tokenStore,
+    epicAccountId: options.epicAccountId,
+    pauseMs: options.pauseMs,
     ...targetsForOwner(key),
   });
 }
