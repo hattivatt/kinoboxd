@@ -39,6 +39,7 @@ const {
   isoOf,
   catalogMetaFlags,
   detailNeedsCatalog,
+  sanitizeDetailGenres,
 } = require('./normalize');
 
 const CACHE_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'secondary-details');
@@ -136,7 +137,15 @@ function readDetail(source, id, options = {}) {
   const hit = gameCache.readJsonWithFingerprint(cachePath(source, id));
   if (!hit || !hit.data) return { doc: null, fresh: false };
   const doc = hit.data;
-  return { doc, fresh: isFresh(doc, options.now == null ? nowMs() : options.now) };
+  // A document cached before a store bucket entered
+  // `EPIC_NON_GENRE_CATEGORIES` still carries it (`Alan Wake 2` →
+  // `genres: ["Public"]`). Sanitizing here makes every reader — the stats
+  // index, the heal path, coverage and the catalog ledger — see the filtered
+  // line without rewriting the file (AGENTS §2: the cache is not edited by
+  // hand). The object identity is preserved when nothing changes.
+  const data = doc.data ? sanitizeDetailGenres(doc.data) : doc.data;
+  const view = data === doc.data ? doc : { ...doc, data };
+  return { doc: view, fresh: isFresh(doc, options.now == null ? nowMs() : options.now) };
 }
 
 /** Fresh, successfully resolved detail data (or null). */

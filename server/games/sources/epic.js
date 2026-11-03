@@ -80,7 +80,7 @@ const {
   tripBreaker,
 } = require('../secondary/store');
 const { SecondaryDetailsError, maskSecrets } = require('../secondary/errors');
-const { applyWikidataYear } = require('../secondary');
+const { applyWikidataFacts } = require('../secondary');
 
 const EPIC_CONTENT_HOST = 'store-content.ak.epicgames.com';
 // Cloudflare fronts the store CMS; the IPv4-only name is the same origin and
@@ -823,7 +823,7 @@ async function resolveEpic(slug, options = {}) {
     // identity bridge (`links/secondary.json`). Additive: a catalog/store year
     // always wins; no bridge entry → the document stays honestly partial.
     if (data) {
-      const withYear = applyWikidataYear(data, { store: 'epic', slug: id });
+      const withYear = applyWikidataFacts(data, { store: 'epic', slug: id });
       if (withYear !== data) {
         const flags = catalogMetaFlags(withYear);
         data = {
@@ -920,9 +920,10 @@ async function resolveEpic(slug, options = {}) {
     catalog,
   });
   // After the catalog pass: if neither the CMS page nor the catalog carried a
-  // release date, the bridged Wikidata item (P6278 slug → QID → P577) may know
-  // it. Genres/developers/poster are untouched; no bridge entry → partial.
-  const data = applyWikidataYear(normalized, {
+  // release date (or a genre line), the bridged Wikidata item (P6278 slug →
+  // QID → P577/P136) may know it. Developers/poster are untouched; no bridge
+  // entry → the document stays honestly partial.
+  const data = applyWikidataFacts(normalized, {
     store: 'epic',
     slug: normalized.slug || id,
   });

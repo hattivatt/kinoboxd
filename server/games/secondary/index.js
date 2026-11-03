@@ -31,9 +31,11 @@
  * zero: `hoursBySource.<store>` is `null` and the entry is `hoursUnknown`.
  *
  * The identity bridge (`links/secondary.json`) is also the last-resort source
- * of a release year (`P577`) for a store document that carries no date;
- * `applyWikidataYear()` only fills an **empty** year and never replaces a
- * store/catalog one.
+ * of a release year (`P577`) and of a genre line (`P136`) for a store document
+ * that carries no date/genres; `applyWikidataYear()` fills only an **empty**
+ * year and `applyWikidataFacts()` also fills only an **empty** genre list —
+ * store/catalog values are never replaced. Genres never enter the identity
+ * maps: a title match stays a metadata answer, not a `P6278` link.
  */
 
 const path = require('path');
@@ -47,7 +49,7 @@ const { fetchOnce, responseFacade } = require('../../core/http');
 // The P577 statement parser/picker is shared with the Steam franchise pass so
 // both WD readers agree on precision and on «earliest year» selection.
 const { parseWbDate, pickDate } = require('../franchise');
-const { yearOfDate, needsCatalogCompletion, catalogMetaFlags } = require('./normalize');
+const { yearOfDate, needsCatalogCompletion, catalogMetaFlags, sanitizeEpicGenres } = require('./normalize');
 
 /* ------------------------------------------------------------------ */
 /* titles, slugs, edition markers (was `gog-union.js`)                 */
@@ -468,7 +470,10 @@ function titleVariants(title) {
  * its bounded Roman/Arabic variants) is a `VALUES` constant on both
  * `rdfs:label` and `skos:altLabel`, restricted to video-game items
  * (`P31/P279* Q7889`). It is used **only** for Epic works whose store/catalog
- * metadata has no date.
+ * metadata has no date — or, since 03.11.2026, no genre line either (a stale
+ * CMS page such as Alan Wake 2's). `wdt:P136` (genre) is `OPTIONAL` and only
+ * labels the QID the title already resolved: it never creates an identity and
+ * never turns an ambiguous title into a link.
  */
 function buildTitleQuery(titles) {
   const values = new Set();
@@ -479,7 +484,7 @@ function buildTitleQuery(titles) {
     }
   }
   if (!values.size) return null;
-  return `SELECT ?item ?matched ?appid ?date ?precision WHERE {
+  return `SELECT ?item ?matched ?appid ?date ?precision ?genreLabel WHERE {
   VALUES ?matched { ${[...values].join(' ')} }
   { ?item rdfs:label ?matched } UNION { ?item skos:altLabel ?matched }
   ?item wdt:P31/wdt:P279* wd:Q7889 .
@@ -490,7 +495,28 @@ function buildTitleQuery(titles) {
     ?val wikibase:timeValue ?date .
     ?val wikibase:timePrecision ?precision .
   }
+  OPTIONAL {
+    ?item wdt:P136 ?genre .
+    SERVICE wikibase:label { bd:serviceParam wikibase:language "en,ru". }
+  }
 }`;
+}
+
+/**
+ * Wikidata P136 labels are lowercase («survival horror», «third-person
+ * shooter», «role-playing video game»), while the genre wall draws store
+ * genres capitalized («Horror», «Turn-Based»). Only the generic «video game»
+ * suffix is dropped and the first letter is capitalized: no renaming, no
+ * invented umbrella genre.
+ */
+function wikidataGenreName(label) {
+  let text = String(label == null ? '' : label).trim();
+  if (!text) return null;
+  // The generic class itself is not a genre chip.
+  if (/^(?:video\s+)?games?$/i.test(text)) return null;
+  text = text.replace(/\s+video\s+games?$/i, '').replace(/\s+games?$/i, '').trim();
+  if (!text) return null;
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 /**
@@ -521,12 +547,21 @@ function parseTitleResponse(data, candidates) {
       const key = `${candidate.store}:${normalizeSlug(candidate.slug)}`;
       let entry = acc.get(key);
       if (!entry) {
-        entry = { candidate, qids: new Set(), appid: null, dates: [], matchedLabel: matched };
+        entry = {
+          candidate,
+          qids: new Set(),
+          appid: null,
+          dates: [],
+          genres: [],
+          matchedLabel: matched,
+        };
         acc.set(key, entry);
       }
       entry.qids.add(qid);
       const appid = row.appid && row.appid.value ? String(row.appid.value) : null;
       if (appid && !entry.appid) entry.appid = appid;
+      const genre = wikidataGenreName(row.genreLabel && row.genreLabel.value);
+      if (genre && !entry.genres.includes(genre)) entry.genres.push(genre);
       if (row.date && row.date.value) {
         const date = parseWbDate(row.date.value, row.precision && row.precision.value);
         if (
@@ -557,16 +592,23 @@ function parseTitleResponse(data, candidates) {
       releasePrecision: date ? date.precision : null,
       releaseDate: date && date.precision === 'day' ? date.iso : null,
       releaseDateSource: date ? 'wikidata' : null,
+      // P136 labels are a **metadata** answer of the resolved QID, never an
+      // identity: they live in this map only (the P6278 entry stays untouched).
+      genres: qid ? sanitizeEpicGenres(entry.genres) : [],
     };
   }
   return entries;
 }
 
 /**
- * Candidate list for the title pass: only an Epic work with a slug and a title,
- * whose store/catalog/known year is still empty. `releaseYear`/`releaseDate`
- * are optional hints the caller already knows; anything non-empty excludes the
- * work.
+ * Candidate list for the title pass: only an Epic work with a slug and a title
+ * whose store/catalog/known year is still empty — or, when the caller already
+ * knows the genre axis (`genres` property present, even empty), whose genre
+ * line is empty too (the «Public» bucket case: the stale cached document is
+ * sanitized to `[]` on read and the real P136 genres are asked for once).
+ * `releaseYear`/`releaseDate`/`genres` are optional hints the caller already
+ * knows. A card without a `genres` key is judged by the year axis only, so the
+ * Epic import (which has no detail documents at hand) does not grow the pass.
  */
 function collectTitleCandidates(epicGames) {
   const out = [];
@@ -576,7 +618,10 @@ function collectTitleCandidates(epicGames) {
     const slug = String(game.slug == null ? '' : game.slug).trim();
     const title = String(game.title == null ? '' : game.title).trim();
     if (!slug || !title) continue;
-    if (game.releaseYear != null || game.releaseDate) continue;
+    const hasYear = game.releaseYear != null || game.releaseDate;
+    const knowsGenres = Object.prototype.hasOwnProperty.call(game, 'genres');
+    const hasGenres = Array.isArray(game.genres) && game.genres.length > 0;
+    if (hasYear && (!knowsGenres || hasGenres)) continue;
     const key = normalizeSlug(slug);
     if (!key || seen.has(key)) continue;
     seen.add(key);
@@ -663,6 +708,7 @@ async function fetchSecondaryTitleLinks(input = {}, options = {}) {
           releasePrecision: null,
           releaseDate: null,
           releaseDateSource: null,
+          genres: [],
         };
       }
     }
@@ -686,7 +732,13 @@ async function fetchSecondaryTitleLinks(input = {}, options = {}) {
 }
 
 function isSettledTitleEntry(entry) {
-  return Boolean(entry && typeof entry === 'object' && entry.matchedBy === 'title');
+  if (!(entry && typeof entry === 'object' && entry.matchedBy === 'title')) return false;
+  // A resolved match written before the genre pass (schema 3) has no `genres`
+  // key at all. It is re-asked **once**, so a P136 genre line can arrive and
+  // heal the detail; after that the key exists (even as `[]`) and the entry is
+  // settled again. A miss (`qid: null`) has no facts to gain and stays settled.
+  if (entry.qid && !Object.prototype.hasOwnProperty.call(entry, 'genres')) return false;
+  return true;
 }
 
 function isSettledEntry(entry) {
@@ -1964,16 +2016,14 @@ async function buildEpicSources(ownerKey) {
  *     i.e. the work stays honestly `partial` (no invented year, no extra
  *     request loop).
  */
-function applyWikidataYear(data, options = {}) {
-  if (!data || data.releaseYear != null) return data;
+function resolveWikidataEntry(data, options = {}) {
   const store = options.store;
   const slug = options.slug || data.slug;
-  if (!store || !slug) return data;
-  let entry = null;
+  if (!store || !slug) return null;
   try {
-    entry = readSecondaryLink(store, slug, options);
+    let entry = readSecondaryLink(store, slug, options);
     // A slug entry is the trustworthy `P6278`/`P2725` identity. The title map
-    // is a **year-only** fallback: it is used when there is no slug entry at
+    // is a **facts-only** fallback: it is used when there is no slug entry at
     // all (Alan Wake 2), or when both name the same QID and the slug entry has
     // no date. Two different QIDs are never mixed.
     const titleEntry = readSecondaryTitleLink(store, slug, options);
@@ -1985,9 +2035,16 @@ function applyWikidataYear(data, options = {}) {
         entry = { ...(entry || {}), ...titleEntry, matchedBy: 'title' };
       }
     }
+    return entry;
   } catch (err) {
-    return data;
+    return null;
   }
+}
+
+/** Year-only view of the bridged Wikidata facts (kept for GOG and old callers). */
+function applyWikidataYear(data, options = {}) {
+  if (!data || data.releaseYear != null) return data;
+  const entry = resolveWikidataEntry(data, options);
   if (
     !entry ||
     !entry.qid ||
@@ -2004,6 +2061,42 @@ function applyWikidataYear(data, options = {}) {
     // Honest provenance: a title match is weaker than a store-slug match.
     releaseYearMatchedBy: entry.matchedBy || 'slug',
   };
+}
+
+/**
+ * Both facts a bridged Wikidata item can supply for a store-exclusive detail:
+ * the release year (`P577`, only when empty) and the genre line (`P136`, only
+ * when empty). Store/catalog values are never replaced; an Epic document
+ * without a genre line (Alan Wake 2) receives `genresSource: 'wikidata'`.
+ * Genres stay in the detail document — they are not written into the identity
+ * bridge entry, so a title match can never become a P6278/P2725 link.
+ */
+function applyWikidataFacts(data, options = {}) {
+  if (!data) return data;
+  const entry = resolveWikidataEntry(data, options);
+  if (!entry || !entry.qid) return data;
+  let next = data;
+  if (
+    next.releaseYear == null &&
+    entry.releaseDateSource === 'wikidata' &&
+    entry.releaseYear != null
+  ) {
+    next = {
+      ...next,
+      releaseYear: entry.releaseYear,
+      releaseDate: entry.releaseDate || null,
+      releaseDateSource: 'wikidata',
+      releaseYearMatchedBy: entry.matchedBy || 'slug',
+    };
+  }
+  const hasGenres = Array.isArray(next.genres) && next.genres.length > 0;
+  if (!hasGenres && next.source === 'epic') {
+    const genres = sanitizeEpicGenres(Array.isArray(entry.genres) ? entry.genres : []);
+    if (genres.length) {
+      next = { ...next, genres, genresSource: 'wikidata' };
+    }
+  }
+  return next;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2101,10 +2194,13 @@ function enrichUnionWithDetails(union, index) {
         Boolean(entry.epic && entry.epic.catalogItemId) &&
         needsCatalogCompletion(detail),
       // What the document actually contains: `resolved` counts `complete`
-      // (year **and** genres), never the mere existence of a file.
+      // (year **and** genres), never the mere existence of a file. Computed
+      // from the (read-sanitized) document, so a stale bucket genre such as
+      // «Public» cannot keep a work «complete» on the strength of a persisted
+      // marker written before the filter existed.
       yearHas: flags.yearHas,
       genresOk: flags.genresOk,
-      metaStatus: detail.metaStatus || flags.metaStatus,
+      metaStatus: flags.metaStatus,
     };
     if (changed) touched++;
   }
@@ -2127,6 +2223,7 @@ module.exports = {
   parseBridgeResponse,
   titleVariants,
   buildTitleQuery,
+  wikidataGenreName,
   parseTitleResponse,
   collectTitleCandidates,
   isSettledEntry,
@@ -2158,6 +2255,7 @@ module.exports = {
   minutesToHours,
   // store documents
   applyWikidataYear,
+  applyWikidataFacts,
   detailKeyForEntry,
   enrichUnionWithDetails,
 };

@@ -64,6 +64,8 @@ const {
   pickEpicPage,
   epicTagName,
   epicGenresFromCategories,
+  sanitizeEpicGenres,
+  sanitizeDetailGenres,
   catalogAnswersMissing,
   catalogMetaFlags,
 } = require('./secondary/normalize');
@@ -102,7 +104,12 @@ const {
   resolveEpic,
   createCatalogClient,
 } = require('./sources/epic');
-const { applyWikidataYear, enrichUnionWithDetails, refreshForJob } = require('./secondary');
+const {
+  applyWikidataFacts,
+  applyWikidataYear,
+  enrichUnionWithDetails,
+  refreshForJob,
+} = require('./secondary');
 
 const DEFAULT_BUDGET = sources.budgetLimit('secondary');
 const DEFAULT_PAUSE_MS = sources.pauseMs('secondary');
@@ -230,22 +237,24 @@ async function runPhase(job, source, targets, resolveOne) {
         catalogItemId: target.catalogItemId,
       });
     if (cached.fresh && !job.force && !completingCatalog) {
-      // A fresh partial document can still receive a year that appeared in the
-      // identity bridge after it was written (the Alan Wake 2 heal). This is a
-      // cache read + a write only when something was actually filled; no
-      // network, no request counter.
-      if (
-        source === 'epic' &&
-        cached.doc &&
-        cached.doc.status === 'ok' &&
-        cached.doc.data &&
-        cached.doc.data.releaseYear == null
-      ) {
-        const healed = applyWikidataYear(cached.doc.data, {
+      // A fresh document can still receive facts that appeared in the identity
+      // bridge after it was written: a release year (the Alan Wake 2 heal) or
+      // a P136 genre line when the store/catalog gave none (its stale CMS page
+      // has only the `public` bucket, whose chip is filtered out on read since
+      // 03.11.2026). This is a cache read + a write only when something was
+      // actually filled; no network, no request counter.
+      const cachedData = cached.doc && cached.doc.status === 'ok' ? cached.doc.data : null;
+      const needsWikidataFacts = Boolean(
+        cachedData &&
+          (cachedData.releaseYear == null ||
+            !(Array.isArray(cachedData.genres) && cachedData.genres.length))
+      );
+      if (source === 'epic' && needsWikidataFacts) {
+        const healed = applyWikidataFacts(cachedData, {
           store: 'epic',
           slug: target.slug || target.id,
         });
-        if (healed !== cached.doc.data) {
+        if (healed !== cachedData) {
           const flags = catalogMetaFlags(healed);
           writeDetail('epic', target.id, 'ok', {
             ...healed,
@@ -338,9 +347,11 @@ async function runPhase(job, source, targets, resolveOne) {
 }
 
 /**
- * Epic works whose year is still empty **and** whose store/catalog gave no
- * date. Only these may be title-matched against Wikidata; a work with a store
- * date (or an already cached year) is never re-identified by title.
+ * Epic works that may still gain facts from a Wikidata title match: the store
+ * and catalog gave no date, **or** the cached detail has no genre line (the
+ * stale `public` bucket is filtered away on read, so the genre axis is empty).
+ * Only these may be title-matched; a work with a store date and a store genre
+ * line is never re-identified by title.
  */
 function titleCandidatesFor(epic) {
   const out = [];
@@ -356,8 +367,22 @@ function titleCandidatesFor(epic) {
       cached = null;
     }
     const data = cached && cached.doc && cached.doc.status === 'ok' ? cached.doc.data : null;
-    if (data && data.releaseYear != null) continue;
-    out.push({ slug: entry.slug, title: entry.title });
+    if (!data) {
+      out.push({ slug: entry.slug, title: entry.title });
+      continue;
+    }
+    const hasYear = data.releaseYear != null;
+    const hasGenres = Array.isArray(data.genres) && data.genres.length > 0;
+    if (hasYear && hasGenres) continue;
+    // The `genres` key makes the genre axis explicit for `collectTitleCandidates`;
+    // `releaseYear`/`releaseDate` keep the year axis honest.
+    out.push({
+      slug: entry.slug,
+      title: entry.title,
+      releaseYear: data.releaseYear == null ? null : data.releaseYear,
+      releaseDate: data.releaseDate || null,
+      genres: Array.isArray(data.genres) ? data.genres : [],
+    });
   }
   return out;
 }
@@ -996,6 +1021,8 @@ module.exports = {
   pickEpicPage,
   epicTagName,
   epicGenresFromCategories,
+  sanitizeEpicGenres,
+  sanitizeDetailGenres,
   catalogAnswersMissing,
   catalogMetaFlags,
   refetchEpicCatalog,
@@ -1005,6 +1032,7 @@ module.exports = {
   readCatalogAttempt,
   recordCatalogAttempt,
   applyWikidataYear,
+  applyWikidataFacts,
   slugFromTitle,
   readDetail,
   writeDetail,
