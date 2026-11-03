@@ -352,6 +352,15 @@ async function runPhase(job, source, targets, resolveOne) {
  * stale `public` bucket is filtered away on read, so the genre axis is empty).
  * Only these may be title-matched; a work with a store date and a store genre
  * line is never re-identified by title.
+ *
+ * Since 03.11.2026 a catalog date no longer stops the pass by itself: `P577`
+ * and `P136` are independent facts of the item, so a dated Epic exclusive with
+ * an empty genre line (Alan Wake 2) is a candidate too. This costs **no**
+ * network when the title answer is already cached — `isSettledTitleEntry()`
+ * filters it in `fetchSecondaryTitleLinks()` — and exactly one question when
+ * the cache has no genre answer yet. A dated work with no cached detail
+ * document is still skipped: there is no genre axis to judge before the
+ * document exists, and the catalog date is trusted as before.
  */
 function titleCandidatesFor(epic) {
   const out = [];
@@ -359,7 +368,8 @@ function titleCandidatesFor(epic) {
     if (!entry || !entry.slug || !entry.title) continue;
     // No catalog document means the store date is unknown; the import writes
     // one for every game, so wait for that instead of asking on a guess.
-    if (!entry.catalog || entry.catalog.releaseDate) continue;
+    if (!entry.catalog) continue;
+    const hasCatalogDate = Boolean(entry.catalog.releaseDate);
     let cached = null;
     try {
       cached = readDetail('epic', entry.slug);
@@ -368,6 +378,8 @@ function titleCandidatesFor(epic) {
     }
     const data = cached && cached.doc && cached.doc.status === 'ok' ? cached.doc.data : null;
     if (!data) {
+      // The old rule: a catalog date is enough while no document exists.
+      if (hasCatalogDate) continue;
       out.push({ slug: entry.slug, title: entry.title });
       continue;
     }
@@ -1049,6 +1061,7 @@ module.exports = {
   kickFromStats,
   coverageNeedsKick,
   coverageForOwner,
+  titleCandidatesFor,
   statusForOwner,
   runningFor,
   jobFor,

@@ -2015,6 +2015,12 @@ async function buildEpicSources(ownerKey) {
  *   - no cached entry / no QID / no P577 → the document is returned unchanged,
  *     i.e. the work stays honestly `partial` (no invented year, no extra
  *     request loop).
+ *
+ * Since 03.11.2026 the same entry also carries the title map's `P136` line for
+ * **Epic** works: when the slug entry and the title entry name the same QID and
+ * the slug entry has no genres, the title entry's (sanitized) genres are merged
+ * in. A date on the slug entry is not a reason to drop them — the genre axis
+ * and the year axis are independent facts of one item.
  */
 function resolveWikidataEntry(data, options = {}) {
   const store = options.store;
@@ -2031,8 +2037,28 @@ function resolveWikidataEntry(data, options = {}) {
       const slugQid = entry && entry.qid ? String(entry.qid) : null;
       const titleQid = String(titleEntry.qid);
       const slugHasDate = Boolean(entry && entry.releaseYear != null);
-      if (!slugQid || (!slugHasDate && slugQid === titleQid)) {
+      if (!slugQid) {
+        // No slug identity at all: the title answer is the only evidence.
         entry = { ...(entry || {}), ...titleEntry, matchedBy: 'title' };
+      } else if (slugQid === titleQid) {
+        if (!slugHasDate) {
+          entry = { ...entry, ...titleEntry, matchedBy: 'title' };
+        } else {
+          // The slug entry names the item, the title answer is a *fact* of the
+          // same item: P136 is a metadata line, never an identity. A date on
+          // the slug entry says nothing about the genre axis (Alan Wake 2: the
+          // slug entry carries `P577` and no genres, the title entry carries
+          // the genres), so an empty list is filled here — identity (`qid`),
+          // `matchedBy`, `confidence` and every existing value stay as they
+          // are.
+          const slugGenres = Array.isArray(entry.genres) ? entry.genres : [];
+          if (!slugGenres.length) {
+            const genres = sanitizeEpicGenres(
+              Array.isArray(titleEntry.genres) ? titleEntry.genres : []
+            );
+            if (genres.length) entry = { ...entry, genres };
+          }
+        }
       }
     }
     return entry;
