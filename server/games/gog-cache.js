@@ -39,6 +39,8 @@ const path = require('path');
 
 const gameCache = require('./game-cache');
 const { envMs } = require('../core/env');
+// One key sanitiser and one 0600 writer for every cache (`core/fs-store`).
+const { safeKey, writeSecretAtomicSync } = require('../core/fs-store');
 
 const CACHE_DIR = gameCache.GAMES_CACHE_DIR;
 const PROFILES_DIR = path.join(CACHE_DIR, 'profiles');
@@ -82,10 +84,6 @@ for (const dir of [PROFILES_DIR, LIBRARY_DIR, PLAYTIME_DIR, STATE_DIR]) {
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
-
-function safeKey(value) {
-  return gameCache.safeKey(value);
-}
 
 /** GOG user ids are numeric (`user_id` from the token response). */
 function isValidUserKey(value) {
@@ -262,16 +260,6 @@ function authStateOf(doc, options = {}) {
 /* ------------------------------------------------------------------ */
 /* tokens (0600)                                                       */
 /* ------------------------------------------------------------------ */
-
-/**
- * Atomic write with an explicit 0600 mode. `writeFileSync` applies the mode
- * only when the file is created; an existing tmp with a wider mode is fixed by
- * the following `chmodSync`, and `rename` preserves the inode mode.
- */
-function writeSecretAtomicSync(filePath, data) {
-  // 0700 dir, 0600 file: one implementation in `server/core/fs-store.js`.
-  return require('../core/fs-store').writeSecretAtomicSync(filePath, data);
-}
 
 /**
  * Persist a token document. Callers pass the raw OAuth material; this is the
@@ -611,7 +599,6 @@ module.exports = {
   isValidUserKey,
   userKeyOf,
   profileKeyOf,
-  safeKey,
   tokenPath,
   profilePath,
   libraryPath,

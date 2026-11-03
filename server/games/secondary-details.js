@@ -916,34 +916,22 @@ function resetJobs() {
 /* public facade                                                       */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* public facade                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Only the names the domain and the tests actually import are re-exported.
+ * The rest of the pipeline (normalizers, catalog guards, breaker, dumps) is
+ * used *inside* this module or by the `secondary/` modules directly — an
+ * export list is a contract, not a directory listing.
+ */
 module.exports = {
-  // errors
-  SecondaryDetailsError,
-  // source hosts / transport knobs
-  GOG_API_HOST,
-  EPIC_CONTENT_HOST,
-  EPIC_CONTENT_MIRROR_HOST,
-  EPIC_HOSTS,
-  BROWSER_UA,
-  // paths and formats (unchanged)
   CACHE_DIR,
   DEBUG_DIR,
   CATALOG_PROBE_DIR,
   CATALOG_STATE_PATH,
-  STATE_DIR,
-  BREAKER_PATH,
   STATUS_PATH,
-  // limits
-  DEFAULT_BUDGET,
-  DEFAULT_PAUSE_MS,
-  DEFAULT_BREAKER_MS,
-  DEFAULT_PROBE_TTL_MS,
-  DEFAULT_CATALOG_PROBE_TTL_MS,
-  MAX_DEBUG_FILES,
-  MAX_CATALOG_ATTEMPTS,
-  MAX_CATALOG_DEBUG_FILES,
-  // normalization
-  EPIC_FEATURE_TAGS,
   yearOfDate,
   absoluteUrl,
   normalizeGogProduct,
@@ -951,53 +939,22 @@ module.exports = {
   pickEpicPage,
   epicTagName,
   epicGenresFromCategories,
-  epicPageNeedsCatalog,
-  detailNeedsCatalog,
-  needsCatalogCompletion,
-  shouldAttemptCatalog,
-  catalogHasMeta,
   catalogAnswersMissing,
-  applyCatalogToDetail,
-  // Epic catalog
   refetchEpicCatalog,
-  ensureEpicCatalog,
   readCatalogProbe,
   writeCatalogProbe,
-  catalogProbePath,
-  readCatalogState,
   writeCatalogState,
   readCatalogAttempt,
   recordCatalogAttempt,
-  catalogRetryDue,
-  catalogMetaFlags,
   applyWikidataYear,
-  catalogCompletionState,
-  catalogTransportFacts,
-  dumpCatalogFailure,
-  catalogAttemptsForOwner,
-  // resolvers
   slugFromTitle,
-  discoverEpicSlug,
-  gogUrl,
-  epicUrl,
-  fetchEpicProduct,
-  dumpEpicFailure,
-  // detail cache
   readDetail,
-  getDetail,
   writeDetail,
   readDetailsIndex,
   enrichUnionWithDetails,
-  // breaker
-  readBreaker,
   writeBreaker,
   breakerBlock,
-  tripBreaker,
-  // status ledger
   readStatusState,
-  writeStatusState,
-  recordSkip,
-  // job
   resolveGog,
   resolveEpic,
   startSecondaryDetails,
