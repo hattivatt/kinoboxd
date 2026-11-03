@@ -21,6 +21,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 const { execFileSync } = require('node:child_process');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -141,7 +142,7 @@ test('layout: four new cards sit in 6+6 pairs and keep the M1–M3 order', () =>
       `${order[index - 1]} должен идти до ${order[index]}`);
   }
 
-  const css = readPublic('style.css');
+  const css = readPublicCss();
   const span = (selector) => {
     const match = new RegExp(`\\${selector} \\{ grid-column: span (\\d+); \\}`).exec(css);
     assert.ok(match, `нет span для ${selector}`);

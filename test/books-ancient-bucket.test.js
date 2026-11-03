@@ -27,6 +27,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 
 process.env.KINOBOXD_CACHE_BOOK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-ancient-'));
 
@@ -192,7 +193,7 @@ test('a profile of nothing but ancient works keeps a valid (empty) year axis', a
 test('UI: both charts open the same list and the bar slot stays off the year axis', () => {
   const booksSource = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'books.js'), 'utf8');
   const chartsSource = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'charts.js'), 'utf8');
-  const cssSource = fs.readFileSync(path.join(PUBLIC_DIR, 'style.css'), 'utf8');
+  const cssSource = readPublicCss();
 
   // One drilldown for the decade slice and the year column.
   assert.match(booksSource, /function openAncientYearModal\(bucket\)/);

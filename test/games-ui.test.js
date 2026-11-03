@@ -22,6 +22,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 const { execFileSync } = require('node:child_process');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -248,7 +249,7 @@ test('every DOM id games.js asks for exists in index.html', () => {
 });
 
 test('style.css ships the games widgets', () => {
-  const css = readPublic('style.css');
+  const css = readPublicCss();
   for (const selector of [
     '.w-games-profile', '.w-games-top', '.w-games-pareto', '.w-games-recent',
     '.games-recent-strip', '.games-recent-card', '.games-recent-art',

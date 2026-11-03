@@ -1,0 +1,1223 @@
+/* =========================================================
+   games: Steam library, import, dashboard, secondary libraries
+   Split from style.css (P8). Load order: core → films → books → games.
+   ========================================================= */
+
+/* =========================================================
+   games tab (Steam library, M1)
+   ========================================================= */
+
+/* ---------------- profile bar + import screen ---------------- */
+
+.games-profile-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+.games-profile-bar-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+.games-profile-list { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.games-profile-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: var(--text-soft);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+.games-profile-chip:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.18); }
+.games-profile-chip.is-active {
+  color: #c8ffd9;
+  background: rgba(0, 224, 84, 0.1);
+  border-color: rgba(0, 224, 84, 0.42);
+}
+.games-profile-dot {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+.games-profile-chip.is-active .games-profile-dot { background: var(--green); }
+.games-profile-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.games-profile-count {
+  flex: none;
+  font-size: 10px;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+.games-profile-empty { font-size: 10.5px; color: var(--muted-2); }
+
+.games-import-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+  gap: 18px;
+}
+.book-source-card[data-source="steam"] { border-top: 2px solid rgba(64, 188, 244, 0.55); }
+.book-source-card[data-source="steam-note"] { border-top: 2px solid rgba(255, 255, 255, 0.1); }
+.book-source-logo.is-steam {
+  background: rgba(64, 188, 244, 0.13);
+  border: 1px solid rgba(64, 188, 244, 0.3);
+  color: #a9e2ff;
+}
+.book-source-logo.is-steam-note {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+}
+.games-key-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 3px 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted-2);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: help;
+}
+.games-key-state.is-on {
+  color: #9fe8bd;
+  background: rgba(0, 224, 84, 0.08);
+  border-color: rgba(0, 224, 84, 0.28);
+}
+.games-key-state.is-off {
+  color: #ffc182;
+  background: rgba(255, 128, 0, 0.09);
+  border-color: rgba(255, 128, 0, 0.3);
+}
+.games-facts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 0;
+  padding: 0 0 0 16px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-soft);
+}
+.games-facts-list li::marker { color: var(--muted-2); }
+.games-facts-list b { color: var(--text); font-weight: 650; }
+.games-facts-list code {
+  padding: 1px 4px;
+  font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #a9e2ff;
+  background: rgba(64, 188, 244, 0.1);
+  border-radius: 4px;
+}
+
+/* ---------------- import progress ---------------- */
+
+.games-progress-track {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.games-progress-track .progress-bar { flex: 1; margin: 0; }
+.games-progress-percent {
+  flex: none;
+  min-width: 42px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- dashboard widgets ---------------- */
+
+.w-games-profile { grid-column: span 4; }
+.w-games-top { grid-column: span 8; }
+.w-games-pareto { grid-column: span 6; }
+/* «Недавно играл» is the top strip of the tab (the films/books pattern):
+   a full-width row of game cards, sorted by rtime_last_played. */
+.w-games-recent { grid-column: span 12; }
+
+.games-profile-body { display: flex; flex-direction: column; gap: 13px; }
+.games-profile-head { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.games-avatar {
+  width: 46px;
+  height: 46px;
+  flex: none;
+  border-radius: 10px;
+  object-fit: cover;
+  background: var(--card-2);
+  border: 1px solid var(--border-strong);
+}
+.games-avatar.is-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 750;
+  color: var(--muted);
+  background: linear-gradient(145deg, #26333f, #1a222b);
+}
+.games-profile-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.games-persona {
+  font-size: 14.5px;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.games-persona-sub { font-size: 10.5px; color: var(--muted-2); }
+.games-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  font-size: 11px;
+}
+.games-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+}
+.games-fact:last-child { border-bottom: 0; padding-bottom: 0; }
+.games-fact dt { color: var(--muted-2); white-space: nowrap; }
+.games-fact dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.games-last-played { font-size: 10.5px; color: var(--muted-2); cursor: help; }
+.games-last-label { color: var(--muted); }
+
+.games-top-list { max-height: 364px; }
+.genre-row.games-hours-row { grid-template-columns: 17px minmax(96px, 30%) minmax(0, 1fr) 62px; }
+.games-hours-value {
+  min-width: 62px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-soft);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.games-pareto-body { display: flex; flex-direction: column; gap: 10px; }
+.games-pareto-track {
+  position: relative;
+  height: 26px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid var(--border);
+}
+.games-pareto-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 5px 0 0 5px;
+  background: linear-gradient(90deg, #b85c00, var(--orange));
+  transition: width 0.75s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+.games-pareto-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--muted-2);
+}
+.games-pareto-legend .swatch { margin-right: 5px; }
+.swatch.muted { background: rgba(255, 255, 255, 0.22); }
+.games-pareto-text { font-size: 12.5px; color: var(--text-soft); }
+.games-pareto-hint { font-size: 10.5px; line-height: 1.5; color: var(--muted-2); }
+
+/* ---------------- «Недавно играл» top strip ---------------- */
+
+.games-recent-strip {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding: 2px 2px 6px;
+}
+.games-recent-card {
+  flex: 0 0 96px;
+  width: 96px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.games-recent-art {
+  position: relative;
+  width: 96px;
+  aspect-ratio: 2 / 3;
+  height: auto;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+.games-recent-art:hover,
+.games-recent-art:focus-visible {
+  border-color: rgba(0, 224, 84, 0.45);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.32);
+  outline: none;
+}
+/* M6c: «also owned in another store» — a badge, never a second hours sum. */
+.games-recent-source {
+  position: absolute;
+  left: 5px;
+  bottom: 5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #efe8ff;
+  background: rgba(20, 16, 30, 0.82);
+  border: 1px solid rgba(177, 140, 255, 0.5);
+  pointer-events: none;
+}
+.games-recent-source.is-epic {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(20, 20, 20, 0.85);
+}
+.games-recent-icon {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.games-recent-icon.game-icon-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 30px;
+  font-weight: 750;
+  color: var(--muted);
+}
+.games-recent-name {
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--text-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.games-recent-meta {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+.games-recent-meta.is-fresh { color: var(--green); }
+
+.games-partial {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #ffd7b0;
+  background: rgba(255, 128, 0, 0.07);
+  border: 1px solid rgba(255, 128, 0, 0.28);
+  border-radius: var(--radius-sm);
+}
+.games-partial strong { font-size: 12.5px; color: #ffc182; }
+.games-partial .btn { align-self: flex-start; margin-top: 2px; }
+
+@media (max-width: 1120px) {
+  .w-games-profile,
+  .w-games-top,
+  .w-games-pareto,
+  .w-games-recent { grid-column: span 6; }
+}
+
+@media (max-width: 760px) {
+  .games-import-grid { grid-template-columns: minmax(0, 1fr); }
+  .genre-row.games-hours-row { grid-template-columns: 17px minmax(78px, 34%) minmax(0, 1fr) 56px; }
+}
+
+@media (max-width: 560px) {
+  .games-profile-bar-label { display: none; }
+  .games-profile-chip { max-width: min(220px, 62vw); }
+}
+
+/* =========================================================
+   games M2/M3: decades, years, genres cloud, enrichment
+   progress, filters, achievements calendar, personnel
+   ========================================================= */
+
+.w-dot.violet { background: var(--violet); }
+
+.games-hero-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.games-hero-actions .btn svg { flex: none; }
+
+/* ---------------- filters (requested vs applied) ---------------- */
+
+.games-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 11.5px;
+  color: var(--text-soft);
+}
+.games-filter-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+.games-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  user-select: none;
+}
+.games-filter input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--card-2);
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.games-filter input:hover { border-color: rgba(255, 255, 255, 0.24); }
+.games-filter input:checked {
+  background: var(--green);
+  border-color: var(--green);
+}
+.games-filter input:checked::after {
+  content: "";
+  position: absolute;
+  inset: 2px 3px 4px;
+  border-left: 2px solid #10251a;
+  border-bottom: 2px solid #10251a;
+  transform: rotate(-45deg);
+}
+.games-filter-note {
+  flex: 1 1 260px;
+  min-width: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted-2);
+}
+.games-filter-note.is-honest { color: #ffc182; }
+
+/* «мин. часов»: a numeric field with −/+ steppers. −1 = every game (including
+   0-hour ones), 0 = the server default (only games with >0 hours), N = ≥N h. */
+.games-filter-hours {
+  gap: 8px;
+  cursor: default;
+}
+.games-filter-hours-label {
+  font-size: 11.5px;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+.games-hours-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--card-2);
+}
+.games-hours-step {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.games-hours-step:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+.games-hours-step:focus-visible { outline: 2px solid var(--blue); outline-offset: -1px; }
+.games-filter .games-hours-input {
+  appearance: textfield;
+  -webkit-appearance: textfield;
+  width: 42px;
+  height: 22px;
+  margin: 0;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  cursor: text;
+}
+.games-filter .games-hours-input::-webkit-outer-spin-button,
+.games-filter .games-hours-input::-webkit-inner-spin-button {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+}
+.games-filter .games-hours-input:focus-visible { outline: 2px solid var(--blue); outline-offset: -1px; }
+.games-filter-hours-hint {
+  font-size: 10px;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+
+/* ---------------- genre bar chart ---------------- */
+
+.games-genre-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.games-genre-hint { font-size: 10.5px; color: var(--muted-2); }
+.games-weight-toggle {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.games-weight-btn {
+  border: 0;
+  background: transparent;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--muted);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.games-weight-btn:hover { color: var(--text); }
+.games-weight-btn.is-active {
+  background: rgba(0, 224, 84, 0.14);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(0, 224, 84, 0.28);
+}
+
+/* Horizontal bars: the fill *is* the printed share of hours (or of genre
+   marks), so the picture and the label can never disagree. */
+.games-genre-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
+.genre-row.games-genre-row {
+  grid-template-columns: minmax(104px, 30%) minmax(0, 1fr) minmax(96px, 30%);
+  padding: 5px 5px;
+}
+.genre-row.games-genre-row .genre-track { height: 14px; }
+.genre-row.games-genre-row .genre-fill {
+  background: linear-gradient(90deg, #00a844, var(--green));
+}
+.games-genre-value {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-size: 12px;
+  line-height: 1.15;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+.games-genre-value small {
+  font-size: 9.5px;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+.games-genre-more { margin-top: 10px; }
+.games-genre-more-btn { font-size: 11px; }
+
+/* ---------------- enrichment progress ---------------- */
+
+.games-meta { display: flex; flex-direction: column; gap: 11px; }
+.games-meta-row { display: flex; flex-direction: column; gap: 4px; }
+.games-meta-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+.games-meta-label { font-weight: 650; }
+.games-meta-percent { color: var(--muted); }
+.games-meta-track {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.games-meta-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6a5cff, var(--violet));
+  transition: width 0.45s cubic-bezier(0.22, 0.7, 0.3, 1);
+}
+.games-meta-row.is-credits .games-meta-fill {
+  background: linear-gradient(90deg, #ff9d3d, var(--orange));
+}
+.games-meta-note { font-size: 10.5px; color: var(--muted-2); }
+.games-meta-note.is-running { color: #b9b0ff; }
+
+/* ---------------- achievements overview ---------------- */
+
+.games-achievements {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+}
+.games-achievement-metric {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+.games-achievement-value {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.games-achievement-label {
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--muted-2);
+}
+.games-achievements-note {
+  grid-column: 1 / -1;
+  font-size: 10.5px;
+  color: var(--muted-2);
+}
+
+/* ---------------- grid spans ---------------- */
+
+.w-games-decades { grid-column: span 6; }
+.w-games-years { grid-column: span 6; }
+/* The count-by-release-year chart is its own full-width block: it never
+   depends on the decade selection above it (unlike .w-games-years). */
+.w-games-yearcount { grid-column: span 12; }
+/* M4: tags 6 + scores 6, franchises 6 + DLC 6 — pairs, so the grid never
+   leaves a hole between the existing M1–M3 cards. */
+.w-games-tags { grid-column: span 6; }
+.w-games-scores { grid-column: span 6; }
+.w-games-franchises { grid-column: span 6; }
+.w-games-dlc { grid-column: span 6; }
+.w-games-genres { grid-column: span 6; }
+.w-games-meta { grid-column: span 6; }
+.w-games-achievements { grid-column: span 6; }
+.w-games-calendar { grid-column: span 12; }
+.w-games-persons { grid-column: span 12; }
+
+/* M4 widgets: tags reuse the genre bar classes; scores reuse the donut/legend
+   classes; franchises are a plain ranked list; DLC is a summary + rows. */
+.games-scores-honest {
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  color: var(--muted-2);
+  font-style: italic;
+}
+.w-games-scores .ratings-body { gap: 10px; }
+.w-games-tags .games-weight-btn { font-size: 10px; }
+.games-dlc-summary {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.games-dlc-list .genre-row { cursor: pointer; }
+.games-dlc-row-count {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted-2);
+  font-size: 11px;
+}
+.games-franchises-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 2px;
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
+
+/* The games summary has 7–8 tiles (the 7th is «не типизированы»), so it
+   sizes itself instead of overflowing the shared 6-column strip. */
+.summary-strip.games-summary { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+
+/* ---------------- game rows / card ---------------- */
+
+.game-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #2b3744;
+  flex: none;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+}
+.game-icon-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 750;
+  color: rgba(255, 255, 255, 0.82);
+}
+/* Game card head: the same vertical poster shape as books/films (2:3). */
+.modal-game-cover {
+  width: 88px;
+  aspect-ratio: 2 / 3;
+  height: auto;
+  border-radius: 11px;
+  object-fit: cover;
+  flex: none;
+  background: #2b3744;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.modal-game-cover.game-icon-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 32px;
+  font-weight: 750;
+  color: rgba(255, 255, 255, 0.82);
+}
+.modal-portrait.game-icon-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 32px;
+  font-weight: 750;
+  color: rgba(255, 255, 255, 0.82);
+}
+.game-row-value {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  justify-self: end;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.game-row-value small { font-size: 9.5px; font-weight: 500; color: var(--muted-2); }
+.game-row { cursor: pointer; }
+.genre-row.is-clickable { cursor: pointer; }
+.genre-row.is-clickable:focus-visible { outline: 2px solid var(--blue); outline-offset: -1px; }
+.genre-row.is-selected {
+  background: rgba(0, 224, 84, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(0, 224, 84, 0.28);
+}
+.genre-row.is-selected .genre-label { color: #fff; }
+.games-show-all {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 2px;
+}
+.games-show-all .btn { font-size: 11px; padding: 7px 14px; }
+
+.game-card-facts { margin: 4px 0 14px; }
+.game-section { margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--border); }
+.game-section-title {
+  margin: 0 0 9px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+.game-note { margin: 4px 0 6px; font-size: 11px; line-height: 1.55; color: var(--muted-2); }
+.game-detail-grid { display: grid; grid-template-columns: 1fr; gap: 5px; margin: 0; }
+.game-detail { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; font-size: 11.5px; }
+.game-detail dt { color: var(--muted-2); }
+.game-detail dd { margin: 0; color: var(--text-soft); overflow-wrap: anywhere; }
+.game-achievements { display: flex; flex-direction: column; gap: 2px; }
+.game-achievement {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  padding: 5px 7px;
+  border-radius: 6px;
+  opacity: 0.55;
+}
+.game-achievement.is-achieved { opacity: 1; background: rgba(0, 224, 84, 0.045); }
+.game-achievement-mark { color: var(--muted-2); font-weight: 700; text-align: center; }
+.game-achievement.is-achieved .game-achievement-mark { color: var(--green); }
+.game-achievement-name { font-size: 11.5px; font-weight: 600; color: #e9eff5; }
+.game-achievement-desc { margin-top: 1px; font-size: 10px; color: var(--muted-2); line-height: 1.35; }
+.game-achievement-date { font-size: 10px; color: var(--muted-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.game-credit-group { margin-bottom: 8px; }
+.game-credit-label { font-size: 10px; color: var(--muted-2); margin-bottom: 3px; }
+.game-credit { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 11.5px; }
+.game-credit-name { color: var(--text-soft); font-weight: 600; }
+.game-credit-roles { font-size: 10px; color: var(--muted-2); }
+.game-links { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* M4 game card extras: tags strip, Steam review badge, franchise chip. */
+.game-tags-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 6px 0 0;
+}
+.game-tag-chip {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 10.5px;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+.game-tag-chip.is-more { color: var(--muted-2); }
+.game-review-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-soft);
+}
+.game-review-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.game-review-score { font-weight: 700; font-variant-numeric: tabular-nums; }
+.game-review-label { color: var(--muted-2); }
+.game-franchise-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 3px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11px;
+  cursor: pointer;
+}
+.game-franchise-chip:hover { border-color: var(--green); color: var(--text); }
+.game-franchise-key { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted-2); }
+.game-link { font-size: 11px; padding: 6px 12px; text-decoration: none; }
+
+/* ---------------- personnel screen ---------------- */
+
+.games-personnel { display: block; }
+.games-personnel-hero { margin-bottom: 18px; }
+.games-personnel-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-bottom: 12px;
+}
+.games-personnel-note { font-size: 10.5px; color: var(--muted-2); }
+.games-coverage-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 128, 0, 0.3);
+  border-radius: 999px;
+  background: rgba(255, 128, 0, 0.08);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #ffc182;
+  font-variant-numeric: tabular-nums;
+}
+.games-role-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.games-role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--muted);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.games-role-chip:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.2); }
+.games-role-chip.is-active {
+  color: var(--text);
+  border-color: rgba(0, 224, 84, 0.36);
+  background: rgba(0, 224, 84, 0.09);
+}
+.games-role-chip .games-role-count {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+.games-role-chip.is-empty { opacity: 0.55; }
+
+.games-personnel-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.games-personnel-list { display: flex; flex-direction: column; gap: 2px; }
+.games-personnel-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) minmax(0, 26%) 64px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  transition: background 0.15s ease;
+  cursor: pointer;
+}
+.games-personnel-row:hover { background: rgba(255, 255, 255, 0.045); }
+.games-personnel-name { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.games-personnel-name > span:first-child {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.games-personnel-alias {
+  font-size: 10px;
+  color: var(--muted-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.games-personnel-role { font-size: 10px; color: var(--muted-2); }
+.games-personnel-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.055);
+  overflow: hidden;
+}
+.games-personnel-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ff9d3d, var(--orange));
+  transition: width 0.45s cubic-bezier(0.22, 0.7, 0.3, 1);
+}
+.games-personnel-value {
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.games-personnel-value small { display: block; font-size: 9.5px; color: var(--muted-2); }
+.games-personnel-games {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 2px 0 6px;
+  font-size: 10.5px;
+  color: var(--muted-2);
+}
+.games-personnel-games span { white-space: nowrap; }
+.games-personnel-empty {
+  padding: 18px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted-2);
+}
+
+@media (max-width: 1120px) {
+  .w-games-decades,
+  .w-games-years,
+  .w-games-tags,
+  .w-games-scores,
+  .w-games-franchises,
+  .w-games-dlc,
+  .w-games-meta,
+  .w-games-achievements { grid-column: span 6; }
+  /* Genres pairs with Pareto on desktop (6+6); below 1120 the pair breaks,
+     so genres takes its own full row — the years/count pair stays 6+12. */
+  .w-games-genres { grid-column: span 12; }
+  .w-games-calendar { grid-column: span 12; }
+  .summary-strip.games-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .w-games-decades,
+  .w-games-years,
+  .w-games-tags,
+  .w-games-scores,
+  .w-games-franchises,
+  .w-games-dlc,
+  .w-games-genres,
+  .w-games-meta,
+  .w-games-achievements,
+  .w-games-persons { grid-column: span 12; }
+  /* Phones: the top strip and the Pareto lane take the whole width; the
+     profile + top-by-hours pair stays 6+6. */
+  .w-games-recent,
+  .w-games-pareto { grid-column: span 12; }
+  /* Source rows: the name keeps the first line with the connect link on the
+     right, numbers + status drop to a second line — still one row of tokens,
+     never a vertical stack. */
+  .games-source-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "name action"
+      "meta meta";
+  }
+  .games-source-name { grid-area: name; }
+  .games-source-meta { grid-area: meta; }
+  .games-source-action { grid-area: action; }
+  .summary-strip.games-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .games-personnel-row { grid-template-columns: 16px minmax(0, 1fr) 56px; }
+  .games-personnel-row .games-personnel-track { display: none; }
+  .games-filter-bar { align-items: flex-start; }
+  .games-filter-note { flex-basis: 100%; }
+  .game-detail { grid-template-columns: 1fr; gap: 1px; }
+}
+
+@media (max-width: 560px) {
+  .summary-strip.games-summary { grid-template-columns: minmax(0, 1fr); }
+  .genre-row.games-genre-row { grid-template-columns: minmax(84px, 34%) minmax(0, 1fr) minmax(84px, 34%); }
+  .games-genre-value small { font-size: 9px; }
+  .games-role-chip { padding: 5px 9px; font-size: 10.5px; }
+}
+
+.modal.modal-wide { width: min(560px, 100%); }
+
+/* ── M6a: GOG secondary library (connect card + «Источники» widget) ── */
+.book-source-card[data-source="gog"] {
+  grid-column: 1 / -1;
+  border-top: 2px solid rgba(177, 140, 255, 0.55);
+}
+.book-source-logo.is-gog {
+  background: rgba(177, 140, 255, 0.13);
+  border: 1px solid rgba(177, 140, 255, 0.3);
+  color: #d9c9ff;
+  font-size: 10px;
+}
+.games-gog-status {
+  margin: 10px 0 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.games-gog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+/* «Источники» is a full-width summary block under the summary strip
+   (films/books parity: like the year bars, it is one 12-col row). It used to
+   fall back to an implicit span 1 of the 12-col grid, which squeezed the row
+   into a ~60 px content column and split «340 игр · 5 852,7 ч» into a vertical
+   token stack. */
+.w-games-sources { grid-column: span 12; }
+
+.games-sources-body {
+  display: flex;
+  flex-direction: column;
+}
+/* [label | meta | action] — one line per source, action pinned right. */
+.games-source-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 170px) minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 18px;
+  row-gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.games-source-row:last-child { border-bottom: 0; }
+.games-source-name { font-weight: 700; color: var(--text); white-space: nowrap; }
+.games-source-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+/* Numbers + units are one unbreakable token («5 852,7 ч»). */
+.games-source-numbers {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+.games-source-state { font-size: 11px; color: var(--muted-2); }
+/* The dot belongs to the status, so the numbers keep their own token. */
+.games-source-numbers + .games-source-state::before {
+  content: '·';
+  margin-right: 8px;
+  color: var(--muted-2);
+}
+.games-source-action { justify-self: end; }
+.games-source-connect { font-size: 11px; white-space: nowrap; }
+.games-source-row.is-journal .games-source-name { color: #a9e2ff; }
+.games-source-row.is-gog .games-source-name { color: #d9c9ff; }
+.games-source-row.is-soon { opacity: 0.65; }
+.games-sources-secondary {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+.games-sources-secondary-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.games-sources-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.games-sources-chip.is-epic { border-color: rgba(255, 255, 255, 0.22); }
+.games-sources-chip.is-gog { border-color: rgba(177, 140, 255, 0.35); }
+.games-sources-chip.is-steam { border-color: rgba(120, 200, 255, 0.35); }
+.games-sources-secondary-hours,
+.games-sources-secondary-charts { margin-top: 4px; }
+.games-sources-secondary-charts { color: var(--muted-2); }
+
+.swatch.violet { background: var(--violet); }
+
+/* Card: one row per source, never a combined total. */
+.games-secondary-hours {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.games-secondary-hour-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 140px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.games-secondary-hour-row:last-child { border-bottom: 0; }
+.games-secondary-hour-source { font-weight: 600; color: var(--text); }
+.games-secondary-hour-value {
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+.games-secondary-hour-row.is-absent { opacity: 0.55; }
+.games-secondary-hour-row.is-gog .games-secondary-hour-source { color: #d9c9ff; }
+.games-secondary-hour-row.is-epic .games-secondary-hour-source { color: #f0e6ff; }
+.games-secondary-hour-value .is-muted { color: var(--muted-2); font-size: 11px; }
+
+/* ── M6c: «Подключения» — one screen for GOG + Epic ── */
+.games-connections-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.games-connections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.games-connections:empty { display: none; }
+.games-connections-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.games-connections-grid .book-source-card[data-source="secondary-note"] {
+  border-top: 2px solid rgba(255, 255, 255, 0.1);
+}
+.games-connections-back {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+.games-import-connections-hint { margin-top: 14px; }
+.games-source-row.is-epic .games-source-name { color: #f0e6ff; }
+@media (max-width: 720px) {
+  .games-connections-grid { grid-template-columns: minmax(0, 1fr); }
+}

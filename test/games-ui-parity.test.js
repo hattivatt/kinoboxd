@@ -21,6 +21,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 const { execFileSync } = require('node:child_process');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -142,7 +143,7 @@ test('inline persons widget: span 12, developers first, search + «показа�
   assert.match(html, /data-games-weight="count"/);
   assert.match(html, /id="games-persons-all"/);
 
-  const css = readPublic('style.css');
+  const css = readPublicCss();
   assert.match(css, /\.w-games-persons \{ grid-column: span 12; \}/);
   assert.match(css, /\.summary-strip\.games-summary/);
 });
@@ -164,7 +165,7 @@ test('layout: decades + years are adjacent (no 6-column holes)', () => {
     assert.equal(html.includes(`id="${id}"`), false, `виджет #${id} должен быть удалён`);
   }
 
-  const css = readPublic('style.css');
+  const css = readPublicCss();
   const span = (selector) => {
     const match = new RegExp(`\\${selector} \\{ grid-column: span (\\d+); \\}`).exec(css);
     assert.ok(match, `нет span для ${selector}`);
@@ -206,7 +207,7 @@ test('year-count chart: span 12, own ids, counts above bars, genre filter', () =
   // The existing decade-gated card keeps its own title — no duplicate wording.
   assert.match(html, /id="games-years-title"[^>]*>[\s\S]{0,120}Годы релиза/);
 
-  const css = readPublic('style.css');
+  const css = readPublicCss();
   assert.match(css, /\.w-games-yearcount \{ grid-column: span 12; \}/);
   assert.match(css, /\.tl-bar-count \{/);
 

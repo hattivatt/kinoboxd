@@ -29,6 +29,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 
 process.env.KINOBOXD_CACHE_BOOK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-year-legacy-'));
 
@@ -240,7 +241,7 @@ test('stats: unknown works are accounted for, never silently dropped', async () 
 
 test('UI: year-less works leave the donut and get a clickable summary line', () => {
   const booksSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'books.js'), 'utf8');
-  const cssSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'style.css'), 'utf8');
+  const cssSource = readPublicCss();
 
   // The unknown slice is filtered out of the decade donut…
   assert.match(booksSource, /const decades = all\.filter\(\(item\) => !item\.unknown\)/);

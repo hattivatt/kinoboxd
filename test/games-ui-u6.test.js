@@ -25,6 +25,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 
 const { installDom, textOf } = require('./helpers/dom-shim');
 
@@ -380,7 +381,7 @@ test('vertical cover element: error walks header → capsule → icon → initia
 });
 
 test('CSS: strip cards and the card-modal head use a 2:3 vertical poster frame', () => {
-  const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'style.css'), 'utf8');
+  const css = readPublicCss();
   const art = /\.games-recent-art \{[^}]*\}/.exec(css);
   assert.ok(art, 'нет правила .games-recent-art');
   assert.match(art[0], /width: 96px/);

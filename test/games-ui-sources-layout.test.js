@@ -20,6 +20,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 const { installDom, textOf } = require('./helpers/dom-shim');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -121,7 +122,7 @@ globalThis.fetch = async (url) => {
 const wait = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test('«Источники» is a full-width widget with a three-column source row', () => {
-  const css = readPublic('style.css');
+  const css = readPublicCss();
   const widget = ruleBlock(css, '.w-games-sources {');
   assert.match(widget, /grid-column:\s*span 12/, 'the widget must own a full 12-col row');
 

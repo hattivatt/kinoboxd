@@ -21,6 +21,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 const { execFileSync } = require('node:child_process');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -122,7 +123,7 @@ test('index.html carries the filters panel and the personnel screen', () => {
 });
 
 test('style.css ships the M2/M3 games widgets', () => {
-  const css = readPublic('style.css');
+  const css = readPublicCss();
   for (const selector of [
     '.w-games-decades', '.w-games-years', '.w-games-genres',
     '.w-games-meta', '.w-games-achievements', '.w-games-calendar',

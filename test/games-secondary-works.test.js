@@ -14,6 +14,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 const { installDom, textOf } = require('./helpers/dom-shim');
 
 const { nodeFor, storage } = installDom({ search: '?tab=games', href: 'http://localhost/?tab=games' });
@@ -102,7 +103,7 @@ test('M6c «Вне Steam» view models', async (t) => {
     assert.equal(gamesJs.includes('secondaryWorksView'), false);
 
     // The union card (modal) survives: its per-source hours grid stays styled.
-    const css = readPublic('style.css');
+    const css = readPublicCss();
     assert.ok(css.includes('.games-secondary-hours'), 'the union card hours grid must stay');
     assert.ok(css.includes('.games-secondary-hour-row'));
     assert.equal(css.includes('.w-games-secondary'), false);

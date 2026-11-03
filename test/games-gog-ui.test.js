@@ -9,6 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -86,7 +87,7 @@ test('GOG UI', async (t) => {
     }
     assert.match(html, /Войти через GOG/);
     assert.match(html, /embed\.gog\.com\/on_login_success/);
-    const css = readPublic('style.css');
+    const css = readPublicCss();
     assert.ok(css.includes('.games-source-row'));
     assert.ok(css.includes('.book-source-card[data-source="gog"]'));
   });

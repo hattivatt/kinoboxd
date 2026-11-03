@@ -18,6 +18,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 
 process.env.KINOBOXD_CACHE_BOOK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-reading-'));
 
@@ -265,7 +266,7 @@ test('public strip renders reading first with a badge and a date-less card', () 
   // The counter reaches the headline as a separate sentence.
   assert.match(books, /readingNowCount/);
 
-  const css = readPublic('style.css');
+  const css = readPublicCss();
   assert.match(css, /\.recent-book-tags \.recent-reading/);
 
   const html = readPublic('index.html');

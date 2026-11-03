@@ -25,6 +25,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readPublicCss } = require('./helpers/css');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -102,7 +103,7 @@ test('the unrecoverable-profile toast is not a restart nag', () => {
 });
 
 test('style.css dropped the dead banner rules', () => {
-  const css = readPublic('style.css');
+  const css = readPublicCss();
 
   assert.doesNotMatch(css, /\.topbar-banner/);
   assert.doesNotMatch(css, /\.stale-icon/);
