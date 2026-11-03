@@ -803,3 +803,84 @@ test('enrichPersonnel: a changed store credit list is re-written inside the TTL 
   assert.equal(second.secondaryUpdated, 0);
   assert.equal(second.secondarySkippedFresh, 1);
 });
+
+/* ------------------------------------------------------------------ */
+/* 7. the aggregate and the games list must agree (04.11.2026)         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The deployed bug: Remedy's card said «7 игр · 266,0 ч» (the aggregate had
+ * counted Alan Wake 2) while the list under it showed six rows (AW2 missing).
+ * A count is a promise about the list: whenever the aggregate counts a work,
+ * the same work must be in `item.games` — Steam rows and secondary-only rows
+ * alike, sorted by hours, and not cut by the limit.
+ */
+test('buildPersonnel: count/hours and item.games are the same set (AW2 included)', async () => {
+  await seedSteam();
+  await seedEpicAlanWake2();
+  // Six Steam titles of the same studio (production shape of the card) plus
+  // the Epic-only AW2 above → 7 games, 266.0 h.
+  const steamTitles = [
+    { appid: 900001, name: 'CONTROL Resonant', hours: 88.5 },
+    { appid: 900002, name: 'Control Ultimate Edition', hours: 83.8 },
+    { appid: 900003, name: 'Alan Wake', hours: 21.2 },
+    { appid: 900004, name: 'Max Payne 2', hours: 10.1 },
+    { appid: 900005, name: "Alan Wake's American Nightmare", hours: 7.0 },
+    { appid: 900006, name: 'Quantum Break', hours: 0.9 },
+  ];
+  await gameCache.saveLibrary(ID, {
+    fetchedAt: iso(),
+    partial: false,
+    source: 'steam-webapi',
+    game_count: steamTitles.length,
+    games: steamTitles.map((game) => ({
+      appid: game.appid,
+      name: game.name,
+      playtime_forever: Math.round(game.hours * 60),
+    })),
+    totalMinutes: steamTitles.reduce((sum, game) => sum + Math.round(game.hours * 60), 0),
+  });
+  for (const game of steamTitles) {
+    await gameCache.saveDetails(game.appid, {
+      appid: game.appid,
+      success: true,
+      type: 'game',
+      name: game.name,
+      developers: ['Remedy Entertainment'],
+      publishers: [],
+      genres: [],
+      categories: [],
+      releaseYear: 2019,
+      releasePrecision: 'year',
+    });
+  }
+
+  const payload = personnel.buildPersonnel(OWNER, { gamesLimit: 50 });
+  const remedy = payload.items.find((item) => /remedy/i.test(item.name));
+  assert.ok(remedy, 'Remedy must be in the developer list');
+
+  // 7 games and 266.0 h in the header…
+  assert.equal(remedy.count, 7);
+  assert.equal(remedy.hours, 266);
+  // …and the very same seven rows in the list.
+  assert.equal(remedy.games.length, remedy.count);
+  assert.equal(
+    Math.round(remedy.games.reduce((sum, game) => sum + game.hours, 0) * 10) / 10,
+    remedy.hours
+  );
+  const aw2 = remedy.games.find((game) => game.workKey === 'epic:cat-aw2');
+  assert.ok(aw2, 'AW2 must be in the list, not only in the count');
+  assert.equal(aw2.appid, null);
+  assert.equal(aw2.secondaryOnly, true);
+  assert.equal(aw2.hours, 54.5);
+  // Third by hours, ahead of every remaining Steam title: sorting by hours
+  // keeps it inside the default limit, and a limit that reaches it includes it.
+  assert.equal(remedy.games[2].workKey, 'epic:cat-aw2');
+  const limited = personnel.buildPersonnel(OWNER, { gamesLimit: 3 });
+  const limitedRemedy = limited.items.find((item) => /remedy/i.test(item.name));
+  assert.deepEqual(limitedRemedy.games.map((game) => game.name), [
+    'CONTROL Resonant',
+    'Control Ultimate Edition',
+    'Alan Wake 2',
+  ]);
+});
