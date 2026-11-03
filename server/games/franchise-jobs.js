@@ -30,9 +30,8 @@
  * to the library of exactly one cached profile.
  */
 
-const crypto = require('crypto');
-
 const gameCache = require('./game-cache');
+const { createJobs } = require('../core/jobs');
 const enrichJobs = require('./enrich');
 const franchise = require('./franchise');
 const lock = require('./personnel/lock');
@@ -44,32 +43,32 @@ const DEFAULT_LOCK_WAIT_MS = 30 * 1000;
 const DEFAULT_WAIT_FOR_ENRICH_MS = 20 * 60 * 1000;
 const DEFAULT_KICK_COOLDOWN_MS = 10 * 60 * 1000;
 
-const jobs = new Map();
-const jobOrder = [];
-/** profile → { at, status, skipped }: cheap re-kick guard for the lazy route. */
-const lastFinished = new Map();
-let chain = Promise.resolve();
+/**
+ * Job registry (core/jobs): single-flight per profile, one pass chain, the
+ * 20-job ring and the lazy re-kick window. The window ignores a failed pass
+ * (the WD breaker already protects WDQS) and a `lock_busy` skip, so a single
+ * import race cannot hide franchises for the whole cooldown.
+ */
+const jobs = createJobs({
+  name: 'games-franchise',
+  idPrefix: 'games-franchise',
+  maxJobs: MAX_JOBS,
+  cooldownMs: DEFAULT_KICK_COOLDOWN_MS,
+  keyOf: (job) => job.profile,
+  maskError: (err) => String((err && err.message) || 'franchise pass failed').slice(0, 300),
+  errorCode: 'games_franchise_failed',
+});
 
 function newJobId(seed) {
-  return `games-franchise-${gameCache.safeKey(seed)}-${Date.now().toString(36)}-${crypto
-    .randomBytes(3)
-    .toString('hex')}`;
+  return jobs.newId(seed);
 }
 
 function rememberJob(job) {
-  jobs.set(job.id, job);
-  jobOrder.push(job.id);
-  while (jobOrder.length > MAX_JOBS) {
-    const stale = jobOrder.shift();
-    if (stale !== job.id) jobs.delete(stale);
-  }
+  return jobs.remember(job);
 }
 
 function findRunningJob(profileKey) {
-  for (const job of jobs.values()) {
-    if (job.profile === profileKey && !job.done && job.status === 'running') return job;
-  }
-  return null;
+  return jobs.findRunning(profileKey);
 }
 
 function codedError(message, code, status = 400) {
@@ -83,6 +82,7 @@ function codedError(message, code, status = 400) {
 function publicStatus(job) {
   if (!job) return null;
   return {
+    ...jobs.snapshot(job),
     jobId: job.id,
     id: job.id,
     job: 'games-franchise',
@@ -169,16 +169,15 @@ function kickGate(profileKey, options = {}) {
   const cooldownMs = Number.isFinite(Number(options.kickCooldownMs))
     ? Math.max(0, Number(options.kickCooldownMs))
     : DEFAULT_KICK_COOLDOWN_MS;
-  const last = lastFinished.get(parsed.key);
   // A failed pass is not throttled (the WD breaker already protects WDQS); a
   // pass that skipped on a busy lock must also be retryable soon — otherwise a
   // single import race would hide franchises for the whole cooldown.
   if (
     options.forceKick !== true &&
-    last &&
-    last.status !== 'failed' &&
-    last.skipped !== 'lock_busy' &&
-    Date.now() - last.at < cooldownMs
+    jobs.cooldownRemaining(parsed.key, {
+      windowMs: cooldownMs,
+      ignore: (record) => record.status === 'failed' || record.skipped === 'lock_busy',
+    }) > 0
   ) {
     return 'recent_cooldown';
   }
@@ -239,6 +238,7 @@ async function runPass(job, parsed, options) {
     job.games = report.games;
     job.candidates = report.candidates;
     job.updated = report.updated;
+    job.setProgress(report.updated, report.games);
     job.skippedFresh = report.skippedFresh;
     job.remaining = report.remaining;
     job.unavailableDetails = report.unavailableDetails;
@@ -291,36 +291,21 @@ async function runPass(job, parsed, options) {
 }
 
 function enqueue(job, task) {
-  chain = chain
-    .then(task)
-    .catch((err) => {
-      job.status = 'failed';
-      job.stage = 'failed';
-      job.code = (err && err.code) || 'games_franchise_failed';
-      job.error = String((err && err.message) || 'franchise pass failed').slice(0, 300);
-      console.error(`[games-franchise ${job.id}] ${job.code}: ${job.error}`);
-    })
-    .then(() => {
-      job.done = job.status !== 'running';
-      job.finishedAt = Date.now();
-      if (job.status === 'running') {
-        job.status = 'done';
-        job.stage = 'done';
-        job.done = true;
-      }
-      lastFinished.set(job.profile, {
-        at: job.finishedAt,
-        status: job.status,
-        skipped: job.skipped || null,
-      });
+  return jobs.run(job, task, {
+    onError: (self, err) => {
+      jobs.fail(self, err);
+      console.error(`[games-franchise ${self.id}] ${self.code}: ${self.error}`);
+    },
+    onFinish: (self) => {
       console.log(
-        `[games-franchise ${job.id}] ${job.status} after ${job.finishedAt - job.startedAt}ms ` +
-          `(games=${job.games == null ? '—' : job.games}, updated=${job.updated}, ` +
-          `fresh=${job.skippedFresh == null ? '—' : job.skippedFresh}, ` +
-          `wdQueries=${job.wdQueries}${job.skipped ? `, skipped=${job.skipped}` : ''}` +
-          `${job.code ? `, code=${job.code}` : ''})`
+        `[games-franchise ${self.id}] ${self.status} after ${self.finishedAt - self.startedAt}ms ` +
+          `(games=${self.games == null ? '—' : self.games}, updated=${self.updated}, ` +
+          `fresh=${self.skippedFresh == null ? '—' : self.skippedFresh}, ` +
+          `wdQueries=${self.wdQueries}${self.skipped ? `, skipped=${self.skipped}` : ''}` +
+          `${self.code ? `, code=${self.code}` : ''})`
       );
-    });
+    },
+  });
 }
 
 /**
@@ -437,12 +422,12 @@ function kickQuietly(profileToken, options = {}) {
 
 /** Wait for the current franchise chain to settle (tests / shutdown). */
 function whenIdle() {
-  return chain;
+  return jobs.whenIdle();
 }
 
 /** Test helper: forget the re-kick guard between cases. */
 function resetCooldown() {
-  lastFinished.clear();
+  jobs.resetCooldown();
 }
 
 module.exports = {
