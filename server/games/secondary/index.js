@@ -1107,6 +1107,26 @@ function stringList(value) {
     .map(String);
 }
 
+/** `stringList` with duplicates removed, order preserved (case-sensitive). */
+function uniqueStringList(value) {
+  const out = [];
+  for (const name of stringList(value)) {
+    if (!out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/** Same names in the same order — used to keep `enrichUnionWithDetails` idempotent. */
+function sameStringList(left, right) {
+  const a = Array.isArray(left) ? left : [];
+  const b = Array.isArray(right) ? right : [];
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 function minutesOrNull(value) {
   if (value == null || value === '') return null;
   const number = Number(value);
@@ -1249,6 +1269,14 @@ function buildSecondaryUnion({
       genresSource: null,
       developers: [],
       publishers: [],
+      // Field-level provenance of `developers`/`publishers` (04.11.2026): the
+      // union fills them from the **library snapshot** first, which is a weak
+      // path for Epic (`catalog.developer` is the seller/distributor, AW2 =
+      // «Epic Games Publishing»). The store product page (detail document)
+      // replaces such a value in `enrichUnionWithDetails`; a value with an
+      // unknown/strong provenance is never touched.
+      developersSource: null,
+      publishersSource: null,
       metadataSources: ['steam-store'],
     });
   }
@@ -1328,6 +1356,10 @@ function buildSecondaryUnion({
       genresSource: null,
       developers: [],
       publishers: [],
+      // See the Steam-seeded template above: provenance of the two company
+      // lists, so a store product page can replace a library-snapshot guess.
+      developersSource: null,
+      publishersSource: null,
       metadataSources: [],
     };
     byWorkKey.set(workKey, entry);
@@ -1411,8 +1443,15 @@ function buildSecondaryUnion({
       entry.genres = genreNamesFromTags(product.tags);
       if (entry.genres.length) entry.genresSource = 'gog-library';
     }
-    if (!entry.developers.length) entry.developers = stringList(product.developers);
-    if (!entry.publishers.length) entry.publishers = stringList(product.publishers);
+    if (!entry.developers.length) {
+      entry.developers = stringList(product.developers);
+      // A library-snapshot field (weak): the product page may replace it.
+      if (entry.developers.length) entry.developersSource = 'gog-catalog';
+    }
+    if (!entry.publishers.length) {
+      entry.publishers = stringList(product.publishers);
+      if (entry.publishers.length) entry.publishersSource = 'gog-catalog';
+    }
     if (!entry.metadataSources.includes('gog-catalog')) entry.metadataSources.push('gog-catalog');
   }
 
@@ -1478,8 +1517,18 @@ function buildSecondaryUnion({
       if (entry.releaseYear != null) entry.releaseYearSource = 'epic-library';
     }
     if (!entry.genres.length) entry.genres = genreNames(game.genres);
-    if (!entry.developers.length && game.developer) entry.developers = [String(game.developer)];
-    if (!entry.publishers.length && game.publisher) entry.publishers = [String(game.publisher)];
+    // Epic's catalog bulk names the **seller/distributor** here (AW2:
+    // «Epic Games Publishing»), so this is the weakest possible developer
+    // source: the CMS product page replaces it as soon as a detail document
+    // exists (`enrichUnionWithDetails`).
+    if (!entry.developers.length && game.developer) {
+      entry.developers = [String(game.developer)];
+      entry.developersSource = 'epic-catalog';
+    }
+    if (!entry.publishers.length && game.publisher) {
+      entry.publishers = [String(game.publisher)];
+      entry.publishersSource = 'epic-catalog';
+    }
     if (!entry.metadataSources.includes('epic-catalog')) entry.metadataSources.push('epic-catalog');
   }
 
@@ -2136,12 +2185,45 @@ function detailKeyForEntry(entry) {
 }
 
 /**
+ * The detail document of one union entry: the priority store first (GOG, then
+ * Epic), the other store only when the priority store has **no** document.
+ * A work owned on both stores therefore still receives its product page facts
+ * instead of silently keeping the library-snapshot fallback.
+ */
+function detailForEntry(entry, index) {
+  const keys = [];
+  if (entry && entry.gog && entry.gog.gogGameId) keys.push(`gog:${entry.gog.gogGameId}`);
+  if (entry && entry.epic && entry.epic.slug) keys.push(`epic:${entry.epic.slug}`);
+  for (const key of keys) {
+    if (index[key]) return index[key];
+  }
+  return null;
+}
+
+/**
  * Fill the union entries from the detail cache. **Additive and never
- * destructive**: a Steam-derived value always wins (Steam `details` are read
- * first by `stats.js`), and only an empty field is filled. The one exception is
- * a release year that came from a **store snapshot** (`gog-library` /
- * `epic-library`): those dates are the store listing date, so the product's own
- * `globalReleaseDate` replaces them.
+ * destructive** for the fields that only a Steam card can own: a Steam-derived
+ * value always wins (Steam `details` are read first by `stats.js`), and only an
+ * empty field is filled. Two documented exceptions, both about provenance:
+ *
+ *   1. a release year that came from a **store snapshot** (`gog-library` /
+ *      `epic-library`) — those dates are the store listing date, so the
+ *      product's own `globalReleaseDate` replaces them;
+ *   2. `developers`/`publishers` that came from a **weak fallback** — the
+ *      library snapshot (`gog-catalog`) or the Epic catalog bulk
+ *      (`epic-catalog`). Epic's catalog `developer` field is the
+ *      seller/distributor (Alan Wake 2: «Epic Games Publishing»), not the
+ *      studio, so the product page (CMS `meta.developer` →
+ *      `about.developerAttribution`, `server/games/secondary/normalize.js`)
+ *      is the authority and **replaces** such a value (04.11.2026).
+ *
+ * Company lists are never *merged* across stores: the union keeps one list per
+ * work, and the detail document of the priority store (`detailForEntry`: GOG
+ * first, then Epic — the same order genres/year use) is the one that wins.
+ * Merging GOG and Epic lists would re-introduce the very bug this fixes (an
+ * Epic catalogue seller glued to a GOG studio). An entry whose
+ * `developersSource` is unknown or Steam-derived is left untouched, and an
+ * empty detail list changes nothing (the fallback stays, honest gap).
  *
  * Returns the number of entries that received at least one field.
  */
@@ -2149,10 +2231,16 @@ function enrichUnionWithDetails(union, index) {
   if (!union || !Array.isArray(union.works) || !index) return 0;
   let touched = 0;
   for (const entry of union.works) {
-    const key = detailKeyForEntry(entry);
-    const detail = key ? index[key] : null;
+    const detail = detailForEntry(entry, index);
     if (!detail) continue;
     let changed = false;
+    // The detail's own provenance label: `gog-store`/`epic-store` is what
+    // `metadataSources` already records for this document.
+    const storeSource = detail.source === 'epic' ? 'epic-store' : 'gog-store';
+    const weakDevelopers =
+      entry.developersSource === 'epic-catalog' || entry.developersSource === 'gog-catalog';
+    const weakPublishers =
+      entry.publishersSource === 'epic-catalog' || entry.publishersSource === 'gog-catalog';
     // The library snapshot's tag slugs (`gog-library`) are a fallback: the
     // product page's own genre line replaces them. A Steam-derived list (no
     // `genresSource`) is never touched.
@@ -2190,15 +2278,37 @@ function enrichUnionWithDetails(union, index) {
       entry.image = detail.image;
       changed = true;
     }
-    if (detail.developers && detail.developers.length && !(entry.developers && entry.developers.length)) {
-      entry.developers = [...detail.developers];
-      changed = true;
+    if (detail.developers && detail.developers.length) {
+      const nextDevelopers = uniqueStringList(detail.developers);
+      // Fill an empty list, or replace a weak fallback (`epic-catalog` /
+      // `gog-catalog`). A Steam-derived list has no marker and is never touched.
+      if (!(entry.developers && entry.developers.length) || weakDevelopers) {
+        if (!sameStringList(entry.developers, nextDevelopers)) {
+          entry.developers = nextDevelopers;
+          changed = true;
+        }
+        // The value may be identical (the catalogue seller *is* the publisher)
+        // while the provenance is not: record the store that confirmed it.
+        if (entry.developersSource !== storeSource) {
+          entry.developersSource = storeSource;
+          changed = true;
+        }
+      }
     }
-    if (detail.publishers && detail.publishers.length && !(entry.publishers && entry.publishers.length)) {
-      entry.publishers = [...detail.publishers];
-      changed = true;
+    if (detail.publishers && detail.publishers.length) {
+      const nextPublishers = uniqueStringList(detail.publishers);
+      if (!(entry.publishers && entry.publishers.length) || weakPublishers) {
+        if (!sameStringList(entry.publishers, nextPublishers)) {
+          entry.publishers = nextPublishers;
+          changed = true;
+        }
+        if (entry.publishersSource !== storeSource) {
+          entry.publishersSource = storeSource;
+          changed = true;
+        }
+      }
     }
-    const metadataSource = detail.source === 'epic' ? 'epic-store' : 'gog-store';
+    const metadataSource = storeSource;
     if (!Array.isArray(entry.metadataSources)) entry.metadataSources = [];
     if (!entry.metadataSources.includes(metadataSource)) {
       entry.metadataSources.push(metadataSource);

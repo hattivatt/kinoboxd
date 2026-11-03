@@ -385,6 +385,73 @@ function studiosFromSecondaryWork(work) {
   return [...map.values()];
 }
 
+/** Sources whose credits come from a store document (not from Wikidata). */
+const STORE_STUDIO_SOURCES = new Set(['steam-store', 'gog-store', 'epic-store']);
+
+/**
+ * Stable signature of the **store-derived** studios of a secondary work
+ * (normalized name + sorted roles). It is written into
+ * `personnel/work-<key>.json` so a document whose store list changed is
+ * re-written even while it is still «fresh»: a 90-day TTL would otherwise keep
+ * a wrong credit («Epic Games Publishing» as the developer of Alan Wake 2)
+ * alive for three months after the union was fixed.
+ */
+function storeStudiosSignature(studios) {
+  return (Array.isArray(studios) ? studios : [])
+    .map((entry) => {
+      const name = normalizeName(entry && entry.name);
+      const roles = [...new Set((entry && entry.roles) || [])].sort().join('+');
+      return `${name}:${roles}`;
+    })
+    .filter(Boolean)
+    .sort()
+    .join('|');
+}
+
+/**
+ * Store credits of a secondary work for the aggregate: the **live union is the
+ * authority** (it is rebuilt from the store documents on every `/stats` call),
+ * the persisted document only adds what the union cannot supply — Wikidata
+ * credits, or a store list when the detail document is gone. A persisted
+ * *store* entry whose company is already named by the live list is dropped: its
+ * roles were computed from an older union, so keeping it would resurrect
+ * «Epic Games Publishing» as a developer (Alan Wake 2, 04.11.2026).
+ */
+function studiosOfSecondaryWork(work, doc) {
+  const live = studiosFromSecondaryWork(work);
+  const persisted = Array.isArray(doc && doc.studios) ? doc.studios : [];
+  const out = [...live];
+  const liveByName = new Map(live.map((entry) => [normalizeName(entry.name), entry]));
+  for (const entry of persisted) {
+    const name = normalizeName(entry && entry.name);
+    if (!name) continue;
+    if (STORE_STUDIO_SOURCES.has(entry.source) && liveByName.has(name)) {
+      // The live union re-derived the company (and its roles) from the current
+      // store document; keep only the identity the document added (Wikidata
+      // QID/Moby id), so grouping with the Steam/Wikidata record survives.
+      const liveEntry = liveByName.get(name);
+      if (liveEntry && !liveEntry.qid && entry.qid) liveEntry.qid = entry.qid;
+      if (liveEntry && liveEntry.mobyId == null && entry.mobyId != null) {
+        liveEntry.mobyId = entry.mobyId;
+      }
+      continue;
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * Store studios to persist: the live list when the union has one, otherwise the
+ * store entries already cached (a detail document that is missing or stale must
+ * not erase the credit).
+ */
+function carriedStoreStudios(live, existing) {
+  if (live.length) return live;
+  const persisted = Array.isArray(existing && existing.studios) ? existing.studios : [];
+  return persisted.filter((entry) => STORE_STUDIO_SOURCES.has(entry && entry.source));
+}
+
 /**
  * Merge studios of a secondary work without losing their store provenance.
  * `dedupeStudios` maps any non-Wikidata source to `steam-store` (its fallback),
@@ -991,8 +1058,7 @@ function buildPersonnel(profileKey, options = {}) {
   for (const work of secondaryWorks) {
     if (!work || !work.workKey) continue;
     const doc = readSecondaryPersonnelDoc(work.workKey);
-    const studios = studiosFromSecondaryWork(work);
-    if (doc) studios.push(...doc.studios);
+    const studios = studiosOfSecondaryWork(work, doc);
     const people = doc
       ? doc.people
           .map((person) => ({
@@ -1508,17 +1574,31 @@ async function enrichPersonnel(options = {}) {
       Boolean(existing) &&
       existing.wdAsked === true &&
       existing.labelRule !== LABEL_RULE_VERSION;
+    // The store credits are recomputed from the live union on every pass; a
+    // document written from an older union (before the developers/publishers
+    // provenance fix, or after the store page changed) carries a different
+    // signature and is re-written even inside the 90-day freshness window.
+    const liveStoreStudios = carriedStoreStudios(studiosFromSecondaryWork(work), existing);
+    const storeSignature = storeStudiosSignature(liveStoreStudios);
+    const storeStale = Boolean(existing) && existing.storeSignature !== storeSignature;
     // A work with a QID that was already asked is complete; a work without a
     // QID only needs the store-derived studios, which the document carries.
     const complete = Boolean(existing) && !labelsStale && (!work.qid || existing.wdAsked === true);
-    if (!force && complete && fresh) {
+    if (!force && complete && fresh && !storeStale) {
       report.secondarySkippedFresh++;
       continue;
     }
     const needsAsk =
       Boolean(work.qid) &&
       (force || !existing || existing.wdAsked !== true || labelsStale);
-    secondaryTargets.push({ work, existing, labelsStale, needsAsk });
+    secondaryTargets.push({
+      work,
+      existing,
+      labelsStale,
+      needsAsk,
+      storeStudios: liveStoreStudios,
+      storeSignature,
+    });
     if (secondaryTargets.length >= limit) break;
   }
   report.secondaryGames = secondaryTargets.length;
@@ -1551,7 +1631,7 @@ async function enrichPersonnel(options = {}) {
   }
   for (const target of secondaryTargets) {
     const { work, existing } = target;
-    const studios = studiosFromSecondaryWork(work);
+    const studios = [...target.storeStudios];
     const people = [];
     const sources = new Set();
     const storeSource = (work.sources || []).includes('gog') ? 'gog-store' : 'epic-store';
@@ -1569,7 +1649,13 @@ async function enrichPersonnel(options = {}) {
       people.push(...(existing.people || []).filter((entry) => entry.source === 'wikidata'));
       sources.add('wikidata');
     }
-    const wdAnswered = Boolean(target.wdCredits) || target.wdAsked === true;
+    // «Wikidata has answered for this work», not «asked this run»: a pass that
+    // only refreshes the store credits (changed signature) must not reset a
+    // settled Wikidata answer and re-ask on the next pass.
+    const wdAnswered =
+      Boolean(target.wdCredits) ||
+      target.wdAsked === true ||
+      (!target.needsAsk && Boolean(existing && existing.wdAsked === true));
     if (!wdAnswered && !existing && work.qid && !target.wdAsked) {
       // A work with a QID but no answer and no cache: writing now would look
       // «fresh» for 90 days. Defer, the next pass retries.
@@ -1587,6 +1673,10 @@ async function enrichPersonnel(options = {}) {
         ? LABEL_RULE_VERSION
         : (existing && existing.labelRule) || null,
       studios: mergedStudios,
+      // Signature of the store credits this document was built from: the next
+      // pass compares it with the live union and re-writes a changed list
+      // without waiting for the 90-day TTL.
+      storeSignature: target.storeSignature,
       people: mergedPeople,
       sources: [...sources].sort(),
       coverage: {
@@ -1730,6 +1820,10 @@ module.exports = {
   readSecondaryPersonnelDoc,
   saveSecondaryPersonnelDoc,
   studiosFromSecondaryWork,
+  studiosOfSecondaryWork,
+  carriedStoreStudios,
+  storeStudiosSignature,
+  STORE_STUDIO_SOURCES,
   mergeSecondaryStudios,
   secondaryWorksFor,
   studiosFromDetails,
