@@ -15,8 +15,7 @@ const os = require('os');
 
 const { errorMiddleware } = require('./core/errors');
 const auth = require('./auth');
-const compression = require('compression');
-const gzipGames = require('./gzip');
+const gzip = require('./gzip');
 const booksRouter = require('./books/routes');
 const gamesRouter = require('./games/routes');
 const gamesGogRouter = require('./games/routes-gog');
@@ -45,19 +44,9 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 app.disable('x-powered-by');
 
-// /api/stats is several megabytes of JSON; gzip cuts it by ~85% and is the
-// single biggest transfer win. Also compresses static JS/CSS.
-//
-// `/api/games/*` goes through our own zlib middleware (server/gzip.js): the
-// games payload is ~290 KB of JSON (the gamesIndex is ~90% of it) and an
-// explicit layer keeps the ratio measurable and testable. The filter below
-// keeps `compression()` away from that prefix so a response is never
-// compressed twice.
-app.use(
-  compression({
-    filter: gzipGames.skipPrefix('/api/games', compression.filter),
-  })
-);
+// One gzip layer for the whole app (U11): the prefix table in server/gzip.js
+// sets the threshold/level, `compression()` is gone, so nothing is gzipped twice.
+app.use(gzip());
 app.use(express.json({ limit: '1mb' }));
 
 // Password protection (KINOBOXD_PASSWORD). Without it the API stays open.
@@ -69,7 +58,6 @@ app.use('/api', auth.requireAuth);
 // Books (cache-book/) and games (cache-games/) come first, exactly as before.
 app.use('/api/books', booksRouter);
 
-app.use('/api/games', gzipGames());
 app.use('/api/games', gamesRouter);
 // GOG (M6a): /api/games/gog/* — connect, status, import, logout.
 app.use('/api/games/gog', gamesGogRouter);

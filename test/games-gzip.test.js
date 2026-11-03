@@ -69,15 +69,23 @@ test('appendVary keeps existing values and never duplicates Accept-Encoding', ()
   assert.equal(gzip.appendVary('origin, accept-encoding', 'Accept-Encoding'), 'origin, accept-encoding');
 });
 
-test('skipPrefix keeps compression() away from /api/games only', () => {
-  const wrapped = gzip.skipPrefix('/api/games', () => true);
-  assert.equal(wrapped({ originalUrl: '/api/games/stats?profile=x' }), false);
-  assert.equal(wrapped({ originalUrl: '/api/games/personnel' }), false);
-  assert.equal(wrapped({ originalUrl: '/api/books/stats' }), true);
-  assert.equal(wrapped({ originalUrl: '/api/stats?uploadId=1' }), true);
-  assert.equal(wrapped({}), true);
-  const rejecting = gzip.skipPrefix('/api/games', () => false);
-  assert.equal(rejecting({ originalUrl: '/api/books/stats' }), false);
+test('prefix table: every heavy JSON prefix resolves to its own rule', () => {
+  // The specific path wins over its namespace.
+  assert.equal(gzip.ruleFor({ originalUrl: '/api/games/stats?profile=x' }).prefix, '/api/games/stats');
+  assert.equal(gzip.ruleFor({ originalUrl: '/api/games/personnel' }).prefix, '/api/games');
+  assert.equal(gzip.ruleFor({ originalUrl: '/api/books/stats?profile=x' }).prefix, '/api/books/stats');
+  assert.equal(gzip.ruleFor({ originalUrl: '/api/stats?uploadId=1' }).prefix, '/api/stats');
+  // A prefix is a path segment boundary, not a string prefix.
+  assert.equal(gzip.ruleFor({ originalUrl: '/api/statsfoo' }), gzip.DEFAULT_RULE);
+  assert.equal(gzip.ruleFor({ originalUrl: '/api/statsx/1' }), gzip.DEFAULT_RULE);
+  assert.equal(gzip.ruleFor({ originalUrl: '/' }), gzip.DEFAULT_RULE);
+  assert.equal(gzip.ruleFor({}), gzip.DEFAULT_RULE);
+  // Every rule carries a usable threshold/level (the single tuning point).
+  for (const rule of gzip.PREFIX_RULES) {
+    assert.equal(typeof rule.threshold, 'number');
+    assert.ok(rule.threshold >= 0);
+    assert.ok(Number.isInteger(rule.level));
+  }
 });
 
 test('middleware: big JSON → gzip ≥3x, decodable, Content-Length/Vary set', async (t) => {
