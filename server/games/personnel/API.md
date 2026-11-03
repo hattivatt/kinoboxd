@@ -1,16 +1,13 @@
 # API «Персоналии» (M3) — контракт для фронта
 
 Реализация: `server/games/personnel/` (backend-раунд M3 + раунд
-«раздельные роли / WD-триггер» 01.11.2026). Роутер самодостаточный; он уже
-смонтирован в `server/index.js` рядом с M1-роутером:
+«раздельные роли / WD-триггер» 01.11.2026). Роутер смонтирован в
+`server/index.js` на `/api/games` рядом с M1-роутером; пути `/personnel`,
+`/personnel/status` и `/override` не пересекаются с M1.
 
-```js
-// server/index.js (сделано интеграционным раундом)
-app.use('/api/games', gamesRouter);
-app.use('/api/games', gamesPersonnelRouter);
-```
-
-Пути `/personnel`, `/personnel/status` и `/override` не пересекаются с M1.
+**Границы документа.** Роуты, строгий query и HTTP-коды — `contracts/api.md`;
+здесь остаётся то, чего там нет: семантика ролей, форма payload'а, правила
+запуска пасса и ограничения источников.
 
 ## Роли: `developer` и `publisher` — разные ответы
 
@@ -44,6 +41,8 @@ app.use('/api/games', gamesPersonnelRouter);
 `role=publisher` дают разные списки и разные числа.
 
 ## `GET /api/games/personnel`
+
+Роут и коды ошибок — `contracts/api.md`. Семантика параметров:
 
 | Параметр | Обязателен | Значения | По умолчанию |
 |---|---|---|---|
