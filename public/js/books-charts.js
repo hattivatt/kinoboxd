@@ -1,4 +1,4 @@
-/* Book-specific charts: reading heatmap, streaks and the monthly timeline.
+/* Book-specific charts: the monthly reading timeline.
  *
  * The film dashboard's donut / year-bar primitives are reused as-is from
  * charts.js; only the pieces whose wording is domain-specific (просмотры →
@@ -9,7 +9,7 @@ import {
   el, clear, fmtInt, fmtPercent, monthName, monthShort, plural, toNum,
   showTooltip, moveTooltip, hideTooltip,
 } from './ui.js';
-import { svgEl, niceStep, buildYearCalendarBook } from './core/charts.js';
+import { svgEl, niceStep } from './core/charts.js';
 
 export { pad2 } from './core/charts.js';
 
@@ -44,154 +44,6 @@ export function fmtDayShortRu(value) {
   const parts = dateParts(value);
   if (!parts) return String(value || '');
   return `${parts.day} ${MONTHS_SHORT_GEN[parts.month - 1]} ${parts.year}`;
-}
-
-/** Days since epoch for a `YYYY-MM-DD` string (UTC, no DST). */
-export function dayIndex(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || '').slice(0, 10));
-  if (!match) return null;
-  return Math.floor(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86400000);
-}
-
-/** Days between today's local calendar date and a UTC `YYYY-MM-DD`. */
-export function daysSince(value) {
-  const parts = dateParts(value);
-  if (!parts) return null;
-  const now = new Date();
-  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  return Math.round((today - Date.UTC(parts.year, parts.month - 1, parts.day)) / 86400000);
-}
-
-export function fmtDateRange(dates) {
-  const list = Array.isArray(dates) ? dates.filter(dateParts) : [];
-  if (!list.length) return '';
-  const sorted = list.slice().sort();
-  if (sorted.length === 1 || sorted[0] === sorted[sorted.length - 1]) {
-    return fmtDayRu(sorted[0]);
-  }
-  const a = dateParts(sorted[0]);
-  const b = dateParts(sorted[sorted.length - 1]);
-  if (a.year === b.year && a.month === b.month) {
-    return `${a.day}–${b.day} ${MONTHS_GEN[b.month - 1]} ${b.year}`;
-  }
-  if (a.year === b.year) {
-    return `${a.day} ${MONTHS_GEN[a.month - 1]} — ${b.day} ${MONTHS_GEN[b.month - 1]} ${b.year}`;
-  }
-  return `${fmtDayRu(sorted[0])} — ${fmtDayRu(sorted[sorted.length - 1])}`;
-}
-
-/* =========================================================
-   streak card
-   ========================================================= */
-
-/**
- * Server streaks, with a local fallback for payloads that only carry
- * `readDays`. The current run ends at the last reading day and does not
- * depend on today's date (same rule as the films dashboard).
- */
-export function normalizeStreaks(raw, readDays = []) {
-  const validDate = (value) => dayIndex(value) != null;
-  if (raw && typeof raw === 'object') {
-    const current = Math.max(0, toNum(raw.current));
-    const best = Math.max(0, toNum(raw.best));
-    const last = raw.lastReadDate || raw.last;
-    const lastReadDate = validDate(last) ? String(last).slice(0, 10) : null;
-    const bestDates = Array.isArray(raw.bestDates)
-      ? raw.bestDates.map((date) => String(date).slice(0, 10)).filter(validDate)
-      : [];
-    if (best > 0 || lastReadDate) return { current, best, lastReadDate, bestDates };
-  }
-
-  const dates = (Array.isArray(readDays) ? readDays : [])
-    .map((entry) => String((entry && entry.date) || '').slice(0, 10))
-    .filter(validDate)
-    .sort();
-  if (!dates.length) return { current: 0, best: 0, lastReadDate: null, bestDates: [] };
-
-  let best = 1;
-  let bestFrom = dates[0];
-  let bestTo = dates[0];
-  let run = 1;
-  let runStart = dates[0];
-  for (let i = 1; i < dates.length; i += 1) {
-    if (dayIndex(dates[i]) - dayIndex(dates[i - 1]) === 1) run += 1;
-    else { run = 1; runStart = dates[i]; }
-    if (run > best) { best = run; bestFrom = runStart; bestTo = dates[i]; }
-  }
-  let current = 1;
-  for (let i = dates.length - 1; i > 0; i -= 1) {
-    if (dayIndex(dates[i]) - dayIndex(dates[i - 1]) === 1) current += 1;
-    else break;
-  }
-  return { current, best, lastReadDate: dates[dates.length - 1], bestDates: [bestFrom, bestTo] };
-}
-
-export function renderStreaks(host, streaks) {
-  if (!host) return;
-  clear(host);
-
-  if (!streaks || !streaks.lastReadDate) {
-    host.hidden = true;
-    return;
-  }
-  host.hidden = false;
-
-  const current = Math.max(0, toNum(streaks.current));
-  const best = Math.max(0, toNum(streaks.best));
-  const currentWord = plural(current, ['день', 'дня', 'дней']);
-
-  host.append(el('span', { class: 'streak-bolt', text: '⚡', 'aria-hidden': 'true' }));
-  const main = el('span', { class: 'streak-main' });
-  main.append(el('span', { class: 'streak-label', text: 'Серия:' }));
-  main.append(el('b', { class: 'streak-num', text: fmtInt(current) }));
-  main.append(el('span', { class: 'streak-unit', text: currentWord }));
-  host.append(main);
-
-  const meta = [];
-  const range = fmtDateRange(streaks.bestDates);
-  meta.push(`Рекорд: ${fmtInt(best)}${range ? ` (${range})` : ''}`);
-  meta.push(`Последняя книга: ${fmtDayShortRu(streaks.lastReadDate)}`);
-  host.append(el('span', { class: 'streak-meta', text: meta.join(' · ') }));
-
-  const daysAgo = daysSince(streaks.lastReadDate);
-  if (current > 0) {
-    host.title = `Текущая серия: ${current} ${currentWord} подряд · последняя книга ${fmtDayRu(streaks.lastReadDate)}`;
-  } else {
-    host.title = daysAgo == null
-      ? 'Нет данных о прочитанном'
-      : `Последняя книга была ${daysAgo} ${plural(daysAgo, ['день', 'дня', 'дней'])} назад`;
-  }
-}
-
-/* =========================================================
-   reading heatmap
-   ========================================================= */
-
-/**
- * Multi-year reading heatmap.
- *
- * @param {HTMLElement} host
- * @param {Array<{date:string,count:number,reReadCount?:number}>} days
- * @param {{onDayClick?: (day:object)=>void}} [opts]
- */
-export function renderReadingCalendar(host, days, { onDayClick } = {}) {
-  if (!host) return;
-  clear(host);
-  const list = (Array.isArray(days) ? days : [])
-    .filter((day) => day && /^\d{4}-\d{2}-\d{2}$/.test(String(day.date || '').slice(0, 10)));
-  if (!list.length) {
-    host.append(el('div', { class: 'empty-state', text: 'Нет дат прочтения в выбранных источниках' }));
-    return;
-  }
-
-  const byDate = new Map(list.map((day) => [String(day.date).slice(0, 10), day]));
-  const years = [...new Set(list.map((day) => Number(String(day.date).slice(0, 4))))]
-    .filter((year) => Number.isFinite(year) && year > 0)
-    .sort((a, b) => a - b);
-
-  for (let year = years[0]; year <= years[years.length - 1]; year += 1) {
-    host.append(buildYearCalendarBook(year, byDate, onDayClick));
-  }
 }
 
 /* =========================================================

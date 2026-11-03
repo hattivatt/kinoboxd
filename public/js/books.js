@@ -43,8 +43,7 @@ import { BOOKS_SHELL } from './shell-descriptors.js';
 import { renderDonut, renderYearBars } from './charts.js';
 import { openModal } from './modal.js';
 import {
-  renderBooksTimeline, renderReadingCalendar, renderStreaks, normalizeStreaks,
-  fmtDayRu, fmtDayShortRu,
+  renderBooksTimeline, fmtDayRu, fmtDayShortRu,
 } from './books-charts.js';
 import { snapshotCounts, refreshToastMessage, metadataBadge, withPreservedScroll } from './books-refresh.js';
 import {
@@ -381,12 +380,6 @@ function normalizeBooks(raw) {
     works: normalizeWorksList(item && item.works),
   })).filter((item) => item.name && item.count > 0);
 
-  const publishers = arr(source.publishers).map((item) => ({
-    name: text(item && item.name),
-    count: Math.max(0, toNum(item && item.count)),
-    works: normalizeWorksList(item && item.works),
-  })).filter((item) => item.name && item.count > 0);
-
   const decades = arr(source.decades).map((item) => {
     const start = Math.round(toNum(item && (item.start ?? item.decade), 0));
     const ancient = Boolean(item && item.ancient);
@@ -442,7 +435,7 @@ function normalizeBooks(raw) {
     month: text(item && item.month),
     // The bar counts every read of that month: exact-day events plus
     // month-only ones (LiveLib stores only {year, month} for part of the
-    // history). Days never enter the calendar/streaks.
+    // history). Days never enter the monthly timeline.
     finished: Math.max(0, toNum(item && (item.finished ?? item.read ?? item.watched)))
       + Math.max(0, toNum(item && item.monthOnly)),
     monthOnly: Math.max(0, toNum(item && item.monthOnly)),
@@ -626,12 +619,10 @@ function normalizeBooks(raw) {
     genres,
     authors,
     series: series.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru')),
-    publishers: publishers.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru')),
     decades,
     years,
     timeline: timeline.sort((a, b) => a.month.localeCompare(b.month)),
     readDays,
-    streaks: normalizeStreaks(source.streaks, readDays),
     recentlyFinished,
     recentlyReading,
     booksIndex,
@@ -2249,12 +2240,10 @@ function renderDashboardBooks(data) {
   renderGenres(data);
   renderSeries(data);
   renderAuthors(data);
-  renderPublishers(data);
   renderDecades(data);
   renderYears(data);
   renderYearBarsWidget(data);
   renderTimeline(data);
-  renderCalendar(data);
 }
 
 function renderHead(data) {
@@ -2296,7 +2285,7 @@ function renderHead(data) {
     const undatedParts = [];
     if (data.summary.monthOnlyEventCount > 0) {
       undatedParts.push(
-        `У ${fmtInt(data.summary.monthOnlyEventCount)} дата по месяцу — в таймлайне, но не в календаре и стриках`
+        `У ${fmtInt(data.summary.monthOnlyEventCount)} дата по месяцу — в таймлайне, без точного дня`
       );
     }
     if (data.summary.undatedEventCount > 0) {
@@ -2362,8 +2351,8 @@ function renderSummary(data) {
   } else if (summary.undatedEventCount > 0) {
     host.append(metric('alert', 'без дат',
       el('div', { class: 'metric-value', text: fmtInt(summary.undatedEventCount) }),
-      'не в календаре',
-      'События без даты прочтения не попадают в календарь, стрики и таймлайн',
+      'не в истории',
+      'События без даты прочтения не попадают в историю чтения',
       'metric-undated',
     ));
   } else {
@@ -2772,7 +2761,7 @@ function openRatingModal(score) {
   });
 }
 
-/* ---------------- ranked bars: genres / series / authors / publishers ---------------- */
+/* ---------------- ranked bars: genres / series / authors ---------------- */
 
 function renderBarRow(host, item, max, { kindLabel = 'жанр', rank = 0, onOpen = null } = {}) {
   const row = el('div', { class: `genre-row is-book-row${rank ? ' is-ranked' : ''}${onOpen ? ' is-clickable' : ''}` });
@@ -2911,6 +2900,10 @@ function renderSeries(data) {
   const section = $('books-series-widget');
   const items = data.series.filter((item) => item.count >= 2);
   if (section) section.hidden = items.length === 0;
+  // A hidden series card would leave the right half of the row empty. When
+  // there is nothing to show, the authors card takes the whole row instead.
+  const authors = $('books-authors-widget');
+  if (authors) authors.classList.toggle('is-wide', items.length === 0);
   renderBarList({
     hostId: 'books-series-list',
     noteId: 'books-series-note',
@@ -3003,27 +2996,6 @@ function renderAuthors(data) {
     });
     moreHost.append(button);
   }
-}
-
-function renderPublishers(data) {
-  renderBarList({
-    hostId: 'books-publishers-list',
-    noteId: 'books-publishers-note',
-    items: data.publishers,
-    emptyText: 'Издательства появятся после enrich Hardcover',
-    kindLabel: 'издательство',
-    unitLabel: ['издательство', 'издательства', 'издательств'],
-    limit: 12,
-    onClick: (item) => {
-      openWorksModal({
-        workIds: item.works,
-        kicker: 'Издательство',
-        title: item.name,
-        subtitle: `${fmtInt(item.count)} ${plural(item.count, ['книга', 'книги', 'книг'])}`,
-        groupLabel: item.name,
-      });
-    },
-  });
 }
 
 /* ---------------- decades / years ---------------- */
@@ -3490,63 +3462,6 @@ function renderTimeline(data) {
   }
 }
 
-/* ---------------- calendar + streaks ---------------- */
-
-function openDayModal(day) {
-  const counts = new Map();
-  for (const workId of day.ids) counts.set(workId, (counts.get(workId) || 0) + 1);
-  const books = [];
-  for (const [workId, views] of counts) {
-    const entry = state.data.booksIndex[workId];
-    if (!entry) continue;
-    books.push(views > 1 ? { ...entry, reReadHint: true } : entry);
-  }
-  const count = Math.max(day.count, books.length);
-  const reReads = Math.max(0, day.reReadCount);
-  openBookListModal({
-    kicker: 'Календарь чтения',
-    title: fmtDayRu(day.date),
-    subtitle: `${fmtInt(count)} ${plural(count, ['прочтение', 'прочтения', 'прочтений'])} · `
-      + `${fmtInt(books.length)} ${plural(books.length, ['книга', 'книги', 'книг'])}`
-      + (reReads > 0
-        ? ` · в т.ч. ${fmtInt(reReads)} ${plural(reReads, ['перечитка', 'перечитки', 'перечитываний'])}`
-        : ''),
-    groupLabel: fmtDayRu(day.date),
-    emptyText: 'За этот день нет книг',
-    books,
-    sortScope: 'readday',
-    defaultSort: 'rating',
-  });
-}
-
-function renderCalendar(data) {
-  const section = $('books-calendar-widget');
-  const host = $('books-calendar-host');
-  const note = $('books-calendar-note');
-  if (!section || !host) return;
-
-  if (!data.readDays.length) {
-    section.hidden = true;
-    clear(host);
-    return;
-  }
-  section.hidden = false;
-
-  renderStreaks($('books-streak-card'), data.streaks);
-  renderReadingCalendar(host, data.readDays, { onDayClick: openDayModal });
-
-  if (note) {
-    const days = data.readDays;
-    const total = days.reduce((sum, day) => sum + day.count, 0);
-    const reReads = days.reduce((sum, day) => sum + day.reReadCount, 0);
-    note.textContent = `${fmtInt(days.length)} ${plural(days.length, ['день', 'дня', 'дней'])} · `
-      + `${fmtInt(total)} ${plural(total, ['книга', 'книги', 'книг'])}`
-      + (reReads > 0
-        ? ` · ${fmtInt(reReads)} ${plural(reReads, ['перечитка', 'перечитки', 'перечитываний'])}`
-        : '');
-  }
-}
-
 /* =========================================================
    book list modal
    ========================================================= */
@@ -3806,7 +3721,7 @@ function closeBookMenu() {
  * Manual manga/comics override: hide a stubborn work or bring a wrongly
  * detected one back. The request is per workId, persists on the server in
  * `cache-book/flags/book-flags.json`, and the dashboard is refetched so every
- * widget (counts, calendar, authors) reflects the change at once.
+ * widget (counts, timeline, authors) reflects the change at once.
  */
 async function setMangaOverride(book, mangaComics, message) {
   if (!book || !book.workId || state.mangaBusy) return;
