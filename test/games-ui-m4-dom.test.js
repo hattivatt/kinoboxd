@@ -4,10 +4,12 @@
  * Games M4 widgets: headless DOM smoke.
  *
  * The view-model tests pin the numbers; this one drives the real `games.js`
- * against the DOM shim and checks that the four new cards actually paint and
+ * against the DOM shim and checks that the new cards actually paint and
  * that a tag row opens the games modal. It also proves the tolerant path:
  * the payload carries every M4 block, and the widgets appear without a second
  * `/api/games/franchises` request (the block is already in `/stats`).
+ * The DLC card was removed in the cosmetic round; its payload block is kept
+ * here on purpose, so the test pins «payload unchanged, nothing painted».
  */
 
 const test = require('node:test');
@@ -180,9 +182,10 @@ test('M4 widgets paint from a /stats payload and a tag row opens the games modal
   assert.match(textOf(nodeFor('games-franchises-list')), /The Witcher/);
   assert.match(textOf(nodeFor('games-franchises-note')), /1 франшиза · по часам/);
 
-  assert.equal(nodeFor('games-dlc-widget').hidden, false);
-  assert.match(textOf(nodeFor('games-dlc-summary')), /Игры с DLC: 2 игры \(в среднем 3,25\)/);
-  assert.match(textOf(nodeFor('games-dlc-list')), /Crusader Kings II/);
+  // Cosmetic round: the DLC card is gone, even though the payload still
+  // carries `summary.dlc` (payload contract unchanged) — nothing paints it.
+  assert.equal(textOf(nodeFor('games-dlc-summary')), '');
+  assert.equal(textOf(nodeFor('games-dlc-list')), '');
 
   // Tag drilldown: click the «Open World» row.
   const openWorld = tagRows.find((row) => textOf(row).includes('Open World'));

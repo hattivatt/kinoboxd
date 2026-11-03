@@ -42,14 +42,14 @@ import {
   paretoView, topHoursRows, recentStripView, lastPlayedInfo,
   importErrorText, jobStageText, jobProgress, gamesJobId, hoursText, HOURS_HINT,
   decadesView, yearsView, genreChartView, metadataProgressView, filtersView,
-  calendarView, achievementStreaksView, achievementsOverviewView, normalizePersonnel, personnelRows,
+  calendarView, achievementStreaksView, normalizePersonnel, personnelRows,
   studiosView, coverageBadge, PERSONNEL_ROLES, formatDateRu, normalizePersonnelRole,
   personnelRoleOptions, personnelRoleCountText, GENRE_CHART_LIMIT,
   gamesInDecade, gamesWithoutYear, gamesWithoutType, gamesByGenre,
   gamesWithRecentHours, allGames, sortGameRows,
   yearsInDecade, gamesInYearGenre, yearCountView, yearCountGenreOptions,
   tagsChartView, TAG_CHART_LIMIT, gamesByTag, scoresView, gamesByReviewBucket,
-  franchisesView, gamesInFranchise, dlcView, normalizeFranchisesResponse,
+  franchisesView, gamesInFranchise, normalizeFranchisesResponse,
   gogSourcesView, gogStatusText,
 } from './games-view.js';
 import {
@@ -1139,15 +1139,13 @@ function renderDashboard(data) {
   renderDecades(data);
   renderYears(data);
   renderYearCount(data);
-  // M4: tags + Steam scores, then genres (paired with Pareto), franchises and
-  // DLC. Every widget hides itself when its block is absent.
+  // M4: tags + Steam scores, then genres (paired with Pareto) and franchises.
+  // Every widget hides itself when its block is absent.
   renderTags(data);
   renderScores(data);
   renderGenreChart(data);
   renderFranchises(data);
-  renderDlc(data);
   renderMetadataProgress(data);
-  renderAchievements(data);
   renderCalendar(data);
   renderPersonsWidget(data);
   // The credits route is lazy and cached per role; a dashboard without it
@@ -2387,66 +2385,6 @@ function renderFranchises(data) {
   }
 }
 
-function findAppidByName(gamesIndex, name) {
-  const target = String(name || '').trim().toLowerCase();
-  if (!target || !gamesIndex || typeof gamesIndex !== 'object') return null;
-  for (const entry of Object.values(gamesIndex)) {
-    if (entry && String(entry.name || '').trim().toLowerCase() === target) return entry.appid;
-  }
-  return null;
-}
-
-function renderDlc(data) {
-  const widget = $('games-dlc-widget');
-  const summary = $('games-dlc-summary');
-  const host = $('games-dlc-list');
-  const note = $('games-dlc-note');
-  if (!widget || !host) return;
-  clear(host);
-  const view = dlcView(data.dlc);
-  if (!view) {
-    widget.hidden = true;
-    if (summary) summary.textContent = '';
-    return;
-  }
-  widget.hidden = false;
-  if (summary) summary.textContent = view.summaryText;
-  if (note) note.textContent = view.note;
-  if (!view.rows.length) {
-    host.append(el('div', { class: 'empty-state', text: 'Список игр с DLC сервер не передал' }));
-    return;
-  }
-  for (const row of view.rows) {
-    const appid = row.appid != null ? row.appid : findAppidByName(data.gamesIndex, row.name);
-    const node = el('div', {
-      class: `genre-row games-dlc-row${appid != null ? ' is-clickable' : ''}`,
-      title: appid != null
-        ? `${row.name} — ${row.countText} · нажмите, чтобы открыть карточку`
-        : `${row.name} — ${row.countText}`,
-      role: appid != null ? 'button' : null,
-      tabIndex: appid != null ? 0 : null,
-      'aria-label': appid != null ? `${row.name}: ${row.countText} — открыть карточку игры` : null,
-    });
-    const name = el('div', { class: 'genre-name' });
-    name.append(el('span', { class: 'genre-label', text: row.name }));
-    node.append(name);
-    node.append(el('div', { class: 'games-dlc-row-count', text: row.countText }));
-    host.append(node);
-    if (appid != null) {
-      const activate = () => {
-        hideTooltip();
-        openGameCardModal(appid, { fallback: { name: row.name } });
-      };
-      node.addEventListener('click', activate);
-      node.addEventListener('keydown', (event) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        activate();
-      });
-    }
-  }
-}
-
 function renderMetadataProgress(data) {
   const widget = $('games-meta-widget');
   const host = $('games-meta-body');
@@ -2488,33 +2426,6 @@ function renderMetadataProgress(data) {
     });
     row.addEventListener('pointermove', moveTooltip);
     row.addEventListener('pointerleave', hideTooltip);
-  }
-}
-
-function renderAchievements(data) {
-  const widget = $('games-achievements-widget');
-  const host = $('games-achievements-body');
-  const note = $('games-achievements-note');
-  if (!widget || !host) return;
-  clear(host);
-  const view = achievementsOverviewView(data.summary);
-  if (!view) {
-    widget.hidden = true;
-    return;
-  }
-  widget.hidden = false;
-  if (note) note.textContent = view.totalText ? `${view.note} · ${view.totalText}` : view.note;
-  for (const metric of view.metrics) {
-    const node = el('div', { class: 'games-achievement-metric', title: metric.hint });
-    node.append(el('div', { class: 'games-achievement-value', text: metric.value }));
-    node.append(el('div', { class: 'games-achievement-label', text: metric.label }));
-    host.append(node);
-    node.addEventListener('pointerenter', (event) => {
-      showTooltip(`${metric.label}: ${metric.value}`, metric.hint);
-      moveTooltip(event);
-    });
-    node.addEventListener('pointermove', moveTooltip);
-    node.addEventListener('pointerleave', hideTooltip);
   }
 }
 

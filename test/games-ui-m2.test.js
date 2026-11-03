@@ -57,19 +57,27 @@ test('style.css ships the M2/M3 games widgets', () => {
   const css = readPublicCss();
   for (const selector of [
     '.w-games-decades', '.w-games-years', '.w-games-genres',
-    '.w-games-meta', '.w-games-achievements', '.w-games-calendar',
+    '.w-games-meta', '.w-games-calendar',
     '.games-genre-chart', '.games-genre-row', '.games-genre-value',
     '.games-genre-more', '.games-weight-toggle', '.games-weight-btn',
     '.games-filter-bar', '.games-filter', '.games-filter-note',
     '.games-hours-stepper', '.games-hours-step', '.games-hours-input',
     '.games-meta-track', '.games-meta-fill',
-    '.games-achievement-metric', '.games-coverage-badge', '.games-role-chip',
+    '.games-coverage-badge', '.games-role-chip',
     '.games-personnel-row', '.games-personnel-fill', '.games-personnel-games',
     '.games-personnel-empty',
   ]) {
     assert.ok(css.includes(selector), `нет стилей для ${selector}`);
   }
-  for (const selector of ['.w-games-modes', '.w-games-access', '.games-access-item']) {
+  // Cosmetic round: the DLC and achievements-overview cards (and their styles)
+  // are gone from the games dashboard.
+  for (const selector of [
+    '.w-games-modes', '.w-games-access', '.games-access-item',
+    '.w-games-dlc', '.w-games-achievements',
+    '.games-achievements', '.games-achievement-metric', '.games-achievement-value',
+    '.games-achievement-label', '.games-achievements-note',
+    '.games-dlc-summary', '.games-dlc-list', '.games-dlc-row-count',
+  ]) {
     assert.equal(css.includes(selector), false, `стили ${selector} должны быть удалены`);
   }
 });
@@ -381,20 +389,14 @@ test('streaks: server values, then a local fallback from the days', async () => 
   assert.equal(achievementStreaksView(null, []), null);
 });
 
-test('achievements overview: completion, perfect, rare, coverage', async () => {
-  const { achievementsOverviewView, normalizeGamesPayload } = await view();
+test('achievements calendar keeps streaks: the overview card is gone', async () => {
+  const { achievementStreaksView, normalizeGamesPayload } = await view();
   const data = normalizeGamesPayload(fixture('stats-m2-mock.json'));
-  const overview = achievementsOverviewView(data.summary);
-  const byKey = new Map(overview.metrics.map((metric) => [metric.key, metric]));
-
-  assert.equal(byKey.get('avg').value, '34%');
-  assert.equal(byKey.get('median').value, '22%');
-  assert.equal(byKey.get('perfect').value, '7');
-  assert.equal(byKey.get('rare').value, '37');
-  assert.equal(byKey.get('coverage').value, '180/340');
-  assert.equal(plain(overview.totalText), '1 420 из 4 200 достижений');
-  assert.equal(overview.note, 'по достижениям, не по игровому времени');
-  assert.equal(achievementsOverviewView({}), null);
+  // The achievements-overview widget was removed from the dashboard; the
+  // calendar + streak card stay and keep their numbers.
+  assert.equal(typeof data.summary.completion, 'object');
+  assert.equal(achievementStreaksView(data.streaks, data.achievementDays).best, 3);
+  assert.equal(achievementStreaksView(null, []), null);
 });
 
 /* =========================================================
@@ -583,7 +585,7 @@ test('coverage badge: visible below 100%, hidden at 100%', async () => {
 test('an M1 payload hides every M2/M3 widget instead of printing zeroes', async () => {
   const {
     normalizeGamesPayload, decadesView, yearsView, genreChartView,
-    metadataProgressView, filtersView, calendarView, achievementStreaksView, achievementsOverviewView,
+    metadataProgressView, filtersView, calendarView, achievementStreaksView,
     studiosView, normalizePersonnel,
   } = await view();
 
@@ -617,13 +619,12 @@ test('an M1 payload hides every M2/M3 widget instead of printing zeroes', async 
   assert.equal(normalizePersonnel({ items: [] }).hasItems, false);
   // The filters block still renders its honest «сервер не сообщил».
   assert.equal(filtersView(data.filters).includeFree.status, 'unknown');
-  assert.equal(achievementsOverviewView(data.summary), null);
 });
 
 test('malformed M2/M3 input never throws', async () => {
   const {
     decadesView, yearsView, genreChartView, metadataProgressView,
-    filtersView, calendarView, achievementStreaksView, achievementsOverviewView,
+    filtersView, calendarView, achievementStreaksView,
     personnelRows, studiosView, coverageBadge, normalizePersonnel,
   } = await view();
 
@@ -635,7 +636,6 @@ test('malformed M2/M3 input never throws', async () => {
     assert.doesNotThrow(() => filtersView(raw));
     assert.doesNotThrow(() => calendarView(raw));
     assert.doesNotThrow(() => achievementStreaksView(raw, raw));
-    assert.doesNotThrow(() => achievementsOverviewView(raw));
     assert.doesNotThrow(() => personnelRows(raw));
     assert.doesNotThrow(() => studiosView(raw));
     assert.doesNotThrow(() => normalizePersonnel(raw));
@@ -645,7 +645,6 @@ test('malformed M2/M3 input never throws', async () => {
     assert.equal(metadataProgressView(raw), null);
     assert.equal(calendarView(raw), null);
     assert.equal(achievementStreaksView(raw, raw), null);
-    assert.equal(achievementsOverviewView(raw), null);
     assert.equal(studiosView(raw), null);
     assert.deepEqual(personnelRows(raw), []);
   }
@@ -680,7 +679,7 @@ test('mock payloads render the same numbers end to end', async () => {
   const {
     normalizeGamesPayload, decadesView, yearsView, genreChartView,
     metadataProgressView, filtersView, calendarView, achievementStreaksView,
-    achievementsOverviewView, normalizePersonnel, personnelRows, coverageBadge,
+    normalizePersonnel, personnelRows, coverageBadge,
   } = await view();
   const data = normalizeGamesPayload(fixture('stats-m2-mock.json'));
 
@@ -693,7 +692,6 @@ test('mock payloads render the same numbers end to end', async () => {
   assert.equal(filtersView(data.filters).includeFree.status, 'applied');
   assert.equal(calendarView(data.achievementDays, data.timeline).total, 70);
   assert.equal(achievementStreaksView(data.streaks, data.achievementDays).best, 3);
-  assert.equal(achievementsOverviewView(data.summary).metrics.length, 5);
 
   const personnel = normalizePersonnel(fixture('personnel-studio-mock.json'), 'studio');
   assert.equal(personnel.items.length, 3);

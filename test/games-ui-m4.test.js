@@ -1,16 +1,16 @@
 'use strict';
 
 /**
- * Games UI, M4 widgets: tags / Steam review scores / franchises / DLC.
+ * Games UI, M4 widgets: tags / Steam review scores / franchises.
  *
  * Same two layers as the other games UI tests:
  *
- *   1. markup + layout: four new cards with ids, 6+6 and 6+6 spans (pairs,
- *      so the 12-column grid keeps no holes), the honest «оценки Steam, не
- *      личные» note, and the wiring in `games.js`/`api.js`;
+ *   1. markup + layout: the new cards with ids, 6+6 spans (pairs, so the
+ *      12-column grid keeps no holes), the honest «оценки Steam, не личные»
+ *      note, and the wiring in `games.js`/`api.js`;
  *   2. DOM-free view models: tag bars (hours/count/SteamSpy weight), the 1–9
- *      score donut (descending), the franchise ranked list, the DLC summary
- *      and the game-card extras (tags strip / review badge / franchise).
+ *      score donut (descending), the franchise ranked list and the game-card
+ *      extras (tags strip / review badge / franchise).
  *
  * The payload blocks are DRAFT contracts from the backend rounds; every
  * normaliser is tolerant, and the «missing block» cases are asserted to
@@ -97,13 +97,16 @@ function miniIndex() {
 
 test('games.js wires the M4 renderers, api.js exposes the franchise route', () => {
   const games = readJs('games.js');
-  for (const fn of ['renderTags(data)', 'renderScores(data)', 'renderFranchises(data)', 'renderDlc(data)']) {
+  for (const fn of ['renderTags(data)', 'renderScores(data)', 'renderFranchises(data)']) {
     assert.ok(games.includes(fn), `games.js не вызывает ${fn}`);
   }
   assert.match(games, /tagsChartView\(data\.tags/);
   assert.match(games, /scoresView\(data\.scores, data\.reviewScore\)/);
   assert.match(games, /getGamesFranchises\(\{ profile \}\)/);
-  assert.match(games, /dlcView\(data\.dlc\)/);
+  // The DLC card was removed in the cosmetic round: neither the renderer nor
+  // its view model may come back.
+  assert.doesNotMatch(games, /renderDlc\(/);
+  assert.doesNotMatch(games, /dlcView\(/);
   assert.match(games, /gamesByTag\(data\.gamesIndex, row\.name\)/);
   assert.match(games, /gamesByReviewBucket\(data\.gamesIndex, seg\.bucket\)/);
   assert.match(games, /openFranchiseModal\(/);
@@ -181,7 +184,7 @@ test('normalizeGamesPayload reads tags / scores / reviewScore / dlc / franchises
 });
 
 test('a payload without M4 blocks keeps them empty and never throws', async () => {
-  const { normalizeGamesPayload, scoresView, franchisesView, dlcView, tagsChartView } = await view();
+  const { normalizeGamesPayload, scoresView, franchisesView, tagsChartView } = await view();
   const data = normalizeGamesPayload({ summary: { gameCount: 1 } });
   assert.deepEqual(data.tags, []);
   assert.deepEqual(data.scores, []);
@@ -194,7 +197,6 @@ test('a payload without M4 blocks keeps them empty and never throws', async () =
   assert.equal(tagsChartView([]), null);
   assert.equal(scoresView([], null), null);
   assert.equal(franchisesView([]), null);
-  assert.equal(dlcView(null), null);
 });
 
 /* =========================================================
@@ -348,38 +350,6 @@ test('franchises: the live `{min,max,span}` spread renders the same as a number'
   assert.ok(viewModel);
   assert.equal(viewModel.rows[0].yearsText, '8');
   assert.match(plain(viewModel.rows[0].secondaryText), /2 игры · 8 лет/);
-});
-
-/* =========================================================
-   DLC
-   ========================================================= */
-
-test('DLC: summary line «N игр (avg X)» and a top-10 list', async () => {
-  const { dlcView } = await view();
-  const viewModel = dlcView({
-    gamesWithDlc: 120,
-    avgCount: 3.25,
-    max: [
-      { name: 'Crusader Kings II', dlcCount: 24, appid: 203770 },
-      { name: 'The Witcher 3', dlcCount: 18 },
-      ...Array.from({ length: 12 }, (_, index) => ({ name: `Game ${index}`, dlcCount: index })),
-    ],
-  });
-  assert.ok(viewModel);
-  assert.equal(viewModel.gamesWithDlc, 120);
-  assert.equal(viewModel.rows.length, 10, 'top-10 only');
-  assert.equal(viewModel.rows[0].name, 'Crusader Kings II');
-  assert.equal(viewModel.rows[0].dlcCount, 24);
-  assert.equal(viewModel.rows[0].appid, 203770);
-  assert.equal(viewModel.rows[1].appid, null);
-  assert.equal(plain(viewModel.summaryText), 'Игры с DLC: 120 игр (в среднем 3,25)');
-  assert.equal(viewModel.note, '120 игр с DLC');
-
-  // A summary-only block still renders the line, with no invented list.
-  const summaryOnly = dlcView({ gamesWithDlc: 5, avgCount: 2, max: [] });
-  assert.ok(summaryOnly);
-  assert.equal(summaryOnly.rows.length, 0);
-  assert.equal(plain(summaryOnly.summaryText), 'Игры с DLC: 5 игр (в среднем 2)');
 });
 
 /* =========================================================
