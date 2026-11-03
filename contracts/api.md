@@ -75,9 +75,9 @@
 | GET | `/api/games/import/:jobId` | — | 404:unknown_job | `server/games/routes.js:399` |
 | GET | `/api/games/import/status` | — | 400:job_id_required, 404:unknown_job | `server/games/routes.js:385` |
 | POST | `/api/games/import/steam` | — | — | `server/games/routes.js:347` |
-| POST | `/api/games/override` | — | — | `server/games/personnel/routes-personnel.js:215` |
-| GET | `/api/games/personnel` | `limit`, `profile`, `role`, `sort` | 400:invalid_limit, 400:profile_not_imported | `server/games/personnel/routes-personnel.js:153` |
-| GET | `/api/games/personnel/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/personnel/routes-personnel.js:200` |
+| POST | `/api/games/override` | — | — | `server/games/personnel/routes-personnel.js:219` |
+| GET | `/api/games/personnel` | `limit`, `profile`, `role`, `sort` | 400:invalid_limit, 400:profile_not_imported | `server/games/personnel/routes-personnel.js:157` |
+| GET | `/api/games/personnel/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/personnel/routes-personnel.js:204` |
 | GET | `/api/games/profiles` | — | — | `server/games/routes.js:272` |
 | POST | `/api/games/refresh` | — | — | `server/games/routes.js:361` |
 | GET | `/api/games/secondary-details/status` | `profile` | — | `server/games/routes.js:527` |
@@ -460,20 +460,20 @@
 
 ### `POST /api/games/override`
 
-- файл: `server/games/personnel/routes-personnel.js:215`
+- файл: `server/games/personnel/routes-personnel.js:219`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/games/personnel`
 
-- файл: `server/games/personnel/routes-personnel.js:153`
+- файл: `server/games/personnel/routes-personnel.js:157`
 - query (строгий список): `limit`, `profile`, `role`, `sort`
 - ошибка `400` `invalid_limit`: 'Query parameter "limit" must be an integer between 1 and 50.'
 - ошибка `400` `profile_not_imported`: `"profile": no library snapshot for ${scope.parsed.key}; run the import first.`
 
 ### `GET /api/games/personnel/status`
 
-- файл: `server/games/personnel/routes-personnel.js:200`
+- файл: `server/games/personnel/routes-personnel.js:204`
 - query (строгий список): `id`
 - ошибка `400` `job_id_required`: 'Query parameter "id" is required.'
 - ошибка `404` `unknown_job`: 'Unknown personnel job id.'
