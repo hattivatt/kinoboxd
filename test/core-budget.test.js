@@ -11,7 +11,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createBudget, budgetLimitFromEnv, budgetFromEnv } = require('../server/core/budget');
+const {
+  createBudget,
+  budgetLimitFromEnv,
+  budgetFromEnv,
+  usedOf,
+  budgetRefused,
+} = require('../server/core/budget');
 
 test('createBudget: parses the limit, floors fractions and stops at zero', () => {
   const budget = createBudget('2.9');
@@ -48,6 +54,19 @@ test('budgetLimitFromEnv reads a finite non-negative number at call time', () =>
     if (previous == null) delete process.env.BOOKS_GB_BUDGET;
     else process.env.BOOKS_GB_BUDGET = previous;
   }
+});
+
+test('budgetRefused separates "no match" from "budget is gone"', () => {
+  const budget = createBudget(1);
+  assert.equal(usedOf(null), null);
+  assert.equal(usedOf(budget), 0);
+  assert.equal(budgetRefused(budget, 0), false);
+  budget.take();
+  // The call consumed the unit: a null answer is a real miss, not a refusal.
+  assert.equal(budgetRefused(budget, 0), false);
+  // The next call sees `used` unchanged and `remaining === 0`: it was refused.
+  assert.equal(budgetRefused(budget, 1), true);
+  assert.equal(budgetRefused(null, 0), false);
 });
 
 test('budgetFromEnv returns a fresh counter with the env limit', () => {

@@ -65,6 +65,15 @@ test('sync write is atomic and returns the new fingerprint', () => {
   assert.equal(fingerprint, store.fingerprintOf(file));
 });
 
+test('writeJsonAtomic(Sync) honours an explicit JSON indent', async () => {
+  const file = path.join(tempDir(), 'indented.json');
+  const data = { schemaVersion: 1, nested: { a: 1 } };
+  await store.writeJsonAtomic(file, data, { space: 2 });
+  assert.equal(fs.readFileSync(file, 'utf8'), JSON.stringify(data, null, 2));
+  store.writeJsonAtomicSync(file, data, { space: 2 });
+  assert.equal(fs.readFileSync(file, 'utf8'), JSON.stringify(data, null, 2));
+});
+
 test('secret documents are written 0600 inside a 0700 directory', () => {
   const dir = tempDir();
   const file = path.join(dir, 'nested', 'token.json');

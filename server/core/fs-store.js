@@ -74,7 +74,7 @@ async function writeJsonAtomic(filePath, data, options = {}) {
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   const tmp = tmpNameFor(filePath);
   try {
-    await fsp.writeFile(tmp, JSON.stringify(data), options.encoding || 'utf8');
+    await fsp.writeFile(tmp, JSON.stringify(data, null, options.space), options.encoding || 'utf8');
     await fsp.rename(tmp, filePath);
   } catch (err) {
     removeQuietly(tmp);
@@ -87,7 +87,7 @@ function writeJsonAtomicSync(filePath, data, options = {}) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = tmpNameFor(filePath, 'flush');
   try {
-    fs.writeFileSync(tmp, JSON.stringify(data), options.encoding || 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(data, null, options.space), options.encoding || 'utf8');
     fs.renameSync(tmp, filePath);
   } catch (err) {
     removeQuietly(tmp);

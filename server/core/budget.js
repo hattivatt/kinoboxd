@@ -59,8 +59,32 @@ function budgetFromEnv(envName, fallback) {
   return createBudget(budgetLimitFromEnv(envName, fallback), fallback);
 }
 
+/** `budget.used` as a number, or null when there is no counter. */
+function usedOf(budget) {
+  if (!budget) return null;
+  return Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
+}
+
+/**
+ * Did a provider call get refused because the per-run budget was already gone?
+ *
+ * `getWork` returns `null` both for "no match" and for "budget is empty", and
+ * the two must not be confused: only the second one leaves the book *unasked*
+ * (the resolve job keeps it pending instead of writing a negative verdict).
+ * The rule is the mutation of the shared counter: unchanged `used` with
+ * `remaining === 0` after the call means `take()` refused it. `resolve.js` and
+ * `years-backfill.js` carried this test verbatim.
+ */
+function budgetRefused(budget, usedBefore) {
+  if (!budget) return false;
+  const before = usedBefore == null ? null : Number(usedBefore);
+  return before != null && usedOf(budget) === before && Number(budget.remaining) === 0;
+}
+
 module.exports = {
   createBudget,
   budgetLimitFromEnv,
   budgetFromEnv,
+  usedOf,
+  budgetRefused,
 };
