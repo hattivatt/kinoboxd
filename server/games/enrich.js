@@ -50,9 +50,8 @@
  * per profile, attempted/deferred appids and a ring of the last 10 summaries.
  */
 
-const crypto = require('crypto');
-
 const gameCache = require('./game-cache');
+const { createJobs } = require('../core/jobs');
 const steam = require('./steam');
 const store = require('./store');
 const spy = require('./spy');
@@ -142,30 +141,31 @@ const PHASE_ALIASES = {
   appreviews: ['reviews'],
 };
 
-const jobs = new Map();
-const jobOrder = [];
-let enrichChain = Promise.resolve();
+/**
+ * Job registry (core/jobs): single-flight per profile, one enrich chain and a
+ * 20-job ring. Phase journals (`state/enrich-state.json` and friends) stay the
+ * domain's own persistent state — jobs are in-memory, exactly like the map
+ * they replace, and a restart resumes from those files, not from a job.
+ */
+const jobs = createJobs({
+  name: 'games-enrich',
+  idPrefix: 'games-enrich',
+  maxJobs: MAX_JOBS,
+  keyOf: (job) => job.profile,
+  maskError: (err) => steam.maskSecrets(err && err.message ? err.message : 'неизвестная ошибка'),
+  errorCode: 'games_enrich_failed',
+});
 
 function newJobId(seed) {
-  return `games-enrich-${gameCache.safeKey(seed)}-${Date.now().toString(36)}-${crypto
-    .randomBytes(3)
-    .toString('hex')}`;
+  return jobs.newId(seed);
 }
 
 function rememberJob(job) {
-  jobs.set(job.id, job);
-  jobOrder.push(job.id);
-  while (jobOrder.length > MAX_JOBS) {
-    const stale = jobOrder.shift();
-    if (stale !== job.id) jobs.delete(stale);
-  }
+  return jobs.remember(job);
 }
 
 function findRunningJob(profileKey) {
-  for (const job of jobs.values()) {
-    if (job.profile === profileKey && !job.done && job.status === 'running') return job;
-  }
-  return null;
+  return jobs.findRunning(profileKey);
 }
 
 function budgetLimitFromEnv(phaseName) {
@@ -305,6 +305,9 @@ function publicPhase(phase) {
 function publicStatus(job) {
   if (!job) return null;
   return {
+    // Unified job view (id/status/stage/progress/startedAt/finishedAt/error/
+    // partial); the legacy fields below keep their exact value.
+    ...jobs.snapshot(job),
     jobId: job.id,
     id: job.id,
     job: 'games-enrich',
@@ -357,26 +360,13 @@ function isRunning(profileKey) {
 }
 
 function enqueue(job, task) {
-  enrichChain = enrichChain
-    .then(task)
-    .catch((err) => {
-      job.status = 'failed';
-      job.stage = 'failed';
-      job.code = (err && err.code) || 'games_enrich_failed';
-      job.error = steam.maskSecrets(err && err.message ? err.message : 'неизвестная ошибка');
-      if (err && err.retryAt) job.retryAt = err.retryAt;
-      console.error(`[games-enrich ${job.id}] ${job.code}: ${job.error}`);
-    })
-    .then(() => {
-      job.done = job.status !== 'running';
-      job.finishedAt = Date.now();
-      if (job.status === 'running') {
-        job.status = 'done';
-        job.stage = 'done';
-        job.percent = 100;
-        job.done = true;
-      }
-      const phaseText = Object.values(job.phases || {})
+  return jobs.run(job, task, {
+    onError: (self, err) => {
+      jobs.fail(self, err);
+      console.error(`[games-enrich ${self.id}] ${self.code}: ${self.error}`);
+    },
+    onFinish: (self) => {
+      const phaseText = Object.values(self.phases || {})
         .map(
           (phase) =>
             `${phase.phase}={selected:${phase.selected},ok:${phase.ok},` +
@@ -385,11 +375,12 @@ function enqueue(job, task) {
         )
         .join(' ');
       console.log(
-        `[games-enrich ${job.id}] ${job.status} after ${job.finishedAt - job.startedAt}ms ` +
-          `(phases=${(job.phasesRequested || []).join('+')}, total=${job.total}, ` +
-          `${phaseText}${job.code ? `, code=${job.code}` : ''})`
+        `[games-enrich ${self.id}] ${self.status} after ${self.finishedAt - self.startedAt}ms ` +
+          `(phases=${(self.phasesRequested || []).join('+')}, total=${self.total}, ` +
+          `${phaseText}${self.code ? `, code=${self.code}` : ''})`
       );
-    });
+    },
+  });
 }
 
 function uniqueAppids(library) {
@@ -607,6 +598,7 @@ async function runPhase(job, phaseName, scope, options) {
     job.percent = overallPercent(job);
     // Persist progress after every appid: a crash mid-run resumes from the
     // cache, but the journal still shows where the pass stopped.
+    job.setProgress(phase.processed, phase.selected == null ? phase.total : phase.selected);
     state.profiles[profileKey] = {
       ...previous,
       phase: phaseName,
@@ -736,6 +728,7 @@ async function runEnrich(job, scope, options) {
     job.detailsResolved = details.resolved;
     job.detailsTotal = details.total;
     job.detailsPercent = details.percent;
+    job.setProgress(details.resolved, details.total);
     job.lastAppid = details.lastAppid;
     job.stoppedBy = details.stoppedBy;
   }
@@ -823,7 +816,7 @@ function startEnrich(profileToken, options = {}) {
 
 /** Wait for the current enrich chain to settle (tests / shutdown). */
 function whenIdle() {
-  return enrichChain;
+  return jobs.whenIdle();
 }
 
 module.exports = {

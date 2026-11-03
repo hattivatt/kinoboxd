@@ -245,7 +245,9 @@ function createJobs(options = {}) {
         job.status = 'failed';
       } else {
         job.status = 'done';
-        if (job.stage === 'queued' || job.stage === 'running') job.stage = 'done';
+        // Every legacy finalizer forces the terminal stage, whatever stage the
+        // task was in when it returned.
+        job.stage = 'done';
         job.percent = 100;
       }
     }
