@@ -122,3 +122,16 @@ test('listJsonFiles returns sorted json documents only', () => {
   assert.deepEqual(store.listJsonFiles(dir), ['a.json', 'b.json']);
   assert.deepEqual(store.listJsonFiles(path.join(dir, 'missing')), []);
 });
+
+test('listJsonFiles accepts symlinked documents (worktree cache is a link)', () => {
+  const dir = tempDir();
+  const target = tempDir();
+  fs.writeFileSync(path.join(target, 'linked.json'), '{}');
+  fs.symlinkSync(path.join(target, 'linked.json'), path.join(dir, 'linked.json'));
+  fs.writeFileSync(path.join(dir, 'plain.json'), '{}');
+  fs.symlinkSync(path.join(target, 'linked.json'), path.join(dir, 'linked.txt'));
+  // A dangling link is still a link entry: it is listed, the reader decides.
+  fs.symlinkSync(path.join(target, 'gone.json'), path.join(dir, 'dangling.json'));
+
+  assert.deepEqual(store.listJsonFiles(dir), ['dangling.json', 'linked.json', 'plain.json']);
+});

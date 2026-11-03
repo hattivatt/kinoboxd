@@ -189,7 +189,11 @@ function listJsonFiles(dir) {
   try {
     return fs
       .readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      // A worktree cache is a symlink to the main tree (AGENTS §3.2), and a
+      // link to a cached document is still a cached document: accept both.
+      .filter(
+        (entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith('.json')
+      )
       .map((entry) => entry.name)
       .sort();
   } catch (err) {

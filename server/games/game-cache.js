@@ -73,7 +73,6 @@ const DETAILS_HEAL_STATE_PATH = path.join(STATE_DIR, 'details-heal-state.json');
 const SPY_STATE_PATH = path.join(STATE_DIR, 'spy-state.json');
 const REVIEWS_STATE_PATH = path.join(STATE_DIR, 'reviews-state.json');
 
-const PROFILE_TTL_MS = 6 * 60 * 60 * 1000;
 const LIBRARY_TTL_MS = 24 * 60 * 60 * 1000;
 const ACHIEVEMENTS_TTL_MS = 24 * 60 * 60 * 1000;
 const GLOBAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -181,11 +180,6 @@ function isFresh(doc, ttlMs, field = 'fetchedAt') {
   if (!Number.isFinite(ts)) return false;
   const age = Date.now() - ts;
   return age >= 0 && age < ttlMs;
-}
-
-function profileTtlMs() {
-  const raw = Number(process.env.GAMES_PROFILE_TTL_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : PROFILE_TTL_MS;
 }
 
 function libraryTtlMs() {
