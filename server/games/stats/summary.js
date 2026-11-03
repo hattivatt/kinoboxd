@@ -13,7 +13,7 @@
  * in their own module.
  */
 
-const { round1, round2, round3, minutesToHours, median, isoOfSeconds } = require('./numeric');
+const { round1, round3, minutesToHours, median, isoOfSeconds } = require('./numeric');
 const { RARE_PERCENT } = require('./constants');
 
 function buildSummary(ctx, extra = {}) {

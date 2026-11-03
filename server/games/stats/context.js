@@ -18,8 +18,7 @@
 const gameCache = require('../game-cache');
 const config = require('../../config');
 const editions = require('../editions');
-const { round1, round2, round3, median } = require('./numeric');
-const { normalizeMinHours, hoursFilterPass, applyDetailFilters } = require('./filters');
+const { normalizeMinHours, applyDetailFilters } = require('./filters');
 const { buildWorks } = require('./works');
 const { buildSecondaryState } = require('./secondary');
 const { buildVisible } = require('./visible');

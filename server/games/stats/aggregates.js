@@ -11,16 +11,14 @@
  * secondary-only works join the same buckets (M6c).
  */
 
-const { UNKNOWN_YEAR_LABEL, TAG_LIMIT, REVIEW_SCORE_LABELS, DLC_TOP_LIMIT } = require('./constants');
+const { UNKNOWN_YEAR_LABEL, TAG_LIMIT, REVIEW_SCORE_LABELS } = require('./constants');
 const {
   round1,
   round2,
   round3,
   median,
-  minutesToHours,
   pushBucket,
 } = require('./numeric');
-const { detailOf, linksOf } = require('./documents');
 
 function buildAggregates(ctx) {
   const {
