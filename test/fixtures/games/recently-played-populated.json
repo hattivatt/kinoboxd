@@ -1,0 +1,30 @@
+{
+  "response": {
+    "total_count": 3,
+    "games": [
+      {
+        "appid": 1091500,
+        "name": "Cyberpunk 2077",
+        "playtime_2weeks": 108,
+        "playtime_forever": 120,
+        "img_icon_url": "6897c3848f3e0350d512f59d5bae174a1e3739f9",
+        "rtime_last_played": 0
+      },
+      {
+        "appid": 620,
+        "name": "Portal 2",
+        "playtime_2weeks": 60,
+        "playtime_forever": 1204,
+        "img_icon_url": "cfa4b0d7b5f2b1a1e4e7c3d2b1a0f9e8d7c6b5a4",
+        "rtime_last_played": 1795000000
+      },
+      {
+        "appid": 999999,
+        "name": "Not In This Library",
+        "playtime_2weeks": 30,
+        "playtime_forever": 30,
+        "rtime_last_played": 1795300000
+      }
+    ]
+  }
+}

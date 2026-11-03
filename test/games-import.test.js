@@ -24,7 +24,7 @@ const { createFakeClient } = require('./fixtures/games/fake-client');
 
 const ID = '76561198000000001';
 
-test('full import: profile XML + summaries + one GetOwnedGames call', async () => {
+test('full import: profile XML + summaries + GetOwnedGames + recently played', async () => {
   const client = createFakeClient();
   const job = importJobs.startImport('test-player', { client });
   assert.equal(job.status, 'running');
@@ -40,14 +40,17 @@ test('full import: profile XML + summaries + one GetOwnedGames call', async () =
   assert.equal(status.libraryPartial, false);
   assert.equal(status.code, null);
   assert.equal(status.error, null);
-  assert.equal(status.requests, 3);
+  assert.equal(status.requests, 4);
   assert.equal(status.gameCount, 10);
   assert.equal(status.ownedCount, 10);
   assert.equal(status.totalMinutes, 36973);
   assert.equal(status.totalHours, 616.2);
   assert.equal(status.playedCount, 8);
   assert.equal(status.backlogCount, 2);
-  assert.deepEqual(client.calls, ['profile', 'summaries', 'owned']);
+  // The default fake recently-played window is empty: no row is touched.
+  assert.equal(status.recentPlayedCount, 0);
+  assert.ok(status.recentPlayedFetchedAt);
+  assert.deepEqual(client.calls, ['profile', 'summaries', 'owned', 'recent']);
 
   const profile = gameCache.getProfile(ID);
   assert.equal(profile.personaName, 'test-player');
@@ -81,7 +84,7 @@ test('force bypasses the reuse window', async () => {
   assert.equal(job.reused, false);
   await importJobs.whenIdle();
   assert.equal(importJobs.getStatus(job.jobId).status, 'done');
-  assert.equal(client.calls.length, 3);
+  assert.equal(client.calls.length, 4);
 });
 
 test('concurrent requests coalesce into one running job', async () => {

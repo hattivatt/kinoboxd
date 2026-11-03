@@ -11,9 +11,11 @@
  * Stages: queued -> bootstrap (profile XML) -> summaries -> library
  *         (GetOwnedGames) -> done, or failed.
  *
- * Requests per full import: 1 community (profile XML) + 2 Web API
- * (GetPlayerSummaries, GetOwnedGames) — no pagination, no scraping of the
- * login-gated `/games` family.
+ * Requests per full import: 1 community (profile XML) + 3 Web API
+ * (GetPlayerSummaries, GetOwnedGames, GetRecentlyPlayedGames) — no pagination,
+ * no scraping of the login-gated `/games` family. The recently-played call is
+ * the launch/2-week source and is non-fatal: without it the library is simply
+ * the plain GetOwnedGames snapshot.
  *
  * Degradation (§10.4): without `STEAM_API_KEY` the import does NOT fail. It
  * saves the profile plus the three most-recent games from the profile XML as a
@@ -93,6 +95,11 @@ function publicStatus(job) {
     totalHours: job.totalHours,
     playedCount: job.playedCount,
     backlogCount: job.backlogCount,
+    // `GetRecentlyPlayedGames` merge (03.11.2026): how many library rows it
+    // refreshed and when. Null when the call was not made (partial library) or
+    // failed — the import itself stays `done` either way.
+    recentPlayedFetchedAt: job.recentPlayedFetchedAt || null,
+    recentPlayedCount: job.recentPlayedCount == null ? null : job.recentPlayedCount,
     startedAt: job.startedAt,
     finishedAt: job.finishedAt || null,
     elapsedMs: job.finishedAt ? job.finishedAt - job.startedAt : null,
@@ -311,6 +318,52 @@ function partialLibraryFromProfile(profile, fetchedAt) {
   };
 }
 
+/**
+ * Merge a `GetRecentlyPlayedGames` snapshot into the owned-games rows.
+ *
+ * Why: `GetOwnedGames` can answer with `rtime_last_played: 0` on every row for
+ * an owner who still plays (verified 03.11.2026 on steam-76561198203871831:
+ * 226 owned rows, all rtime=0; `GetRecentlyPlayedGames` returned the 6 games of
+ * the last two weeks). The recently-played list is the canonical launch source,
+ * so its numbers win where they exist.
+ *
+ * Rules (`merge-only`):
+ *   - an appid that is not in the library is ignored — the library is the
+ *     owner's journal, RGP never adds a game to it;
+ *   - `rtime_last_played: 0` from RGP is "not exposed", not "never played", so
+ *     an existing timestamp is kept;
+ *   - `playtime_forever` only grows (a staler RGP snapshot must not shrink a
+ *     library row);
+ *   - `playtime_2weeks` is copied when present (RGP lists exactly the games
+ *     with activity in the window).
+ *
+ * Mutates the freshly parsed library rows in place; returns the merge count.
+ */
+function mergeRecentlyPlayed(games, recent) {
+  const list = Array.isArray(games) ? games : [];
+  const recentGames = recent && Array.isArray(recent.games) ? recent.games : [];
+  if (!recentGames.length) return 0;
+  const byAppid = new Map();
+  for (const game of list) byAppid.set(game.appid, game);
+  let merged = 0;
+  for (const entry of recentGames) {
+    const game = byAppid.get(entry.appid);
+    if (!game) continue;
+    merged++;
+    if (Number(entry.rtime_last_played) > 0) {
+      game.rtime_last_played = Number(entry.rtime_last_played);
+    }
+    if (Number(entry.playtime_2weeks) > 0) {
+      game.playtime_2weeks = Number(entry.playtime_2weeks);
+    }
+    const forever = Number(entry.playtime_forever);
+    if (Number.isFinite(forever) && forever > (Number(game.playtime_forever) || 0)) {
+      game.playtime_forever = forever;
+    }
+  }
+  return merged;
+}
+
 async function runImport(job, target, client, options) {
   const nowIso = () => new Date().toISOString();
 
@@ -447,21 +500,56 @@ async function runImport(job, target, client, options) {
     );
   }
   const fetchedAt = nowIso();
+
+  /* --------------------- 4b. recently played ---------------------- */
+  // `GetRecentlyPlayedGames` is the canonical launch source and the only place
+  // some owners expose activity: `GetOwnedGames` can answer `rtime_last_played:
+  // 0` on every row while this endpoint knows the games of the last two weeks
+  // (verified 03.11.2026: 226 owned rows with rtime=0, 6 RGP rows). Merge-only:
+  // an appid the library does not own is ignored. NOT fatal — a network/API
+  // error leaves a warning and the job keeps the plain library snapshot (no
+  // negative cache: the next import asks again).
+  try {
+    job.requests++;
+    const recent = await client.getRecentlyPlayedGames(steamId64);
+    if (recent && Array.isArray(recent.games)) {
+      job.recentPlayedCount = mergeRecentlyPlayed(owned.games, recent);
+      job.recentPlayedFetchedAt = nowIso();
+      console.log(
+        `[games-import ${job.id}] recently-played merged into library: ` +
+          `${job.recentPlayedCount} row(s) of ${recent.games.length}`
+      );
+    }
+  } catch (err) {
+    job.warnings = [...(job.warnings || []), `recent_played_${(err && err.code) || 'failed'}`];
+    // Masked like every games log line: a wrapped URL must never carry the key.
+    const message = steam.maskSecrets((err && err.message) || 'failed');
+    console.warn(`[games-import ${job.id}] recently-played skipped (import kept): ${message}`);
+  }
+  // The merge may have raised `playtime_forever`/`rtime_last_played`, so the
+  // stored totals and fingerprint describe the rows that are actually saved.
+  const mergedTotalMinutes = owned.games.reduce(
+    (sum, game) => sum + (Number(game.playtime_forever) || 0),
+    0
+  );
   const library = {
     fetchedAt,
     partial: false,
     source: 'steam-webapi',
     game_count: owned.gameCount,
     games: owned.games,
-    totalMinutes: owned.totalMinutes,
-    fingerprint: owned.fingerprint,
+    totalMinutes: mergedTotalMinutes,
+    fingerprint: steam.libraryFingerprint(owned.games, owned.gameCount),
+    // Null when the RGP call failed or was not made; an ISO stamp means the
+    // library rows carry the two-week window of that moment.
+    recentPlayedFetchedAt: job.recentPlayedFetchedAt || null,
   };
   await gameCache.saveLibrary(steamId64, library);
 
   job.gameCount = owned.gameCount;
   job.ownedCount = owned.games.length;
-  job.totalMinutes = owned.totalMinutes;
-  job.totalHours = Math.round((owned.totalMinutes / 60) * 10) / 10;
+  job.totalMinutes = mergedTotalMinutes;
+  job.totalHours = Math.round((mergedTotalMinutes / 60) * 10) / 10;
   job.playedCount = owned.games.filter((game) => game.playtime_forever > 0).length;
   job.backlogCount = owned.games.filter((game) => game.playtime_forever === 0).length;
   job.percent = 100;
@@ -536,6 +624,9 @@ function startImport(rawTarget, options = {}) {
           : null,
         playedCount: (library.games || []).filter((game) => game.playtime_forever > 0).length,
         backlogCount: (library.games || []).filter((game) => game.playtime_forever === 0).length,
+        // The cached snapshot keeps its own RGP stamp; a reuse makes no call.
+        recentPlayedFetchedAt: library.recentPlayedFetchedAt || null,
+        recentPlayedCount: null,
         startedAt: now,
         finishedAt: now,
         cachedAt: (profile && profile.importedAt) || library.fetchedAt || null,
@@ -599,6 +690,7 @@ module.exports = {
   publicStatus,
   whenIdle,
   partialLibraryFromProfile,
+  mergeRecentlyPlayed,
   AUTO_ENRICH_PHASES,
   MAX_JOBS,
 };

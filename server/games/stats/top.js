@@ -9,6 +9,14 @@
  * S1 «распил god-функции»: pure over `chartWorks`/`visibleWorks` and the
  * per-work metadata helpers. The key order of every entry is the payload
  * contract.
+ *
+ * `recentlyPlayed` (03.11.2026): the strip is "launched lately", and Steam
+ * does not always expose a launch timestamp — `GetOwnedGames` can answer
+ * `rtime_last_played: 0` on every row of an owner who is clearly playing
+ * (verified on steam-76561198203871831: 226 rows with rtime=0, 6 games with
+ * two-week hours). A work with **2-week hours > 0 but no rtime** therefore
+ * joins the strip on the hours alone; its `lastPlayed` stays `null` — no date
+ * is ever invented. Sorting: rtime desc, then two-week minutes desc.
  */
 
 const { RECENT_LIMIT, TOP_LIMIT, BACKLOG_LIMIT } = require('./constants');
@@ -121,14 +129,19 @@ function buildTop(ctx) {
   });
 
   const recentlyPlayed = [...visibleWorks]
-    .filter((work) => work.rtime > 0)
-    .sort((left, right) => right.rtime - left.rtime)
+    .filter((work) => work.rtime > 0 || work.minutes2w > 0)
+    .sort(
+      (left, right) =>
+        right.rtime - left.rtime ||
+        (Number(right.minutes2w) || 0) - (Number(left.minutes2w) || 0)
+    )
     .slice(0, RECENT_LIMIT)
     .map((work) => ({
       appid: work.primary.appid,
       name: work.primary.name || null,
       hours2w: work.minutes2w ? minutesToHours(work.minutes2w) : 0,
       hoursTotal: round1(work.hours),
+      // `rtime = 0` = "Steam did not expose a launch date", not a date.
       lastPlayed: isoOfSeconds(work.rtime),
       iconUrl: iconUrlOf(work.primary.appid, work.primary.img_icon_url),
       headerImage: headerImageOf(detailOf(details, work.primary.appid)),

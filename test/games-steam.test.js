@@ -94,6 +94,51 @@ test('parseOwnedGamesResponse: missing/empty response means private, not "0 game
   assert.equal(steam.parseOwnedGamesResponse({ response: { game_count: 0, games: [] } }).empty, true);
 });
 
+test('parseRecentlyPlayedResponse: same row shape as owned games, empty window is not an error', () => {
+  const recent = steam.parseRecentlyPlayedResponse(
+    JSON.parse(readFixture('recently-played-populated.json'))
+  );
+  assert.equal(recent.empty, false);
+  assert.equal(recent.gameCount, 3);
+  assert.equal(recent.games.length, 3);
+  const cyberpunk = recent.games.find((game) => game.appid === 1091500);
+  // A 2-week window row is normalized like a library row: minutes stay minutes
+  // and an unexposed launch date stays 0 (the "unknown" value).
+  assert.equal(cyberpunk.playtime_2weeks, 108);
+  assert.equal(cyberpunk.playtime_forever, 120);
+  assert.equal(cyberpunk.rtime_last_played, 0);
+  assert.equal(recent.totalMinutes, 120 + 1204 + 30);
+  assert.equal(recent.fingerprint, steam.libraryFingerprint(recent.games, 3));
+
+  // An empty `response` / `total_count: 0` is "nothing played", not an error.
+  assert.equal(steam.parseRecentlyPlayedResponse({}).empty, true);
+  assert.equal(steam.parseRecentlyPlayedResponse({ response: {} }).empty, true);
+  assert.deepEqual(
+    steam.parseRecentlyPlayedResponse({ response: { total_count: 0, games: [] } }).games,
+    []
+  );
+});
+
+test('getRecentlyPlayedGames: canonical URL, key never echoed, parsed window', async () => {
+  const fixture = readFixture('recently-played-populated.json');
+  const request = fakeRequest(() => ({ status: 200, body: fixture }));
+  const key = 'SECRETKEY0123456789';
+  const client = steam.createClient({
+    request,
+    pauseMs: 0,
+    breakerStore: memoryBreakerStore(),
+    keyProvider: () => ({ key, source: 'env:STEAM_API_KEY' }),
+  });
+  const recent = await client.getRecentlyPlayedGames('76561198000000001');
+  assert.equal(recent.games.length, 3);
+  const url = request.calls[0].url;
+  assert.match(url, /\/IPlayerService\/GetRecentlyPlayedGames\/v1\/\?/);
+  assert.match(url, /steamid=76561198000000001/);
+  assert.match(url, /format=json/);
+  assert.equal(url.includes(key), true, 'the key travels in the URL…');
+  assert.equal(steam.maskSecrets(url).includes(key), false, '…and is masked when logged');
+});
+
 test('parseAchievementsXml: closed flags, unlockTimestamp and fingerprint', () => {
   const parsed = steam.parseAchievementsXml(achievementsXml);
   assert.equal(parsed.privacyState, 'public');
