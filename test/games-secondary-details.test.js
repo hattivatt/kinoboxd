@@ -361,6 +361,23 @@ test('secondary details', async (t) => {
       details.epicGenresFromCategories(['public', { path: 'games/action' }, 'applications']),
       ['Action']
     );
+    // The same bucket filter on an already-normalized line: a stale document's
+    // `["Public"]` disappears, real genres survive in order.
+    assert.deepEqual(details.sanitizeEpicGenres(['Public']), []);
+    assert.deepEqual(details.sanitizeEpicGenres(['Public', 'Action', 'Games', 'Horror']), [
+      'Action',
+      'Horror',
+    ]);
+    // Read sanitizer is pure and source-scoped.
+    const epicDoc = { source: 'epic', genres: ['Public'], genresSource: 'epic-catalog' };
+    const cleaned = details.sanitizeDetailGenres(epicDoc);
+    assert.deepEqual(cleaned.genres, []);
+    assert.equal(cleaned.genresSource, null);
+    assert.deepEqual(epicDoc.genres, ['Public'], 'the input object is never mutated');
+    const intact = { source: 'epic', genres: ['Horror'] };
+    assert.equal(details.sanitizeDetailGenres(intact), intact);
+    const gogDoc = { source: 'gog', genres: ['Public'] };
+    assert.equal(details.sanitizeDetailGenres(gogDoc), gogDoc);
   });
 
   await t.test('Epic catalog without a date and public-only buckets stays empty', () => {
@@ -384,6 +401,44 @@ test('secondary details', async (t) => {
     assert.equal(details.slugFromTitle('The Witcher 3: Wild Hunt'), 'the-witcher-3-wild-hunt');
     assert.equal(details.slugFromTitle('  '), '');
     assert.equal(details.slugFromTitle('Ведьмак 3'), '3');
+  });
+
+  await t.test('a legacy «Public» genre document is sanitized on every read path', () => {
+    // The document was normalized *before* `public` entered
+    // EPIC_NON_GENRE_CATEGORIES (Alan Wake 2, 02.11.2026) and keeps the bucket
+    // on disk for its 30-day TTL. No cache file is edited: the readers filter.
+    const legacy = fixture('epic/detail-alan-wake-2-public.json');
+    const fetchedAt = new Date().toISOString();
+    legacy.fetchedAt = fetchedAt;
+    legacy.data.fetchedAt = fetchedAt;
+    fs.writeFileSync(cacheFile('epic', 'alan-wake-2'), JSON.stringify(legacy));
+
+    // 1. Detail read.
+    const { doc, fresh } = details.readDetail('epic', 'alan-wake-2');
+    assert.equal(fresh, true);
+    assert.deepEqual(doc.data.genres, []);
+    assert.equal(doc.data.genresSource, null);
+    // The document on disk is untouched (no hand-cleaning of the cache).
+    const onDisk = JSON.parse(fs.readFileSync(cacheFile('epic', 'alan-wake-2'), 'utf8'));
+    assert.deepEqual(onDisk.data.genres, ['Public']);
+
+    // 2. The stats read model: the same filtered line, and «genresOk» is
+    // recomputed from it instead of trusting the persisted `complete` marker.
+    const index = details.readDetailsIndex({ epicSlugs: ['alan-wake-2'] });
+    assert.deepEqual(index['epic:alan-wake-2'].genres, []);
+    const union = buildSecondaryUnion({
+      works: [],
+      epicLayer: {
+        accountId: 'acct-legacy-public',
+        games: [{ name: 'Alan Wake 2', slug: 'alan-wake-2', catalogItemId: 'aw2-catalog' }],
+      },
+    });
+    details.enrichUnionWithDetails(union, index);
+    const entry = union.works.find((work) => work.epic && work.epic.slug === 'alan-wake-2');
+    assert.ok(entry);
+    assert.deepEqual(entry.genres, []);
+    assert.equal(entry.secondaryDetails.genresOk, false);
+    assert.equal(entry.secondaryDetails.metaStatus, 'partial');
   });
 
   await t.test('a title-matched P577 fills an empty Epic year (Alan Wake 2 path)', () => {
@@ -422,6 +477,69 @@ test('secondary details', async (t) => {
       details.applyWikidataYear(original, { store: 'epic' }),
       original
     );
+  });
+
+  await t.test('a title-matched P136 fills empty Epic genres and never a store line', () => {
+    identity.writeCache(
+      {},
+      {
+        titleEntries: {
+          'epic:aw2_title_genres': {
+            qid: 'Q108417001',
+            appid: null,
+            store: 'epic',
+            slug: 'aw2-title-genres',
+            title: 'Alan Wake 2',
+            matchedLabel: 'Alan Wake II',
+            matchedBy: 'title',
+            confidence: 'medium',
+            titleMatched: 'unique',
+            releaseYear: 2023,
+            releasePrecision: 'day',
+            releaseDate: '2023-10-27',
+            releaseDateSource: 'wikidata',
+            genres: ['Survival horror', 'Third-person shooter'],
+          },
+        },
+      }
+    );
+    const empty = details.applyWikidataFacts(
+      {
+        source: 'epic',
+        slug: 'aw2-title-genres',
+        genres: [],
+        genresSource: null,
+        releaseYear: 2023,
+        releaseDateSource: 'epic-catalog',
+      },
+      { store: 'epic' }
+    );
+    assert.deepEqual(empty.genres, ['Survival horror', 'Third-person shooter']);
+    assert.equal(empty.genresSource, 'wikidata');
+    // The store year is not replaced.
+    assert.equal(empty.releaseYear, 2023);
+    assert.equal(empty.releaseDateSource, 'epic-catalog');
+
+    // Existing store/catalog genres win; the document object is untouched.
+    const storeGenres = {
+      source: 'epic',
+      slug: 'aw2-title-genres',
+      genres: ['Horror'],
+      genresSource: 'epic-store',
+      releaseYear: 2023,
+      releaseDateSource: 'epic-store',
+    };
+    assert.equal(details.applyWikidataFacts(storeGenres, { store: 'epic' }), storeGenres);
+
+    // A GOG document never receives the P136 genre axis.
+    const gogDoc = {
+      source: 'gog',
+      slug: 'aw2-title-genres',
+      genres: [],
+      releaseYear: 2023,
+      releaseDateSource: 'gog-global',
+    };
+    assert.equal(details.applyWikidataFacts(gogDoc, { store: 'epic' }), gogDoc);
   });
 });
 
