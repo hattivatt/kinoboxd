@@ -21,6 +21,9 @@
  */
 
 import { fmtInt, plural, toNum } from './ui.js';
+import { arr, text, numOrNull, firstString } from './core/dom.js';
+
+export { jobProgress } from './core/progress.js';
 
 const MONTHS_SHORT_RU = [
   'янв.', 'февр.', 'мар.', 'апр.', 'мая', 'июн.',
@@ -39,32 +42,10 @@ const SECONDARY_SOURCE_LABELS = { steam: 'Steam', gog: 'GOG', epic: 'Epic' };
    primitive coercion
    ========================================================= */
 
-function arr(value) {
-  return Array.isArray(value) ? value : [];
-}
-
-function text(value) {
-  return value == null ? '' : String(value).trim();
-}
-
-function numOrNull(value) {
-  if (value == null || value === '') return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
 function toCount(value) {
   const n = numOrNull(value);
   if (n == null || n < 0) return 0;
   return Math.floor(n);
-}
-
-function firstString(...values) {
-  for (const value of values) {
-    const s = text(value);
-    if (s) return s;
-  }
-  return '';
 }
 
 function boolOrNull(value) {
@@ -3689,21 +3670,6 @@ export function jobStageText(status) {
   if (message) return message;
   const stage = text(status.stage || status.phase || status.status).toLowerCase();
   return STAGE_LABEL[stage] || 'Импортируем библиотеку…';
-}
-
-/** 0…100 for the progress bar: explicit `percent`/`progress`, else stage weights. */
-export function jobProgress(status) {
-  if (!status || typeof status !== 'object') return 0;
-  const explicit = numOrNull(status.percent ?? status.progress ?? status.pct);
-  if (explicit != null) return Math.max(0, Math.min(100, explicit));
-  const stage = text(status.stage || status.phase || status.status).toLowerCase();
-  if (stage === 'done' || status.done === true) return 100;
-  if (stage === 'failed' || status.failed === true) return 100;
-  const weights = {
-    start: 4, init: 8, queued: 6, bootstrap: 10, profile: 18, 'steam-profile': 18, community: 18,
-    library: 52, 'owned-games': 52, games: 52, summaries: 62, achievements: 74, global: 84, stats: 92, done: 100,
-  };
-  return weights[stage] != null ? weights[stage] : 10;
 }
 
 /**

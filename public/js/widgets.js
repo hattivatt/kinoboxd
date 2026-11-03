@@ -5,6 +5,8 @@ import {
   monthName, monthShort, toNum, emptyState, showTooltip, moveTooltip, hideTooltip, debounce, slugTitle,
 } from './ui.js';
 import { renderDonut, renderTimeline, renderYearBars } from './charts.js';
+import { buildYearCalendarFilm } from './core/charts.js';
+import { numOrNull } from './core/dom.js';
 import { initPersons } from './persons.js';
 import {
   openFilmListModal, filmCountPhrase, EXTRA_SORT_OPTIONS, setFilmMenuContext,
@@ -59,12 +61,6 @@ const RUNTIME_BUCKET_LABELS = {
   unknown: 'Неизвестно',
 };
 const RUNTIME_BUCKET_ORDER = Object.keys(RUNTIME_BUCKET_LABELS);
-
-function numOrNull(value) {
-  if (value == null || value === '') return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
 
 /** Normalize one keyword-taxonomy bucket (categories / origins / periods). */
 function mapTaxonomy(value) {
@@ -1785,12 +1781,6 @@ const MONTHS_SHORT_GEN = [
   'янв.', 'февр.', 'мар.', 'апр.', 'мая', 'июн.',
   'июл.', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.',
 ];
-/* Standalone month labels for the calendar axis ("май", not "мая"). */
-const CAL_MONTHS = [
-  'янв', 'фев', 'мар', 'апр', 'май', 'июн',
-  'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
-];
-
 function dateParts(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
   if (!match) return null;
@@ -1932,19 +1922,6 @@ function renderRecentlyWatched(stats) {
    G. watch calendar heatmap + streaks
    ========================================================= */
 
-function heatLevel(count) {
-  const n = toNum(count);
-  if (n <= 0) return 0;
-  if (n === 1) return 1;
-  if (n === 2) return 2;
-  if (n === 3) return 3;
-  return 4;
-}
-
-function pad2(value) {
-  return String(value).padStart(2, '0');
-}
-
 function openWatchDayModal(stats, day) {
   const counts = new Map();
   for (const slug of Array.isArray(day.slugs) ? day.slugs : []) {
@@ -1985,96 +1962,6 @@ function openWatchDayModal(stats, day) {
     films,
     sortScope: 'watchday',
   });
-}
-
-function buildYearCalendar(year, byDate, stats) {
-  const first = Date.UTC(year, 0, 1);
-  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-  const daysInYear = leap ? 366 : 365;
-  const offset = (new Date(first).getUTCDay() + 6) % 7; // Monday = 0
-  const columns = Math.ceil((offset + daysInYear) / 7);
-  const pitch = 13; // 11px cell + 2px gap; keep in sync with CSS
-
-  const row = el('div', { class: 'cal-year', dataset: { year: String(year) } });
-  row.append(el('div', { class: 'cal-year-label', text: String(year) }));
-
-  const scroll = el('div', { class: 'cal-scroll' });
-  const months = el('div', {
-    class: 'cal-months',
-    style: { width: `${columns * pitch}px` },
-    'aria-hidden': 'true',
-  });
-
-  let lastLabelColumn = -10;
-  let monthStartDay = 0;
-  for (let month = 0; month < 12; month++) {
-    const column = Math.floor((offset + monthStartDay) / 7);
-    if (column - lastLabelColumn >= 2) {
-      months.append(el('span', {
-        class: 'cal-month-label',
-        text: CAL_MONTHS[month],
-        style: { left: `${column * pitch}px` },
-      }));
-      lastLabelColumn = column;
-    }
-    monthStartDay += new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  }
-
-  const grid = el('div', {
-    class: 'cal-grid',
-    role: 'grid',
-    'aria-label': `Календарь просмотров, ${year}`,
-    style: { gridTemplateColumns: `repeat(${columns}, 11px)` },
-  });
-
-  const totalCells = columns * 7;
-  for (let index = 0; index < totalCells; index++) {
-    const dayOfYear = index - offset;
-    if (dayOfYear < 0 || dayOfYear >= daysInYear) {
-      grid.append(el('span', { class: 'cal-cell is-blank', 'aria-hidden': 'true' }));
-      continue;
-    }
-    const dateObj = new Date(first + dayOfYear * 86400000);
-    const date = `${year}-${pad2(dateObj.getUTCMonth() + 1)}-${pad2(dateObj.getUTCDate())}`;
-    const day = byDate.get(date) || null;
-    const count = day ? toNum(day.count) : 0;
-    // Diary rewatches only: the KinoPoisk rating-date proxy has no flag, so
-    // `rewatchCount` is 0 there by construction.
-    const rewatch = day ? Math.max(0, toNum(day.rewatchCount)) : 0;
-    const countLabel = `${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])}`;
-    const rewatchLabel = `${fmtInt(rewatch)} ${plural(rewatch, ['пересмотр', 'пересмотра', 'пересмотров'])}`;
-    const dayTitle = count > 0
-      ? `${date} — ${countLabel}${rewatch > 0 ? ` (в т.ч. ${rewatchLabel})` : ''}`
-      : `${date} — нет просмотров`;
-    const cell = el(day && count > 0 ? 'button' : 'span', {
-      class: `cal-cell cal-level-${heatLevel(count)}${count > 0 ? ' is-active' : ''}${rewatch > 0 ? ' has-rewatch' : ''}`,
-      dataset: { date, count: String(count), rewatch: String(rewatch) },
-      title: dayTitle,
-      role: 'gridcell',
-      'aria-label': dayTitle,
-    });
-    if (day && count > 0) {
-      if (cell.tagName === 'BUTTON') cell.type = 'button';
-      cell.addEventListener('pointerenter', (event) => {
-        showTooltip(
-          dayTitle,
-          rewatch > 0 ? 'в том числе пересмотры · нажмите, чтобы увидеть фильмы' : 'нажмите, чтобы увидеть фильмы'
-        );
-        moveTooltip(event);
-      });
-      cell.addEventListener('pointermove', moveTooltip);
-      cell.addEventListener('pointerleave', hideTooltip);
-      cell.addEventListener('click', () => {
-        hideTooltip();
-        openWatchDayModal(stats, day);
-      });
-    }
-    grid.append(cell);
-  }
-
-  scroll.append(months, grid);
-  row.append(scroll);
-  return row;
 }
 
 function renderStreaks(streaks) {
@@ -2139,7 +2026,7 @@ function renderWatchCalendar(stats) {
   const first = years[0];
   const last = years[years.length - 1];
   for (let year = first; year <= last; year++) {
-    host.append(buildYearCalendar(year, byDate, stats));
+    host.append(buildYearCalendarFilm(year, byDate, { onDayClick: (day) => openWatchDayModal(stats, day) }));
   }
 
   const total = days.reduce((sum, day) => sum + toNum(day.count), 0);

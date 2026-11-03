@@ -4,16 +4,7 @@ import {
   clear, el, fmtInt, fmtPercent, monthName, monthShort, showTooltip, moveTooltip, hideTooltip, toNum,
   plural,
 } from './ui.js';
-
-const NS = 'http://www.w3.org/2000/svg';
-
-function svgEl(tag, attrs = {}) {
-  const node = document.createElementNS(NS, tag);
-  for (const [key, value] of Object.entries(attrs)) {
-    if (value != null) node.setAttribute(key, String(value));
-  }
-  return node;
-}
+import { svgEl, niceStep } from './core/charts.js';
 
 function polar(cx, cy, radius, degrees) {
   const rad = ((degrees - 90) * Math.PI) / 180;
@@ -259,14 +250,6 @@ export function renderDonut(host, opts = {}) {
 /* =========================================================
    timeline
    ========================================================= */
-
-function niceStep(raw) {
-  if (raw <= 1) return 1;
-  const power = Math.pow(10, Math.floor(Math.log10(raw)));
-  const n = raw / power;
-  const base = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
-  return Math.max(1, base * power);
-}
 
 /**
  * Full-width monthly bar chart. Renders a fixed-size SVG inside a scroll wrapper;

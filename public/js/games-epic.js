@@ -19,6 +19,8 @@
  * never leave the server. The UI only shows presence/expiry and library counts.
  */
 
+import { text } from './core/dom.js';
+
 const PROFILE_KEY = 'kinoboxd.games.profile.v1';
 const STATUS_REFRESH_MS = 15000;
 
@@ -37,10 +39,6 @@ const state = {
   importTimer: null,
   stylesInjected: false,
 };
-
-function text(value) {
-  return value == null ? '' : String(value).trim();
-}
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);

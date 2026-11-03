@@ -32,6 +32,12 @@ import {
   monthName, monthShort, toNum, emptyState, errorBox, showTooltip, moveTooltip, hideTooltip,
   debounce, toast, shortErrorMessage,
 } from './ui.js';
+import {
+  text, firstString, arr, numOrNull, safeStorageGet, safeStorageSet, safeStorageRemove,
+  setLoadingVisible,
+} from './core/dom.js';
+import { progressPercent } from './core/progress.js';
+import { createPoller } from './core/poll.js';
 import { renderDonut, renderYearBars } from './charts.js';
 import { openModal } from './modal.js';
 import {
@@ -132,12 +138,16 @@ const state = {
   profileMenuOpen: false,
   restoreCandidate: null, // server-side profiles adoptable (one per source)
   fileImport: { busy: false, result: null }, // livelib-backup export upload = LiveLib refresh
-  pollTimer: 0,
-  pollSeq: 0,
   metadataTimer: 0,
   mangaBusy: false,
   onActivate: null,
 };
+
+const poller = createPoller({
+  intervalMs: POLL_INTERVAL,
+  shouldContinue: () => state.view === 'progress' && (state.active || Boolean(state.refresh)),
+  tick: pollOnce,
+});
 
 let openBookMenuClose = null;
 let bookModalSeq = 0;
@@ -150,52 +160,6 @@ const authorsState = { visible: AUTHORS_INITIAL, expanded: false, query: '' };
 /* =========================================================
    small helpers
    ========================================================= */
-
-function arr(value) {
-  return Array.isArray(value) ? value : [];
-}
-
-function numOrNull(value) {
-  if (value == null || value === '') return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
-function text(value) {
-  return value == null ? '' : String(value).trim();
-}
-
-function firstString(...values) {
-  for (const value of values) {
-    const s = text(value);
-    if (s) return s;
-  }
-  return '';
-}
-
-function safeStorageGet(key) {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function safeStorageSet(key, value) {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    /* private mode — the flow still works for this session */
-  }
-}
-
-function safeStorageRemove(key) {
-  try {
-    window.localStorage.removeItem(key);
-  } catch {
-    /* ignore */
-  }
-}
 
 function readJson(key, fallback) {
   const raw = safeStorageGet(key);
@@ -751,8 +715,7 @@ function showScreen(name) {
 }
 
 function showLoading(visible) {
-  const node = $('books-loading');
-  if (node) node.hidden = !visible;
+  setLoadingVisible('books-loading', visible);
 }
 
 function showError(error, options = {}) {
@@ -1704,26 +1667,6 @@ async function startImport(source, account) {
   }
 }
 
-function progressPercent(status) {
-  if (!status) return 0;
-  const doneFlag = status.done || status.stage === 'done';
-  const percentValue = numOrNull(status.percent);
-  if (percentValue != null) {
-    return Math.max(doneFlag ? 100 : 2, Math.min(100, Math.round(percentValue)));
-  }
-  const page = numOrNull(status.page ?? status.current);
-  const pageTotal = numOrNull(status.pageTotal ?? status.totalPages ?? status.pagesTotal ?? status.pages);
-  if (page != null && pageTotal && pageTotal > 0) {
-    return Math.max(2, Math.min(100, Math.round((page / pageTotal) * 100)));
-  }
-  const batch = numOrNull(status.batch ?? status.batchIndex);
-  const batchTotal = numOrNull(status.batchTotal ?? status.batchesTotal ?? status.batches);
-  if (batch != null && batchTotal && batchTotal > 0) {
-    return Math.max(2, Math.min(100, Math.round((batch / batchTotal) * 100)));
-  }
-  return doneFlag ? 100 : 0;
-}
-
 function statusMeta(status) {
   if (!status) return '';
   const parts = [];
@@ -1946,35 +1889,34 @@ function renderProgressError(jobs) {
 }
 
 function stopPolling() {
-  if (state.pollTimer) {
-    window.clearTimeout(state.pollTimer);
-    state.pollTimer = 0;
-  }
-  state.pollSeq += 1;
+  poller.stop();
 }
 
 function startPolling() {
-  stopPolling();
+  poller.stop();
   if (state.view !== 'progress') return;
   // A profile refresh keeps polling after the user switches to Films: the
   // server job must not be abandoned just because the tab is hidden.
   if (!state.active && !state.refresh) return;
-  pollOnce(state.pollSeq);
+  poller.start(0);
 }
 
-async function pollOnce(pollId) {
-  const stillPolling = () => pollId === state.pollSeq &&
-    state.view === 'progress' &&
+/**
+ * One polling tick. Returns `false` when the chain must stop (the poller
+ * treats any other value as "schedule the next tick").
+ */
+async function pollOnce() {
+  const stillPolling = () => state.view === 'progress' &&
     (state.active || Boolean(state.refresh));
-  if (!stillPolling()) return;
+  if (!stillPolling()) return false;
   const jobs = jobList();
   if (!jobs.length) {
     await finishImport();
-    return;
+    return false;
   }
 
   const results = await Promise.allSettled(jobs.map(([source, job]) => getBooksImportStatus(job.jobId, { source })));
-  if (!stillPolling()) return;
+  if (!stillPolling()) return false;
 
   let changed = false;
   results.forEach((result, index) => {
@@ -1999,7 +1941,7 @@ async function pollOnce(pollId) {
   });
 
   if (changed) saveJobs();
-  if (!stillPolling()) return;
+  if (!stillPolling()) return false;
 
   renderProgress();
 
@@ -2009,10 +1951,10 @@ async function pollOnce(pollId) {
   // the stats reload of the other one. Imports still wait for a manual retry.
   if (!pending.length && (!failed || state.refresh)) {
     await finishImport();
-    return;
+    return false;
   }
-  if (!pending.length && failed) return; // manual retry / show-stats buttons
-  state.pollTimer = window.setTimeout(() => pollOnce(pollId), POLL_INTERVAL);
+  if (!pending.length && failed) return false; // manual retry / show-stats buttons
+  return true;
 }
 
 async function finishImport() {

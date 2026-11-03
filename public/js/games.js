@@ -29,6 +29,8 @@ import {
   $, el, clear, fmtInt, fmtPercent, plural, icon, toast, errorBox, showTooltip, moveTooltip, hideTooltip,
   shortErrorMessage, debounce,
 } from './ui.js';
+import { text, safeStorageGet, safeStorageSet, safeStorageRemove, setLoadingVisible } from './core/dom.js';
+import { createPoller } from './core/poll.js';
 import { withPreservedScroll } from './books-refresh.js';
 import { renderYearBars, renderDonut } from './charts.js';
 import {
@@ -107,8 +109,6 @@ const state = {
   profilesLoadedAt: 0,
   profileKey: '',
   job: null, // { id, profile, status, failed, startedAt }
-  pollTimer: 0,
-  pollSeq: 0,
   importBusy: false,
   onActivate: null,
   // M2: includeFree/includeDlc are sent only when they differ from the server
@@ -152,34 +152,6 @@ let inflightLoad = null;
 /* =========================================================
    tiny helpers
    ========================================================= */
-
-function text(value) {
-  return value == null ? '' : String(value).trim();
-}
-
-function safeStorageGet(key) {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function safeStorageSet(key, value) {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    /* private mode — the flow still works for this session */
-  }
-}
-
-function safeStorageRemove(key) {
-  try {
-    window.localStorage.removeItem(key);
-  } catch {
-    /* ignore */
-  }
-}
 
 function readJob() {
   const raw = safeStorageGet(JOB_KEY);
@@ -264,8 +236,7 @@ function updateActions() {
 }
 
 function showLoading(visible) {
-  const node = $('games-loading');
-  if (node) node.hidden = !visible;
+  setLoadingVisible('games-loading', visible);
 }
 
 /**
@@ -630,29 +601,21 @@ async function submitImport(event) {
   }
 }
 
+const poller = createPoller({
+  intervalMs: POLL_INTERVAL,
+  // A hidden tab keeps its job in localStorage; `showGames()` restarts the poller.
+  shouldContinue: () => Boolean(state.job) && state.active,
+  tick: pollOnce,
+});
+
 function stopPolling() {
-  if (state.pollTimer) window.clearTimeout(state.pollTimer);
-  state.pollTimer = 0;
-  state.pollSeq += 1;
+  poller.stop();
 }
 
 function startPolling() {
-  stopPolling();
-  const pollId = state.pollSeq;
-  const tick = async () => {
-    if (pollId !== state.pollSeq) return;
-    if (!state.job) return;
-    if (!state.active) {
-      // Keep the job in localStorage; `showGames()` resumes the poller.
-      state.pollTimer = 0;
-      return;
-    }
-    await pollOnce();
-    if (pollId !== state.pollSeq) return;
-    if (!state.job) return;
-    state.pollTimer = window.setTimeout(tick, POLL_INTERVAL);
-  };
-  state.pollTimer = window.setTimeout(tick, 320);
+  poller.stop();
+  // Give the server a moment to register the job before the first status read.
+  poller.start(320);
 }
 
 async function pollOnce() {

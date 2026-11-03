@@ -24,6 +24,7 @@ import {
 import { initBooks, showBooks, hideBooks, resetBooks } from './books.js';
 import { initGames, showGames, hideGames, resetGames } from './games.js';
 import { $, clear, toast, dismissToasts, errorBox, shortErrorMessage, toNum, fmtInt } from './ui.js';
+import { createPoller } from './core/poll.js';
 
 const SESSION_KEY = 'kinoboxd.session.v1';
 const LEGACY_SESSION_KEY = 'boxdstats.session.v1';
@@ -1560,7 +1561,18 @@ function hideProgressError() {
   host.hidden = true;
 }
 
+const poller = createPoller({
+  intervalMs: POLL_INTERVAL,
+  shouldContinue: () => state.pollMode === 'kinopoisk' &&
+    state.view === 'enrich' &&
+    Boolean(state.uploadId),
+  tick: pollKinopoiskOnce,
+});
+
 function stopPolling() {
+  poller.stop();
+  // `finishStats` retries the stats read on its own timer; stopping the
+  // import poller must cancel that retry too.
   if (state.pollTimer) {
     window.clearTimeout(state.pollTimer);
     state.pollTimer = 0;
@@ -1573,15 +1585,19 @@ function startKinopoiskPolling() {
   state.pollMode = 'kinopoisk';
   state.statusMisses = 0;
   if (!state.uploadId) return;
-  pollKinopoiskOnce();
+  poller.start(0);
 }
 
+/**
+ * One status tick. Returns `false` on a terminal state so the poller stops;
+ * any other value schedules the next tick after `POLL_INTERVAL`.
+ */
 async function pollKinopoiskOnce() {
-  if (!state.uploadId || state.view !== 'enrich' || state.pollMode !== 'kinopoisk') return;
+  if (!state.uploadId || state.view !== 'enrich' || state.pollMode !== 'kinopoisk') return false;
 
   try {
     const status = await getKinopoiskStatus(state.uploadId);
-    if (state.view !== 'enrich' || state.pollMode !== 'kinopoisk') return;
+    if (state.view !== 'enrich' || state.pollMode !== 'kinopoisk') return false;
     state.statusMisses = 0;
 
     const stage = status && typeof status.stage === 'string' ? status.stage : 'scrape';
@@ -1593,7 +1609,7 @@ async function pollKinopoiskOnce() {
         ? status.error.trim()
         : 'Сервер не смог собрать оценки с Кинопоиска.';
       showKinopoiskError(message, retryKinopoiskImport);
-      return;
+      return false;
     }
 
     if ((status && status.done) || stage === 'done') {
@@ -1613,35 +1629,35 @@ async function pollKinopoiskOnce() {
       const warning = status && typeof status.warning === 'string' ? status.warning.trim() : '';
       if (warning) toast(warning, 'info', { duration: 12000 });
       await finishStats(0);
-      return;
+      return false;
     }
 
     if (stage === 'enrich') applyEnrichStage(status);
     else if (stage === 'refresh') applyRefreshStage(status);
     else applyScrapeStage(status);
 
-    state.pollTimer = window.setTimeout(pollKinopoiskOnce, POLL_INTERVAL);
+    return true;
   } catch (error) {
-    if (state.view !== 'enrich' || state.pollMode !== 'kinopoisk') return;
+    if (state.view !== 'enrich' || state.pollMode !== 'kinopoisk') return false;
     if (error && (error.status === 404 || error.status === 410)) {
       // A freshly started import can become visible a moment later.
       state.statusMisses += 1;
       if (state.statusMisses <= 4) {
         setProgressStatus('Ждём статус импорта…');
-        state.pollTimer = window.setTimeout(pollKinopoiskOnce, POLL_INTERVAL);
-        return;
+        return true;
       }
       clearSession();
       state.uploadId = null;
       setProgressStatus('Импорт не найден на сервере');
       showKinopoiskError(shortErrorMessage(error), retryKinopoiskImport);
-      return;
+      return false;
     }
     setProgressStatus('Связь с сервером потеряна');
     showKinopoiskError(shortErrorMessage(error), () => {
       hideProgressError();
       startKinopoiskPolling();
     });
+    return false;
   }
 }
 
