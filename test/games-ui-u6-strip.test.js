@@ -47,6 +47,11 @@ function game(appid, name, extra = {}) {
   };
 }
 
+const STORE = 'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps';
+const HASH_937 = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4';
+const HASH_462780 = 'f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3';
+const HASH_70 = '0011aabbccddeeff0011aabbccddeeff0011aabb';
+
 const gamesIndex = {
   937: game(937, 'Darksiders', {
     hours: 15.6,
@@ -57,6 +62,9 @@ const gamesIndex = {
     isPrimary: true,
     editionCount: 2,
     iconUrl: 'https://media.steampowered.com/steamcommunity/public/images/apps/937/icon.jpg',
+    // Post-2024 store schema: every asset of the SKU lives under this hash,
+    // so the real vertical `library_600x900.jpg` is requestable via `?h=`.
+    headerImage: `${STORE}/937/${HASH_937}/header.jpg`,
   }),
   462780: game(462780, 'Darksiders Warmastered Edition', {
     hours: 5.4,
@@ -68,6 +76,8 @@ const gamesIndex = {
     isPrimary: false,
     editionCount: 2,
     iconUrl: 'https://media.steampowered.com/steamcommunity/public/images/apps/462780/icon.jpg',
+    // The edition has its own hash; the card must still paint the primary's.
+    headerImage: `${STORE}/462780/${HASH_462780}/header.jpg`,
   }),
   70: game(70, 'Half-Life', {
     hours: 11,
@@ -76,6 +86,7 @@ const gamesIndex = {
     canonicalWorkKey: 'steam:70',
     primaryAppid: 70,
     iconUrl: 'https://media.steampowered.com/steamcommunity/public/images/apps/70/icon.jpg',
+    headerImage: `${STORE}/70/${HASH_70}/header.jpg`,
   }),
 };
 
@@ -194,18 +205,23 @@ test('strip: two editions of one work paint one card with a vertical poster', as
   assert.match(textOf(strip.children[1]), /Half-Life/);
 
   // Every strip image is the vertical library capsule of the canonical
-  // (primary) edition — the same 2:3 shape as books/films.
+  // (primary) edition, in the primary's own store-asset hash — the same 2:3
+  // shape as books/films. The landscape header is never the first poster.
   const srcs = images(strip);
   assert.equal(srcs.length, 2);
   assert.deepEqual(srcs, [
-    '/api/games/steam-art/library/937',
-    '/api/games/steam-art/library/70',
+    `/api/games/steam-art/library/937?h=${HASH_937}`,
+    `/api/games/steam-art/library/70?h=${HASH_70}`,
   ]);
   for (const src of srcs) {
     assert.doesNotMatch(src, /steamcommunity\/public\/images/, '32×32 icon не должен быть обложкой');
     assert.doesNotMatch(src, /\/header\.jpg$/, 'вертикальный capsule важнее ландшафтного header');
     assert.match(src, /^\/api\/games\/steam-art\//, 'Steam-арт идёт через CDN-прокси');
   }
+  assert.ok(
+    srcs.every((src) => !src.includes(HASH_462780)),
+    'издание не подменяет hash primary-издания',
+  );
   // The art frame and the image carry the classes the CSS sizes to 2:3.
   for (const card of strip.children) {
     const art = card.children.find((node) => String(node.className || '').includes('games-recent-art'));
@@ -220,6 +236,30 @@ test('strip: two editions of one work paint one card with a vertical poster', as
   const modal = nodeFor('modal-root');
   const modalImages = images(modal);
   assert.ok(modalImages.length >= 1, 'в карточке нет обложки');
-  assert.equal(modalImages[0], '/api/games/steam-art/library/937');
+  assert.equal(modalImages[0], `/api/games/steam-art/library/937?h=${HASH_937}`);
   assert.match(textOf(modal).replace(/\s+/g, ' '), /Darksiders Warmastered Edition/);
+});
+
+test('strip view: a payload row headerImage survives without a gamesIndex copy', async () => {
+  const { recentStripView } = await import('../public/js/games-view.js');
+  const now = Date.UTC(2026, 10, 3);
+  const rtime = Math.floor(now / 1000) - 3 * 86400;
+  const header = `${STORE}/431730/${HASH_70}/header.jpg`;
+  const view = recentStripView(
+    [{
+      appid: 431730,
+      name: 'Aseprite',
+      hours2w: 0.4,
+      hoursTotal: 12,
+      lastPlayed: new Date(rtime * 1000).toISOString(),
+      headerImage: header,
+    }],
+    {},
+    { now },
+  );
+  assert.equal(view.items.length, 1);
+  // The card face must carry the store header, otherwise the hashed vertical
+  // capsule cannot be built and the landscape `header.jpg` is painted.
+  assert.equal(view.items[0].headerImage, header);
+  assert.equal(view.items[0].primaryAppid, 431730);
 });

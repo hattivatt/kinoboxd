@@ -261,6 +261,10 @@ function normalizeRecent(raw) {
     // The top strip paints the Steam capsule icon; the index may not have it
     // for entries the payload already carries.
     iconUrl: firstString(item.iconUrl, item.icon) || '',
+    // M7/vertical posters: the store header carries the per-asset hash of the
+    // post-2024 `store_item_assets` schema, so the strip can ask the proxy for
+    // the real vertical `library_600x900.jpg` instead of the landscape header.
+    headerImage: /^https?:\/\//i.test(text(item.headerImage)) ? text(item.headerImage) : '',
     // M6c: cross-store ownership of the same work (GOG today) and an optional
     // store-provided poster for rows that are not on the Steam CDN.
     sources: arr(item.sources).map((value) => String(value)).filter(Boolean),
@@ -2287,6 +2291,10 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     // A never-launched game with no 2-week hours has nothing to say here.
     if (!fresh && rtime <= 0) return;
     const iconUrl = firstString(item.iconUrl, item.icon, entry.iconUrl) || '';
+    // New-schema Steam art: the header's asset hash is the only way to ask for
+    // the vertical `library_600x900.jpg` of the same SKU (steamAssetHashFromImageUrl
+    // in games-modal reads it). The payload row wins; the index fills it.
+    const headerImage = firstString(item.headerImage, entry.headerImage) || '';
     // M6c: cross-store facts travel with the card face (GOG badge, own poster).
     const sources = arr(item.sources ?? entry.sources)
       .map((value) => String(value))
@@ -2304,6 +2312,7 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
         lastPlayed,
         iconUrl,
         coverUrl,
+        headerImage,
         sources,
         hours2wByAppid,
         hoursTotal,
@@ -2325,6 +2334,7 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
       if (!previous.sources.includes(source)) previous.sources.push(source);
     }
     if (!previous.coverUrl && coverUrl) previous.coverUrl = coverUrl;
+    if (!previous.headerImage && headerImage) previous.headerImage = headerImage;
     if (hoursTotal != null) {
       previous.hoursTotal =
         previous.hoursTotal == null ? hoursTotal : Math.max(previous.hoursTotal, hoursTotal);
@@ -2350,6 +2360,7 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
       previous.faceRtime = rtime;
       previous.faceFresh = fresh;
       if (iconUrl) previous.iconUrl = iconUrl;
+      if (headerImage) previous.headerImage = headerImage;
     } else if (!previous.iconUrl && iconUrl) {
       // The server row may arrive without an icon (trimmed payload): the
       // index is allowed to fill it without touching the face.
@@ -2390,6 +2401,9 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
         lastPlayedText: shortDayText(row.rtime),
         lastPlayedTitle: lastPlayedInfo(row.lastPlayed).title,
         iconUrl: row.iconUrl,
+        // M7: the store header lets the card ask the proxy for the vertical
+        // capsule in the same (new-schema) asset folder.
+        headerImage: row.headerImage,
         // M6c: the card face can carry a non-Steam poster and a store badge.
         coverUrl: row.coverUrl,
         sources: row.sources,

@@ -8,8 +8,10 @@
  * `store_item_assets/steam/apps/<appid>/<asset-hash>/…`; the legacy
  * `<cdn>/steam/apps/<appid>/header.jpg` path 404s (CONTROL Resonant,
  * appid 3669870), so the card fell back to initials even though every metadata
- * field arrived. The fix stores the real `header_image`/`capsule_image` URLs
- * and puts the new-schema header first in the card chain.
+ * field arrived. The fix stores the real `header_image`/`capsule_image` URLs;
+ * since 03.11.2026 the asset hash of that header is also used to request the
+ * true vertical `library_600x900.jpg` of the same SKU first, and the landscape
+ * header is only a fallback (the «обрезанный арт» bug).
  *
  * The second defect: `Node.append(null)` stringifies `null` into a text node,
  * so two empty rows (DLC count + release date) painted «nullnull». `detailRow`
@@ -175,13 +177,17 @@ test('/stats gamesIndex: the primary edition header wins for every edition', asy
    3. card chain
    ========================================================= */
 
-test('vertical chain: a new-schema header_image is requested first', async () => {
+test('vertical chain: a new-schema header_image gives the vertical capsule its hash', async () => {
   const { configureGamesModals, gameVerticalCoverUrls } = await import('../public/js/games-modal.js');
   configureGamesModals({ gamesIndex: {}, secondaryWorks: [] });
   const art = '/api/games/steam-art';
+  // Bug 03.11.2026 (Aseprite/Brotato/Control Resonant): the landscape
+  // `header.jpg` was painted first because the asset hash was only used for
+  // the header. The true `library_600x900.jpg` of the same SKU comes first.
   assert.deepEqual(gameVerticalCoverUrls({ appid: 3669870, headerImage: NEW_HEADER }), [
-    `${art}/header/3669870?h=1e0c76e4253d347bb1304c3f213570251d924edf`,
+    `${art}/library/3669870?h=1e0c76e4253d347bb1304c3f213570251d924edf`,
     `${art}/library/3669870`,
+    `${art}/header/3669870?h=1e0c76e4253d347bb1304c3f213570251d924edf`,
     `${art}/header/3669870`,
     `${art}/capsule/3669870`,
   ]);
@@ -200,7 +206,7 @@ test('vertical chain: gamesIndex[primaryAppid].headerImage wins over the row', a
   });
   assert.equal(
     gameVerticalCoverUrls({ appid: 462780, primaryAppid: 937 })[0],
-    '/api/games/steam-art/header/937?h=a'
+    '/api/games/steam-art/library/937?h=a'
   );
 });
 
@@ -294,7 +300,7 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-test('card modal: paints the appdetails header_image, not the dead legacy URL', async () => {
+test('card modal: paints the vertical capsule derived from appdetails header_image', async () => {
   const { nodeFor } = installDom({ search: '?tab=games', href: 'http://localhost/?tab=games' });
   const payload = cardPayload();
   globalThis.fetch = async () => ({
@@ -313,10 +319,10 @@ test('card modal: paints the appdetails header_image, not the dead legacy URL', 
     assert.ok(cover, 'the card head has a cover');
     assert.equal(cover.tagName, 'IMG');
     // The card must ask the local proxy, never the blocked CDN host: the
-    // new-schema asset hash becomes `?h=`.
+    // new-schema asset hash becomes `?h=` on the vertical capsule request.
     assert.equal(
       cover.getAttribute('src'),
-      '/api/games/steam-art/header/3669870?h=1e0c76e4253d347bb1304c3f213570251d924edf'
+      '/api/games/steam-art/library/3669870?h=1e0c76e4253d347bb1304c3f213570251d924edf'
     );
   } finally {
     delete globalThis.fetch;

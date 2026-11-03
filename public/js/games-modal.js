@@ -207,12 +207,50 @@ function artHash(value) {
  * hosts in Vietnam, so the browser must load artwork through the server
  * (`GET /api/games/steam-art/<type>/<appid>`); the route assembles the
  * upstream URL itself from the allowlist.
+ *
+ * The third argument is the asset hash, either bare (`'abc'`, icon) or as
+ * `{ h: 'abc' }` — the same shape as the `?h=` query parameter. An unknown
+ * hash shape is dropped rather than smuggled into the URL.
  */
-export function steamArtProxyUrl(type, appid, hash) {
+export function steamArtProxyUrl(type, appid, hashOrOptions) {
   const id = positiveId(appid);
   if (!id || !type) return '';
+  const hash = hashOrOptions && typeof hashOrOptions === 'object'
+    ? artHash(hashOrOptions.h)
+    : artHash(hashOrOptions);
   const suffix = hash ? `?h=${encodeURIComponent(hash)}` : '';
   return `${STEAM_ART_PATH}/${type}/${id}${suffix}`;
+}
+
+/**
+ * The per-asset hash of the post-2024 Steam store schema, taken from
+ * `appdetails.header_image` / `capsule_image`:
+ *
+ *   https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/
+ *     <appid>/<asset-hash>/header.jpg                       → `<asset-hash>`
+ *
+ * Every asset of one SKU (header, capsule, `library_600x900.jpg`) lives under
+ * the same hash, so the real vertical capsule becomes requestable through the
+ * proxy (`?h=<hash>`) instead of guessing the legacy path. Legacy
+ * `/steam/apps/<appid>/header.jpg` URLs carry no per-asset hash and return
+ * `null`: the caller then keeps the hash-less (legacy-first) chain.
+ */
+export function steamAssetHashFromImageUrl(value) {
+  const url = httpUrl(value);
+  if (!url) return null;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (err) {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  if (!STEAM_CDN_HOST.test(parsed.hostname)) return null;
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  if (parts.length < 6) return null;
+  if (parts[0] !== 'store_item_assets' || parts[1] !== 'steam' || parts[2] !== 'apps') return null;
+  if (!/^[1-9]\d{0,9}$/.test(parts[3])) return null;
+  return artHash(parts[4]) || null;
 }
 
 /**
@@ -275,6 +313,11 @@ function pushUrl(urls, value) {
   if (url && !urls.includes(url)) urls.push(url);
 }
 
+/** Same dedupe for an already-built URL (the proxy path is not absolute). */
+function pushUnique(urls, url) {
+  if (url && !urls.includes(url)) urls.push(url);
+}
+
 /**
  * The real store header (`appdetails.header_image`), saved per appid by the
  * server. This is the honest fix for new SKUs: Valve puts their assets under
@@ -297,16 +340,6 @@ function providedCapsuleImage(game) {
 
 function providedScreenshot(game) {
   return httpUrl(game && (game.screenshot || (game.details && game.details.screenshot)));
-}
-
-/**
- * New-asset games have no legacy `library_600x900.jpg`; their `header_image`
- * must be requested first. For legacy games the vertical library capsule stays
- * the best poster and `header_image` (a landscape `header.jpg` on the old CDN)
- * is only a fallback, so quality does not regress.
- */
-function isStoreItemAsset(url) {
-  return /\/store_item_assets\//i.test(String(url || ''));
 }
 
 /**
@@ -350,12 +383,23 @@ export function gameCoverUrls(game) {
  * landscape `header.jpg` still exists, so it is the first fallback and CSS
  * centre-crops it into the 2:3 frame (`object-fit: cover`).
  *
- *   `appdetails.header_image` — first only for the new `store_item_assets`
- *                               schema, where the legacy vertical capsule is
- *                               dead (02.11.2026: CONTROL Resonant 3669870);
- *   library_600x900.jpg (600×900, 2:3) — the official vertical library capsule;
- *   header.jpg (460×215)              — landscape header, cropped vertically;
- *   `appdetails.header_image`         — legacy-schema header (fallback only);
+ * The real vertical capsule is always asked first — also for the post-2024
+ * `store_item_assets` schema, where every asset of one SKU lives under the
+ * per-asset hash of `appdetails.header_image` (02.11.2026: CONTROL Resonant
+ * 3669870 painted a landscape header because the hash was only used for the
+ * header, never for `library_600x900.jpg`). If the hashed capsule is absent
+ * the proxy falls through to the legacy hash-less path and the next URL in
+ * this chain, so the extra step costs a request only when it fails.
+ *
+ *   library_600x900.jpg (600×900, 2:3) — the official vertical capsule, in
+ *                               the header's own asset schema (`?h=<hash>`)
+ *                               when `header_image` carries one;
+ *   library_600x900.jpg       — legacy hash-less path (old SKUs);
+ *   `appdetails.header_image` — the real store header; for the new schema it
+ *                               is proxied with its own hash (`?h=`), whose
+ *                               server-side fallback already covers the
+ *                               legacy `header.jpg`;
+ *   header.jpg (460×215)      — legacy landscape header, cropped vertically;
  *   `appdetails.capsule_image`        — small store capsule, same schema;
  *   `appdetails.screenshots[0]`       — last real artwork before the icon;
  *   capsule_231x87.jpg                — older capsule, same CDN;
@@ -371,13 +415,11 @@ export function gameVerticalCoverUrls(game) {
   const appid = positiveId(game && (game.primaryAppid ?? game.appid));
   const urls = [];
   const header = providedHeaderImage(game);
-  const headerFirst = header && isStoreItemAsset(header);
-  if (headerFirst) pushUrl(urls, header);
-  if (appid) {
-    urls.push(steamArtProxyUrl('library', appid));
-    urls.push(steamArtProxyUrl('header', appid));
-  }
-  if (header && !headerFirst) pushUrl(urls, header);
+  const storeHash = steamAssetHashFromImageUrl(header);
+  if (appid && storeHash) urls.push(steamArtProxyUrl('library', appid, { h: storeHash }));
+  if (appid) urls.push(steamArtProxyUrl('library', appid));
+  if (header) pushUrl(urls, header);
+  if (appid) pushUnique(urls, steamArtProxyUrl('header', appid));
   pushUrl(urls, providedCapsuleImage(game));
   pushUrl(urls, providedScreenshot(game));
   if (appid) urls.push(steamArtProxyUrl('capsule', appid));
