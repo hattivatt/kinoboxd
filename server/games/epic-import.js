@@ -26,45 +26,46 @@
 const crypto = require('crypto');
 
 const epic = require('./epic');
+const { createJobs } = require('../core/jobs');
 const epicCache = require('./epic-cache');
 const gameCache = require('./game-cache');
 const tokenStore = require('./epic-token-store');
 const secondaryIdentity = require('./secondary-identity');
 const secondaryDetails = require('./secondary-details');
 
-const jobs = new Map();
-const jobOrder = [];
-const MAX_JOBS = 20;
+/**
+ * Job registry (core/jobs): single-flight per Epic account id, one import
+ * chain and the 20-job ring. `deferred` (network/5xx) stays a domain verdict —
+ * the shared finalizer only finishes whatever status the task left.
+ */
+const jobs = createJobs({
+  name: 'games-epic-import',
+  idPrefix: 'games-epic',
+  maxJobs: 20,
+  keyOf: (job) => (job.accountId == null ? null : String(job.accountId)),
+  maskError: (err) => epic.maskSecrets(err && err.message ? err.message : 'неизвестная ошибка'),
+  errorCode: 'epic_import_failed',
+});
 
-let importChain = Promise.resolve();
+const MAX_JOBS = jobs.maxJobs;
 
 function newJobId(seed) {
-  return `games-epic-${gameCache.safeKey(seed)}-${Date.now().toString(36)}-${crypto
-    .randomBytes(3)
-    .toString('hex')}`;
+  return jobs.newId(seed);
 }
 
 function rememberJob(job) {
-  jobs.set(job.id, job);
-  jobOrder.push(job.id);
-  while (jobOrder.length > MAX_JOBS) {
-    const stale = jobOrder.shift();
-    if (stale !== job.id) jobs.delete(stale);
-  }
+  return jobs.remember(job);
 }
 
 function findRunningJob(accountId) {
-  for (const job of jobs.values()) {
-    if (job.done || job.status !== 'running') continue;
-    if (job.accountId === accountId) return job;
-  }
-  return null;
+  return jobs.findRunning(String(accountId == null ? "" : accountId));
 }
 
 /** Public job view: no token, no device code, no raw HTTP details. */
 function publicStatus(job) {
   if (!job) return null;
   return {
+    ...jobs.snapshot(job),
     jobId: job.id,
     id: job.id,
     source: 'epic',
@@ -107,34 +108,21 @@ function isRunning(accountId) {
 }
 
 function enqueue(job, task) {
-  importChain = importChain
-    .then(task)
-    .catch((err) => {
-      const deferred = Boolean(err && err.deferred);
-      job.status = deferred ? 'deferred' : 'failed';
-      job.stage = deferred ? 'deferred' : 'failed';
-      job.deferred = deferred;
-      job.code = (err && err.code) || 'epic_import_failed';
-      job.error = epic.maskSecrets(err && err.message ? err.message : 'неизвестная ошибка');
-      if (err && err.retryAt) job.retryAt = err.retryAt;
-      console.error(`[games-epic-import ${job.id}] ${job.code}: ${job.error}`);
-    })
-    .then(() => {
-      job.done = job.status !== 'running';
-      job.finishedAt = Date.now();
-      if (job.status === 'running') {
-        job.status = 'done';
-        job.stage = 'done';
-        job.percent = 100;
-        job.done = true;
-      }
+  return jobs.run(job, task, {
+    onError: (self, err) => {
+      jobs.fail(self, err);
+      self.deferred = Boolean(err && err.deferred);
+      console.error(`[games-epic-import ${self.id}] ${self.code}: ${self.error}`);
+    },
+    onFinish: (self) => {
       console.log(
-        `[games-epic-import ${job.id}] ${job.status} after ${job.finishedAt - job.startedAt}ms ` +
-          `(stage=${job.stage}, requests=${job.requests}, ` +
-          `games=${job.gameCount == null ? '—' : job.gameCount}` +
-          `${job.deferred ? ', deferred' : ''}${job.code ? `, code=${job.code}` : ''})`
+        `[games-epic-import ${self.id}] ${self.status} after ${self.finishedAt - self.startedAt}ms ` +
+          `(stage=${self.stage}, requests=${self.requests}, ` +
+          `games=${self.gameCount == null ? '—' : self.gameCount}` +
+          `${self.deferred ? ', deferred' : ''}${self.code ? `, code=${self.code}` : ''})`
       );
-    });
+    },
+  });
 }
 
 function isoNow() {
@@ -635,7 +623,7 @@ async function startImport(options = {}) {
 
 /** Wait for the current job chain to settle (tests / shutdown). */
 function whenIdle() {
-  return importChain;
+  return jobs.whenIdle();
 }
 
 module.exports = {
