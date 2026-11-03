@@ -541,6 +541,130 @@ test('secondary details', async (t) => {
     };
     assert.equal(details.applyWikidataFacts(gogDoc, { store: 'epic' }), gogDoc);
   });
+
+  /* -- 03.11.2026: a slug entry with a date is not a genre verdict --- */
+
+  // The deploy shape of Alan Wake 2: `epic:alan-wake-2` carries the `P6278`
+  // identity and the `P577` date, the QID's `P136` line lives in the title map
+  // only. The date says nothing about the genre axis, so both facts are used.
+  const datedSlugEntry = {
+    qid: 'Q108417001',
+    appid: null,
+    store: 'epic',
+    releaseYear: 2023,
+    releasePrecision: 'day',
+    releaseDate: '2023-10-27',
+    releaseDateSource: 'wikidata',
+  };
+  const aw2TitleEntry = {
+    qid: 'Q108417001',
+    appid: null,
+    store: 'epic',
+    title: 'Alan Wake 2',
+    matchedLabel: 'Alan Wake II',
+    matchedBy: 'title',
+    confidence: 'medium',
+    titleMatched: 'unique',
+    releaseYear: 2023,
+    releasePrecision: 'day',
+    releaseDate: '2023-10-27',
+    releaseDateSource: 'wikidata',
+    genres: ['Survival horror', 'Third-person shooter'],
+  };
+
+  await t.test('a dated slug entry still receives the title genres (Alan Wake 2)', () => {
+    identity.writeCache(
+      { 'epic:aw2_dated_slug': { ...datedSlugEntry, slug: 'aw2-dated-slug' } },
+      {
+        titleEntries: {
+          'epic:aw2_dated_slug': { ...aw2TitleEntry, slug: 'aw2-dated-slug' },
+        },
+      }
+    );
+    const doc = {
+      source: 'epic',
+      slug: 'aw2-dated-slug',
+      genres: [],
+      genresSource: null,
+      releaseYear: 2023,
+      releaseDate: '2023-10-27',
+      releaseDateSource: 'epic-catalog',
+    };
+    const healed = details.applyWikidataFacts(doc, { store: 'epic' });
+    assert.notEqual(healed, doc, 'a real fact change produces a new document');
+    assert.deepEqual(healed.genres, ['Survival horror', 'Third-person shooter']);
+    assert.equal(healed.genresSource, 'wikidata');
+    // The year axis does not move: the store/catalog answer is not replaced and
+    // no `releaseYearMatchedBy` marker is invented for a year that did not move.
+    assert.equal(healed.releaseYear, 2023);
+    assert.equal(healed.releaseDateSource, 'epic-catalog');
+    assert.equal(Object.prototype.hasOwnProperty.call(healed, 'releaseYearMatchedBy'), false);
+    // No identity leaked into the document either.
+    assert.equal(Object.prototype.hasOwnProperty.call(healed, 'matchedBy'), false);
+    assert.equal(details.applyWikidataFacts(doc, { store: 'epic' }).slug, 'aw2-dated-slug');
+
+    // A document that lacks the year takes the slug entry's `P577`: the identity
+    // label stays the slug's (`slug`, never `title`) even though the genre line
+    // came from the title map.
+    const dateless = details.applyWikidataFacts(
+      { source: 'epic', slug: 'aw2-dated-slug', genres: [], releaseYear: null },
+      { store: 'epic' }
+    );
+    assert.equal(dateless.releaseYear, 2023);
+    assert.equal(dateless.releaseDate, '2023-10-27');
+    assert.equal(dateless.releaseDateSource, 'wikidata');
+    assert.equal(dateless.releaseYearMatchedBy, 'slug');
+    assert.deepEqual(dateless.genres, ['Survival horror', 'Third-person shooter']);
+  });
+
+  await t.test('a settled title entry without genres changes nothing', () => {
+    identity.writeCache(
+      { 'epic:aw2_dated_settled': { ...datedSlugEntry, slug: 'aw2-dated-settled' } },
+      {
+        titleEntries: {
+          'epic:aw2_dated_settled': {
+            ...aw2TitleEntry,
+            slug: 'aw2-dated-settled',
+            genres: [],
+          },
+        },
+      }
+    );
+    const doc = {
+      source: 'epic',
+      slug: 'aw2-dated-settled',
+      genres: [],
+      releaseYear: 2023,
+      releaseDateSource: 'epic-catalog',
+    };
+    assert.equal(details.applyWikidataFacts(doc, { store: 'epic' }), doc);
+  });
+
+  await t.test('two different QIDs are never mixed, not even for genres', () => {
+    // The slug entry names the item (Q108417001); the title answer resolved a
+    // different item (Q999999). Its genre line is not evidence about this game.
+    identity.writeCache(
+      { 'epic:aw2_other_item': { ...datedSlugEntry, slug: 'aw2-other-item' } },
+      {
+        titleEntries: {
+          'epic:aw2_other_item': {
+            ...aw2TitleEntry,
+            qid: 'Q999999',
+            slug: 'aw2-other-item',
+            genres: ['First-person shooter'],
+          },
+        },
+      }
+    );
+    const doc = {
+      source: 'epic',
+      slug: 'aw2-other-item',
+      genres: [],
+      releaseYear: 2023,
+      releaseDateSource: 'epic-catalog',
+    };
+    assert.equal(details.applyWikidataFacts(doc, { store: 'epic' }), doc);
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -790,6 +914,238 @@ test('secondary details job', async (t) => {
     const again = await waitForJob('steam-test-noslug');
     assert.equal(again.epic.resolved, 0);
     assert.equal(client.calls.length, 1);
+  });
+
+  await t.test('a dated detail is healed with the cached title genres, zero WDQS', async () => {
+    // The deploy shape (03.11.2026): the slug entry owns the identity and the
+    // date, the QID's `P136` line lives in the title map, and the cached detail
+    // carries the store year plus the filtered `Public` bucket. The heal must
+    // write the genres and must not spend a single WDQS request — the facts are
+    // already in `links/secondary.json`.
+    details.resetJobs();
+    clearCache();
+    identity.writeCache(
+      {
+        'epic:alan_wake_2': {
+          qid: 'Q108417001',
+          appid: null,
+          store: 'epic',
+          releaseYear: 2023,
+          releasePrecision: 'day',
+          releaseDate: '2023-10-27',
+          releaseDateSource: 'wikidata',
+        },
+      },
+      {
+        titleEntries: {
+          'epic:alan_wake_2': {
+            qid: 'Q108417001',
+            appid: null,
+            store: 'epic',
+            slug: 'alan-wake-2',
+            title: 'Alan Wake 2',
+            matchedLabel: 'Alan Wake II',
+            matchedBy: 'title',
+            confidence: 'medium',
+            titleMatched: 'unique',
+            releaseYear: 2023,
+            releasePrecision: 'day',
+            releaseDate: '2023-10-27',
+            releaseDateSource: 'wikidata',
+            genres: ['Survival horror', 'Third-person shooter'],
+          },
+        },
+      }
+    );
+    details.writeDetail('epic', 'alan-wake-2', 'ok', {
+      source: 'epic',
+      slug: 'alan-wake-2',
+      title: 'Alan Wake 2',
+      // The stale bucket is filtered on read, so the genre axis is empty.
+      genres: ['Public'],
+      genresSource: 'epic-catalog',
+      releaseYear: 2023,
+      releaseDate: '2023-10-27',
+      releaseDateSource: 'epic-catalog',
+      storeReleaseDate: null,
+      developers: [],
+      publishers: [],
+      tags: [],
+      platforms: [],
+      fetchedAt: new Date().toISOString(),
+    });
+    let wdqsCalls = 0;
+    const fetchImpl = async () => {
+      wdqsCalls++;
+      return { ok: true, status: 200, json: async () => ({ results: { bindings: [] } }) };
+    };
+    details.startSecondaryDetails({
+      ownerKey: 'steam-test-aw2-heal',
+      gog: [],
+      epic: [
+        {
+          slug: 'alan-wake-2',
+          title: 'Alan Wake 2',
+          // A dated catalog entry no longer stops the pass, and the settled
+          // title entry answers it from the cache.
+          catalog: { releaseDate: '2023-10-27T00:00:00.000Z' },
+        },
+      ],
+      fetchImpl,
+      pauseMs: 0,
+    });
+    const job = await waitForJob('steam-test-aw2-heal');
+    assert.equal(job.status, 'done');
+    assert.equal(wdqsCalls, 0, 'no WDQS request for facts that are already cached');
+    assert.equal(job.requests, 0, 'the details phase did not go to the network');
+    assert.equal(job.epic.resolved, 1);
+    assert.equal(job.epic.cached, 1);
+
+    const healed = details.readDetail('epic', 'alan-wake-2').doc.data;
+    assert.deepEqual(healed.genres, ['Survival horror', 'Third-person shooter']);
+    assert.equal(healed.genresSource, 'wikidata');
+    // The store year is still the store's.
+    assert.equal(healed.releaseYear, 2023);
+    assert.equal(healed.releaseDateSource, 'epic-catalog');
+    // Written to disk, so /stats sees it without another kick.
+    const onDisk = JSON.parse(fs.readFileSync(cacheFile('epic', 'alan-wake-2'), 'utf8'));
+    assert.deepEqual(onDisk.data.genres, ['Survival horror', 'Third-person shooter']);
+    assert.equal(onDisk.data.genresSource, 'wikidata');
+    assert.equal(onDisk.data.metaGenresOk, true);
+    assert.equal(onDisk.data.metaStatus, 'complete');
+
+    // A second run has nothing left to heal and still asks nobody.
+    details.resetJobs();
+    details.startSecondaryDetails({
+      ownerKey: 'steam-test-aw2-heal',
+      gog: [],
+      epic: [
+        {
+          slug: 'alan-wake-2',
+          title: 'Alan Wake 2',
+          catalog: { releaseDate: '2023-10-27T00:00:00.000Z' },
+        },
+      ],
+      fetchImpl,
+      pauseMs: 0,
+    });
+    const again = await waitForJob('steam-test-aw2-heal');
+    assert.equal(again.epic.resolved, 1);
+    assert.equal(again.epic.cached, 1);
+    assert.equal(wdqsCalls, 0);
+  });
+
+  await t.test('title candidates: a catalog date does not hide an empty genre axis', () => {
+    details.resetJobs();
+    clearCache();
+    const dated = { releaseDate: '2023-10-27T00:00:00.000Z' };
+    details.writeDetail('epic', 'dated-no-genres', 'ok', {
+      source: 'epic',
+      slug: 'dated-no-genres',
+      genres: [],
+      releaseYear: 2023,
+    });
+    details.writeDetail('epic', 'dated-complete', 'ok', {
+      source: 'epic',
+      slug: 'dated-complete',
+      genres: ['Horror'],
+      releaseYear: 2023,
+    });
+    const cards = details.titleCandidatesFor([
+      { slug: 'dated-no-genres', title: 'Dated No Genres', catalog: dated },
+      { slug: 'dated-complete', title: 'Dated Complete', catalog: dated },
+      // A dated catalog entry with no document yet keeps the old rule: wait for
+      // the document instead of asking on a guess.
+      { slug: 'dated-no-doc', title: 'Dated No Doc', catalog: dated },
+      // No catalog document at all: the store date is unknown, stay quiet.
+      { slug: 'no-catalog', title: 'No Catalog', catalog: null },
+      // No slug/title: nothing to address.
+      { slug: null, title: 'No Slug', catalog: dated },
+    ]);
+    assert.deepEqual(cards, [
+      {
+        slug: 'dated-no-genres',
+        title: 'Dated No Genres',
+        releaseYear: 2023,
+        releaseDate: null,
+        genres: [],
+      },
+    ]);
+    // `collectTitleCandidates` accepts exactly that card (the empty genre axis
+    // makes the work askable) and would reject a complete one.
+    assert.deepEqual(identity.collectTitleCandidates(cards), [
+      { store: 'epic', slug: 'dated-no-genres', title: 'Dated No Genres' },
+    ]);
+    assert.deepEqual(
+      identity.collectTitleCandidates([
+        { slug: 'dated-complete', title: 'Dated Complete', releaseYear: 2023, genres: ['Horror'] },
+      ]),
+      []
+    );
+  });
+
+  await t.test('a dated work without a title answer is asked once, then stays quiet', async () => {
+    details.resetJobs();
+    clearCache();
+    identity.writeCache(
+      {
+        'epic:dated_quiet': {
+          qid: 'Q108417001',
+          appid: null,
+          store: 'epic',
+          releaseYear: 2023,
+          releasePrecision: 'day',
+          releaseDate: '2023-10-27',
+          releaseDateSource: 'wikidata',
+        },
+      },
+      { titleEntries: {} }
+    );
+    details.writeDetail('epic', 'dated-quiet', 'ok', {
+      source: 'epic',
+      slug: 'dated-quiet',
+      title: 'Dated Quiet',
+      genres: [],
+      releaseYear: 2023,
+    });
+    let wdqsCalls = 0;
+    const fetchImpl = async () => {
+      wdqsCalls++;
+      return { ok: true, status: 200, json: async () => ({ results: { bindings: [] } }) };
+    };
+    const targets = [
+      {
+        slug: 'dated-quiet',
+        title: 'Dated Quiet',
+        catalog: { releaseDate: '2023-10-27T00:00:00.000Z' },
+      },
+    ];
+    details.startSecondaryDetails({
+      ownerKey: 'steam-test-dated-quiet',
+      gog: [],
+      epic: targets,
+      fetchImpl,
+      pauseMs: 0,
+    });
+    await waitForJob('steam-test-dated-quiet');
+    assert.equal(wdqsCalls, 1, 'exactly one question for an unset title answer');
+    // Nothing is written when there is no genre fact to apply.
+    const unchanged = details.readDetail('epic', 'dated-quiet').doc.data;
+    assert.deepEqual(unchanged.genres, []);
+    assert.notEqual(unchanged.genresSource, 'wikidata');
+    // The miss is now settled in `titleEntries`, so the next run asks nobody.
+    assert.equal(identity.readSecondaryTitleLinks()['epic:dated_quiet'].titleMatched, 'miss');
+    details.resetJobs();
+    details.startSecondaryDetails({
+      ownerKey: 'steam-test-dated-quiet',
+      gog: [],
+      epic: targets,
+      fetchImpl,
+      pauseMs: 0,
+    });
+    const again = await waitForJob('steam-test-dated-quiet');
+    assert.equal(wdqsCalls, 1, 'the settled miss is never re-asked');
+    assert.equal(again.status, 'done');
   });
 
   await t.test('a running job is reused, not duplicated; kick honours the cooldown', async () => {
