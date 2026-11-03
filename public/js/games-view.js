@@ -590,8 +590,16 @@ function normalizePersonGames(raw) {
       const name = firstString(item.name, item.title);
       const appid = numOrNull(item.appid);
       if (!name && appid == null) return null;
+      // M6 follow-up (04.11.2026): a secondary-only work has no appid — its
+      // identity is the `workKey`. Dropping it here made the person modal hide
+      // exactly the row the aggregate had counted (Remedy: «7 игр · 266 ч» in
+      // the header, 6 rows in the list — Alan Wake 2 was lost). The key must
+      // survive the view model so `personGames` can find the `gamesIndex` row.
+      const workKey = firstString(item.workKey, item.work_key);
       return {
         appid,
+        workKey: workKey || null,
+        secondaryOnly: item.secondaryOnly === true || (appid == null && Boolean(workKey)),
         name,
         hours: numOrNull(item.hours ?? item.playtimeHours),
         completion: numOrNull(item.completion),
