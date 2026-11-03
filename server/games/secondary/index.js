@@ -1626,19 +1626,13 @@ async function buildEpicSources(ownerKey) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Wikidata P577 year for a store document without a date              */
-/* ------------------------------------------------------------------ */
-
-/* ------------------- Wikidata P577 year (identity bridge) ---------- */
-
 /**
  * Last-resort release year for a GOG/Epic detail whose store — and, for Epic,
  * catalog — answer carried no date (Alan Wake 2: `genresOk true`,
  * `yearHas false`). The value is the `P577` of the item the store slug resolves
  * to in the identity bridge (`cache-games/links/secondary.json`, written by
- * `secondary-identity.js`); this function only **reads** that cache and never
- * calls WDQS.
+ * `fetchSecondaryLinks()` in this module); this function only **reads** that
+ * cache and never calls WDQS.
  *
  * Rules, all hard:
  *   - only an **empty** `releaseYear` is filled — a store/catalog year is never
