@@ -170,6 +170,21 @@ async function seedEpicAlanWake2() {
       },
     ],
   });
+  // Epic's **catalog bulk** names the seller/distributor in `developer`
+  // (production value for AW2: «Epic Games Publishing»). The union used to keep
+  // that string as the developer forever; the CMS product page below must
+  // replace it (fix 04.11.2026).
+  await epicCache.saveEpicCatalogItem('cat-aw2', {
+    catalogItemId: 'cat-aw2',
+    namespace: 'ns-aw2',
+    title: 'Alan Wake 2',
+    slug: 'alan-wake-2',
+    developer: 'Epic Games Publishing',
+    publisher: 'Epic Games Publishing',
+    releaseDate: '2023-10-27',
+    categories: ['games'],
+    fetchedAt: iso(),
+  });
   await epicCache.saveEpicPlaytime(ACCOUNT, {
     fetchedAt: iso(),
     byArtifactId: {
@@ -468,4 +483,323 @@ test('stats: secondaryWorks/gamesIndex of AW2 carry qid and the Alan Wake franch
   // Steam rows stay additive: no secondary keys appear on them.
   const steamRow = payload.gamesIndex[108710];
   assert.equal(Object.prototype.hasOwnProperty.call(steamRow, 'qid'), false);
+  // The Epic catalog bulk (the weak fallback) names the seller; the payload
+  // must carry the CMS product page's answer, not «Epic Games Publishing» as a
+  // studio (fix 04.11.2026).
+  assert.deepEqual(aw2.developers, ['Remedy Entertainment']);
+  assert.equal(aw2.metadataSources.includes('epic-store'), true);
+});
+
+/* ------------------------------------------------------------------ */
+/* 6. developers/publishers provenance (fix 04.11.2026)                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The deployed bug: `entry.developers` was filled once from the Epic **catalog
+ * bulk** (`catalog.developer` is the seller/distributor: AW2 → «Epic Games
+ * Publishing») and `enrichUnionWithDetails` only filled **empty** fields, so the
+ * authoritative CMS product page (`about.developerAttribution` →
+ * `Remedy Entertainment`) could never replace it. These tests pin the new
+ * priority: a store detail document wins over a weak library-snapshot value,
+ * a Steam/unknown value is never touched, and no two stores' lists are merged.
+ */
+
+const AW2_DETAIL = {
+  source: 'epic',
+  id: 'alan-wake-2',
+  developers: ['Remedy Entertainment'],
+  publishers: ['Epic Games Publishing'],
+  genres: ['Horror'],
+  releaseYear: 2023,
+  releaseDate: '2023-10-27',
+  releaseDateSource: 'epic-store',
+  fetchedAt: iso(),
+};
+
+test('enrichUnionWithDetails: the Epic catalog seller is replaced by the product page', () => {
+  const union = {
+    works: [
+      {
+        workKey: 'epic:cat-aw2',
+        developers: ['Epic Games Publishing'],
+        publishers: ['Epic Games Publishing'],
+        developersSource: 'epic-catalog',
+        publishersSource: 'epic-catalog',
+        metadataSources: ['epic-catalog'],
+        epic: { slug: 'alan-wake-2', catalogItemId: 'cat-aw2' },
+      },
+    ],
+  };
+  const touched = secondary.enrichUnionWithDetails(union, { 'epic:alan-wake-2': AW2_DETAIL });
+  const entry = union.works[0];
+  assert.equal(touched, 1);
+  assert.deepEqual(entry.developers, ['Remedy Entertainment']);
+  // The publisher string is the same company — the list is not duplicated.
+  assert.deepEqual(entry.publishers, ['Epic Games Publishing']);
+  assert.equal(entry.developersSource, 'epic-store');
+  assert.equal(entry.publishersSource, 'epic-store');
+  assert.ok(entry.metadataSources.includes('epic-store'));
+  // Idempotent: a second pass over the same documents reports «nothing new».
+  assert.equal(secondary.enrichUnionWithDetails(union, { 'epic:alan-wake-2': AW2_DETAIL }), 0);
+  assert.deepEqual(entry.developers, ['Remedy Entertainment']);
+});
+
+test('enrichUnionWithDetails: a strong/unknown provenance is never replaced', () => {
+  const union = {
+    works: [
+      {
+        workKey: 'steam:292030',
+        // Steam `details` (read first by `stats.js`) or a manual value: no
+        // weak source marker, so the store document must not overwrite it.
+        developers: ['CD Projekt Red'],
+        publishers: ['CD Projekt'],
+        developersSource: null,
+        publishersSource: null,
+        metadataSources: ['steam-store'],
+        gog: { gogGameId: '1207658924' },
+        epic: { slug: 'the-witcher-3' },
+      },
+    ],
+  };
+  secondary.enrichUnionWithDetails(union, {
+    'gog:1207658924': {
+      source: 'gog',
+      id: '1207658924',
+      developers: ['CD PROJEKT RED'],
+      publishers: ['CD PROJEKT S.A.'],
+    },
+  });
+  const entry = union.works[0];
+  assert.deepEqual(entry.developers, ['CD Projekt Red']);
+  assert.deepEqual(entry.publishers, ['CD Projekt']);
+  assert.equal(entry.developersSource, null);
+});
+
+test('enrichUnionWithDetails: two store documents — the priority store wins, no merge', () => {
+  const union = {
+    works: [
+      {
+        workKey: 'gog:1207658924',
+        developers: [],
+        publishers: [],
+        metadataSources: [],
+        gog: { gogGameId: '1207658924' },
+        epic: { slug: 'the-witcher-3' },
+      },
+    ],
+  };
+  secondary.enrichUnionWithDetails(union, {
+    'gog:1207658924': {
+      source: 'gog',
+      id: '1207658924',
+      developers: ['CD Projekt RED'],
+      publishers: ['CD Projekt'],
+    },
+    'epic:the-witcher-3': {
+      source: 'epic',
+      id: 'the-witcher-3',
+      developers: ['Epic Games Publishing'],
+      publishers: ['Epic Games Publishing'],
+    },
+  });
+  const entry = union.works[0];
+  // GOG is the priority store (`detailKeyForEntry` order, same as genres/year);
+  // the Epic catalogue seller is not glued onto the GOG studio list.
+  assert.deepEqual(entry.developers, ['CD Projekt RED']);
+  assert.deepEqual(entry.publishers, ['CD Projekt']);
+  assert.equal(entry.developersSource, 'gog-store');
+  assert.ok(entry.metadataSources.includes('gog-store'));
+  assert.equal(entry.metadataSources.includes('epic-store'), false);
+});
+
+test('enrichUnionWithDetails: a work owned on both stores uses the one document it has', () => {
+  const union = {
+    works: [
+      {
+        workKey: 'gog:42',
+        developers: [],
+        publishers: [],
+        metadataSources: [],
+        gog: { gogGameId: '42' },
+        epic: { slug: 'epic-only-doc' },
+      },
+    ],
+  };
+  secondary.enrichUnionWithDetails(union, {
+    'epic:epic-only-doc': {
+      source: 'epic',
+      id: 'epic-only-doc',
+      developers: ['Remedy Entertainment'],
+      publishers: ['Epic Games Publishing'],
+    },
+  });
+  const entry = union.works[0];
+  assert.deepEqual(entry.developers, ['Remedy Entertainment']);
+  assert.deepEqual(entry.publishers, ['Epic Games Publishing']);
+  assert.equal(entry.developersSource, 'epic-store');
+});
+
+test('enrichUnionWithDetails: without a store document the catalog fallback stays', () => {
+  const union = {
+    works: [
+      {
+        workKey: 'epic:cat-aw2',
+        developers: ['Epic Games Publishing'],
+        publishers: ['Epic Games Publishing'],
+        developersSource: 'epic-catalog',
+        publishersSource: 'epic-catalog',
+        metadataSources: ['epic-catalog'],
+        epic: { slug: 'alan-wake-2', catalogItemId: 'cat-aw2' },
+      },
+    ],
+  };
+  const touched = secondary.enrichUnionWithDetails(union, {});
+  const entry = union.works[0];
+  assert.equal(touched, 0);
+  assert.deepEqual(entry.developers, ['Epic Games Publishing']);
+  assert.equal(entry.developersSource, 'epic-catalog');
+  assert.equal(entry.metadataSources.includes('epic-store'), false);
+});
+
+test('union: the Epic catalog seller is marked as the weak developer source', () => {
+  const union = secondary.buildSecondaryUnion({
+    works: [],
+    gogSnapshots: [],
+    epicLayer: {
+      accountId: 'epic-a',
+      games: [
+        {
+          catalogItemId: 'cat-aw2',
+          name: 'Alan Wake 2',
+          slug: 'alan-wake-2',
+          developer: 'Epic Games Publishing',
+          publisher: 'Epic Games Publishing',
+        },
+      ],
+    },
+    links: {},
+    secondaryLinks: {},
+  });
+  const entry = union.works[0];
+  assert.deepEqual(entry.developers, ['Epic Games Publishing']);
+  assert.equal(entry.developersSource, 'epic-catalog');
+  assert.equal(entry.publishersSource, 'epic-catalog');
+});
+
+test('buildPersonnel: a stale «Epic Games Publishing» developer doc does not win over the union', async () => {
+  await seedSteam();
+  await seedEpicAlanWake2();
+  // The document the previous code wrote: the seller as a *developer*.
+  await personnel.saveSecondaryPersonnelDoc('epic:cat-aw2', {
+    fetchedAt: iso(),
+    qid: AW2_QID,
+    wdAsked: true,
+    labelRule: personnel.LABEL_RULE_VERSION,
+    sources: ['epic-store', 'wikidata'],
+    studios: [
+      {
+        name: 'Epic Games Publishing',
+        nameEn: 'Epic Games Publishing',
+        nameRu: null,
+        qid: null,
+        mobyId: null,
+        roles: ['developer'],
+        roleSource: 'epic-store',
+        source: 'epic-store',
+        confidence: 'high',
+      },
+    ],
+    people: [],
+  });
+
+  const developers = personnel.buildPersonnel(OWNER, { gamesLimit: 10 });
+  const remedy = developers.items.find((item) => /remedy/i.test(item.name));
+  assert.ok(remedy, 'Remedy must be the developer');
+  assert.ok(remedy.games.some((game) => game.workKey === 'epic:cat-aw2'));
+  assert.equal(
+    developers.items.some((item) => /epic games publishing/i.test(item.name)),
+    false,
+    'the seller must not be listed as a developer'
+  );
+
+  const publishers = personnel.buildPersonnel(OWNER, { role: 'publisher', gamesLimit: 10 });
+  const seller = publishers.items.find((item) => /epic games publishing/i.test(item.name));
+  assert.ok(seller, 'the seller stays a publisher');
+  assert.deepEqual(seller.roles, ['publisher']);
+  assert.ok(seller.games.some((game) => game.workKey === 'epic:cat-aw2'));
+});
+
+test('enrichPersonnel: a changed store credit list is re-written inside the TTL window', async () => {
+  await seedSteam();
+  await seedEpicAlanWake2();
+  await personnel.saveSecondaryPersonnelDoc('epic:cat-aw2', {
+    fetchedAt: iso(),
+    qid: AW2_QID,
+    wdAsked: true,
+    labelRule: personnel.LABEL_RULE_VERSION,
+    sources: ['epic-store', 'wikidata'],
+    studios: [
+      {
+        name: 'Epic Games Publishing',
+        nameEn: 'Epic Games Publishing',
+        nameRu: null,
+        qid: null,
+        mobyId: null,
+        roles: ['developer'],
+        roleSource: 'epic-store',
+        source: 'epic-store',
+        confidence: 'high',
+      },
+    ],
+    people: [],
+  });
+
+  const wdMock = {
+    wikidataEnabled: () => true,
+    creditsForAppids: async () => ({
+      credits: new Map(),
+      queries: 0,
+      batches: 0,
+      errors: [],
+      disabledUntil: null,
+    }),
+    fetchCredits: async () => {
+      throw new Error('a settled Wikidata answer must not be re-asked');
+    },
+  };
+  const mobyMock = {
+    isEnabled: () => false,
+    status: () => ({ enabled: false, configured: false, source: null, reason: 'key_missing' }),
+    fetchGameCredits: async () => {
+      throw new Error('moby must not be called without a key');
+    },
+  };
+
+  const report = await personnel.enrichPersonnel({
+    profileKey: OWNER,
+    wikidata: wdMock,
+    moby: mobyMock,
+  });
+  assert.equal(report.secondaryUpdated, 1);
+
+  const doc = personnel.readSecondaryPersonnelDoc('epic:cat-aw2');
+  assert.equal(doc.wdAsked, true, 'a store-only refresh keeps the settled WD answer');
+  const roles = new Map(doc.studios.map((studio) => [studio.name, studio.roles]));
+  assert.deepEqual(roles.get('Remedy Entertainment'), ['developer']);
+  assert.deepEqual(roles.get('Epic Games Publishing'), ['publisher']);
+  assert.equal(
+    typeof doc.storeSignature,
+    'string',
+    'the document records which store list it was built from'
+  );
+  assert.ok(doc.storeSignature.includes('remedy entertainment:developer'));
+
+  // Second pass: nothing changed, the document is fresh and complete.
+  const second = await personnel.enrichPersonnel({
+    profileKey: OWNER,
+    wikidata: wdMock,
+    moby: mobyMock,
+  });
+  assert.equal(second.secondaryUpdated, 0);
+  assert.equal(second.secondarySkippedFresh, 1);
 });
