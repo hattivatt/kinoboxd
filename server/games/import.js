@@ -26,53 +26,49 @@
  * the running job.
  */
 
-const crypto = require('crypto');
-
 const config = require('../config');
+const { createJobs } = require('../core/jobs');
 const steam = require('./steam');
 const gameCache = require('./game-cache');
 const enrichJobs = require('./enrich');
 const personnelJobs = require('./personnel/jobs');
 const franchiseJobs = require('./franchise-jobs');
 
-const jobs = new Map();
-const jobOrder = [];
-const MAX_JOBS = 20;
+/**
+ * Job registry (core/jobs): single-flight per `targetKey` (with the pre-resolve
+ * vanity kept in `aliasKeys`), one import chain, 20-job ring. The domain keeps
+ * `publicStatus` and its own fields; `targetKey` stays the coalescing key.
+ */
+const jobs = createJobs({
+  name: 'games-import',
+  idPrefix: 'games-steam',
+  maxJobs: 20,
+  keyOf: (job) => job.targetKey,
+  maskError: (err) => steam.maskSecrets(err && err.message ? err.message : 'неизвестная ошибка'),
+  errorCode: 'games_import_failed',
+});
 
-let importChain = Promise.resolve();
+const MAX_JOBS = jobs.maxJobs;
 
 function newJobId(seed) {
-  return `games-steam-${gameCache.safeKey(seed)}-${Date.now().toString(36)}-${crypto
-    .randomBytes(3)
-    .toString('hex')}`;
+  return jobs.newId(seed);
 }
 
 function rememberJob(job) {
-  jobs.set(job.id, job);
-  jobOrder.push(job.id);
-  while (jobOrder.length > MAX_JOBS) {
-    const stale = jobOrder.shift();
-    if (stale !== job.id) jobs.delete(stale);
-  }
+  return jobs.remember(job);
 }
 
 function findRunningJob(targetKey) {
-  for (const job of jobs.values()) {
-    if (job.done || job.status !== 'running') continue;
-    if (job.targetKey === targetKey) return job;
-    // A vanity job moves its key to `steam-<steamid64>` once the profile XML
-    // resolves it (P3). The pre-resolve key stays in `aliasKeys` so a second
-    // import of the same vanity still coalesces instead of starting a parallel
-    // job for the same owner.
-    if (Array.isArray(job.aliasKeys) && job.aliasKeys.includes(targetKey)) return job;
-  }
-  return null;
+  return jobs.findRunning(targetKey);
 }
 
 /** Public job view: no key, no key source value, no raw HTTP details. */
 function publicStatus(job) {
   if (!job) return null;
   return {
+    // Unified job view (id/status/stage/progress/startedAt/finishedAt/error/
+    // partial); every legacy field below keeps its exact value.
+    ...jobs.snapshot(job),
     jobId: job.id,
     id: job.id,
     source: 'steam',
@@ -129,34 +125,22 @@ function isRunning(targetKey) {
 }
 
 function enqueue(job, task) {
-  importChain = importChain
-    .then(task)
-    .catch((err) => {
-      job.status = 'failed';
-      job.stage = 'failed';
-      job.code = (err && err.code) || 'games_import_failed';
+  return jobs.run(job, task, {
+    onError: (self, err) => {
       // SteamError messages are already masked; mask once more so a wrapped
       // URL (with `key=`) can never reach a log or the job status.
-      job.error = steam.maskSecrets(err && err.message ? err.message : 'неизвестная ошибка');
-      if (err && err.retryAt) job.retryAt = err.retryAt;
-      console.error(`[games-import ${job.id}] ${job.code}: ${job.error}`);
-    })
-    .then(() => {
-      job.done = job.status !== 'running';
-      job.finishedAt = Date.now();
-      if (job.status === 'running') {
-        job.status = 'done';
-        job.stage = 'done';
-        job.percent = 100;
-        job.done = true;
-      }
+      jobs.fail(self, err);
+      console.error(`[games-import ${self.id}] ${self.code}: ${self.error}`);
+    },
+    onFinish: (self) => {
       console.log(
-        `[games-import ${job.id}] ${job.status} after ${job.finishedAt - job.startedAt}ms ` +
-          `(stage=${job.stage}, requests=${job.requests}, ` +
-          `games=${job.gameCount == null ? '—' : job.gameCount}, ` +
-          `partial=${job.libraryPartial}${job.code ? `, code=${job.code}` : ''})`
+        `[games-import ${self.id}] ${self.status} after ${self.finishedAt - self.startedAt}ms ` +
+          `(stage=${self.stage}, requests=${self.requests}, ` +
+          `games=${self.gameCount == null ? '—' : self.gameCount}, ` +
+          `partial=${self.libraryPartial}${self.code ? `, code=${self.code}` : ''})`
       );
-    });
+    },
+  });
 }
 
 /**
@@ -402,6 +386,7 @@ async function runImport(job, target, client, options) {
     const library = partialLibraryFromProfile(profileDoc, fetchedAt);
     await gameCache.saveLibrary(steamId64, library);
     job.libraryPartial = true;
+    job.partial = true;
     job.code = 'steam_key_missing';
     job.warning =
       'STEAM_API_KEY не задан: библиотека и часы недоступны. Сохранены профиль и три ' +
@@ -536,6 +521,7 @@ function startImport(rawTarget, options = {}) {
         reused: true,
         force: false,
         libraryPartial: Boolean(library.partial),
+        partial: Boolean(library.partial),
         code: null,
         error: null,
         warning: null,
@@ -581,6 +567,7 @@ function startImport(rawTarget, options = {}) {
     reused: false,
     force,
     libraryPartial: false,
+    partial: false,
     code: null,
     error: null,
     warning: null,
@@ -602,7 +589,7 @@ function startImport(rawTarget, options = {}) {
 
 /** Wait for the current job chain to settle (tests / shutdown). */
 function whenIdle() {
-  return importChain;
+  return jobs.whenIdle();
 }
 
 module.exports = {
