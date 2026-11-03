@@ -31,6 +31,10 @@ import {
 } from './ui.js';
 import { text, safeStorageGet, safeStorageSet, safeStorageRemove, setLoadingVisible } from './core/dom.js';
 import { createPoller } from './core/poll.js';
+import {
+  renderProfileBar, renderJobRows, renderSourceCards, mountConnectionsScreen,
+} from './core/shell.js';
+import { GAMES_SHELL } from './shell-descriptors.js';
 import { withPreservedScroll } from './books-refresh.js';
 import { renderYearBars, renderDonut } from './charts.js';
 import {
@@ -317,8 +321,8 @@ function renderProfiles() {
   const host = $('games-profile-list');
   const bar = $('games-profile-bar');
   if (!host) return;
-  clear(host);
   if (!state.profiles.length) {
+    renderProfileBar({ list: host, items: [], variant: 'flat' });
     if (bar) bar.hidden = state.view === 'progress';
     const note = $('games-profile-empty');
     if (note) note.hidden = Boolean(state.profileKey);
@@ -328,26 +332,28 @@ function renderProfiles() {
   if (empty) empty.hidden = true;
   if (bar) bar.hidden = state.view === 'progress';
 
-  for (const profile of state.profiles) {
+  // `label` is the owner-facing name typed at import; the persona is what
+  // Steam says. Two owners of one account are told apart by the label, so it
+  // wins in the chip and the persona stays as the tooltip.
+  const items = state.profiles.map((profile) => {
     const active = profile.key === state.profileKey;
-    // `label` is the owner-facing name typed at import; the persona is what
-    // Steam says. Two owners of one account are told apart by the label, so it
-    // wins in the chip and the persona stays as the tooltip.
     const chipName = text(profile.label) || text(profile.personaName) || profile.key;
-    const button = el('button', {
-      type: 'button',
-      class: `games-profile-chip${active ? ' is-active' : ''}`,
-      'aria-pressed': active ? 'true' : 'false',
+    return {
+      id: profile.key,
+      label: chipName,
+      active,
+      count: profile.gameCount != null ? fmtInt(profile.gameCount) : null,
       title: `${chipName}${profile.personaName && profile.personaName !== chipName ? ` · ${profile.personaName}` : ''}${profile.gameCount != null ? ` · ${fmtInt(profile.gameCount)} ${plural(profile.gameCount, GAME_PLURAL)}` : ''}`,
-    });
-    button.append(el('span', { class: 'games-profile-dot', 'aria-hidden': 'true' }));
-    button.append(el('span', { class: 'games-profile-name', text: chipName }));
-    if (profile.gameCount != null) {
-      button.append(el('span', { class: 'games-profile-count', text: fmtInt(profile.gameCount) }));
-    }
-    button.addEventListener('click', () => switchProfile(profile.key));
-    host.append(button);
-  }
+      deletable: false,
+    };
+  });
+  renderProfileBar({
+    list: host,
+    items,
+    variant: 'flat',
+    itemClass: 'games-profile-chip',
+    onSelect: (key) => { switchProfile(key); },
+  });
 }
 
 async function switchProfile(key) {
@@ -758,16 +764,25 @@ function renderProgress() {
   const job = state.job;
   const status = job ? job.status : null;
   const percent = jobProgress(status);
-  const fill = $('games-progress-fill');
-  if (fill) fill.style.width = `${Math.max(3, percent)}%`;
-  const pct = $('games-progress-percent');
-  if (pct) pct.textContent = `${Math.round(percent)}%`;
-  const bar = $('games-progress-bar');
-  if (bar) bar.setAttribute('aria-valuenow', String(Math.round(percent)));
   const line = $('games-progress-status');
   if (line) {
     line.textContent = job && job.failed ? 'Импорт остановился' : jobStageText(status);
   }
+  // One progress renderer for every domain (`core/shell.js`): a Steam journal
+  // is a single row, books paint one row per source.
+  renderJobRows({
+    host: $('games-progress-jobs'),
+    jobs: job ? [{
+      source: 'steam',
+      mark: 'ST',
+      title: 'Steam',
+      account: job.account ? `@${job.account}` : '',
+      stage: jobStageText(status),
+      percent,
+      failed: Boolean(job.failed),
+      done: Boolean(status && (status.done || status.stage === 'done')),
+    }] : [],
+  });
   const host = $('games-progress-error');
   if (host) {
     clear(host);
@@ -3110,6 +3125,27 @@ export function initGames({ onActivate } = {}) {
   state.onActivate = typeof onActivate === 'function' ? onActivate : null;
   state.profileKey = text(safeStorageGet(PROFILE_KEY));
   state.filters = readStoredFilters();
+
+  // One shell for the three tabs (`core/shell.js`): the source cards and the
+  // one «Подключения» screen are painted from the domain descriptor. Steam is
+  // the journal card of the import screen; GOG is the only card of the
+  // connections screen (Epic paints its own slot in `#games-connections`).
+  renderSourceCards({
+    grid: $('games-import-grid'),
+    sources: GAMES_SHELL.sources.filter((source) => source.id === 'steam'),
+  });
+  mountConnectionsScreen({
+    screen: $('games-connections-screen'),
+    hero: {
+      kicker: 'подключения',
+      title: 'Вторые библиотеки',
+      sub: 'GOG и Epic — библиотеки того же владельца. Их игры и часы показываются отдельной строкой и никогда не складываются с журналом Steam: одна игра могла запускаться в двух магазинах, это два факта, а не одна сумма.',
+    },
+    back: { id: 'games-connections-back', label: '← к профилю Steam' },
+    grid: $('games-connections-grid'),
+    sources: GAMES_SHELL.sources.filter((source) => source.id === 'gog'),
+  });
+
   const storedGenreWeight = text(safeStorageGet(GENRE_WEIGHT_KEY));
   state.genreWeight = storedGenreWeight === 'count' ? 'count' : 'hours';
   const storedTagWeight = text(safeStorageGet(TAG_WEIGHT_KEY));

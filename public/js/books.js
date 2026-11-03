@@ -38,6 +38,8 @@ import {
 } from './core/dom.js';
 import { progressPercent } from './core/progress.js';
 import { createPoller } from './core/poll.js';
+import { renderProfileBar, renderJobRows, renderSourceCards } from './core/shell.js';
+import { BOOKS_SHELL } from './shell-descriptors.js';
 import { renderDonut, renderYearBars } from './charts.js';
 import { openModal } from './modal.js';
 import {
@@ -61,6 +63,7 @@ import {
 
 const SOURCE_LABEL = { livelib: 'LiveLib', hardcover: 'Hardcover' };
 const SOURCE_MARK = { livelib: 'LL', hardcover: 'HC' };
+
 /* Bibliographic metadata providers carried by `booksIndex[].metadataSources`.
  * Short marks only: one badge per row, the full name lives in the title. */
 const METADATA_LABEL = {
@@ -894,49 +897,23 @@ function applyProfileToForms() {
   if (hardcover) hardcover.value = profileAccount('hardcover');
 }
 
-function renderProfileMenuRow(profile) {
-  const active = Boolean(state.profile && state.profile.id === profile.id);
-  const item = el('div', {
-    class: `profile-item${active ? ' is-active' : ''}`,
-    role: 'option',
-    'aria-selected': active ? 'true' : 'false',
-    dataset: { profileId: profile.id },
+function profileMenuItems(profiles) {
+  return profiles.map((profile) => {
+    const active = Boolean(state.profile && state.profile.id === profile.id);
+    const summary = profileSummary(profile);
+    const saved = profileSavedLabel(profile.savedAt);
+    return {
+      id: profile.id,
+      label: profile.label,
+      title: `${profile.label} · ${summary}`,
+      meta: summary || saved,
+      metaTitle: [summary, saved].filter(Boolean).join(' · '),
+      active,
+      checkHtml: icon('check', 14),
+      deleteHtml: icon('trash', 14),
+      deleteLabel: `Удалить профиль ${profile.label}`,
+    };
   });
-  const pick = el('button', {
-    type: 'button',
-    class: 'profile-pick',
-    title: `${profile.label} · ${profileSummary(profile)}`,
-  });
-  const copy = el('span', { class: 'profile-copy' });
-  copy.append(el('span', { class: 'profile-name', text: profile.label }));
-  const saved = profileSavedLabel(profile.savedAt);
-  const summary = profileSummary(profile);
-  copy.append(el('span', {
-    class: 'profile-meta',
-    text: summary || saved,
-    title: [summary, saved].filter(Boolean).join(' · '),
-  }));
-  pick.append(copy);
-  if (active) pick.append(el('span', { class: 'profile-check', html: icon('check', 14) }));
-  pick.addEventListener('click', () => {
-    closeProfileMenu();
-    switchProfile(profile.id);
-  });
-
-  const del = el('button', {
-    type: 'button',
-    class: 'profile-del',
-    title: 'Удалить профиль',
-    'aria-label': `Удалить профиль ${profile.label}`,
-    html: icon('trash', 14),
-  });
-  del.addEventListener('click', (event) => {
-    event.stopPropagation();
-    deleteProfile(profile.id);
-  });
-
-  item.append(pick, del);
-  return item;
 }
 
 function renderProfileSwitcher() {
@@ -951,15 +928,21 @@ function renderProfileSwitcher() {
 
   const list = $('books-profile-list');
   if (list) {
-    clear(list);
-    if (!profiles.length) {
-      list.append(el('div', { class: 'profile-empty', text: 'Пока нет книжных профилей' }));
-    } else {
-      for (const profile of profiles) list.append(renderProfileMenuRow(profile));
-    }
+    renderProfileBar({
+      list,
+      add: $('books-profile-add'),
+      items: profileMenuItems(profiles),
+      maxReached: profiles.length >= MAX_PROFILES,
+      emptyText: profiles.length ? '' : 'Пока нет книжных профилей',
+      onSelect: (id) => {
+        closeProfileMenu();
+        switchProfile(id);
+      },
+      onDelete: (id) => {
+        deleteProfile(id);
+      },
+    });
   }
-  const add = $('books-profile-add');
-  if (add) add.disabled = profiles.length >= MAX_PROFILES;
 
   const empty = $('books-profile-empty');
   if (empty) {
@@ -1766,44 +1749,27 @@ function renderProgress() {
   }
 
   let totalEvents = 0;
+  const rows = [];
   for (const [source, job] of jobs) {
     const status = job.status || {};
     const percent = progressPercent(status);
     const done = status.done || status.stage === 'done' || Boolean(job.failed);
-    const row = el('div', { class: `books-job-row is-${source}${job.failed ? ' is-failed' : ''}` });
-    const head = el('div', { class: 'books-job-head' });
-    head.append(el('span', { class: `book-source-logo is-${source}`, text: SOURCE_MARK[source] }));
-    const copy = el('div', { class: 'books-job-copy' });
-    copy.append(el('div', { class: 'books-job-title', text: sourceLabel(source) }));
-    copy.append(el('div', {
-      class: 'books-job-account',
-      text: job.account ? (source === 'livelib' ? `@${job.account}` : `user ${job.account}`) : '',
-    }));
-    head.append(copy);
-    head.append(el('span', {
-      class: `books-job-stage${job.failed ? ' is-error' : done ? ' is-done' : ''}`,
-      text: refreshing ? refreshStageText(source, job) : stageText(source, job),
-    }));
-    row.append(head);
-
-    const bar = el('div', {
-      class: 'progress-bar books-job-bar',
-      role: 'progressbar',
-      'aria-valuemin': '0',
-      'aria-valuemax': '100',
-      'aria-valuenow': String(percent),
-    });
-    const fill = el('div', { class: 'progress-fill' });
-    fill.style.width = `${percent}%`;
-    if (!done && percent === 0) bar.classList.add('is-indeterminate');
-    bar.append(fill);
-    row.append(bar);
-
-    const meta = refreshing ? refreshMeta(status) : statusMeta(status);
-    if (meta) row.append(el('div', { class: 'books-job-meta', text: meta }));
     totalEvents += Array.isArray(status.events) ? status.events.length : Math.max(0, toNum(status.events));
-    host.append(row);
+    rows.push({
+      source,
+      mark: SOURCE_MARK[source],
+      title: sourceLabel(source),
+      account: job.account ? (source === 'livelib' ? `@${job.account}` : `user ${job.account}`) : '',
+      stage: refreshing ? refreshStageText(source, job) : stageText(source, job),
+      percent,
+      meta: refreshing ? refreshMeta(status) : statusMeta(status),
+      failed: Boolean(job.failed),
+      done: Boolean(done),
+    });
   }
+  // One row renderer for every domain (`core/shell.js`); the wording and the
+  // percent math stay book-side.
+  renderJobRows({ host, jobs: rows });
 
   if (statusNode) {
     const failed = jobs.filter(([, job]) => job.failed || (job.status && job.status.error));
@@ -4179,6 +4145,11 @@ export function renderBookMenu(book) {
 export function initBooks({ onActivate } = {}) {
   state.onActivate = typeof onActivate === 'function' ? onActivate : null;
   state.includeManga = readJson(MANGA_STORAGE_KEY, false) === true;
+
+  // The one shell paints the source cards from the domain descriptor: an
+  // existing `book-source-card` is adopted, a missing one is created. The
+  // forms inside stay book-side (their ids are bound below).
+  renderSourceCards({ grid: $('books-sources-grid'), sources: BOOKS_SHELL.sources });
 
   const hardcoverForm = $('books-hardcover-form');
   if (hardcoverForm) {

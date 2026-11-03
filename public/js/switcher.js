@@ -2,7 +2,8 @@
  * relative "updated" timestamps and per-row delete.
  */
 
-import { $, el, clear, icon, plural } from './ui.js';
+import { $, icon, plural } from './ui.js';
+import { renderProfileBar } from './core/shell.js';
 
 const MONTHS_SHORT = [
   'янв', 'фев', 'мар', 'апр', 'мая', 'июн',
@@ -93,54 +94,22 @@ export function initProfileSwitcher(nextHandlers = {}) {
   });
 }
 
-function buildRow(profile, active) {
-  const item = el('div', {
-    class: `profile-item${active ? ' is-active' : ''}`,
-    role: 'option',
-    'aria-selected': active ? 'true' : 'false',
-    dataset: { profileId: profile.id },
+function profileItems(profiles, activeId) {
+  return profiles.map((profile) => {
+    const active = profile.id === activeId;
+    return {
+      id: profile.id,
+      label: profile.label || 'Профиль',
+      title: profile.label || '',
+      active,
+      badgeHtml: icon(profile.type === 'kp' ? 'kp' : 'film', 13),
+      badgeClass: `profile-kind${profile.type === 'kp' ? ' is-kp' : ' is-lb'}`,
+      meta: `${profile.type === 'kp' ? 'Кинопоиск' : 'Letterboxd'} · ${formatSavedAt(profile.savedAt)}`,
+      checkHtml: icon('check', 14),
+      deleteHtml: icon('trash', 14),
+      deleteLabel: `Удалить профиль ${profile.label || ''}`.trim(),
+    };
   });
-
-  const pick = el('button', {
-    type: 'button',
-    class: 'profile-pick',
-    title: profile.label || '',
-  });
-
-  const badge = el('span', {
-    class: `profile-kind${profile.type === 'kp' ? ' is-kp' : ' is-lb'}`,
-    html: icon(profile.type === 'kp' ? 'kp' : 'film', 13),
-  });
-
-  const copy = el('span', { class: 'profile-copy' });
-  copy.append(el('span', { class: 'profile-name', text: profile.label || 'Профиль' }));
-  copy.append(el('span', {
-    class: 'profile-meta',
-    text: `${profile.type === 'kp' ? 'Кинопоиск' : 'Letterboxd'} · ${formatSavedAt(profile.savedAt)}`,
-  }));
-
-  pick.append(badge, copy);
-  if (active) {
-    pick.append(el('span', { class: 'profile-check', html: icon('check', 14) }));
-  }
-  pick.addEventListener('click', () => {
-    if (typeof handlers.onSelect === 'function') handlers.onSelect(profile.id);
-  });
-
-  const del = el('button', {
-    type: 'button',
-    class: 'profile-del',
-    title: 'Удалить профиль',
-    'aria-label': `Удалить профиль ${profile.label || ''}`.trim(),
-    html: icon('trash', 14),
-  });
-  del.addEventListener('click', (event) => {
-    event.stopPropagation();
-    if (typeof handlers.onDelete === 'function') handlers.onDelete(profile.id);
-  });
-
-  item.append(pick, del);
-  return item;
 }
 
 export function renderProfileSwitcher({ profiles = [], activeId = null } = {}) {
@@ -157,16 +126,18 @@ export function renderProfileSwitcher({ profiles = [], activeId = null } = {}) {
 
   const list = $('profile-list');
   if (!list) return;
-  clear(list);
-
-  if (!profiles.length) {
-    list.append(el('div', { class: 'profile-empty', text: 'Пока нет сохранённых профилей' }));
-    return;
-  }
-
-  for (const profile of profiles) {
-    list.append(buildRow(profile, profile.id === activeId));
-  }
+  renderProfileBar({
+    list,
+    add: $('profile-add'),
+    items: profileItems(profiles, activeId),
+    emptyText: profiles.length ? '' : 'Пока нет сохранённых профилей',
+    onSelect: (id) => {
+      if (typeof handlers.onSelect === 'function') handlers.onSelect(id);
+    },
+    onDelete: (id) => {
+      if (typeof handlers.onDelete === 'function') handlers.onDelete(id);
+    },
+  });
 }
 
 export function setProfileSwitcherBusy(busy, text = '') {

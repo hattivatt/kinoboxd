@@ -314,7 +314,7 @@
     <!-- Films: the archive enriches the CURRENT KinoPoisk profile. It is a
          connection of that profile, not a profile of its own. -->
     <section class="view" data-view="films-connections" hidden>
-      <header class="topbar">
+      <header class="topbar topbar-screen" data-shell-header="films-connections">
         <div class="topbar-inner">
           <button type="button" class="btn btn-ghost" id="films-connections-back">← к статистике фильмов</button>
           <div class="topbar-actions">
@@ -323,12 +323,7 @@
         </div>
       </header>
       <div class="dash books-dash">
-        <div class="dash-hero books-import-hero">
-          <div class="kicker dash-kicker">подключения</div>
-          <h1>Архив Letterboxd</h1>
-          <p class="dash-sub">Архив обогащает текущий профиль Кинопоиска: реальные даты просмотра из дневника, пересмотры и watchlist. Отдельного профиля он не создаёт.</p>
-        </div>
-        <div class="games-import-grid games-connections-grid">
+        <div class="games-import-grid games-connections-grid" id="films-connections-grid">
           <article class="book-source-card" data-source="letterboxd">
             <div class="book-source-head">
               <span class="book-source-logo" aria-hidden="true">LB</span>
@@ -621,7 +616,7 @@
             <p class="dash-sub">Профиль чтения — объединение LiveLib и Hardcover. Оценки, даты прочтения и перечитывания; метадата книг — из Hardcover.</p>
           </div>
 
-          <div class="books-import-grid">
+          <div class="books-import-grid" id="books-sources-grid">
             <article class="book-source-card" data-source="livelib">
               <div class="book-source-head">
                 <span class="book-source-logo is-livelib" aria-hidden="true">LL</span>
@@ -953,18 +948,13 @@
              same owner. GOG (M6a) and Epic (M6b) are wired here; Steam stays
              the journal and is imported from the screen below. -->
         <section class="games-connections-screen" id="games-connections-screen" hidden aria-label="Подключения библиотек">
-          <div class="dash-hero books-import-hero">
-            <div class="kicker dash-kicker">подключения</div>
-            <h1>Вторые библиотеки</h1>
-            <p class="dash-sub">GOG и Epic — библиотеки того же владельца. Их игры и часы показываются отдельной строкой и никогда не складываются с журналом Steam: одна игра могла запускаться в двух магазинах, это два факта, а не одна сумма.</p>
-          </div>
-
           <!-- Epic (M6b) mounts its slot into #games-connections; the GOG card
                below is painted by the M6a code. One screen, no duplicate
-               «подключено» state. -->
+               «подключено» state. The screen chrome (hero) and the card list
+               come from the games descriptor via `core/shell.js`. -->
           <section class="games-connections" id="games-connections" aria-label="Слоты подключений"></section>
 
-          <div class="games-import-grid games-connections-grid">
+          <div class="games-import-grid games-connections-grid" id="games-connections-grid">
             <article class="book-source-card" data-source="gog" id="games-gog-card">
               <div class="book-source-head">
                 <span class="book-source-logo is-gog" aria-hidden="true">GOG</span>
@@ -1036,7 +1026,7 @@
             <p class="dash-sub">Часы, backlog, топ игр и распределение времени — по библиотеке Steam. У Steam нет личных оценок 1–10, поэтому главный счётчик здесь — часы.</p>
           </div>
 
-          <div class="games-import-grid">
+          <div class="games-import-grid" id="games-import-grid">
             <article class="book-source-card" data-source="steam">
               <div class="book-source-head">
                 <span class="book-source-logo is-steam" aria-hidden="true">ST</span>
@@ -1107,12 +1097,7 @@
                 <h2>Собираем библиотеку</h2>
                 <p class="progress-status" id="games-progress-status" aria-live="polite">Готовим запрос…</p>
               </div>
-              <div class="games-progress-track">
-                <div class="progress-bar" id="games-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                  <div class="progress-fill" id="games-progress-fill"></div>
-                </div>
-                <span class="games-progress-percent" id="games-progress-percent">0%</span>
-              </div>
+              <div class="books-progress-jobs" id="games-progress-jobs"></div>
               <div id="games-progress-error" hidden></div>
               <div class="progress-foot">
                 <span class="pulse-dot" aria-hidden="true"></span>
@@ -1495,7 +1480,7 @@
     </section>
     <!-- ───────────────────────── compare ───────────────────────── -->
     <section class="view" data-view="compare" hidden>
-      <header class="topbar">
+      <header class="topbar topbar-screen" data-shell-header="compare">
         <div class="topbar-inner">
           <div class="brand" aria-label="kinoboxd">
             <span class="brand-name">kino<span class="accent">boxd</span></span>

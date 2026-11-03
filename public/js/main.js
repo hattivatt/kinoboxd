@@ -25,11 +25,14 @@ import { initBooks, showBooks, hideBooks, resetBooks } from './books.js';
 import { initGames, showGames, hideGames, resetGames } from './games.js';
 import { $, clear, toast, dismissToasts, errorBox, shortErrorMessage, toNum, fmtInt } from './ui.js';
 import { createPoller } from './core/poll.js';
+import { mountConnectionsScreen } from './core/shell.js';
+import { FILMS_SHELL } from './shell-descriptors.js';
 
 const SESSION_KEY = 'kinoboxd.session.v1';
 const LEGACY_SESSION_KEY = 'boxdstats.session.v1';
 const TAB_KEY = 'kinoboxd.tab.v1';
 const POLL_INTERVAL = 1000;
+
 
 let lastRenderedUploadId = null;
 let activeTab = 'films';
@@ -1709,7 +1712,22 @@ function bindUi() {
   initGames({ onActivate: () => showView('games') });
 
   // Films: the Letterboxd archive is a connection of the current profile,
-  // so it lives on its own screen instead of the topbar.
+  // so it lives on its own screen instead of the topbar. The screen chrome and
+  // the card list come from the domain descriptor (`core/shell.js`).
+  const filmsConnectionsScreen = typeof document.querySelector === 'function'
+    ? document.querySelector('.view[data-view="films-connections"]')
+    : null;
+  mountConnectionsScreen({
+    screen: filmsConnectionsScreen || $('films-connections'),
+    hero: {
+      kicker: 'подключения',
+      title: 'Архив Letterboxd',
+      sub: 'Архив обогащает текущий профиль Кинопоиска: реальные даты просмотра из дневника, пересмотры и watchlist. Отдельного профиля он не создаёт.',
+    },
+    back: { id: 'films-connections-back', label: '← к статистике фильмов' },
+    grid: $('films-connections-grid'),
+    sources: FILMS_SHELL.sources,
+  });
   const filmsConnections = document.getElementById('films-connections-btn');
   if (filmsConnections) {
     filmsConnections.addEventListener('click', () => {
