@@ -39,9 +39,8 @@
  * secrets are masked before any error message is built.
  */
 
-const crypto = require('crypto');
-
 const gameCache = require('./game-cache');
+const { createJobs } = require('../core/jobs');
 const gogCache = require('./gog-cache');
 const gog = require('./gog');
 const gogAuth = require('./gog-auth');
@@ -49,10 +48,20 @@ const secondaryIdentity = require('./secondary-identity');
 const secondaryDetails = require('./secondary-details');
 const { budgetLimitFromEnv } = require('../core/budget');
 
-const jobs = new Map();
-const jobOrder = [];
-const MAX_JOBS = 20;
-const chains = new Map();
+/**
+ * Job registry (core/jobs): single-flight per GOG account, one chain per
+ * `userKey` (two accounts may import at once, one account never twice) and the
+ * 20-job ring. `force` still starts a second job for the same account — the
+ * per-key chain serializes it, which is the legacy behaviour.
+ */
+const jobs = createJobs({
+  name: 'games-gog-import',
+  idPrefix: 'games-gog',
+  maxJobs: 20,
+  keyOf: (job) => job.userKey,
+  maskError: (err) => gog.maskSecrets((err && err.message) || 'GOG import failed'),
+  errorCode: 'gog_error',
+});
 
 /** How many raw `sessions` answers one run keeps in `cache-games/debug/gog/`. */
 const DEBUG_DUMP_LIMIT = 3;
@@ -69,36 +78,21 @@ function recheckZeroMs() {
 }
 
 function newJobId(userKey) {
-  return `games-gog-${gogCache.safeKey(userKey)}-${Date.now().toString(36)}-${crypto
-    .randomBytes(3)
-    .toString('hex')}`;
+  return jobs.newId(userKey);
 }
 
 function rememberJob(job) {
-  jobs.set(job.id, job);
-  jobOrder.push(job.id);
-  while (jobOrder.length > MAX_JOBS) {
-    const stale = jobOrder.shift();
-    if (stale !== job.id) jobs.delete(stale);
-  }
-}
-
-function chainFor(userKey) {
-  if (!chains.has(userKey)) chains.set(userKey, Promise.resolve());
-  return chains.get(userKey);
+  return jobs.remember(job);
 }
 
 function findRunningJob(userKey) {
-  for (const job of jobs.values()) {
-    if (job.done || job.status !== 'running') continue;
-    if (job.userKey === userKey) return job;
-  }
-  return null;
+  return jobs.findRunning(userKey);
 }
 
 function publicStatus(job) {
   if (!job) return null;
   return {
+    ...jobs.snapshot(job),
     jobId: job.id,
     id: job.id,
     source: 'gog',
@@ -134,13 +128,7 @@ function publicStatus(job) {
 }
 
 function fail(job, err) {
-  job.status = 'failed';
-  job.done = true;
-  job.code = (err && err.code) || 'gog_error';
-  job.error = gog.maskSecrets((err && err.message) || 'GOG import failed');
-  if (err && err.retryAt) job.retryAt = err.retryAt;
-  job.finishedAt = Date.now();
-  return job;
+  return jobs.fail(job, err);
 }
 
 /* ------------------------------------------------------------------ */
@@ -476,6 +464,7 @@ async function runImport(job, api, options) {
       job.libraryCount = fetched.products.length;
       job.pages = fetched.pages;
       job.libraryPartial = !fetched.complete;
+      job.partial = job.libraryPartial;
     }
 
     const library = gogCache.getLibrary(userKey) || previous;
@@ -637,6 +626,7 @@ async function runImport(job, api, options) {
       const done = Object.keys(minutes).length;
       job.percent = Math.min(95, 50 + Math.floor((done / Math.max(1, targets.length)) * 45));
       job.playtimeGames = done;
+      job.setProgress(done, targets.length);
     }
     if (pending < 0) pending = 0;
     job.playtimePending = pending;
@@ -743,30 +733,32 @@ function startImport({
   job.budget = resolvedBudget;
   rememberJob(job);
 
-  const previous = chainFor(userKey);
-  const next = previous
-    .catch(() => {})
-    .then(async () => {
-      await runImport(job, api, {
-        budget: resolvedBudget,
-        // The identity bridge runs only for a real import: an injected client
-        // (tests, diagnostics) keeps the job hermetic and never touches WDQS.
-        client: client || undefined,
-      });
-      // M6d: the freshly written library snapshot is the target list for the
-      // public store metadata (genres/year/poster). Same fire-and-forget rule
-      // as the Steam enrich chain: a failure is a job warning, the import
-      // stays `done`. An injected client (tests/diagnostics) never kicks.
-      if (autoSecondaryDetails !== false && !client && job.ownerProfile) {
-        const status = secondaryDetails.kickSecondaryDetailsQuietly(job.ownerProfile, {
-          forceKick: true,
-          ...secondaryDetails.targetsForOwner(job.ownerProfile),
-        });
-        job.secondaryDetailsJobId = (status && status.id) || null;
-        job.secondaryDetailsSkipped = (status && status.skipped) || null;
-      }
+  jobs.run(job, async () => {
+    await runImport(job, api, {
+      budget: resolvedBudget,
+      // The identity bridge runs only for a real import: an injected client
+      // (tests, diagnostics) keeps the job hermetic and never touches WDQS.
+      client: client || undefined,
     });
-  chains.set(userKey, next);
+    // M6d: the freshly written library snapshot is the target list for the
+    // public store metadata (genres/year/poster). Same fire-and-forget rule
+    // as the Steam enrich chain: a failure is a job warning, the import
+    // stays `done`. An injected client (tests/diagnostics) never kicks.
+    if (autoSecondaryDetails !== false && !client && job.ownerProfile) {
+      const status = secondaryDetails.kickSecondaryDetailsQuietly(job.ownerProfile, {
+        forceKick: true,
+        ...secondaryDetails.targetsForOwner(job.ownerProfile),
+      });
+      job.secondaryDetailsJobId = (status && status.id) || null;
+      job.secondaryDetailsSkipped = (status && status.skipped) || null;
+    }
+  }, {
+    chainKey: userKey,
+    onError: (self, err) => {
+      jobs.fail(self, err);
+      console.error(`[games-gog-import ${self.id}] ${self.code}: ${self.error}`);
+    },
+  });
   return publicStatus(job);
 }
 
@@ -775,7 +767,7 @@ function getStatus(jobId) {
 }
 
 function listJobs() {
-  return [...jobs.values()].map(publicStatus).sort((a, b) => b.startedAt - a.startedAt);
+  return jobs.list().map(publicStatus).sort((a, b) => b.startedAt - a.startedAt);
 }
 
 module.exports = {
