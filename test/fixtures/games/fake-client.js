@@ -24,6 +24,11 @@ function createFakeClient(options = {}) {
     owned:
       options.owned ||
       steam.parseOwnedGamesResponse(JSON.parse(readFixture('owned-games.json'))),
+    // `GetRecentlyPlayedGames`: empty by default so the pre-RGP import contract
+    // stays byte-identical; tests that exercise the merge pass `options.recent`.
+    recent:
+      options.recent ||
+      steam.parseRecentlyPlayedResponse(JSON.parse(readFixture('recently-played.json'))),
     achievements:
       options.achievements || steam.parseAchievementsXml(readFixture('achievements.xml')),
     global:
@@ -68,6 +73,11 @@ function createFakeClient(options = {}) {
       calls.push('owned');
       if (state.fail.owned) throw state.fail.owned;
       return { ...state.owned, games: state.owned.games.map((g) => ({ ...g })) };
+    },
+    async getRecentlyPlayedGames() {
+      calls.push('recent');
+      if (state.fail.recent) throw state.fail.recent;
+      return { ...state.recent, games: state.recent.games.map((g) => ({ ...g })) };
     },
     async getAchievements() {
       calls.push('achievements');

@@ -7,10 +7,10 @@
  * which host answers which question:
  *
  *   - **Web API** (`api.steampowered.com`, `STEAM_API_KEY`): the ONLY source of
- *     the owned-games library with per-game playtime. `GetOwnedGames` returns
- *     the whole library in one response (340 games / 110 KB for the verified
- *     profile, no pagination — see ИГРЫ-АРХИТЕКТУРА.md §2.1.3), plus
- *     `GetPlayerSummaries` for persona/avatar/`timecreated`/`lastlogoff`.
+ *     the owned-games library with per-game playtime (`GetOwnedGames`, the whole
+ *     library in one response, no pagination — §2.1.3), plus summaries and
+ *     `GetRecentlyPlayedGames` (the two-week window / launch source when a
+ *     library answers `rtime_last_played: 0` everywhere).
  *   - **Community XML** (`steamcommunity.com`, no key): vanity → steamid64 and
  *     profile metadata (`id/<vanity>/?xml=1`), achievements with
  *     `unlockTimestamp` (`profiles/<id64>/stats/<appid>?tab=achievements&xml=1`).
@@ -344,6 +344,36 @@ function libraryFingerprint(games, gameCount) {
     .createHash('sha1')
     .update(`${count}:${totalMinutes}:${maxRtime}`)
     .digest('hex');
+}
+
+/**
+ * Parse `IPlayerService/GetRecentlyPlayedGames` (the last two weeks).
+ *
+ * This is the canonical "was launched lately" source and the only Steam answer
+ * some profiles expose: a library can carry `rtime_last_played: 0` on every
+ * row while this endpoint still reports the two-week playtime (verified
+ * 03.11.2026: 226 owned games with rtime=0, 6 recently-played rows). The rows
+ * use the same field names as `GetOwnedGames`, so the same normalizer applies;
+ * a missing/empty `response` (or `total_count: 0`) is a valid "nothing played",
+ * never an error — the caller only merges what it gets.
+ */
+function parseRecentlyPlayedResponse(json) {
+  const response = json && typeof json === 'object' ? json.response : null;
+  if (!response || typeof response !== 'object' || !Array.isArray(response.games)) {
+    return { empty: true, gameCount: 0, games: [], totalMinutes: 0, fingerprint: null };
+  }
+  const games = response.games.map(normalizeOwnedGame).filter((game) => game.appid != null);
+  const gameCount = Number.isFinite(Number(response.total_count))
+    ? Number(response.total_count)
+    : games.length;
+  const totalMinutes = games.reduce((sum, game) => sum + game.playtime_forever, 0);
+  return {
+    empty: games.length === 0,
+    gameCount,
+    games,
+    totalMinutes,
+    fingerprint: libraryFingerprint(games, gameCount),
+  };
 }
 
 /**
@@ -749,6 +779,21 @@ function createClient(options = {}) {
     return parseOwnedGamesResponse(json);
   }
 
+  /**
+   * Recently played (key): the games launched in the last two weeks, with
+   * `playtime_2weeks` and — when the owner exposes it — `rtime_last_played`.
+   * One request, same host/breaker/retry path as `GetOwnedGames`. An empty
+   * list is a valid answer ("nothing played"), not an error.
+   */
+  async function getRecentlyPlayedGames(steamId64, keyOverride) {
+    const info = keyOverride ? { key: keyOverride, source: 'test' } : apiKeyOrThrow();
+    const url =
+      `https://${API_HOST}/IPlayerService/GetRecentlyPlayedGames/v1/?key=${encodeURIComponent(info.key)}` +
+      `&steamid=${encodeURIComponent(steamId64)}&format=json`;
+    const json = await apiGet(url);
+    return parseRecentlyPlayedResponse(json);
+  }
+
   /** Achievements XML for one game (community, no key). */
   async function getAchievements(steamId64, appid) {
     const url =
@@ -800,6 +845,7 @@ function createClient(options = {}) {
     getProfile,
     getPlayerSummaries,
     getOwnedGames,
+    getRecentlyPlayedGames,
     getAchievements,
     getGlobalPercentages,
     assertNotBlocked,
@@ -824,6 +870,7 @@ module.exports = {
   profileKeyOf,
   parseProfileXml,
   parseOwnedGamesResponse,
+  parseRecentlyPlayedResponse,
   parseAchievementsXml,
   parseGlobalPercentages,
   normalizeOwnedGame,
