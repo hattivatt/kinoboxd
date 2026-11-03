@@ -73,7 +73,7 @@ function recordingFetch(handler) {
 
 function clearArtDir() {
   for (const name of fs.readdirSync(art.ART_DIR)) {
-    fs.rmSync(path.join(art.ART_DIR, name), { force: true });
+    fs.rmSync(path.join(art.ART_DIR, name), { recursive: true, force: true });
   }
 }
 

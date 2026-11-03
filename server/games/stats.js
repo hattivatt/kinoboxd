@@ -119,6 +119,7 @@ const { buildFeatures } = require('./stats/features');
 const { buildTop } = require('./stats/top');
 const { buildGamesIndex } = require('./stats/games-index');
 const { buildTimeline, calendarFromAchievements } = require('./stats/timeline');
+const steamArt = require('./steam-art');
 
 /**
  * Build the payload. Pure: the caller supplies the library snapshot, the
@@ -410,6 +411,10 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     spy: gameCache.listSpy(appids),
     reviews: gameCache.listReviews(appids),
     links,
+    // Vertical-art resolve documents (one per appid, 180/30-day TTL). Additive:
+    // without them the index/rows keep the pre-resolve fields and the client
+    // walks the legacy CDN chain.
+    art: steamArt.listResolvedArt(appids),
     // B6: base-version metadata for regional SKUs (year/genres/studios/name).
     detailsBase,
     // M6a: GOG secondary library (ownership + its own hours, never summed).

@@ -265,6 +265,12 @@ function normalizeRecent(raw) {
     // post-2024 `store_item_assets` schema, so the strip can ask the proxy for
     // the real vertical `library_600x900.jpg` instead of the landscape header.
     headerImage: /^https?:\/\//i.test(text(item.headerImage)) ? text(item.headerImage) : '',
+    verticalCapsule: text(item.verticalCapsule),
+    verticalCapsuleKnown:
+      item.verticalCapsuleKnown === true || item.verticalCapsuleKnown === false
+        ? item.verticalCapsuleKnown
+        : null,
+    iconFallbackUrl: text(item.iconFallbackUrl),
     // M6c: cross-store ownership of the same work (GOG today) and an optional
     // store-provided poster for rows that are not on the Steam CDN.
     sources: arr(item.sources).map((value) => String(value)).filter(Boolean),
@@ -765,6 +771,15 @@ function normalizeGameIndexEntry(entry, appid) {
     // M7: the real store header from `appdetails` (new SKUs live under a
     // per-asset `store_item_assets/.../<hash>/` path, so it cannot be guessed).
     headerImage: /^https?:\/\//i.test(text(item.headerImage)) ? text(item.headerImage) : '',
+    // M7-resolve: the server-resolved vertical poster (proxy path or an
+    // absolute SteamGridDB URL), the «vertical art exists» verdict and the
+    // small-capsule fallback for a broken 32×32 icon. Absent on old payloads.
+    verticalCapsule: text(item.verticalCapsule),
+    verticalCapsuleKnown:
+      item.verticalCapsuleKnown === true || item.verticalCapsuleKnown === false
+        ? item.verticalCapsuleKnown
+        : null,
+    iconFallbackUrl: text(item.iconFallbackUrl),
     type: text(item.type).toLowerCase(),
     releaseYear,
     year: releaseYear,
@@ -2291,10 +2306,14 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     // A never-launched game with no 2-week hours has nothing to say here.
     if (!fresh && rtime <= 0) return;
     const iconUrl = firstString(item.iconUrl, item.icon, entry.iconUrl) || '';
-    // New-schema Steam art: the header's asset hash is the only way to ask for
-    // the vertical `library_600x900.jpg` of the same SKU (steamAssetHashFromImageUrl
-    // in games-modal reads it). The payload row wins; the index fills it.
+    // New-schema Steam art: the server resolves the real vertical capsule once
+    // (`verticalCapsule`) and says whether it exists at all
+    // (`verticalCapsuleKnown`). The payload row wins; the index fills it.
     const headerImage = firstString(item.headerImage, entry.headerImage) || '';
+    const verticalCapsule = firstString(item.verticalCapsule, entry.verticalCapsule) || '';
+    const verticalCapsuleKnown =
+      item.verticalCapsuleKnown ?? entry.verticalCapsuleKnown ?? null;
+    const iconFallbackUrl = firstString(item.iconFallbackUrl, entry.iconFallbackUrl) || '';
     // M6c: cross-store facts travel with the card face (GOG badge, own poster).
     const sources = arr(item.sources ?? entry.sources)
       .map((value) => String(value))
@@ -2313,6 +2332,9 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
         iconUrl,
         coverUrl,
         headerImage,
+        verticalCapsule,
+        verticalCapsuleKnown,
+        iconFallbackUrl,
         sources,
         hours2wByAppid,
         hoursTotal,
@@ -2335,6 +2357,11 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     }
     if (!previous.coverUrl && coverUrl) previous.coverUrl = coverUrl;
     if (!previous.headerImage && headerImage) previous.headerImage = headerImage;
+    if (!previous.verticalCapsule && verticalCapsule) previous.verticalCapsule = verticalCapsule;
+    if (previous.verticalCapsuleKnown == null && verticalCapsuleKnown != null) {
+      previous.verticalCapsuleKnown = verticalCapsuleKnown;
+    }
+    if (!previous.iconFallbackUrl && iconFallbackUrl) previous.iconFallbackUrl = iconFallbackUrl;
     if (hoursTotal != null) {
       previous.hoursTotal =
         previous.hoursTotal == null ? hoursTotal : Math.max(previous.hoursTotal, hoursTotal);
@@ -2361,6 +2388,9 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
       previous.faceFresh = fresh;
       if (iconUrl) previous.iconUrl = iconUrl;
       if (headerImage) previous.headerImage = headerImage;
+      if (verticalCapsule) previous.verticalCapsule = verticalCapsule;
+      if (verticalCapsuleKnown != null) previous.verticalCapsuleKnown = verticalCapsuleKnown;
+      if (iconFallbackUrl) previous.iconFallbackUrl = iconFallbackUrl;
     } else if (!previous.iconUrl && iconUrl) {
       // The server row may arrive without an icon (trimmed payload): the
       // index is allowed to fill it without touching the face.
@@ -2404,6 +2434,11 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
         // M7: the store header lets the card ask the proxy for the vertical
         // capsule in the same (new-schema) asset folder.
         headerImage: row.headerImage,
+        // M7-resolve: the server-resolved poster (and «none known» verdict),
+        // plus the small-capsule fallback for a broken 32×32 icon.
+        verticalCapsule: row.verticalCapsule,
+        verticalCapsuleKnown: row.verticalCapsuleKnown ?? null,
+        iconFallbackUrl: row.iconFallbackUrl,
         // M6c: the card face can carry a non-Steam poster and a store badge.
         coverUrl: row.coverUrl,
         sources: row.sources,

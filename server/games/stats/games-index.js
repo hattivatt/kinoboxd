@@ -17,10 +17,17 @@ const {
   isoOfSeconds,
   iconUrlOf,
   headerImageOf,
+  artFieldsOf,
   hoursBySourceOf,
   round1,
 } = require('./numeric');
 const { detailOf, spyOf, reviewsOf, linksOf, genreNamesOf, categoryNamesOf } = require('./documents');
+
+function artOf(art, appid) {
+  if (appid == null) return null;
+  const map = art && typeof art === 'object' ? art : {};
+  return map[appid] || map[String(appid)] || null;
+}
 
 function buildGamesIndex(ctx) {
   const {
@@ -30,6 +37,7 @@ function buildGamesIndex(ctx) {
     spyDocs,
     reviewDocs,
     linkDocs,
+    art,
     workByAppid,
     gogUnion,
     secondaryVisible,
@@ -55,6 +63,11 @@ function buildGamesIndex(ctx) {
     // editions of one work paint the same cover; an unavailable primary doc
     // falls back to this edition's own document, never to a guessed URL.
     const primaryDoc = work ? detailOf(details, work.primary.appid) : null;
+    // Vertical capsule: the canonical (primary) edition's resolve document
+    // wins, exactly like `headerImage` above. Additive — absent until the
+    // details phase has resolved this appid.
+    const artDoc =
+      artOf(art, work ? work.primary.appid : appid) || artOf(art, appid);
     const genres = genreNamesOf(doc);
     const developers = doc && Array.isArray(doc.developers) ? [...doc.developers] : [];
     const publishers = doc && Array.isArray(doc.publishers) ? [...doc.publishers] : [];
@@ -71,6 +84,10 @@ function buildGamesIndex(ctx) {
       // first. `null` means «details not fetched yet» — the client then walks
       // the legacy CDN chain (header.jpg → capsule → icon → initials).
       headerImage: headerImageOf(primaryDoc) || headerImageOf(doc) || null,
+      // Vertical poster + small-icon fallback (03.11.2026). Absent when the
+      // appid has not been resolved yet; `verticalCapsuleKnown: false` means
+      // Steam genuinely has no vertical capsule (kind 'none').
+      ...artFieldsOf(artDoc),
       // M5-B: edition identity (additive; `hours` above is still this row's).
       canonicalWorkKey: work ? work.workKey : `steam:${appid}`,
       primaryAppid: work ? work.primary.appid : appid,

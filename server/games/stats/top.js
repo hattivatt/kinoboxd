@@ -26,9 +26,16 @@ const {
   isoOfSeconds,
   iconUrlOf,
   headerImageOf,
+  artFieldsOf,
   hoursBySourceOf,
 } = require('./numeric');
 const { detailOf } = require('./documents');
+
+function artOf(art, appid) {
+  if (appid == null) return null;
+  const map = art && typeof art === 'object' ? art : {};
+  return map[appid] || map[String(appid)] || null;
+}
 
 function buildTop(ctx) {
   const {
@@ -36,6 +43,7 @@ function buildTop(ctx) {
     visibleWorks,
     gogUnion,
     details,
+    art,
   } = ctx;
   const {
     workYear,
@@ -97,6 +105,7 @@ function buildTop(ctx) {
       cover: null,
       iconUrl: iconUrlOf(game.appid, game.img_icon_url),
       headerImage: headerImageOf(doc),
+      ...artFieldsOf(artOf(art, game.appid)),
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
     };
@@ -145,6 +154,7 @@ function buildTop(ctx) {
       lastPlayed: isoOfSeconds(work.rtime),
       iconUrl: iconUrlOf(work.primary.appid, work.primary.img_icon_url),
       headerImage: headerImageOf(detailOf(details, work.primary.appid)),
+      ...artFieldsOf(artOf(art, work.primary.appid)),
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
       // M6c: when the same work is owned outside Steam, the strip card can say
@@ -169,6 +179,7 @@ function buildTop(ctx) {
       lastPlayed: isoOfSeconds(work.rtime),
       iconUrl: iconUrlOf(work.primary.appid, work.primary.img_icon_url),
       headerImage: headerImageOf(detailOf(details, work.primary.appid)),
+      ...artFieldsOf(artOf(art, work.primary.appid)),
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
     }));

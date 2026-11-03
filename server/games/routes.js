@@ -18,7 +18,7 @@
  *   GET  /api/games/achievements?profile=…&appid=…&refresh=0|1
  *   GET  /api/games/game/:appid?profile=…
  *   GET  /api/games/steam-art/<type>/<appid>[?h=<hash>]
- *        type: header|capsule|library|small_capsule|icon
+ *        type: header|capsule|library|library_capsule|small_capsule|icon
  *        The Steam CDN proxy for the owner's ISP-blocked client; the upstream
  *        URL is assembled server-side (allowlisted hosts only).
  *

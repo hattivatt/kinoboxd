@@ -50,6 +50,9 @@ function buildContext(input = {}) {
   // M4-B: `franchise.readLinks` views keyed by appid (optional input, so the
   // builder stays pure and every M1..M4 unit test keeps working unchanged).
   const linkDocs = input.links && typeof input.links === 'object' ? input.links : {};
+  // Vertical-art resolve documents (`cache-games/art/resolved/<appid>.json`).
+  // Optional: an old payload/test without them keeps the pre-resolve shape.
+  const artDocs = input.art && typeof input.art === 'object' ? input.art : {};
   const includeFree = input.includeFree !== false;
   const includeDlc = Boolean(input.includeDlc);
   const { detailsCount, hasDetails, excluded, keptGames } = applyDetailFilters(games, details, {
@@ -165,6 +168,7 @@ function buildContext(input = {}) {
     spyDocs,
     reviewDocs,
     linkDocs,
+    art: artDocs,
     includeFree,
     includeDlc,
     detailsCount,
