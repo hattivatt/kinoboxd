@@ -45,7 +45,6 @@ const LIVELIB_REIMPORT_TTL_MS = Number(process.env.KINOBOXD_LIVELIB_REIMPORT_TTL
   ? Number(process.env.KINOBOXD_LIVELIB_REIMPORT_TTL_MS)
   : 12 * 60 * 60 * 1000;
 
-
 /** True when `importedAt` is a valid timestamp within the reuse window. */
 function isFreshImport(importedAt) {
   const ts = Date.parse(String(importedAt || ''));
