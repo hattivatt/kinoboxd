@@ -1010,9 +1010,68 @@ test('secondary identity bridge', async (t) => {
     assert.match(query, /skos:altLabel \?matched/);
     assert.match(query, /wdt:P31\/wdt:P279\* wd:Q7889/);
     assert.match(query, /p:P577 \?st/);
+    // P136 (genre) is an optional label of the already-resolved item — it can
+    // never create an identity and adds no unconstrained scan.
+    assert.match(query, /wdt:P136 \?genre/);
+    assert.match(query, /wikibase:label/);
     assert.doesNotMatch(query, /mwapi|SEARCH/i);
     // No title → no query, never an unconstrained scan.
     assert.equal(identity.buildTitleQuery([]), null);
+  });
+
+  await t.test('P136 labels become a curated genre line, never a bucket chip', () => {
+    // Live WDQS answer for Alan Wake 2 (Q108417001, 03.11.2026): «survival
+    // horror», «third-person shooter». A row per genre; duplicates and store
+    // buckets are dropped.
+    const entries = identity.parseTitleResponse(
+      {
+        results: {
+          bindings: [
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q108417001' },
+              matched: { value: 'Alan Wake II' },
+              date: { value: '2023-10-27T00:00:00Z' },
+              precision: { value: '11' },
+              genreLabel: { value: 'survival horror' },
+            },
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q108417001' },
+              matched: { value: 'Alan Wake II' },
+              genreLabel: { value: 'third-person shooter' },
+            },
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q108417001' },
+              matched: { value: 'Alan Wake II' },
+              genreLabel: { value: 'survival horror' },
+            },
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q108417001' },
+              matched: { value: 'Alan Wake II' },
+              genreLabel: { value: 'video game' },
+            },
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q108417001' },
+              matched: { value: 'Alan Wake II' },
+              genreLabel: { value: 'Public' },
+            },
+          ],
+        },
+      },
+      [{ store: 'epic', slug: 'alan-wake-2', title: 'Alan Wake 2' }]
+    );
+    assert.deepEqual(entries['epic:alan_wake_2'].genres, [
+      'Survival horror',
+      'Third-person shooter',
+    ]);
+    assert.equal(entries['epic:alan_wake_2'].releaseYear, 2023);
+  });
+
+  await t.test('wikidataGenreName strips only the generic suffix and capitalizes', () => {
+    assert.equal(identity.wikidataGenreName('survival horror'), 'Survival horror');
+    assert.equal(identity.wikidataGenreName('role-playing video game'), 'Role-playing');
+    assert.equal(identity.wikidataGenreName('action-adventure game'), 'Action-adventure');
+    assert.equal(identity.wikidataGenreName('video game'), null);
+    assert.equal(identity.wikidataGenreName(''), null);
   });
 
   await t.test('a unique exact-title match is stored in the title map with honest provenance', () => {
@@ -1045,6 +1104,7 @@ test('secondary identity bridge', async (t) => {
       releasePrecision: 'day',
       releaseDate: '2023-10-27',
       releaseDateSource: 'wikidata',
+      genres: [],
     });
   });
 
@@ -1071,6 +1131,120 @@ test('secondary identity bridge', async (t) => {
     assert.equal(entry.titleMatched, 'ambiguous');
     assert.equal(entry.confidence, 'none');
     assert.equal(entry.releaseYear, null);
+  });
+
+  await t.test('an ambiguous title has no genre line either', () => {
+    const entries = identity.parseTitleResponse(
+      {
+        results: {
+          bindings: [
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q100' },
+              matched: { value: 'Prey' },
+              genreLabel: { value: 'first-person shooter' },
+            },
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q200' },
+              matched: { value: 'Prey' },
+              genreLabel: { value: 'immersive sim' },
+            },
+          ],
+        },
+      },
+      [{ store: 'epic', slug: 'prey', title: 'Prey' }]
+    );
+    assert.deepEqual(entries['epic:prey'].genres, []);
+  });
+
+  await t.test('a legacy title entry (no genres key) is re-asked once and then settled', async () => {
+    // Schema 3 wrote year-only entries. Without this upgrade path a cached
+    // Alan Wake 2 answer would keep its bucket genre until the 30-day TTL.
+    identity.writeCache(
+      {},
+      {
+        titleEntries: {
+          'epic:aw2_legacy': {
+            qid: 'Q108417001',
+            appid: null,
+            store: 'epic',
+            slug: 'aw2-legacy',
+            title: 'Alan Wake 2',
+            matchedBy: 'title',
+            confidence: 'medium',
+            titleMatched: 'unique',
+            releaseYear: 2023,
+            releasePrecision: 'day',
+            releaseDate: '2023-10-27',
+            releaseDateSource: 'wikidata',
+          },
+        },
+      }
+    );
+    const fetchImpl = fakeFetch(() =>
+      jsonResponse({
+        results: {
+          bindings: [
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q108417001' },
+              matched: { value: 'Alan Wake II' },
+              date: { value: '2023-10-27T00:00:00Z' },
+              precision: { value: '11' },
+              genreLabel: { value: 'survival horror' },
+            },
+          ],
+        },
+      })
+    );
+    const report = await identity.fetchSecondaryTitleLinks(
+      {
+        epicGames: [
+          {
+            slug: 'aw2-legacy',
+            title: 'Alan Wake 2',
+            releaseYear: 2023,
+            genres: [],
+          },
+        ],
+      },
+      { fetchImpl }
+    );
+    assert.equal(report.queries, 1);
+    assert.deepEqual(report.titleEntries['epic:aw2_legacy'].genres, ['Survival horror']);
+    // Written back with the key → settled, no second request.
+    const again = await identity.fetchSecondaryTitleLinks(
+      {
+        epicGames: [
+          { slug: 'aw2-legacy', title: 'Alan Wake 2', releaseYear: 2023, genres: [] },
+        ],
+      },
+      { fetchImpl }
+    );
+    assert.equal(again.queries, 0);
+    assert.equal(fetchImpl.calls.length, 1);
+  });
+
+  await t.test('the genre axis is only judged when the caller knows it', () => {
+    // The Epic import passes no `genres` key: its candidates stay year-driven.
+    assert.deepEqual(
+      identity.collectTitleCandidates([
+        { slug: 'dated', title: 'Dated', releaseDate: '2023-10-27' },
+      ]),
+      []
+    );
+    // The details job reads the cached document, so an empty genre line with a
+    // known year is a candidate (the «Public» bucket case).
+    assert.deepEqual(
+      identity.collectTitleCandidates([
+        { slug: 'bucket', title: 'Bucket', releaseYear: 2023, genres: [] },
+      ]),
+      [{ store: 'epic', slug: 'bucket', title: 'Bucket' }]
+    );
+    assert.deepEqual(
+      identity.collectTitleCandidates([
+        { slug: 'complete', title: 'Complete', releaseYear: 2023, genres: ['Horror'] },
+      ]),
+      []
+    );
   });
 
   await t.test('the title pass caches into titleEntries, not into the P6278 entries', async () => {

@@ -351,6 +351,41 @@ function epicGenresFromCategories(categories) {
   return out;
 }
 
+/**
+ * The same bucket filter applied to an already-normalized genre line. A detail
+ * document written **before** a bucket entered `EPIC_NON_GENRE_CATEGORIES`
+ * keeps it on disk for its 30-day TTL (`Alan Wake 2`, `genres: ["Public"]`).
+ * Every read path passes the list through this helper, so the stale chip
+ * disappears immediately without editing a cache file by hand.
+ */
+function sanitizeEpicGenres(genres) {
+  const out = [];
+  for (const name of uniqueStrings(Array.isArray(genres) ? genres : [])) {
+    const code = epicTagCodeOf(name);
+    if (code && EPIC_NON_GENRE_CATEGORIES.has(code)) continue;
+    if (!out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * Read-time sanitizer for a cached detail document. Pure: the same object is
+ * returned when nothing was filtered, so a heal/write decision (`next !== data`)
+ * still works. Only Epic documents are filtered — a GOG genre line never
+ * contained store buckets.
+ */
+function sanitizeDetailGenres(data) {
+  if (!data || data.source !== 'epic' || !Array.isArray(data.genres)) return data;
+  const genres = sanitizeEpicGenres(data.genres);
+  const unchanged =
+    genres.length === data.genres.length &&
+    genres.every((name, index) => name === data.genres[index]);
+  if (unchanged) return data;
+  const next = { ...data, genres };
+  if (!genres.length) next.genresSource = null;
+  return next;
+}
+
 function normalizeEpicProduct(payload, options = {}) {
   const page = pickEpicPage(payload);
   if (!page) {
@@ -416,7 +451,7 @@ function normalizeEpicProduct(payload, options = {}) {
     id: String(slug || ''),
     title,
     slug,
-    genres: uniqueStrings(genres),
+    genres: sanitizeEpicGenres(genres),
     genresSource,
     tags: uniqueStrings(tags),
     releaseDate,
@@ -585,6 +620,8 @@ module.exports = {
   EPIC_FEATURE_TAGS,
   EPIC_NON_GENRE_CATEGORIES,
   epicGenresFromCategories,
+  sanitizeEpicGenres,
+  sanitizeDetailGenres,
   slugFromStoreLink,
   normalizeGogProduct,
   pickEpicPage,

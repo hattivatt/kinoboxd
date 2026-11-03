@@ -79,13 +79,13 @@
 | `GAMES_REVIEWS_TTL_MS` | ttlMs = 2592000000 ms (30 d) (`steamReviews`) | `server/core/sources.js` (steamReviews) | ttlEnv: 'GAMES_REVIEWS_TTL_MS', |
 | `GAMES_SECONDARY_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`secondary`) | `server/core/sources.js` (secondary) | breakerEnv: 'GAMES_SECONDARY_BREAKER_MS', |
 | `GAMES_SECONDARY_BUDGET` | budget = 200 (0 = off) (`secondary`) | `server/core/sources.js` (secondary) | budgetEnv: 'GAMES_SECONDARY_BUDGET', |
-| `GAMES_SECONDARY_CATALOG_PROBE_TTL_MS` | `2592000000 ms (30 d) (DEFAULT_CATALOG_PROBE_TTL_MS)` (server/games/secondary/store.js) | `server/games/secondary/store.js:103` | return envMs('GAMES_SECONDARY_CATALOG_PROBE_TTL_MS', DEFAULT_CATALOG_PROBE_TTL_MS); |
-| `GAMES_SECONDARY_KICK_COOLDOWN_MS` | `600000 ms (10 min) (DEFAULT_KICK_COOLDOWN_MS)` (server/games/secondary-details.js) | `server/games/secondary-details.js:124` | return envMs('GAMES_SECONDARY_KICK_COOLDOWN_MS', DEFAULT_KICK_COOLDOWN_MS); |
-| `GAMES_SECONDARY_LAZY_KICK` | `''` (server/games/secondary-details.js) | `server/games/secondary-details.js:884` | if (String(process.env.GAMES_SECONDARY_LAZY_KICK \|\| '').trim() === '0') { |
-| `GAMES_SECONDARY_LINKS_TTL_MS` | см. файл | `server/games/secondary/index.js:334` | const raw = Number(process.env.GAMES_SECONDARY_LINKS_TTL_MS); |
-| `GAMES_SECONDARY_NOT_FOUND_TTL_MS` | `2592000000 ms (30 d) (DEFAULT_NOT_FOUND_TTL_MS)` (server/games/secondary/store.js) | `server/games/secondary/store.js:90` | return envMs('GAMES_SECONDARY_NOT_FOUND_TTL_MS', DEFAULT_NOT_FOUND_TTL_MS); |
+| `GAMES_SECONDARY_CATALOG_PROBE_TTL_MS` | `2592000000 ms (30 d) (DEFAULT_CATALOG_PROBE_TTL_MS)` (server/games/secondary/store.js) | `server/games/secondary/store.js:104` | return envMs('GAMES_SECONDARY_CATALOG_PROBE_TTL_MS', DEFAULT_CATALOG_PROBE_TTL_MS); |
+| `GAMES_SECONDARY_KICK_COOLDOWN_MS` | `600000 ms (10 min) (DEFAULT_KICK_COOLDOWN_MS)` (server/games/secondary-details.js) | `server/games/secondary-details.js:131` | return envMs('GAMES_SECONDARY_KICK_COOLDOWN_MS', DEFAULT_KICK_COOLDOWN_MS); |
+| `GAMES_SECONDARY_LAZY_KICK` | `''` (server/games/secondary-details.js) | `server/games/secondary-details.js:909` | if (String(process.env.GAMES_SECONDARY_LAZY_KICK \|\| '').trim() === '0') { |
+| `GAMES_SECONDARY_LINKS_TTL_MS` | см. файл | `server/games/secondary/index.js:336` | const raw = Number(process.env.GAMES_SECONDARY_LINKS_TTL_MS); |
+| `GAMES_SECONDARY_NOT_FOUND_TTL_MS` | `2592000000 ms (30 d) (DEFAULT_NOT_FOUND_TTL_MS)` (server/games/secondary/store.js) | `server/games/secondary/store.js:91` | return envMs('GAMES_SECONDARY_NOT_FOUND_TTL_MS', DEFAULT_NOT_FOUND_TTL_MS); |
 | `GAMES_SECONDARY_PAUSE_MS` | pauseMs = 2000 ms (2 s) (`secondary`) | `server/core/sources.js` (secondary) | pauseEnv: 'GAMES_SECONDARY_PAUSE_MS', |
-| `GAMES_SECONDARY_PROBE_TTL_MS` | `604800000 ms (7 d) (DEFAULT_PROBE_TTL_MS)` (server/games/secondary/store.js) | `server/games/secondary/store.js:95` | return envMs('GAMES_SECONDARY_PROBE_TTL_MS', DEFAULT_PROBE_TTL_MS); |
+| `GAMES_SECONDARY_PROBE_TTL_MS` | `604800000 ms (7 d) (DEFAULT_PROBE_TTL_MS)` (server/games/secondary/store.js) | `server/games/secondary/store.js:96` | return envMs('GAMES_SECONDARY_PROBE_TTL_MS', DEFAULT_PROBE_TTL_MS); |
 | `GAMES_SECONDARY_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`secondary`) | `server/core/sources.js` (secondary) | timeoutEnv: 'GAMES_SECONDARY_TIMEOUT_MS', |
 | `GAMES_SECONDARY_TTL_MS` | ttlMs = 2592000000 ms (30 d) (`secondary`) | `server/core/sources.js` (secondary) | ttlEnv: 'GAMES_SECONDARY_TTL_MS', |
 | `GAMES_SGDB_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`steamGridDb`) | `server/core/sources.js` (steamGridDb) | breakerEnv: 'GAMES_SGDB_BREAKER_MS', |
