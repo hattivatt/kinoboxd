@@ -1,12 +1,12 @@
 'use strict';
 
 /**
- * M6c: secondary-only works in **every** aggregate.
+ * Secondary-library **model** (U10): identity, cross-store union, title/edition
+ * matching.
  *
- * The user's rule (01.11.2026): a game owned only on Epic/GOG is a real owned
- * game — it belongs in `gameCount`, `totalHours`, years/decades, genres, the
- * histogram, the top list and the backlog. Only Steam-specific facts
- * (achievements, `lastPlayed`, SteamSpy tags, review scores) stay absent.
+ * Merged from `games-secondary-union.test.js`, `games-secondary-identity.test.js`
+ * and `games-gog-union.test.js` — one model, one file. Every assertion of the
+ * three files is kept; each block is scoped so the helper names cannot clash.
  */
 
 const test = require('node:test');
@@ -15,9 +15,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-secondary-union-'));
+const CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-secondary-model-'));
 process.env.KINOBOXD_CACHE_GAMES_DIR = CACHE_DIR;
-process.env.KINOBOXD_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-secondary-union-state-'));
+process.env.KINOBOXD_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd-secondary-model-state-'));
 
 const gameCache = require('../server/games/game-cache');
 const gogCache = require('../server/games/gog-cache');
@@ -25,8 +25,11 @@ const epicCache = require('../server/games/epic-cache');
 const { buildSecondaryUnion, yearOfDate, genreNames } = require('../server/games/secondary-union');
 const { buildGamesStatsFromCache } = require('../server/games/stats');
 const { buildBridgeQuery, parseBridgeResponse, collectSlugs } = require('../server/games/secondary-identity');
+const identity = require('../server/games/secondary-identity');
+const { normalizeTitle, normalizeSlug, buildGogUnion } = require('../server/games/gog-union');
 
-const STEAM_ID = '76561198000000021';
+/* ---- was games-secondary-union.test.js ---- */
+{const STEAM_ID = '76561198000000021';
 const OWNER = `steam-${STEAM_ID}`;
 const GOG_KEY = '1234500000';
 const EPIC_ACCOUNT = 'epic-account-1';
@@ -844,3 +847,379 @@ test('secondary works in every aggregate', async (t) => {
     fs.rmSync(path.join(linksDir, 'secondary.json'), { force: true });
   });
 });
+
+}
+
+/* ---- was games-secondary-identity.test.js ---- */
+{
+const RESPONSE = {
+  results: {
+    bindings: [
+      {
+        item: { value: 'http://www.wikidata.org/entity/Q4267401' },
+        store: { value: 'gog' },
+        slug: { value: 'game/the_witcher_3_wild_hunt' },
+        appid: { value: '292030' },
+      },
+      {
+        item: { value: 'http://www.wikidata.org/entity/Q4267401' },
+        store: { value: 'epic' },
+        slug: { value: 'the-witcher-3-wild-hunt' },
+        appid: { value: '292030' },
+      },
+    ],
+  },
+};
+
+function fakeFetch(handler) {
+  const calls = [];
+  const impl = async (url, init) => {
+    calls.push({ url, init, body: init && init.body ? String(init.body) : '' });
+    return handler(url, init, calls.length);
+  };
+  impl.calls = calls;
+  return impl;
+}
+
+function jsonResponse(data, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async json() {
+      return data;
+    },
+  };
+}
+
+test('secondary identity bridge', async (t) => {
+  await t.test('one batch resolves both stores and is cached', async () => {
+    const fetchImpl = fakeFetch(() => jsonResponse(RESPONSE));
+    const report = await identity.fetchSecondaryLinks(
+      { gogSlugs: ['the_witcher_3_wild_hunt'], epicSlugs: ['the-witcher-3-wild-hunt'] },
+      { fetchImpl }
+    );
+    assert.equal(report.queries, 1);
+    assert.equal(report.errors.length, 0);
+    assert.equal(report.entries['gog:the_witcher_3_wild_hunt'].appid, '292030');
+    assert.equal(report.entries['epic:the_witcher_3_wild_hunt'].appid, '292030');
+    // POST + SPARQL JSON accept header + the project UA.
+    const call = fetchImpl.calls[0];
+    assert.equal(call.init.method, 'POST');
+    assert.match(call.init.headers.accept, /sparql-results\+json/);
+    assert.match(call.init.headers['user-agent'], /kinoboxd/);
+    // The cache is readable without a network call.
+    const cached = identity.readSecondaryLinks();
+    assert.equal(cached['gog:the_witcher_3_wild_hunt'].qid, 'Q4267401');
+    assert.ok(fs.existsSync(identity.CACHE_PATH));
+  });
+
+  await t.test('a second pass reuses the cache (no request)', async () => {
+    const fetchImpl = fakeFetch(() => jsonResponse(RESPONSE));
+    const report = await identity.fetchSecondaryLinks(
+      { gogSlugs: ['the_witcher_3_wild_hunt'], epicSlugs: [] },
+      { fetchImpl }
+    );
+    assert.equal(fetchImpl.calls.length, 0);
+    assert.equal(report.queries, 0);
+    assert.equal(report.cached, 1);
+  });
+
+  await t.test('a miss is cached honestly as qid:null', async () => {
+    const fetchImpl = fakeFetch(() => jsonResponse({ results: { bindings: [] } }));
+    const report = await identity.fetchSecondaryLinks(
+      { gogSlugs: ['no_such_game'], epicSlugs: [] },
+      { fetchImpl }
+    );
+    assert.deepEqual(report.entries['gog:no_such_game'], {
+      qid: null,
+      appid: null,
+      store: 'gog',
+      slug: 'no_such_game',
+      // The P577 column is part of the settled shape: a miss has no date and
+      // must not be re-asked by the schema heal (`isSettledEntry`).
+      releaseYear: null,
+      releasePrecision: null,
+      releaseDate: null,
+      releaseDateSource: null,
+    });
+  });
+
+  await t.test('a 429/5xx answer is deferred, not a negative verdict', async () => {
+    const before = identity.readSecondaryLinks({ allowStale: true });
+    const fetchImpl = fakeFetch(() => jsonResponse({}, 429));
+    const report = await identity.fetchSecondaryLinks(
+      { gogSlugs: ['another_slug'], epicSlugs: [] },
+      { fetchImpl }
+    );
+    assert.equal(report.queries, 1);
+    assert.equal(report.skipped, 'rate_limited');
+    assert.equal(report.errors[0], 'wd_429');
+    const after = identity.readSecondaryLinks({ allowStale: true });
+    // Nothing was written for the failed batch.
+    assert.deepEqual(Object.keys(after).sort(), Object.keys(before).sort());
+  });
+
+  await t.test('a network failure never throws', async () => {
+    const fetchImpl = fakeFetch(() => {
+      throw new Error('ECONNRESET');
+    });
+    const report = await identity.fetchSecondaryLinks(
+      { gogSlugs: ['yet_another'], epicSlugs: [] },
+      { fetchImpl }
+    );
+    assert.equal(report.skipped, 'network');
+    assert.match(report.errors[0], /wd_network/);
+  });
+
+  await t.test('slugs are chunked by 450 per request', async () => {
+    const slugs = Array.from({ length: 460 }, (_, index) => `game_${index}`);
+    const fetchImpl = fakeFetch(() => jsonResponse({ results: { bindings: [] } }));
+    const report = await identity.fetchSecondaryLinks({ gogSlugs: slugs, epicSlugs: [] }, {
+      fetchImpl,
+      force: true,
+    });
+    assert.equal(report.queries, 2);
+    assert.equal(fetchImpl.calls.length, 2);
+  });
+
+  await t.test('the query uses the raw Epic slug (dashes), the cache key does not', async () => {
+    // Live shape (verified 01.11.2026): P6278 is `the-witcher-3-wild-hunt`
+    // while P2725 is `game/the_witcher_3_wild_hunt`. Sending the normalised
+    // `the_witcher_3_wild_hunt` to P6278 matches nothing — the 0-hit bug this
+    // test pins.
+    const fetchImpl = fakeFetch((url, init) => {
+      assert.match(String(init.body), /the-witcher-3-wild-hunt/);
+      assert.equal(String(init.body).includes('"the_witcher_3_wild_hunt"'), false);
+      return jsonResponse(RESPONSE);
+    });
+    const report = await identity.fetchSecondaryLinks(
+      { gogSlugs: ['the_witcher_3_wild_hunt'], epicSlugs: ['the-witcher-3-wild-hunt'] },
+      { fetchImpl, force: true }
+    );
+    // One cache key per store, both normalised for lookup.
+    assert.equal(report.entries['epic:the_witcher_3_wild_hunt'].appid, '292030');
+  });
+
+  await t.test('refreshForJob is skipped for an injected client and for a disabled pass', async () => {
+    assert.deepEqual(
+      await identity.refreshForJob({
+        gogProducts: [{ slug: 'x' }],
+        options: { client: { fake: true } },
+      }),
+      { skipped: 'injected_client' }
+    );
+    assert.deepEqual(
+      await identity.refreshForJob({
+        gogProducts: [{ slug: 'x' }],
+        options: { wikidata: false },
+      }),
+      { skipped: 'disabled' }
+    );
+    assert.deepEqual(await identity.refreshForJob({ gogProducts: [], options: {} }), {
+      skipped: 'no_slugs',
+    });
+  });
+
+  await t.test('refreshForJob reports what it asked for', async () => {
+    const fetchImpl = fakeFetch(() => jsonResponse(RESPONSE));
+    const report = await identity.refreshForJob({
+      gogProducts: [{ slug: 'the_witcher_3_wild_hunt' }],
+      epicGames: [{ slug: 'the-witcher-3-wild-hunt' }],
+      options: { fetchImpl, force: true },
+    });
+    assert.equal(report.gogSlugs, 1);
+    assert.equal(report.epicSlugs, 1);
+    assert.equal(report.queries, 1);
+    assert.equal(report.skipped, null);
+    assert.deepEqual(report.errors, []);
+  });
+});
+
+}
+
+/* ---- was games-gog-union.test.js ---- */
+{
+function steamWorks() {
+  return [
+    {
+      workKey: 'steam:292030',
+      minutes: 6000,
+      primary: { appid: 292030, name: 'The Witcher 3: Wild Hunt' },
+      games: [
+        { appid: 292030, name: 'The Witcher 3: Wild Hunt', playtime_forever: 6000 },
+        { appid: 378648, name: 'The Witcher 3: Wild Hunt - GOTY', playtime_forever: 0 },
+      ],
+    },
+    {
+      workKey: 'steam:1091500',
+      minutes: 3000,
+      primary: { appid: 1091500, name: 'Cyberpunk 2077' },
+      games: [{ appid: 1091500, name: 'Cyberpunk 2077', playtime_forever: 3000 }],
+    },
+    {
+      workKey: 'steam:620',
+      minutes: 120,
+      primary: { appid: 620, name: 'Portal 2' },
+      games: [{ appid: 620, name: 'Portal 2', playtime_forever: 120 }],
+    },
+  ];
+}
+
+test('GOG union', async (t) => {
+  await t.test('normalizes titles and slugs across stores', () => {
+    assert.equal(
+      normalizeTitle('The Witcher 3: Wild Hunt — Game of the Year Edition'),
+      'the witcher 3 wild hunt'
+    );
+    assert.equal(normalizeTitle('Cyberpunk 2077: Ultimate Edition'), 'cyberpunk 2077');
+    assert.equal(normalizeTitle('Pokémon™ & Co.'), 'pokemon and co');
+    assert.equal(normalizeSlug('game/the_witcher_3_wild_hunt'), 'the_witcher_3_wild_hunt');
+    assert.equal(normalizeSlug('the-witcher-3-wild-hunt'), 'the_witcher_3_wild_hunt');
+  });
+
+  await t.test('the same game on Steam+GOG is one work with separate hours', () => {
+    const union = buildGogUnion({
+      products: [
+        {
+          gogGameId: '1207658924',
+          title: 'The Witcher 3: Wild Hunt - Game of the Year Edition',
+          slug: 'the_witcher_3_wild_hunt',
+        },
+      ],
+      minutes: { 1207658924: 1200 },
+      works: steamWorks(),
+      links: { 292030: { gogSlugs: ['game/the_witcher_3_wild_hunt'] } },
+    });
+    const witcher = union.works.find((work) => work.workKey === 'steam:292030');
+    assert.deepEqual(witcher.sources, ['steam', 'gog']);
+    assert.deepEqual(witcher.ownedOn, ['steam', 'gog']);
+    assert.deepEqual(witcher.storeIds, { steam: 292030, gog: '1207658924', epic: null });
+    // Never summed: Steam stays 6000 min, GOG 1200 min.
+    assert.equal(witcher.hoursBySource.steam, 6000);
+    assert.equal(witcher.hoursBySource.gog, 1200);
+    assert.equal(witcher.matchedBy, 'wikidata');
+    assert.equal(witcher.confidence, 'high');
+    assert.equal(union.summary.secondaryOnlyWorks, 0);
+    assert.equal(union.summary.worksTotal, 3);
+    assert.equal(union.summary.gogHours, 20);
+    // Every Steam edition row inherits the GOG link.
+    assert.deepEqual(union.byAppid['292030'].storeIds.gog, '1207658924');
+    assert.deepEqual(union.byAppid['378648'].storeIds.gog, '1207658924');
+    assert.equal(union.byAppid['292030'].hoursBySource.steam, 6000);
+    assert.equal(union.byAppid['292030'].hoursBySource.gog, 1200);
+  });
+
+  await t.test('title fallback matches an edition suffix (medium confidence)', () => {
+    const union = buildGogUnion({
+      products: [
+        {
+          gogGameId: '1423049311',
+          title: 'Cyberpunk 2077: Ultimate Edition',
+          slug: 'cyberpunk_2077_ultimate_edition',
+        },
+      ],
+      minutes: { 1423049311: 600 },
+      works: steamWorks(),
+      links: {},
+    });
+    const cp = union.works.find((work) => work.workKey === 'steam:1091500');
+    assert.deepEqual(cp.sources, ['steam', 'gog']);
+    assert.equal(cp.matchedBy, 'title');
+    assert.equal(cp.confidence, 'medium');
+    assert.equal(union.summary.matchedByTitle, 1);
+  });
+
+  await t.test('a GOG-only game is a secondary work and never enters Steam hours', () => {
+    const union = buildGogUnion({
+      products: [
+        { gogGameId: '1999999999', title: 'GOG Exclusive Indie', slug: 'gog_exclusive_indie' },
+      ],
+      minutes: { 1999999999: 90 },
+      works: steamWorks(),
+      links: {},
+    });
+    assert.equal(union.summary.secondaryOnlyWorks, 1);
+    assert.equal(union.summary.worksTotal, 4);
+    assert.equal(union.summary.gogHours, 1.5);
+    assert.equal(union.secondaryWorks.length, 1);
+    const only = union.secondaryWorks[0];
+    assert.equal(only.workKey, 'gog:1999999999');
+    assert.deepEqual(only.sources, ['gog']);
+    assert.equal(only.hoursBySource.steam, null);
+    assert.equal(only.hoursBySource.gog, 90);
+    // No Steam appid was invented.
+    assert.deepEqual(union.byAppid, {
+      292030: {
+        workKey: 'steam:292030',
+        sources: ['steam'],
+        ownedOn: ['steam'],
+        storeIds: { steam: 292030, gog: null, epic: null },
+        hoursBySource: { steam: 6000, gog: null, epic: null },
+        matchedBy: null,
+        confidence: 'single',
+      },
+      378648: {
+        workKey: 'steam:292030',
+        sources: ['steam'],
+        ownedOn: ['steam'],
+        storeIds: { steam: 378648, gog: null, epic: null },
+        hoursBySource: { steam: 0, gog: null, epic: null },
+        matchedBy: null,
+        confidence: 'single',
+      },
+      1091500: {
+        workKey: 'steam:1091500',
+        sources: ['steam'],
+        ownedOn: ['steam'],
+        storeIds: { steam: 1091500, gog: null, epic: null },
+        hoursBySource: { steam: 3000, gog: null, epic: null },
+        matchedBy: null,
+        confidence: 'single',
+      },
+      620: {
+        workKey: 'steam:620',
+        sources: ['steam'],
+        ownedOn: ['steam'],
+        storeIds: { steam: 620, gog: null, epic: null },
+        hoursBySource: { steam: 120, gog: null, epic: null },
+        matchedBy: null,
+        confidence: 'single',
+      },
+    });
+  });
+
+  await t.test('an ambiguous title is not auto-merged', () => {
+    const works = [
+      { workKey: 'steam:1', minutes: 0, primary: { appid: 1, name: 'Same Name' }, games: [{ appid: 1, name: 'Same Name', playtime_forever: 0 }] },
+      { workKey: 'steam:2', minutes: 0, primary: { appid: 2, name: 'Same Name' }, games: [{ appid: 2, name: 'Same Name', playtime_forever: 0 }] },
+    ];
+    const union = buildGogUnion({
+      products: [{ gogGameId: '77', title: 'Same Name', slug: 'same_name' }],
+      minutes: { 77: 30 },
+      works,
+      links: {},
+    });
+    assert.equal(union.summary.secondaryOnlyWorks, 1);
+    assert.equal(union.summary.matchedByTitle, 0);
+    assert.equal(union.works.find((work) => work.workKey === 'gog:77').hoursBySource.gog, 30);
+  });
+
+  await t.test('GOG editions match by slug only when the slug is the same', () => {
+    const union = buildGogUnion({
+      products: [
+        { gogGameId: '1', title: 'The Witcher 3: Wild Hunt', slug: 'the_witcher_3_wild_hunt' },
+        { gogGameId: '2', title: 'The Witcher 3: Wild Hunt - Expansion Pass', slug: 'the_witcher_3_wild_hunt_expansion_pass' },
+      ],
+      minutes: { 1: 600, 2: 120 },
+      works: steamWorks(),
+      links: { 292030: { gogSlugs: ['game/the_witcher_3_wild_hunt'] } },
+    });
+    const witcher = union.works.find((work) => work.workKey === 'steam:292030');
+    assert.equal(witcher.hoursBySource.steam, 6000);
+    assert.equal(witcher.hoursBySource.gog, 600);
+    // The expansion pass does not match the base slug → its own GOG work.
+    assert.equal(union.summary.secondaryOnlyWorks, 1);
+  });
+});
+
+}

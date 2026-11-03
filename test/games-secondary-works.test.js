@@ -1,27 +1,27 @@
 'use strict';
 
 /**
- * M6c secondary-only works (frontend, no separate widget).
+ * Secondary-only works in the UI (U10): the union card, its poster and the
+ * drilldown contract — no separate «Вне Steam» widget.
  *
- * Product decision (01.11.2026): there is **no** «Вне Steam» widget — the
- * works are counted by the year/decade/genre charts and open their union card
- * from those drilldowns. These tests pin the DOM-free contract:
- *   - `secondaryWorks[]` entries from GOG and Epic normalise into one shape
- *     (poster, year, genres, per-source hours) with no invented numbers;
- *   - the client-side card renders one hours row per source (never a sum) and
- *     needs no `/api/games/game/:appid` request;
- *   - `gamesIndex` secondary-only rows are part of the same drilldowns
- *     (`gamesByGenre`/`gamesInYear`), so the chart count and its list agree;
- *   - chart inclusion is read tolerantly: an old payload hides the hint, a
- *     new payload can say «включая вне Steam: N».
+ * Merged from `games-secondary-works.test.js`, `games-secondary-cover.test.js`
+ * and `games-secondary-works-dom.test.js`; every assertion is kept. The DOM
+ * shim is installed once and the modules are imported lazily inside each test,
+ * so one process can drive `games-view.js` and `games.js` in turn.
  */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { installDom, textOf } = require('./helpers/dom-shim');
 
-const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const { nodeFor, storage } = installDom({ search: '?tab=games', href: 'http://localhost/?tab=games' });
+const KEY = 'steam-76561198038369983';
+storage.set('kinoboxd.games.profile.v1', KEY);
+
+/* ---- was games-secondary-works.test.js ---- */
+{const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const readPublic = (name) => fs.readFileSync(path.join(PUBLIC_DIR, name), 'utf8');
 
 function gogWork(overrides = {}) {
@@ -371,3 +371,422 @@ test('M6c «Вне Steam» view models', async (t) => {
     assert.equal(genreChartView(steamOnly.genres).rows[0].count, 40);
   });
 });
+
+}
+
+/* ---- was games-secondary-cover.test.js ---- */
+{
+const GOG_POSTER = 'https://images-1.gog-statics.com/box_171x241.jpg';
+const GOG_BANNER = 'https://images.gog.com/indie-banner.jpg';
+
+function walk(node, visit) {
+  if (!node) return;
+  visit(node);
+  for (const child of node.children || []) walk(child, visit);
+}
+
+function images(host) {
+  const found = [];
+  walk(host, (node) => {
+    if (node.tagName === 'IMG') found.push(node.getAttribute('src') || '');
+  });
+  return found;
+}
+
+function findByClass(host, className) {
+  let hit = null;
+  walk(host, (node) => {
+    if (!hit && String(node.className || '').split(/\s+/).includes(className)) hit = node;
+  });
+  return hit;
+}
+
+/** One `secondaryWorks[]` entry as `/stats` sends it (M6d shape). */
+function secondaryWork(overrides = {}) {
+  return {
+    workKey: 'gog:1999999999',
+    name: 'GOG Exclusive Indie',
+    source: 'gog',
+    sources: ['gog'],
+    ownedOn: ['gog'],
+    storeIds: { steam: null, gog: '1999999999', epic: null },
+    hoursBySource: { steam: null, gog: 12.3, epic: null },
+    hours: 12.3,
+    secondaryHours: 12.3,
+    displayHours: 12.3,
+    releaseYear: 2007,
+    genres: ['Indie'],
+    gog: {
+      gogGameId: '1999999999',
+      slug: 'gog_exclusive_indie',
+      title: 'GOG Exclusive Indie',
+      image: GOG_BANNER,
+    },
+    epic: null,
+    ...overrides,
+  };
+}
+
+function payload(work) {
+  return {
+    sources: {
+      profile: { key: 'steam-76561198038369983', personaName: 'player' },
+      gog: { configured: true, connected: true, status: 'ok', productCount: 4 },
+      epic: null,
+    },
+    summary: { gameCount: 340, ownedCount: 340, totalHours: 5852.7 },
+    // The light drilldown row: no poster on purpose (the card needs the full
+    // `secondaryWorks` entry, exactly like the real payload).
+    gamesIndex: {
+      'gog:1999999999': {
+        appid: null,
+        workKey: 'gog:1999999999',
+        secondaryOnly: true,
+        source: 'gog',
+        name: 'GOG Exclusive Indie',
+        hours: 12.3,
+        hours2w: 0,
+        rtime: 0,
+        lastPlayed: null,
+        iconUrl: null,
+        canonicalWorkKey: 'gog:1999999999',
+        primaryAppid: null,
+        isPrimary: true,
+        editionCount: 1,
+        canonicalHours: 12.3,
+        sources: ['gog'],
+        storeIds: { steam: null, gog: '1999999999', epic: null },
+        hoursBySource: { steam: null, gog: 12.3, epic: null },
+        type: 'game',
+        year: 2007,
+        releaseYear: 2007,
+        genres: ['Indie'],
+        developers: [],
+        publishers: [],
+        categories: [],
+      },
+    },
+    secondaryWorks: [work],
+  };
+}
+
+function resetModals() {
+  const root = nodeFor('modal-root');
+  root.replaceChildren();
+  return root;
+}
+
+async function openCardFromYearList() {
+  const { normalizeGamesPayload, gamesInYear } = await import('../public/js/games-view.js');
+  const { configureGamesModals, openGameListModal } = await import('../public/js/games-modal.js');
+  const data = normalizeGamesPayload(payload(secondaryWork({ verticalCover: GOG_POSTER })));
+  configureGamesModals({
+    profile: 'steam-76561198038369983',
+    gamesIndex: data.gamesIndex,
+    secondaryWorks: data.secondaryWorks,
+  });
+  const root = resetModals();
+  const rows = gamesInYear(data.gamesIndex, 2007);
+  assert.equal(rows.length, 1, 'drilldown must carry the secondary-only row');
+  openGameListModal({ title: '2007 — 1 игра', games: rows });
+  const row = findByClass(root, 'film-row');
+  assert.ok(row, 'list row did not render');
+  assert.match(textOf(row), /GOG Exclusive Indie/);
+  row.click();
+  return root;
+}
+
+test('union card: a secondary work paints its `verticalCover` store poster', async () => {
+  const root = await openCardFromYearList();
+  const srcs = images(root);
+  assert.ok(srcs.length >= 1, 'карточка без обложки');
+  assert.equal(srcs[0], GOG_POSTER);
+  assert.equal(srcs.includes(GOG_BANNER), false, 'горизонтальный баннер не должен подменять постер');
+  assert.match(textOf(root).replace(/\s+/g, ' '), /GOG Exclusive Indie/);
+});
+
+test('union card: no `verticalCover` falls back to the horizontal image, then initials', async () => {
+  const { normalizeGamesPayload, secondaryWorkCardView } = await import('../public/js/games-view.js');
+  const { openSecondaryWorkCardModal } = await import('../public/js/games-modal.js');
+
+  const bannerOnly = normalizeGamesPayload(payload(secondaryWork())).secondaryWorks[0];
+  assert.equal(bannerOnly.verticalCover, null);
+  assert.equal(secondaryWorkCardView(bannerOnly).coverUrl, GOG_BANNER);
+  let root = resetModals();
+  openSecondaryWorkCardModal(bannerOnly);
+  assert.deepEqual(images(root), [GOG_BANNER]);
+
+  const noArt = normalizeGamesPayload(payload(secondaryWork({
+    gog: { gogGameId: '1999999999', slug: 'gog_exclusive_indie', title: 'GOG Exclusive Indie' },
+  }))).secondaryWorks[0];
+  assert.equal(noArt.verticalCover, null);
+  assert.equal(noArt.coverUrl, null);
+  root = resetModals();
+  openSecondaryWorkCardModal(noArt);
+  assert.deepEqual(images(root), []);
+  // The initials block still names the work: no invented URL.
+  assert.equal(textOf(findByClass(root, 'modal-game-cover')).trim(), 'G');
+});
+
+}
+
+/* ---- was games-secondary-works-dom.test.js ---- */
+{
+function work(index) {
+  const epic = index % 3 === 0;
+  const both = index === 1;
+  const sources = both ? ['gog', 'epic'] : epic ? ['epic'] : ['gog'];
+  const hoursBySource = both
+    ? { steam: null, gog: 12.3, epic: 1.5 }
+    : epic
+      ? { steam: null, gog: null, epic: index + 1 }
+      : { steam: null, gog: index + 1, epic: null };
+  return {
+    workKey: both ? 'gog:1' : epic ? null : `gog:${index}`,
+    source: epic ? 'epic' : 'gog',
+    name: index === 0 ? 'GOG Zero Hours' : index === 2 ? 'GOG Unknown Hours' : `Work ${index}`,
+    sources,
+    ownedOn: sources,
+    storeIds: {
+      steam: null,
+      gog: epic ? null : String(index),
+      epic: epic ? `epic-${index}` : null,
+    },
+    hoursBySource: index === 0
+      ? { steam: null, gog: 0, epic: null }
+      : index === 2
+        ? { steam: null, gog: null, epic: null }
+        : hoursBySource,
+    gog: epic ? null : {
+      gogGameId: String(index),
+      slug: `work-${index}`,
+      title: `Work ${index}`,
+      image: '//images.gog.com/work.jpg',
+      releaseDate: '2015-05-18T00:00:00+0000',
+    },
+    epic: epic ? {
+      catalogItemId: `epic-${index}`,
+      slug: `work-${index}`,
+      releaseDate: '2018-06-01T00:00:00+0000',
+    } : {},
+    genres: index === 1 ? ['RPG', 'Action'] : [],
+  };
+}
+
+const WORKS = Array.from({ length: 20 }, (_, index) => work(index));
+
+// The server puts secondary-only works into `gamesIndex` under their own
+// `workKey` (`appid: null`); the drilldown list must count them exactly like
+// the chart bucket does.
+const SECONDARY_INDEX_ROW = {
+  appid: null,
+  workKey: 'gog:1',
+  secondaryOnly: true,
+  source: 'gog',
+  name: 'Work 1',
+  hours: 13.8,
+  hours2w: 0,
+  rtime: 0,
+  lastPlayed: null,
+  iconUrl: null,
+  canonicalWorkKey: 'gog:1',
+  primaryAppid: null,
+  isPrimary: true,
+  editionCount: 1,
+  canonicalHours: 13.8,
+  sources: ['gog', 'epic'],
+  storeIds: { steam: null, gog: '1', epic: 'epic-1' },
+  hoursBySource: { steam: null, gog: 12.3, epic: 1.5 },
+  hoursUnknown: false,
+  hoursStatus: { gog: 'ok', epic: 'ok' },
+  type: 'game',
+  year: 2015,
+  releaseYear: 2015,
+  genres: ['RPG', 'Action'],
+  developers: [],
+  publishers: [],
+  categories: [],
+  tags: [],
+  metadataSources: [],
+};
+
+const payload = {
+  sources: {
+    connected: [KEY],
+    selected: [KEY],
+    profile: { key: KEY, source: 'steam', personaName: 'player', gameCount: 340 },
+    steam: { configured: true, status: 'ok', gameCount: 340 },
+    gog: { configured: true, connected: true, status: 'ok', productCount: 10 },
+    epic: { configured: true, connected: true, status: 'ok', productCount: 5 },
+  },
+  summary: {
+    gameCount: 340,
+    ownedCount: 340,
+    totalHours: 5852.7,
+    worksTotal: 360,
+    secondaryOnlyWorks: 20,
+    secondaryWorksTotal: 20,
+    hoursBySource: { steam: 5852.7, gog: 120.4, epic: 45 },
+    ownedBySource: { steam: 340, gog: 10, epic: 5 },
+    // M6c backend contract: charts counted secondary-only works.
+    chartsIncludeSecondary: true,
+    secondaryWorksInCharts: 20,
+  },
+  genres: [{ name: 'RPG', count: 40, hours: 100, secondaryCount: 2 }],
+  decades: [{ decade: 2010, count: 80, hours: 200 }],
+  years: [{ year: 2015, count: 30, hours: 70 }],
+  secondaryWorks: WORKS,
+  topGames: [],
+  recentlyPlayed: [],
+  gamesIndex: { 'gog:1': SECONDARY_INDEX_ROW },
+  timeline: [],
+  achievementDays: [],
+  streaks: [],
+  tags: [],
+  scores: [],
+  franchises: [],
+};
+
+const fetched = [];
+globalThis.fetch = async (url) => {
+  const target = String(url);
+  fetched.push(target);
+  let body = {};
+  if (target.startsWith('/api/games/profiles')) {
+    body = {
+      profiles: [{ source: 'steam', userKey: '76561198038369983', key: KEY, personaName: 'player', gameCount: 340 }],
+      steamKey: { configured: true, source: 'file' },
+    };
+  } else if (target.startsWith('/api/games/stats')) {
+    body = payload;
+  } else if (target.startsWith('/api/games/gog/status')) {
+    body = { configured: true, connected: true, status: 'ok', productCount: 10 };
+  } else if (target.startsWith('/api/games/epic/status')) {
+    body = { configured: true, connected: true, status: 'ok', productCount: 5 };
+  } else if (target.startsWith('/api/games/enrich')) {
+    body = { running: false };
+  }
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'application/json' },
+    async json() { return body; },
+    async text() { return JSON.stringify(body); },
+  };
+};
+
+const wait = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
+const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+function lastModal() {
+  const root = nodeFor('modal-root');
+  if (!root || !root.children.length) return null;
+  return root.children[root.children.length - 1];
+}
+
+function lastModalText() {
+  const modal = lastModal();
+  return modal ? norm(textOf(modal)) : '';
+}
+
+function findByClass(root, className) {
+  const out = [];
+  const walk = (node) => {
+    if (!node) return;
+    const classes = String(node.className || '').split(/\s+/);
+    if (classes.includes(className)) out.push(node);
+    for (const child of node.children || []) walk(child);
+  };
+  walk(root);
+  return out;
+}
+
+function findSlices(hostId) {
+  const out = [];
+  const walk = (node) => {
+    if (!node) return;
+    const key = node.attributes && node.attributes['data-key'];
+    if (key) out.push({ key, node });
+    for (const child of node.children || []) walk(child);
+  };
+  walk(nodeFor(hostId));
+  return out;
+}
+
+test('secondary works live in the charts and open the union card from a drilldown', async () => {
+  const games = await import('../public/js/games.js');
+  games.initGames({ onActivate() {} });
+  await games.showGames();
+  await wait(60);
+
+  // There is no standalone «Вне Steam» widget any more.
+  assert.equal(payload.gamesIndex['gog:1'].secondaryOnly, true);
+  assert.equal(
+    (nodeFor('games-secondary-widget').children || []).length,
+    0,
+    'the removed widget must never be painted',
+  );
+
+  // Sources widget: union headline + per-source hour totals + chart status.
+  assert.equal(nodeFor('games-sources-widget').hidden, false);
+  assert.match(norm(textOf(nodeFor('games-sources-note'))), /360 работ в объединённой библиотеке \(включая вне Steam: 20\)/);
+  const secondary = norm(textOf(nodeFor('games-sources-secondary')));
+  assert.match(secondary, /Часы вне Steam: GOG 120,4 ч · Epic 45,0 ч/);
+  assert.match(secondary, /Графики жанров, годов и десятилетий включают работы вне Steam: 20/);
+
+  // Each secondary source row prints its own hours next to the game count.
+  const sourceRows = nodeFor('games-sources-body').children;
+  assert.match(norm(textOf(sourceRows[1])), /10 игр · 120,4 ч/);
+  assert.match(norm(textOf(sourceRows[2])), /5 игр · 45,0 ч/);
+
+  // Chart notes are tolerant and report the inclusion status.
+  assert.match(norm(textOf(nodeFor('games-decades-note'))), /включая вне Steam: 20/);
+  assert.match(norm(textOf(nodeFor('games-years-note'))), /включая вне Steam: 20/);
+  assert.match(norm(textOf(nodeFor('games-genres-note'))), /включая вне Steam: 20/);
+
+  // Genre drilldown: the RPG bar counts the secondary-only work, and its list
+  // contains the same row (no second widget, no separate screen).
+  const rpgRow = nodeFor('games-genres-chart').children
+    .find((row) => norm(textOf(row)).includes('RPG'));
+  assert.ok(rpgRow, 'the RPG genre row must be painted');
+  rpgRow.click();
+  await wait(20);
+  assert.match(lastModalText(), /RPG/);
+  assert.match(lastModalText(), /Work 1/);
+
+  const listRow = findByClass(lastModal(), 'film-row')
+    .find((row) => norm(textOf(row)).includes('Work 1'));
+  assert.ok(listRow, 'the secondary-only work must be a row in the genre modal');
+  // Per-source hours in the row: a GOG+Epic work never prints 13,8 ч.
+  assert.match(norm(textOf(listRow)), /GOG 12,3 ч · Epic 1,5 ч/);
+  assert.equal(norm(textOf(listRow)).includes('13,8'), false);
+
+  // The row opens the client-side union card: no appid, no details request.
+  const before = fetched.filter((url) => url.includes('/api/games/game/')).length;
+  listRow.click();
+  await wait(20);
+  const modal = lastModalText();
+  assert.match(modal, /Работа вне Steam/);
+  assert.match(modal, /Work 1/);
+  assert.match(modal, /Часы по источникам/);
+  assert.match(modal, /Steam/);
+  assert.match(modal, /GOG/);
+  assert.match(modal, /Epic/);
+  assert.match(modal, /12,3 ч/);
+  assert.match(modal, /1,5 ч/);
+  assert.match(modal, /год релиза 2015/);
+  assert.match(modal, /RPG/);
+  const after = fetched.filter((url) => url.includes('/api/games/game/')).length;
+  assert.equal(after, before, 'a secondary card must never call /api/games/game/:appid');
+
+  // Year drilldown counts the same secondary-only work (release year 2015).
+  nodeFor('modal-root').children = [];
+  const yearSlice = findSlices('games-years-donut')
+    .find((slice) => slice.key === 'year-2015');
+  assert.ok(yearSlice, 'the 2015 year slice must be painted');
+  yearSlice.node.click();
+  await wait(20);
+  assert.match(lastModalText(), /Work 1/);
+});
+
+}
