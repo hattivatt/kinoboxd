@@ -79,12 +79,13 @@ const PER_PAGE = 200;
 const PER_PAGE_COOKIE = 'my_perpages';
 const PER_PAGE_COOKIE_KEY = '79votes'; // KinoPoisk's list type id for "оценки"
 
+// uploadId -> kp job
 const jobs = createJobs({
   name: 'films-kp',
   idPrefix: 'films-kp',
   maxJobs: 0,
   keyOf: (job) => job.uploadId,
-}); // uploadId -> kp job
+});
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                              */
@@ -1073,6 +1074,7 @@ function startEnrichment(upload, job) {
 /* ------------------------------------------------------------------ */
 
 // KinoPoisk requests are serialized across all imports so that a second
+// import never runs in parallel with the first one (the registry-wide chain).
 
 function startImport(rawUrl) {
   const userId = parseUserId(rawUrl);
