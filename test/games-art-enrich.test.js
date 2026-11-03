@@ -78,6 +78,12 @@ function recordingArtFetch() {
 }
 
 async function seedProfile(id, appid) {
+  return seedProfileGames(id, [
+    { appid, name: `Game ${appid}`, playtime_forever: 60, img_icon_url: '' },
+  ]);
+}
+
+async function seedProfileGames(id, games) {
   const now = new Date().toISOString();
   await gameCache.saveProfile({
     userKey: id,
@@ -90,9 +96,9 @@ async function seedProfile(id, appid) {
     fetchedAt: now,
     partial: false,
     source: 'steam-webapi',
-    game_count: 1,
-    games: [{ appid, name: `Game ${appid}`, playtime_forever: 60, img_icon_url: '' }],
-    totalMinutes: 60,
+    game_count: games.length,
+    games,
+    totalMinutes: games.reduce((sum, game) => sum + (Number(game.playtime_forever) || 0), 0),
   });
 }
 
@@ -100,6 +106,17 @@ function fakeStore(doc) {
   return {
     async getAppDetails() {
       return JSON.parse(JSON.stringify(doc));
+    },
+  };
+}
+
+/** One details document per appid, each with a new-schema `header_image`. */
+function fakeStorePerAppid(headerFor) {
+  return {
+    async getAppDetails(appid) {
+      return JSON.parse(
+        JSON.stringify(detailDoc(Number(appid), { headerImage: headerFor(Number(appid)) }))
+      );
     },
   };
 }
@@ -176,4 +193,48 @@ test('a deferred resolve is counted but not written (retried next run)', async (
   assert.equal(status.phases.details.artDeferred, 1);
   assert.equal(status.phases.details.artResolved, 0);
   assert.equal(art.readResolvedArt(appid), null);
+});
+
+test('art sweep order: two-week playtime, then last played, then total playtime — not ascending appid', async () => {
+  const id = '76561198000000304';
+  const rows = [
+    { appid: 10, name: 'Game 10', playtime_forever: 0, img_icon_url: '' },
+    {
+      appid: 100,
+      name: 'Game 100',
+      playtime_forever: 5000,
+      rtime_last_played: 1700000000,
+      img_icon_url: '',
+    },
+    { appid: 300, name: 'Game 300', playtime_forever: 9000, playtime_2weeks: 30, img_icon_url: '' },
+    {
+      appid: 400,
+      name: 'Game 400',
+      playtime_forever: 1000,
+      playtime_2weeks: 120,
+      rtime_last_played: 1600000000,
+      img_icon_url: '',
+    },
+    { appid: 900, name: 'Game 900', playtime_forever: 8000, img_icon_url: '' },
+  ];
+  await seedProfileGames(id, rows);
+  const headerFor = (appid) =>
+    `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${appid}/${HEADER_HASH}/header.jpg`;
+  const visited = [];
+  const status = await run(`steam-${id}`, fakeStorePerAppid(headerFor), {
+    budget: 10,
+    artResolver: async (appid) => {
+      visited.push(appid);
+      return { kind: 'none' };
+    },
+  });
+
+  assert.equal(status.status, 'done');
+  assert.equal(status.phases.details.artCandidates, 5);
+  assert.equal(status.phases.details.artNone, 5);
+  assert.deepEqual(
+    visited,
+    [400, 300, 100, 900, 10],
+    'fresh two-week games first, then last-played, then total hours; the rest keeps appid order'
+  );
 });

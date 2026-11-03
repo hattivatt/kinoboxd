@@ -480,16 +480,59 @@ function artResolverFor(options) {
 }
 
 /**
+ * Sweep key of one library row: the owner's most useful art targets first —
+ * minutes played in the last two weeks, then the last-played timestamp, then
+ * total playtime. All three are already on the library row; nothing extra is
+ * fetched.
+ */
+function artSweepKey(row) {
+  return {
+    minutes2w: Math.max(0, Number(row && row.playtime_2weeks) || 0),
+    rtime: Math.max(0, Number(row && row.rtime_last_played) || 0),
+    forever: Math.max(0, Number(row && row.playtime_forever) || 0),
+  };
+}
+
+/**
+ * Reorder the resolve candidates so a fresh or actively played game gets its
+ * capsule during the first seconds of the sweep instead of after a 25-minute
+ * ascending-appid walk. Only the visit order changes: the candidate set, the
+ * counters and the per-appid documents are identical. Ties keep the library
+ * order (appid ascending), so the sweep stays deterministic.
+ */
+function artSweepOrder(candidates, library) {
+  const rows = new Map();
+  for (const game of (library && Array.isArray(library.games) && library.games) || []) {
+    const appid = Number(game && game.appid);
+    if (Number.isInteger(appid) && appid > 0 && !rows.has(appid)) rows.set(appid, game);
+  }
+  return candidates
+    .map((candidate, index) => ({ candidate, index, key: artSweepKey(rows.get(candidate.appid)) }))
+    .sort(
+      (a, b) =>
+        b.key.minutes2w - a.key.minutes2w ||
+        b.key.rtime - a.key.rtime ||
+        b.key.forever - a.key.forever ||
+        a.index - b.index
+    )
+    .map((entry) => entry.candidate);
+}
+
+/**
  * Resolve the vertical capsule for every library appid whose `details`
  * document carries `header_image` and whose resolve document is missing or
  * older than its TTL (180 days positive / 30 days `none`). One pass per
  * appid; the result lives in `cache-games/art/resolved/<appid>.json`.
  *
+ * The pass visits `most recently played → most played → rest` (`artSweepOrder`)
+ * instead of ascending appid: the owner sees the art of the games they are
+ * playing right now first.
+ *
  * Counters are additive on the phase: `artCandidates`, `artResolved`,
  * `artNone`, `artDeferred`. A deferred lookup is not a verdict and is retried
  * on the next run.
  */
-async function resolveArtForLibrary(job, phase, appids, options = {}) {
+async function resolveArtForLibrary(job, phase, appids, options = {}, library = null) {
   const resolver = artResolverFor(options);
   if (!resolver) return;
   const now = Date.now();
@@ -514,7 +557,7 @@ async function resolveArtForLibrary(job, phase, appids, options = {}) {
     sgdbSpec.budgetDefault
   );
 
-  for (const { appid, doc } of candidates) {
+  for (const { appid, doc } of artSweepOrder(candidates, library)) {
     try {
       const resolved = await resolver(appid, {
         headerImage: doc.headerImage,
@@ -628,7 +671,7 @@ async function runPhase(job, phaseName, scope, options) {
     const coverage = phaseCoverage(spec, appids);
     phase.resolved = coverage.resolved;
     phase.percent = coverage.percent;
-    if (phaseName === 'details') await resolveArtForLibrary(job, phase, appids, options);
+    if (phaseName === 'details') await resolveArtForLibrary(job, phase, appids, options, library);
     phase.elapsedMs = Date.now() - startedAt;
     return phase;
   }
@@ -738,7 +781,7 @@ async function runPhase(job, phaseName, scope, options) {
 
   phase.remaining = stale.length - selected.length + phase.deferred;
   phase.budgetRemaining = budget.remaining;
-  if (phaseName === 'details') await resolveArtForLibrary(job, phase, appids, options);
+  if (phaseName === 'details') await resolveArtForLibrary(job, phase, appids, options, library);
   phase.stage = 'done';
   phase.status = 'done';
   phase.percent = 100;
