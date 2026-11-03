@@ -21,11 +21,15 @@
  *   - `resolved` counts a detail whose **facts** arrived (year + genres for
  *     Epic), `partial` a document with only one of them, `pending` a work with
  *     no detail yet, `unavailable` a settled negative;
- *   - the kick rule is `resolved < total || partial > 0 || noSlug > 0`
- *     (`coverageNeedsKick`), refined by the cache so an already-attempted work
- *     is not re-kicked every poll;
+ *   - the kick rule is `resolved < total || partial > 0 || healable > 0 ||
+ *     noSlug > 0` (`coverageNeedsKick`), refined by the cache so an
+ *     already-attempted work is not re-kicked every poll;
  *   - a `partial` whose catalog answer is still due (`retryablePartial`) stays
- *     kickable; a settled `shape_ok` partial does not burn a request per poll.
+ *     kickable; a settled `shape_ok` partial does not burn a request per poll;
+ *   - a `partial` whose missing fact is already in the identity bridge
+ *     (`healable`: a `P577` year or a `P136` genre line waiting in
+ *     `links/secondary.json`) is kickable too — the job's heal branch writes it
+ *     from the cache with **no** request, and the counter drops to 0 afterwards.
  *
  * Politeness (§14.5): one request per product, pause `GAMES_SECONDARY_PAUSE_MS`
  * (default **2 s**, GOG's undocumented ~200 req/h/IP limit is the reference),
@@ -109,6 +113,8 @@ const {
   applyWikidataYear,
   enrichUnionWithDetails,
   refreshForJob,
+  readSecondaryLinks,
+  readSecondaryTitleLinks,
 } = require('./secondary');
 
 const DEFAULT_BUDGET = sources.budgetLimit('secondary');
@@ -667,6 +673,35 @@ function targetsForOwner(ownerKey) {
 /* ------------------------------------------------------------------ */
 
 /**
+ * Would the cached identity bridge fill an **empty** fact of this detail —
+ * without a single request?
+ *
+ * `applyWikidataFacts` is the exact function the job's cached-document heal
+ * branch calls, so the verdict and the heal cannot drift: `next !== data` means
+ * the bridge already carries the release year (`P577`) or the genre line
+ * (`P136`) this document is missing. A partial with such a fact is `healable`
+ * and must reach the kick even when the catalog has nothing left to answer
+ * (the Alan Wake 2 symptom: the genre line sat in `titleEntries`, the lazy kick
+ * returned `attempted` because only catalog work counted).
+ *
+ * Only **facts** count, never the presence of an entry: a settled title `miss`
+ * (`qid: null`), a genre-less QID, or two different QIDs leave the document
+ * unchanged and are not healable — otherwise the kick would repeat forever with
+ * nothing to apply. The bridge is read **fresh-only**, exactly like the heal
+ * branch: a stale entry would not be applied by the job either, so it must not
+ * start one.
+ */
+function healableFromBridge(data, slug, bridge) {
+  if (!data || !slug || data.source !== 'epic') return false;
+  // Both facts arrived — nothing to fill, whatever the bridge says.
+  if (catalogMetaFlags(data).metaStatus === 'complete') return false;
+  const { links, titleLinks } = bridge();
+  return (
+    applyWikidataFacts(data, { store: 'epic', slug, links, titleLinks }) !== data
+  );
+}
+
+/**
  * How many of the owner's secondary products already have a detail document.
  * `total` includes **slugless** Epic works: the title probe is the only way to
  * address them, and «resolved < total» must stay true until one of them is
@@ -687,12 +722,30 @@ function coverageForOwner(ownerKey) {
   } catch (err) {
     catalogState = null;
   }
+  // The identity bridge is read **once** per pass and only when a partial Epic
+  // document needs it: `/stats` is polled, and a 300-work library must not
+  // re-read `links/secondary.json` per target. `null` = not read yet.
+  let bridgeLinks = null;
+  let bridgeTitleLinks = null;
+  const bridge = () => {
+    if (bridgeLinks === null) {
+      try {
+        bridgeLinks = readSecondaryLinks();
+        bridgeTitleLinks = readSecondaryTitleLinks();
+      } catch (err) {
+        bridgeLinks = {};
+        bridgeTitleLinks = {};
+      }
+    }
+    return { links: bridgeLinks, titleLinks: bridgeTitleLinks };
+  };
   const phase = (source, list, idOf) => {
     let resolved = 0;
     let notFound = 0;
     let unavailable = 0;
     let partial = 0;
     let retryablePartial = 0;
+    let healable = 0;
     let pending = 0;
     for (const target of list) {
       const id = idOf(target);
@@ -759,6 +812,11 @@ function coverageForOwner(ownerKey) {
         ) {
           retryablePartial++;
         }
+        // Independent of the catalog: a missing fact that is already in the
+        // identity bridge is applied by the job's heal branch from the cache,
+        // with no request and no owner token. This is what makes the AW2
+        // genre line reach a kick at all.
+        if (healableFromBridge(doc.data, id, bridge)) healable++;
       } else if (completion === 'pending') pending++;
       else unavailable++;
     }
@@ -769,6 +827,7 @@ function coverageForOwner(ownerKey) {
       unavailable,
       partial,
       retryablePartial,
+      healable,
       missingSlug: 0,
       pending,
     };
@@ -797,16 +856,19 @@ function coverageForOwner(ownerKey) {
     pending: gog.pending + epic.pending,
     // `partial` is a first-class state: the work has a detail document but one
     // of year/genres is missing. `retryablePartial` is the subset the catalog
-    // can still answer for (no attempt yet, or the 30-day window expired).
+    // can still answer for (no attempt yet, or the 30-day window expired);
+    // `healable` is the subset whose missing fact already sits in the cached
+    // identity bridge (a cache-only write, no request, no token).
     partial: gog.partial + epic.partial,
     retryablePartial: gog.retryablePartial + epic.retryablePartial,
+    healable: gog.healable + epic.healable,
   };
 }
 
 /**
  * The owner-facing diagnostic (`GET /api/games/secondary-details/status`).
- * Contract: `{ resolved, total, pending, partial, retryablePartial, running,
- * bySource, slugless[], lastErrors[], cooldownUntil, kick, lastRunAt }`.
+ * Contract: `{ resolved, total, pending, partial, retryablePartial, healable,
+ * running, bySource, slugless[], lastErrors[], cooldownUntil, kick, lastRunAt }`.
  * Everything here is a cache/state read — the endpoint never makes a network
  * request.
  */
@@ -837,6 +899,10 @@ function statusForOwner(ownerKey) {
     // every partial, is what a lazy kick will address.
     partial: coverage.partial,
     retryablePartial: coverage.retryablePartial,
+    // The subset of `partial` whose missing fact is already cached in the
+    // identity bridge: the next job writes it without a request. Additive
+    // diagnostic — it never changes the meaning of the counters above.
+    healable: coverage.healable,
     running: runningFor(key),
     bySource: {
       gog: { ...coverage.gog },
@@ -889,6 +955,13 @@ function statusForOwner(ownerKey) {
  *                          arrived; the time-based rule used to let this work
  *                          sit forever (the AW2 symptom), so it is now
  *                          re-posted with the goal «complete»;
+ *   - `healable > 0`     — a partial whose missing fact is already in the
+ *                          cached identity bridge: the job writes it from the
+ *                          cache, no request. Absent from the cheap
+ *                          `stats.meta.secondaryDetails` snapshot (that one is
+ *                          built from the detail index alone); a coverage
+ *                          snapshot carries it, and the lazy kick's refinement
+ *                          is what turns it into a job;
  *   - `noSlug > 0`       — an Epic work has no store slug and can only be
  *                          addressed by the title probe.
  *
@@ -900,8 +973,9 @@ function coverageNeedsKick(meta) {
   const total = Number(meta.total) || 0;
   const resolved = Number(meta.resolved) || 0;
   const partial = Number(meta.partial) || 0;
+  const healable = Number(meta.healable) || 0;
   const noSlug = Number(meta.noSlug) || 0;
-  return (total > 0 && resolved < total) || partial > 0 || noSlug > 0;
+  return (total > 0 && resolved < total) || partial > 0 || healable > 0 || noSlug > 0;
 }
 
 /**
@@ -913,7 +987,10 @@ function coverageNeedsKick(meta) {
  * Kick rule (fix 02.11.2026): `resolved < total || partial > 0 || noSlug > 0`
  * — see `coverageNeedsKick`. The cache refinement then drops works that were
  * already attempted (404/settled negative), while a `partial` whose catalog
- * answer is still due stays kickable.
+ * answer is still due stays kickable. Since 03.11.2026 a partial whose missing
+ * fact is already cached in the identity bridge (`healable`) is kickable as
+ * well: the job's heal branch writes it with no request, and the counter drops
+ * to 0, so the kick cannot repeat for the same document.
  */
 function kickFromStats(ownerKey, meta, options = {}) {
   const key = String(ownerKey == null ? '' : ownerKey).trim();
@@ -949,6 +1026,7 @@ function kickFromStats(ownerKey, meta, options = {}) {
     memo &&
     memo.pending <= 0 &&
     memo.retryablePartial <= 0 &&
+    !(Number(memo.healable) > 0) &&
     nowMs() - memo.at < COVERAGE_MEMO_MS
   ) {
     return { skipped: 'attempted' };
@@ -971,9 +1049,17 @@ function kickFromStats(ownerKey, meta, options = {}) {
   // are incomplete — the catalog is re-asked when no attempt is recorded yet
   // or its 30-day probe window expired. A settled `shape_ok` partial stays
   // settled and must not burn a request on every poll.
+  //
+  // `healable` is the other way out of `partial` (fix 03.11.2026): the missing
+  // fact is already in `links/secondary.json`, so the job heals the document
+  // from the cache with **no** request. It must be a kick reason on its own —
+  // the AW2 genre line was never a catalog question, so `retryablePartial`
+  // stayed 0 and `/stats` answered `attempted` forever. After the heal the
+  // document is complete and both counters are 0, so this cannot loop.
   const retryablePartial = coverage.retryablePartial;
-  if (coverage.pending <= 0 && retryablePartial <= 0) {
-    coverageMemo.set(key, { at: nowMs(), pending: 0, retryablePartial: 0 });
+  const healable = Number(coverage.healable) || 0;
+  if (coverage.pending <= 0 && retryablePartial <= 0 && healable <= 0) {
+    coverageMemo.set(key, { at: nowMs(), pending: 0, retryablePartial: 0, healable: 0 });
     return { skipped: 'attempted' };
   }
   coverageMemo.delete(key);

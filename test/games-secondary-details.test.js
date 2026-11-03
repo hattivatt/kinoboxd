@@ -2107,6 +2107,9 @@ test('secondary details status + lazy kick', async (t) => {
       unavailable: 0,
       partial: 0,
       retryablePartial: 0,
+      // Additive counter (03.11.2026): partials whose missing fact is already
+      // cached in the identity bridge — a cache-only heal, no request.
+      healable: 0,
       missingSlug: 1,
       pending: 2,
       // Diagnostics added by the 02.11.2026 silent-skip fix: the profile is
@@ -2698,6 +2701,16 @@ test('coverageNeedsKick: the documented rule, in one place', () => {
   assert.equal(details.coverageNeedsKick({ resolved: 0, total: 1, partial: 0, noSlug: 0 }), true);
   assert.equal(details.coverageNeedsKick({ resolved: 1, total: 1, partial: 0, noSlug: 0 }), false);
   assert.equal(details.coverageNeedsKick({ resolved: 1, total: 1, partial: 1, noSlug: 0 }), true);
+  // A partial whose missing fact is already cached in the identity bridge is a
+  // kick reason on its own (03.11.2026): the heal costs no request.
+  assert.equal(
+    details.coverageNeedsKick({ resolved: 1, total: 1, partial: 0, healable: 1, noSlug: 0 }),
+    true
+  );
+  assert.equal(
+    details.coverageNeedsKick({ resolved: 1, total: 1, partial: 0, healable: 0, noSlug: 0 }),
+    false
+  );
   assert.equal(details.coverageNeedsKick({ resolved: 1, total: 1, partial: 0, noSlug: 1 }), true);
   assert.equal(details.coverageNeedsKick(null), false);
   assert.equal(details.coverageNeedsKick({}), false);
@@ -2789,6 +2802,189 @@ test('partial coverage: retryablePartial > 0, status and stats expose partial', 
     const coverage = details.coverageForOwner(OWNER);
     assert.equal(coverage.partial, 1);
     assert.equal(coverage.retryablePartial, 0, 'a shape_ok answer is terminal even if the doc is partial');
+
+    const skipped = details.kickFromStats(OWNER, {
+      resolved: 0,
+      total: 1,
+      partial: 1,
+      noSlug: 0,
+    });
+    assert.equal(skipped.skipped, 'attempted');
+    assert.equal(details.jobFor(OWNER), null);
+  });
+
+  /* ---- healable partials: the fact is already in the identity bridge ---- */
+
+  /**
+   * The deploy shape of `links/secondary.json` (03.11.2026): the slug entry
+   * owns the identity and the `P577` date, the QID's `P136` genre line lives in
+   * the title map. Nothing here needs a request — `applyWikidataFacts` merges
+   * the two, exactly as the job's heal branch does.
+   */
+  function writeDeployBridge() {
+    identity.writeCache(
+      {
+        'epic:alan_wake_2': {
+          qid: 'Q108417001',
+          appid: null,
+          store: 'epic',
+          releaseYear: 2023,
+          releasePrecision: 'day',
+          releaseDate: '2023-10-27',
+          releaseDateSource: 'wikidata',
+        },
+      },
+      {
+        titleEntries: {
+          'epic:alan_wake_2': {
+            qid: 'Q108417001',
+            appid: null,
+            store: 'epic',
+            slug: SLUG,
+            title: 'Alan Wake 2',
+            matchedLabel: 'Alan Wake II',
+            matchedBy: 'title',
+            confidence: 'medium',
+            titleMatched: 'unique',
+            releaseYear: 2023,
+            releasePrecision: 'day',
+            releaseDate: '2023-10-27',
+            releaseDateSource: 'wikidata',
+            genres: ['Survival horror', 'Third-person shooter'],
+          },
+        },
+      }
+    );
+  }
+
+  await t.test('a partial whose genre line is cached in the bridge is kicked from /stats', async () => {
+    clearState();
+    await seedOwner();
+    writePartialDetail();
+    writeDeployBridge();
+    // The catalog has already answered (`shape_ok`): the **only** way this
+    // document can become complete is the cached `P136` line. This is the prod
+    // shape — ledger settled, genres waiting in `titleEntries`.
+    details.recordCatalogAttempt(OWNER, CATALOG_ID, {
+      result: 'shape_ok',
+      httpStatus: 200,
+      bytes: 512,
+      genresOk: true,
+      yearHas: true,
+    });
+    const coverage = details.coverageForOwner(OWNER);
+    assert.equal(coverage.partial, 1);
+    assert.equal(coverage.retryablePartial, 0, 'the catalog has nothing left to answer');
+    assert.equal(coverage.healable, 1, 'the genre line is already in titleEntries');
+    assert.equal(coverage.epic.healable, 1);
+    assert.equal(details.statusForOwner(OWNER).healable, 1);
+
+    const cmsCalls = [];
+    const kicked = details.kickFromStats(
+      OWNER,
+      // `/stats` meta has no `healable` key: the cache refinement supplies it.
+      { resolved: 0, total: 1, partial: 1, noSlug: 0 },
+      { client: fakeClient(cmsCalls), pauseMs: 0 }
+    );
+    assert.equal(kicked.skipped, undefined, 'a healable partial must not be skipped');
+    assert.ok(kicked.id, 'a job was started');
+    const job = await waitForJob();
+    assert.equal(job.status, 'done');
+    assert.equal(job.requests, 0, 'the heal is a cache read + a write, not a request');
+    assert.equal(job.epic.resolved, 1);
+    assert.equal(job.epic.cached, 1);
+    assert.equal(cmsCalls.length, 0, 'no CMS request for a cached heal');
+
+    const doc = details.readDetail('epic', SLUG).doc;
+    assert.deepEqual(doc.data.genres, ['Survival horror', 'Third-person shooter']);
+    assert.equal(doc.data.genresSource, 'wikidata');
+    assert.equal(doc.data.metaStatus, 'complete');
+    const status = details.statusForOwner(OWNER);
+    assert.equal(status.resolved, 1);
+    assert.equal(status.partial, 0);
+    assert.equal(status.healable, 0);
+    // The ledger proves the trigger: «nobody kicked» was the production symptom.
+    assert.ok(
+      status.kick.history.some((entry) => entry.trigger === 'stats' && entry.result === 'started')
+    );
+  });
+
+  await t.test('after the heal the work is neither healable nor kicked again', async () => {
+    // Continues the previous case: the document is complete now.
+    const before = details.jobFor(OWNER);
+    const coverage = details.coverageForOwner(OWNER);
+    assert.equal(coverage.partial, 0);
+    assert.equal(coverage.healable, 0, 'nothing left to apply — the counter must reach 0');
+    // A stale `/stats` snapshot still says «partial»: the refinement must not
+    // start a no-op job, or the 10-minute cooldown would kick forever.
+    const again = details.kickFromStats(OWNER, {
+      resolved: 0,
+      total: 1,
+      partial: 1,
+      noSlug: 0,
+    });
+    assert.equal(again.skipped, 'attempted');
+    assert.equal(details.jobFor(OWNER).id, before.id, 'no second job');
+  });
+
+  await t.test('a partial with no bridge facts is not kicked from /stats', async () => {
+    clearState();
+    await seedOwner();
+    writePartialDetail();
+    // Catalog settled, and no bridge file at all: nothing to heal.
+    details.recordCatalogAttempt(OWNER, CATALOG_ID, {
+      result: 'shape_ok',
+      httpStatus: 200,
+      bytes: 512,
+      genresOk: true,
+      yearHas: true,
+    });
+    try {
+      fs.rmSync(identity.CACHE_PATH, { force: true });
+    } catch (err) {
+      /* nothing to clean */
+    }
+    let coverage = details.coverageForOwner(OWNER);
+    assert.equal(coverage.partial, 1);
+    assert.equal(coverage.healable, 0, 'no bridge file at all');
+
+    // A *settled miss* is an entry without facts: it must not count as healable
+    // (otherwise the kick would repeat every cooldown with nothing to apply).
+    identity.writeCache(
+      {
+        'epic:alan_wake_2': {
+          qid: 'Q108417001',
+          appid: null,
+          store: 'epic',
+          releaseYear: 2023,
+          releasePrecision: 'day',
+          releaseDate: '2023-10-27',
+          releaseDateSource: 'wikidata',
+        },
+      },
+      {
+        titleEntries: {
+          'epic:alan_wake_2': {
+            qid: null,
+            appid: null,
+            store: 'epic',
+            slug: SLUG,
+            title: 'Alan Wake 2',
+            matchedBy: 'title',
+            confidence: 'none',
+            titleMatched: 'miss',
+            releaseYear: null,
+            releasePrecision: null,
+            releaseDate: null,
+            releaseDateSource: null,
+            genres: [],
+          },
+        },
+      }
+    );
+    coverage = details.coverageForOwner(OWNER);
+    assert.equal(coverage.partial, 1);
+    assert.equal(coverage.healable, 0, 'a settled miss is not a fact');
 
     const skipped = details.kickFromStats(OWNER, {
       resolved: 0,
