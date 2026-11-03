@@ -1000,6 +1000,119 @@ test('secondary identity bridge', async (t) => {
     assert.equal(report.entries['epic:the_witcher_3_wild_hunt'].appid, '292030');
   });
 
+  await t.test('title query is exact-literal, class-restricted and never a SEARCH call', () => {
+    const query = identity.buildTitleQuery(['Alan Wake 2']);
+    // The store says «2», Wikidata usually says «II» — both are exact VALUES.
+    assert.match(query, /"Alan Wake 2"@en/);
+    assert.match(query, /"Alan Wake II"@en/);
+    assert.match(query, /VALUES \?matched/);
+    assert.match(query, /rdfs:label \?matched/);
+    assert.match(query, /skos:altLabel \?matched/);
+    assert.match(query, /wdt:P31\/wdt:P279\* wd:Q7889/);
+    assert.match(query, /p:P577 \?st/);
+    assert.doesNotMatch(query, /mwapi|SEARCH/i);
+    // No title → no query, never an unconstrained scan.
+    assert.equal(identity.buildTitleQuery([]), null);
+  });
+
+  await t.test('a unique exact-title match is stored in the title map with honest provenance', () => {
+    const entries = identity.parseTitleResponse(
+      {
+        results: {
+          bindings: [
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q108417001' },
+              matched: { value: 'Alan Wake II' },
+              date: { value: '2023-10-27T00:00:00Z' },
+              precision: { value: '11' },
+            },
+          ],
+        },
+      },
+      [{ store: 'epic', slug: 'alan-wake-2', title: 'Alan Wake 2' }]
+    );
+    assert.deepEqual(entries['epic:alan_wake_2'], {
+      qid: 'Q108417001',
+      appid: null,
+      store: 'epic',
+      slug: 'alan-wake-2',
+      title: 'Alan Wake 2',
+      matchedLabel: 'Alan Wake II',
+      matchedBy: 'title',
+      confidence: 'medium',
+      titleMatched: 'unique',
+      releaseYear: 2023,
+      releasePrecision: 'day',
+      releaseDate: '2023-10-27',
+      releaseDateSource: 'wikidata',
+    });
+  });
+
+  await t.test('two different QIDs for an exact title are not linked', () => {
+    const entries = identity.parseTitleResponse(
+      {
+        results: {
+          bindings: [
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q100' },
+              matched: { value: 'Prey' },
+            },
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q200' },
+              matched: { value: 'Prey' },
+            },
+          ],
+        },
+      },
+      [{ store: 'epic', slug: 'prey', title: 'Prey' }]
+    );
+    const entry = entries['epic:prey'];
+    assert.equal(entry.qid, null, 'ambiguity is never resolved by picking one');
+    assert.equal(entry.titleMatched, 'ambiguous');
+    assert.equal(entry.confidence, 'none');
+    assert.equal(entry.releaseYear, null);
+  });
+
+  await t.test('the title pass caches into titleEntries, not into the P6278 entries', async () => {
+    const fetchImpl = fakeFetch(() =>
+      jsonResponse({
+        results: {
+          bindings: [
+            {
+              item: { value: 'http://www.wikidata.org/entity/Q108417001' },
+              matched: { value: 'Alan Wake II' },
+              date: { value: '2023-10-27T00:00:00Z' },
+              precision: { value: '11' },
+            },
+          ],
+        },
+      })
+    );
+    const report = await identity.fetchSecondaryTitleLinks(
+      { epicGames: [{ slug: 'aw2-title-cache', title: 'Alan Wake 2' }] },
+      { fetchImpl, force: true }
+    );
+    assert.equal(report.queries, 1);
+    assert.equal(report.resolved, 1);
+    assert.equal(fetchImpl.calls.length, 1);
+    // The query is the title query, not the P6278 bridge query.
+    assert.equal(String(fetchImpl.calls[0].body).includes('P6278'), false);
+    assert.match(String(fetchImpl.calls[0].body), /skos%3AaltLabel|skos:altLabel/);
+    const titleLinks = identity.readSecondaryTitleLinks();
+    assert.equal(titleLinks['epic:aw2_title_cache'].qid, 'Q108417001');
+    assert.equal(titleLinks['epic:aw2_title_cache'].matchedBy, 'title');
+    // It did not fabricate a trustworthy slug identity.
+    assert.equal(identity.readSecondaryLinks()['epic:aw2_title_cache'], undefined);
+
+    // Fresh miss/answer is not re-asked.
+    const again = await identity.fetchSecondaryTitleLinks(
+      { epicGames: [{ slug: 'aw2-title-cache', title: 'Alan Wake 2' }] },
+      { fetchImpl }
+    );
+    assert.equal(again.queries, 0);
+    assert.equal(fetchImpl.calls.length, 1);
+  });
+
   await t.test('refreshForJob is skipped for an injected client and for a disabled pass', async () => {
     assert.deepEqual(
       await identity.refreshForJob({
@@ -1032,6 +1145,43 @@ test('secondary identity bridge', async (t) => {
     assert.equal(report.queries, 1);
     assert.equal(report.skipped, null);
     assert.deepEqual(report.errors, []);
+  });
+
+  await t.test('refreshForJob asks the title pass only for a date-less Epic work', async () => {
+    const fetchImpl = fakeFetch((url, init) => {
+      const body = String(init.body);
+      if (body.includes('P6278')) return jsonResponse({ results: { bindings: [] } });
+      if (body.includes('P577')) {
+        return jsonResponse({
+          results: {
+            bindings: [
+              {
+                item: { value: 'http://www.wikidata.org/entity/Q108417001' },
+                matched: { value: 'Alan Wake II' },
+                date: { value: '2023-10-27T00:00:00Z' },
+                precision: { value: '11' },
+              },
+            ],
+          },
+        });
+      }
+      return jsonResponse({ results: { bindings: [] } });
+    });
+    const report = await identity.refreshForJob({
+      epicGames: [{ slug: 'aw2-title-job', title: 'Alan Wake 2' }],
+      options: { fetchImpl, force: true },
+    });
+    assert.equal(report.epicTitles, 1);
+    assert.equal(report.queries, 2);
+    assert.equal(report.titleQueries, 1);
+    assert.equal(report.titleResolved, 1);
+    assert.equal(identity.readSecondaryTitleLinks()['epic:aw2_title_job'].qid, 'Q108417001');
+    // A work with a store date is not even considered for the title pass.
+    const dated = identity.collectTitleCandidates([
+      { slug: 'aw2-title-job', title: 'Alan Wake 2', releaseDate: '2023-10-27' },
+      { slug: 'aw2-title-job', title: 'Alan Wake 2', releaseYear: 2023 },
+    ]);
+    assert.deepEqual(dated, []);
   });
 });
 

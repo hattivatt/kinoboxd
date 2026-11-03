@@ -65,6 +65,7 @@ const {
   epicTagName,
   epicGenresFromCategories,
   catalogAnswersMissing,
+  catalogMetaFlags,
 } = require('./secondary/normalize');
 const {
   CACHE_DIR,
@@ -101,7 +102,7 @@ const {
   resolveEpic,
   createCatalogClient,
 } = require('./sources/epic');
-const { applyWikidataYear, enrichUnionWithDetails } = require('./secondary');
+const { applyWikidataYear, enrichUnionWithDetails, refreshForJob } = require('./secondary');
 
 const DEFAULT_BUDGET = sources.budgetLimit('secondary');
 const DEFAULT_PAUSE_MS = sources.pauseMs('secondary');
@@ -229,6 +230,35 @@ async function runPhase(job, source, targets, resolveOne) {
         catalogItemId: target.catalogItemId,
       });
     if (cached.fresh && !job.force && !completingCatalog) {
+      // A fresh partial document can still receive a year that appeared in the
+      // identity bridge after it was written (the Alan Wake 2 heal). This is a
+      // cache read + a write only when something was actually filled; no
+      // network, no request counter.
+      if (
+        source === 'epic' &&
+        cached.doc &&
+        cached.doc.status === 'ok' &&
+        cached.doc.data &&
+        cached.doc.data.releaseYear == null
+      ) {
+        const healed = applyWikidataYear(cached.doc.data, {
+          store: 'epic',
+          slug: target.slug || target.id,
+        });
+        if (healed !== cached.doc.data) {
+          const flags = catalogMetaFlags(healed);
+          writeDetail('epic', target.id, 'ok', {
+            ...healed,
+            metaStatus: flags.metaStatus,
+            metaYearHas: flags.yearHas,
+            metaGenresOk: flags.genresOk,
+            metaCheckedAt: isoOf(nowMs()),
+          });
+          phase.resolved++;
+          phase.cached++;
+          continue;
+        }
+      }
       if (cached.doc.status === 'ok') phase.resolved++;
       else phase.notFound++;
       phase.cached++;
@@ -308,6 +338,31 @@ async function runPhase(job, source, targets, resolveOne) {
 }
 
 /**
+ * Epic works whose year is still empty **and** whose store/catalog gave no
+ * date. Only these may be title-matched against Wikidata; a work with a store
+ * date (or an already cached year) is never re-identified by title.
+ */
+function titleCandidatesFor(epic) {
+  const out = [];
+  for (const entry of Array.isArray(epic) ? epic : []) {
+    if (!entry || !entry.slug || !entry.title) continue;
+    // No catalog document means the store date is unknown; the import writes
+    // one for every game, so wait for that instead of asking on a guess.
+    if (!entry.catalog || entry.catalog.releaseDate) continue;
+    let cached = null;
+    try {
+      cached = readDetail('epic', entry.slug);
+    } catch (err) {
+      cached = null;
+    }
+    const data = cached && cached.doc && cached.doc.status === 'ok' ? cached.doc.data : null;
+    if (data && data.releaseYear != null) continue;
+    out.push({ slug: entry.slug, title: entry.title });
+  }
+  return out;
+}
+
+/**
  * Start (or coalesce into) a details job. Returns the public job immediately;
  * the loop runs in the background and never rejects into the caller.
  */
@@ -362,6 +417,25 @@ function startSecondaryDetails(options = {}) {
 
   const run = async () => {
     try {
+      // A store-exclusive with no date (Alan Wake 2) can get its P577 from a
+      // unique exact-title Wikidata match. One cache-backed request per run,
+      // skipped for inert clients and on the shared `KINOBOXD_GAMES_WD=off`
+      // kill switch (checked inside `refreshForJob`).
+      const titleCards = titleCandidatesFor(epic);
+      if (!job.client && titleCards.length) {
+        try {
+          job.titleLinks = await refreshForJob({
+            epicGames: titleCards,
+            options: {
+              fetchImpl: options.fetchImpl,
+              wdqsEndpoint: options.wdqsEndpoint,
+              wikidata: options.wikidata,
+            },
+          });
+        } catch (err) {
+          job.titleLinks = { skipped: 'error' };
+        }
+      }
       await runPhase(
         job,
         'gog',
@@ -513,12 +587,26 @@ function targetsForOwner(ownerKey) {
     const catalog = epicCache.listEpicCatalogItems(
       games.map((game) => game && game.catalogItemId).filter(Boolean)
     );
+    // productmapping keys are appNames or namespaces; an Epic exclusive (Alan
+    // Wake 2) is present only under its namespace.
+    let productMapping = {};
+    try {
+      const mapping = epicCache.getProductMapping();
+      productMapping = mapping && mapping.byAppName ? mapping.byAppName : {};
+    } catch (err) {
+      productMapping = {};
+    }
     for (const game of games) {
       if (!game) continue;
       const meta = (game.catalogItemId && catalog[game.catalogItemId]) || null;
+      const mappedSlug =
+        (game.appName && productMapping[game.appName]) ||
+        (game.namespace && productMapping[game.namespace]) ||
+        null;
       const slug =
         (meta && meta.slug) ||
         game.slug ||
+        mappedSlug ||
         (game.catalogItemId ? epicCache.getEpicSlugOverride(game.catalogItemId) : null) ||
         null;
       const title = (meta && meta.title) || game.name || game.appName || null;
@@ -909,6 +997,7 @@ module.exports = {
   epicTagName,
   epicGenresFromCategories,
   catalogAnswersMissing,
+  catalogMetaFlags,
   refetchEpicCatalog,
   readCatalogProbe,
   writeCatalogProbe,

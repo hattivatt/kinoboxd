@@ -33,6 +33,7 @@ const gogCache = require('../server/games/gog-cache');
 const epicCache = require('../server/games/epic-cache');
 const tokenStore = require('../server/games/epic-token-store');
 const details = require('../server/games/secondary-details');
+const identity = require('../server/games/secondary-identity');
 const epicLayer = require('../server/games/epic-layer');
 const { buildSecondaryUnion } = require('../server/games/secondary-union');
 const { buildGamesStatsFromCache } = require('../server/games/stats');
@@ -350,11 +351,77 @@ test('secondary details', async (t) => {
     );
   });
 
+  await t.test('Epic buckets are case-insensitive and never become a genre', () => {
+    // The live Alan Wake 2 catalog answer: ["public","games","applications"].
+    // «public» used to pass the filter and became the genre «Public».
+    assert.deepEqual(details.epicGenresFromCategories(['public', 'games', 'applications']), []);
+    assert.deepEqual(details.epicGenresFromCategories(['Public', 'GAMES', 'Applications']), []);
+    assert.deepEqual(details.epicGenresFromCategories(['PUBLIC', 'Games']), []);
+    assert.deepEqual(
+      details.epicGenresFromCategories(['public', { path: 'games/action' }, 'applications']),
+      ['Action']
+    );
+  });
+
+  await t.test('Epic catalog without a date and public-only buckets stays empty', () => {
+    const data = details.normalizeEpicProduct(EPIC_AW2, {
+      slug: 'alan-wake-2',
+      catalog: {
+        catalogItemId: 'aw2-live',
+        title: 'Alan Wake 2',
+        releaseDate: null,
+        categories: ['public', 'games', 'applications'],
+      },
+    });
+    assert.equal(data.releaseDate, null);
+    assert.equal(data.releaseDateSource, null);
+    assert.deepEqual(data.genres, []);
+    assert.equal(data.genresSource, null);
+  });
+
   await t.test('slugFromTitle: kebab-case, ASCII only, no invented transliteration', () => {
     assert.equal(details.slugFromTitle('Alan Wake 2'), 'alan-wake-2');
     assert.equal(details.slugFromTitle('The Witcher 3: Wild Hunt'), 'the-witcher-3-wild-hunt');
     assert.equal(details.slugFromTitle('  '), '');
     assert.equal(details.slugFromTitle('Ведьмак 3'), '3');
+  });
+
+  await t.test('a title-matched P577 fills an empty Epic year (Alan Wake 2 path)', () => {
+    identity.writeCache(
+      {},
+      {
+        titleEntries: {
+          'epic:aw2_title_year': {
+            qid: 'Q108417001',
+            appid: null,
+            store: 'epic',
+            slug: 'aw2-title-year',
+            title: 'Alan Wake 2',
+            matchedBy: 'title',
+            confidence: 'medium',
+            titleMatched: 'unique',
+            releaseYear: 2023,
+            releasePrecision: 'day',
+            releaseDate: '2023-10-27',
+            releaseDateSource: 'wikidata',
+          },
+        },
+      }
+    );
+    const data = details.applyWikidataYear(
+      { source: 'epic', slug: 'aw2-title-year', releaseYear: null, releaseDate: null },
+      { store: 'epic' }
+    );
+    assert.equal(data.releaseYear, 2023);
+    assert.equal(data.releaseDate, '2023-10-27');
+    assert.equal(data.releaseDateSource, 'wikidata');
+    assert.equal(data.releaseYearMatchedBy, 'title');
+    // A store/catalog year is still never replaced.
+    const original = { ...data, releaseYear: 2015, releaseDateSource: 'epic-store' };
+    assert.equal(
+      details.applyWikidataYear(original, { store: 'epic' }),
+      original
+    );
   });
 });
 
