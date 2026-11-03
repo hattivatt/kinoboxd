@@ -717,6 +717,10 @@ function normalizeFranchiseRef(raw) {
     key: text(raw.key) || label,
     label,
     appids: arr(raw.appids).map((value) => numOrNull(value)).filter((value) => value != null),
+    // M6 follow-up: identity of secondary-only members (`gog:<id>` /
+    // `epic:<id>`). A franchise can therefore contain Steam rows *and* store
+    // exclusives; `appids` alone would silently drop the latter.
+    workKeys: arr(raw.workKeys).map((value) => text(value)).filter(Boolean),
   };
 }
 
@@ -733,6 +737,7 @@ function normalizeFranchises(raw) {
       const appids = arr(item.appids)
         .map((value) => numOrNull(value))
         .filter((value) => value != null);
+      const workKeys = arr(item.workKeys).map((value) => text(value)).filter(Boolean);
       // `yearsSpread` is `{min, max, span}` from `/api/games/franchises`
       // (M4-B) and a plain number in older payloads/tests — accept both.
       const spreadRaw = item.yearsSpread ?? item.years;
@@ -746,6 +751,7 @@ function normalizeFranchises(raw) {
         hoursSum: numOrNull(item.hoursSum ?? item.hours ?? item.totalHours),
         yearsSpread,
         appids,
+        workKeys,
       };
     })
     .filter(Boolean);
@@ -1007,6 +1013,25 @@ export function normalizeSecondaryWork(entry, context = {}) {
           : entry.genres ?? epic.genres ?? gog.genres
   );
   const slug = firstString(entry.slug, gog.slug, epic.slug);
+  // M6 follow-up: the store detail document names the studios; Wikidata (via
+  // the bridge) supplies the QID and the P179 series. Both are additive — an
+  // old payload simply has empty lists and no chip.
+  const developers = normalizeGenres(
+    Array.isArray(entry.developers) && entry.developers.length
+      ? entry.developers
+      : Array.isArray(epic.developers) && epic.developers.length
+        ? epic.developers
+        : entry.developers ?? epic.developers ?? epic.developer ?? gog.developers
+  );
+  const publishers = normalizeGenres(
+    Array.isArray(entry.publishers) && entry.publishers.length
+      ? entry.publishers
+      : Array.isArray(epic.publishers) && epic.publishers.length
+        ? epic.publishers
+        : entry.publishers ?? epic.publishers ?? epic.publisher ?? gog.publishers
+  );
+  const franchise = normalizeFranchiseRef(entry.franchise);
+  const qid = text(entry.qid) || null;
   const gogSlug = firstString(gog.slug, entry.slug);
   const epicSlug = firstString(epic.slug, entry.slug);
   const storeLinks = [];
@@ -1038,6 +1063,11 @@ export function normalizeSecondaryWork(entry, context = {}) {
     releaseDate: text(entry.releaseDate) || text(gog.releaseDate) || text(epic.releaseDate) || null,
     releaseYear: releaseYear != null ? Math.round(releaseYear) : null,
     genres,
+    developers,
+    publishers,
+    // Wikidata identity + series of the work (`null` = not resolved yet).
+    qid,
+    franchise,
     hoursBySource,
     hoursKnown,
     hours,
@@ -1759,15 +1789,25 @@ export function personGames(person, gamesIndex) {
     .map((game) => {
       if (!game || typeof game !== 'object') return null;
       const appid = numOrNull(game.appid);
-      if (appid == null) return null;
-      const entry = index[appid] || index[String(appid)] || null;
+      const workKey = firstString(game.workKey);
+      // M6 follow-up: a secondary-only work has no appid — its row lives in
+      // `gamesIndex` under the `workKey` the personnel payload carries.
+      if (appid == null && !workKey) return null;
+      const entry = appid != null
+        ? index[appid] || index[String(appid)] || null
+        : index[workKey] || null;
       const row = entry
         ? normalizeGameIndexEntry(entry, appid)
-        : normalizeGameIndexEntry({ appid }, appid);
+        : normalizeGameIndexEntry(
+            { appid, workKey, secondaryOnly: appid == null && Boolean(workKey) },
+            appid
+          );
       return {
         ...row,
         appid,
-        name: firstString(game.name, row.name, `appid ${appid}`),
+        workKey: workKey || row.workKey || null,
+        secondaryOnly: row.secondaryOnly || (appid == null && Boolean(workKey)),
+        name: firstString(game.name, row.name, appid != null ? `appid ${appid}` : workKey),
         hours: numOrNull(game.hours) ?? row.hours,
         completion: row.completion ?? numOrNull(game.completion),
         roles: arr(game.roles).map((role) => text(role)).filter(Boolean),
@@ -2902,6 +2942,7 @@ export function franchisesView(franchises) {
       gamesCount: item.gamesCount,
       hoursSum: item.hoursSum,
       appids: item.appids,
+      workKeys: item.workKeys,
       countText,
       hoursText: itemHours,
       yearsText,
@@ -2931,9 +2972,18 @@ export function gamesInFranchise(gamesIndex, franchise) {
   const ref = normalizeFranchiseRef(franchise);
   if (!ref) return [];
   const ids = new Set(ref.appids.map((value) => Number(value)));
+  const workKeys = new Set(ref.workKeys || []);
+  const explicit = ids.size > 0 || workKeys.size > 0;
   const targetLabel = ref.label.toLowerCase();
   return gameRowsFromIndex(gamesIndex, (row) => {
-    if (ids.size > 0) return row.appid != null && ids.has(Number(row.appid));
+    if (explicit) {
+      // Explicit membership is authoritative: a Steam row matches by appid, a
+      // secondary-only row by its work key (the merged edition row keeps
+      // `canonicalWorkKey`, which is what `workKeys` names).
+      if (row.appid != null && ids.has(Number(row.appid))) return true;
+      const rowKeys = [row.workKey, row.canonicalWorkKey].filter(Boolean);
+      return rowKeys.some((key) => workKeys.has(key));
+    }
     if (!row.franchise) return false;
     return row.franchise.key === ref.key
       || row.franchise.label === ref.label

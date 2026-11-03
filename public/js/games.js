@@ -2359,11 +2359,21 @@ function renderFranchises(data) {
     const activate = () => {
       hideTooltip();
       const games = sortGameRows(
-        gamesInFranchise(data.gamesIndex, { key: row.key, label: row.label, appids: row.appids }),
+        gamesInFranchise(data.gamesIndex, {
+          key: row.key,
+          label: row.label,
+          appids: row.appids,
+          workKeys: row.workKeys,
+        }),
         'year',
       );
       openFranchiseModal({
-        franchise: { key: row.key, label: row.label, appids: row.appids },
+        franchise: {
+          key: row.key,
+          label: row.label,
+          appids: row.appids,
+          workKeys: row.workKeys,
+        },
         games,
         hoursSum: row.hoursSum,
       });

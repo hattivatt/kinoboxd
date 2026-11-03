@@ -851,7 +851,7 @@ export function openPersonModal({ person, role = 'developer', weight = 'hours', 
     clear(listHost);
     clear(moreHost);
     for (const game of ordered.slice(0, shown)) {
-      listHost.append(gameRow(game, { onOpen: (row) => openGameCardModal(row.appid) }));
+      listHost.append(gameRow(game, { onOpen: (row) => openGameRow(row) }));
     }
     if (shown < ordered.length) {
       const more = el('button', {
@@ -1383,6 +1383,27 @@ export function openSecondaryWorkCardModal(work) {
     copy.append(strip);
   }
 
+  // M6 follow-up: P179 series of a secondary-only work. Same chip as the
+  // Steam card, so «Alan Wake 2» opens the franchise list that includes the
+  // Steam titles of the same owner.
+  if (card.franchise && card.franchise.label) {
+    const chip = el('button', {
+      type: 'button',
+      class: 'game-franchise-chip',
+      title: 'Открыть игры этой франшизы',
+    });
+    chip.append(el('span', { class: 'game-franchise-key', text: 'Франшиза' }));
+    chip.append(el('strong', { text: card.franchise.label }));
+    chip.addEventListener('click', () => {
+      const list = sortGameRows(
+        gamesInFranchise(context.gamesIndex, card.franchise),
+        'year'
+      );
+      openFranchiseModal({ franchise: card.franchise, games: list });
+    });
+    copy.append(chip);
+  }
+
   const facts = el('dl', { class: 'games-facts game-card-facts' });
   facts.append(factRow(
     'год релиза',
@@ -1391,6 +1412,17 @@ export function openSecondaryWorkCardModal(work) {
   ));
   facts.append(factRow('источники', storeLabel, 'Работа есть только во вторых библиотеках, не в Steam'));
   body.append(facts);
+
+  // M6 follow-up: developers/publishers come from the store detail document
+  // (Epic CMS / GOG product page). `qid` is shown only when the Wikidata
+  // bridge actually resolved the work — no invented identity.
+  if (card.developers.length || card.publishers.length || card.qid) {
+    const grid = el('dl', { class: 'game-detail-grid' });
+    appendDetailRow(grid, 'разработчики', card.developers.join(', '));
+    appendDetailRow(grid, 'издатели', card.publishers.join(', '));
+    appendDetailRow(grid, 'Wikidata', card.qid || '');
+    body.append(section('Что это за игра', grid));
+  }
 
   const hoursGrid = el('div', { class: 'games-secondary-hours' });
   for (const row of card.hourRows) {
