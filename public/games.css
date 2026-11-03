@@ -127,25 +127,6 @@
   border-radius: 4px;
 }
 
-/* ---------------- import progress ---------------- */
-
-.games-progress-track {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 4px;
-}
-.games-progress-track .progress-bar { flex: 1; margin: 0; }
-.games-progress-percent {
-  flex: none;
-  min-width: 42px;
-  text-align: right;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-soft);
-  font-variant-numeric: tabular-nums;
-}
-
 /* ---------------- dashboard widgets ---------------- */
 
 .w-games-profile { grid-column: span 4; }

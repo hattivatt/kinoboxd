@@ -1097,3 +1097,58 @@ body:not([data-view="dashboard"]):not([data-view="books"]):not([data-view="games
 }
 .dash-sub { font-size: 13px; color: var(--muted); }
 
+
+/* ─────────────────────────────────────────────────────────────────────────
+   P8 shell (U15): the parts one component paints for all three tabs.
+
+   These rules sit at the END of core.css on purpose. The cascade is
+   core → films → books → games, so a domain file loaded after this one can
+   still override a shell default for its own screen (the games GOG status
+   keeps its games.css look, the books job row keeps its books.css rhythm).
+   Nothing above this line moved between files in this round.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* A source's role inside one owner's profile: журнал / обогащение / архив. */
+.book-source-role {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--muted-2);
+}
+.book-source-role.is-journal {
+  color: #8ef0b1;
+  border-color: rgba(0, 224, 84, 0.4);
+  background: rgba(0, 224, 84, 0.08);
+}
+.book-source-role.is-enricher {
+  color: #ffc182;
+  border-color: rgba(255, 128, 0, 0.4);
+  background: rgba(255, 128, 0, 0.08);
+}
+.book-source-role.is-archive {
+  color: #a8c8ff;
+  border-color: rgba(64, 188, 244, 0.4);
+  background: rgba(64, 188, 244, 0.08);
+}
+.book-source-role.is-reference {
+  color: var(--muted-2);
+}
+
+/* A status line the shell adds when a source had none. Cards with their own
+   `.games-gog-status` keep that class and its domain styling. */
+.book-source-status {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--muted-2);
+}
+
+/* Neutral alias for the shared progress row (books.css owns the look). */
+.shell-job-row { min-width: 0; }
