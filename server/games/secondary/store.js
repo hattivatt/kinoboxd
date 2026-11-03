@@ -140,12 +140,6 @@ function readDetail(source, id, options = {}) {
 }
 
 /** Fresh, successfully resolved detail data (or null). */
-function getDetail(source, id) {
-  const { doc, fresh } = readDetail(source, id);
-  if (!fresh || !doc || doc.status !== 'ok') return null;
-  return doc.data || null;
-}
-
 function writeDetail(source, id, status, data, extra = {}) {
   const doc = {
     schemaVersion: SCHEMA_VERSION,
@@ -669,7 +663,6 @@ module.exports = {
   cachePath,
   isFresh,
   readDetail,
-  getDetail,
   writeDetail,
   catalogProbePath,
   readCatalogProbe,

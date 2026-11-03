@@ -942,7 +942,7 @@ async function resolveEpic(slug, options = {}) {
   data.metaGenresOk = flags.genresOk;
   data.metaCheckedAt = isoOf(nowMs());
   writeDetail('epic', id, 'ok', data);
-  // Persist a discovered slug so the read model (`epic-layer.joinGames`) can
+  // Persist a discovered slug so the read model (`secondary/index.js joinGames`) can
   // key the union entry `epic:<slug>` and attach this detail next request.
   if (options.catalogItemId && data.slug) {
     try {
