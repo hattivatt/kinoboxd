@@ -1,7 +1,16 @@
-# kinoboxd — backend
+# kinoboxd — statistics backend
 
-Node.js/Express backend for KinoPoisk statistics with TMDB enrichment and an
-optional Letterboxd archive attachment (package `kinoboxd`).
+Node.js/Express backend for personal media statistics across three domains:
+
+* **films** — KinoPoisk profiles plus TMDB enrichment, with an optional
+  Letterboxd archive attachment;
+* **books** — LiveLib shelves with Hardcover metadata and provider resolve;
+* **games** — Steam libraries with GOG/Epic secondary metadata.
+
+One Express process serves all three domains, each with its own on-disk cache
+and an optional password gate (`KINOBOXD_PASSWORD`). The service ships as a
+Nix package plus module for deployment; the test suite is plain
+`node --test` and runs with `npm test`.
 
 ## Run
 
