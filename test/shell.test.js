@@ -216,9 +216,7 @@ test('games dashboard keeps every widget mount and its honest wording', () => {
     'games-scores-donut', 'games-scores-legend', 'games-scores-honest',
     'games-franchises-widget', 'games-franchises-title', 'games-franchises-note',
     'games-franchises-list', 'games-franchises-loading',
-    'games-dlc-widget', 'games-dlc-title', 'games-dlc-note', 'games-dlc-summary', 'games-dlc-list',
     'games-meta-widget', 'games-meta-body',
-    'games-achievements-widget', 'games-achievements-body',
     'games-calendar-widget', 'games-calendar-host', 'games-streak-card',
     'games-filters', 'games-filter-free', 'games-filter-dlc', 'games-filter-note',
     'games-filter-hours', 'games-filter-hours-minus', 'games-filter-hours-plus', 'games-filter-hours-hint',
@@ -229,9 +227,13 @@ test('games dashboard keeps every widget mount and its honest wording', () => {
     assert.match(html, new RegExp(`id="${id}"`), `нет узла #${id}`);
   }
   // U5 removed these for good; the dashboard must never paint them again.
+  // Cosmetic games round: the DLC and achievements-overview widgets are gone
+  // too (the payload keeps both blocks, the dashboard just does not show them).
   for (const id of [
     'games-histogram-widget', 'games-backlog-widget', 'games-modes-widget', 'games-access-widget',
     'games-recent-list', 'games-personnel-open',
+    'games-dlc-widget', 'games-dlc-title', 'games-dlc-note', 'games-dlc-summary', 'games-dlc-list',
+    'games-achievements-widget', 'games-achievements-title', 'games-achievements-note', 'games-achievements-body',
   ]) {
     assert.equal(html.includes(`id="${id}"`), false, `виджет #${id} должен быть удалён`);
   }

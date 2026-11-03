@@ -602,38 +602,6 @@
 .games-meta-note { font-size: 10.5px; color: var(--muted-2); }
 .games-meta-note.is-running { color: #b9b0ff; }
 
-/* ---------------- achievements overview ---------------- */
-
-.games-achievements {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
-  gap: 8px;
-}
-.games-achievement-metric {
-  padding: 9px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.02);
-}
-.games-achievement-value {
-  font-size: 17px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-.games-achievement-label {
-  margin-top: 2px;
-  font-size: 10px;
-  line-height: 1.35;
-  color: var(--muted-2);
-}
-.games-achievements-note {
-  grid-column: 1 / -1;
-  font-size: 10.5px;
-  color: var(--muted-2);
-}
-
 /* ---------------- grid spans ---------------- */
 
 .w-games-decades { grid-column: span 6; }
@@ -641,15 +609,13 @@
 /* The count-by-release-year chart is its own full-width block: it never
    depends on the decade selection above it (unlike .w-games-years). */
 .w-games-yearcount { grid-column: span 12; }
-/* M4: tags 6 + scores 6, franchises 6 + DLC 6 — pairs, so the grid never
-   leaves a hole between the existing M1–M3 cards. */
+/* M4: tags 6 + scores 6 — a pair, then franchises 6 + meta 6, so the grid
+   never leaves a hole between the existing M1–M3 cards. */
 .w-games-tags { grid-column: span 6; }
 .w-games-scores { grid-column: span 6; }
 .w-games-franchises { grid-column: span 6; }
-.w-games-dlc { grid-column: span 6; }
 .w-games-genres { grid-column: span 6; }
 .w-games-meta { grid-column: span 6; }
-.w-games-achievements { grid-column: span 6; }
 .w-games-calendar { grid-column: span 12; }
 .w-games-persons { grid-column: span 12; }
 
@@ -663,18 +629,6 @@
 }
 .w-games-scores .ratings-body { gap: 10px; }
 .w-games-tags .games-weight-btn { font-size: 10px; }
-.games-dlc-summary {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: var(--text-soft);
-}
-.games-dlc-list .genre-row { cursor: pointer; }
-.games-dlc-row-count {
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  color: var(--muted-2);
-  font-size: 11px;
-}
 .games-franchises-loading {
   display: flex;
   align-items: center;
@@ -994,9 +948,7 @@
   .w-games-tags,
   .w-games-scores,
   .w-games-franchises,
-  .w-games-dlc,
-  .w-games-meta,
-  .w-games-achievements { grid-column: span 6; }
+  .w-games-meta { grid-column: span 6; }
   /* Genres pairs with Pareto on desktop (6+6); below 1120 the pair breaks,
      so genres takes its own full row — the years/count pair stays 6+12. */
   .w-games-genres { grid-column: span 12; }
@@ -1010,10 +962,8 @@
   .w-games-tags,
   .w-games-scores,
   .w-games-franchises,
-  .w-games-dlc,
   .w-games-genres,
   .w-games-meta,
-  .w-games-achievements,
   .w-games-persons { grid-column: span 12; }
   /* Phones: the top strip and the Pareto lane take the whole width; the
      profile + top-by-hours pair stays 6+6. */

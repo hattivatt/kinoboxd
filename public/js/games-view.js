@@ -2999,34 +2999,6 @@ export function gamesInFranchise(gamesIndex, franchise) {
   });
 }
 
-/** `summary.dlc` → summary line + top-10 rows (click → game card). */
-export function dlcView(dlc) {
-  const block = normalizeDlcSummary(dlc);
-  if (!block) return null;
-  const fmtNumber = (value) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);
-  const rows = block.max.slice(0, 10).map((item) => ({
-    name: item.name,
-    appid: item.appid,
-    dlcCount: item.dlcCount,
-    countText: item.dlcCount != null ? `${fmtInt(item.dlcCount)} DLC` : 'DLC: ?',
-  }));
-  const countText = block.gamesWithDlc != null
-    ? `${fmtInt(block.gamesWithDlc)} ${plural(block.gamesWithDlc, GAME_PLURAL)}`
-    : '—';
-  const avgPart = block.avgCount != null ? `в среднем ${fmtNumber(block.avgCount)}` : 'среднее неизвестно';
-  return {
-    gamesWithDlc: block.gamesWithDlc,
-    avgCount: block.avgCount,
-    avgText: block.avgCount != null ? fmtNumber(block.avgCount) : '—',
-    rows,
-    note: block.gamesWithDlc != null ? `${countText} с DLC` : 'DLC не посчитаны',
-    summaryText: block.gamesWithDlc != null
-      ? `Игры с DLC: ${countText} (${avgPart})`
-      : 'Сводка DLC не собрана',
-    summaryParts: { gamesText: countText, avgPart },
-  };
-}
-
 /** Response of `/api/games/franchises` (array or `{ franchises: [] }`). */
 export function normalizeFranchisesResponse(raw) {
   return normalizeFranchises(raw);
@@ -3243,76 +3215,6 @@ export function achievementStreaksView(streaks, achievementDays = []) {
     ].filter(Boolean).join(' · '),
     hint: 'Серия — дни подряд с хотя бы одним достижением. Это активность достижений, а не игровое время.',
     visible: value.best > 0 || Boolean(value.lastUnlockDate),
-  };
-}
-
-/**
- * Completion / rare-achievements overview (§6.2). `perfectCount` is exactly
- * 100%; games without achievement stats are never counted as zero.
- */
-export function achievementsOverviewView(summary) {
-  const s = summary && typeof summary === 'object' ? summary : {};
-  const completion = s.completion && typeof s.completion === 'object' ? s.completion : null;
-  const achievements = s.achievements && typeof s.achievements === 'object' ? s.achievements : null;
-  if (!completion && !achievements) return null;
-  const metrics = [];
-  if (completion && completion.avgPercent != null) {
-    metrics.push({
-      key: 'avg',
-      label: 'средний completion',
-      value: percentText(completion.avgPercent, 0),
-      hint: 'Средний процент полученных достижений по играм, у которых есть статистика достижений.',
-    });
-  }
-  if (completion && completion.medianPercent != null) {
-    metrics.push({
-      key: 'median',
-      label: 'медианный completion',
-      value: percentText(completion.medianPercent, 0),
-      hint: 'Половина игр с достижениями имеет меньший процент, половина — больший.',
-    });
-  }
-  if (completion && completion.perfectCount != null) {
-    metrics.push({
-      key: 'perfect',
-      label: 'идеальных игр',
-      value: fmtInt(completion.perfectCount),
-      hint: 'Игры ровно со 100% достижений.',
-    });
-  }
-  if (achievements && achievements.rareUnlocked != null) {
-    metrics.push({
-      key: 'rare',
-      label: 'редких разблокировано',
-      value: fmtInt(achievements.rareUnlocked),
-      hint: 'Разблокированные достижения с глобальным процентом ниже 5% (Steam global achievements).',
-    });
-  }
-  const coverage = achievements && achievements.coverage
-    ? achievements.coverage
-    : completion && completion.gamesWithStats != null
-    ? { gamesWithStats: completion.gamesWithStats, gamesTotal: completion.gamesTotal }
-    : null;
-  if (coverage && coverage.gamesWithStats != null && coverage.gamesTotal) {
-    metrics.push({
-      key: 'coverage',
-      label: 'игр с достижениями',
-      value: `${fmtInt(coverage.gamesWithStats)}/${fmtInt(coverage.gamesTotal)}`,
-      hint: 'Игры без публичной статистики достижений не считаются нулём — они просто вне completion-метрик.',
-    });
-  }
-  if (!metrics.length) return null;
-  const unlocked = achievements && achievements.unlocked != null ? achievements.unlocked : null;
-  const total = achievements && achievements.total != null ? achievements.total : null;
-  return {
-    metrics,
-    unlocked,
-    total,
-    totalText: unlocked != null && total != null
-      ? `${fmtInt(unlocked)} из ${fmtInt(total)} ${plural(total, ['достижение', 'достижения', 'достижений'])}`
-      : '',
-    note: 'по достижениям, не по игровому времени',
-    hint: 'Completion = полученные достижения / все достижения игры. Игры без статистики не входят в средние.',
   };
 }
 
