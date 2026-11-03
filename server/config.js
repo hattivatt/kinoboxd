@@ -39,6 +39,10 @@ const STEAM_ENV_KEYS = ['STEAM_API_KEY'];
 // Tests point this at a non-existent file so the local dev fallback
 // (`config/steam-token`, present in the main tree) cannot change their result.
 const STEAM_KEY_FILE_ENV = 'KINOBOXD_STEAM_KEY_FILE';
+// Optional community artwork fallback (vertical grids for SKUs Steam does not
+// publish). Missing key = provider skipped, never an error.
+const STEAMGRIDDB_KEY_PATH = path.join(__dirname, '..', 'config', 'steamgriddb-token');
+const STEAMGRIDDB_ENV_KEYS = ['STEAMGRIDDB_API_KEY'];
 
 function steamKeyPath() {
   const override = process.env[STEAM_KEY_FILE_ENV];
@@ -72,6 +76,11 @@ const hardcover = createSecret({
 const gbooks = createSecret({ envKeys: GBOOKS_ENV_KEYS, file: GBOOKS_KEY_PATH });
 
 const steam = createSecret({ envKeys: STEAM_ENV_KEYS, file: steamKeyPath });
+
+const steamgriddb = createSecret({
+  envKeys: STEAMGRIDDB_ENV_KEYS,
+  file: STEAMGRIDDB_KEY_PATH,
+});
 
 /** TMDB token; throws code TMDB_TOKEN_MISSING when no source has it. */
 function loadTmdbToken() {
@@ -109,6 +118,15 @@ function steamKeySource() {
   return steam.source();
 }
 
+/** SteamGridDB key, or null when the optional provider is disabled. */
+function loadSteamgriddbKey() {
+  return steamgriddb.load();
+}
+
+function steamgriddbKeySource() {
+  return steamgriddb.source();
+}
+
 /** Test helper: forget the cached key so the next call re-reads env/file. */
 function resetSteamKeyCache() {
   steam.reset();
@@ -135,4 +153,8 @@ module.exports = {
   getSteamKey: loadSteamKey,
   steamKeySource,
   resetSteamKeyCache,
+  STEAMGRIDDB_KEY_PATH,
+  loadSteamgriddbKey,
+  getSteamgriddbKey: loadSteamgriddbKey,
+  steamgriddbKeySource,
 };

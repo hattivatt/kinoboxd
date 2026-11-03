@@ -295,6 +295,42 @@ const SOURCES = Object.freeze({
     userAgent: 'kinoboxd/1.0 (+games-tab)',
     note: 'IUserReviewsService; own breaker key so a 429 does not freeze the Web API.',
   },
+  steamBrowse: {
+    id: 'steamBrowse',
+    host: 'api.steampowered.com',
+    // The per-asset hash of the new-schema vertical capsule is published only
+    // by the store-frontend method `IStoreBrowseService/GetItems` (no key).
+    // One request per appid per 180-day resolve, 150 ms apart.
+    pauseEnv: 'GAMES_BROWSE_PAUSE_MS',
+    pauseMs: 150,
+    timeoutEnv: 'GAMES_BROWSE_TIMEOUT_MS',
+    timeoutMs: 20000,
+    budgetEnv: 'GAMES_BROWSE_BUDGET',
+    budgetDefault: 340,
+    breakerEnv: 'GAMES_BROWSE_BREAKER_MS',
+    breakerMs: BREAKER_30M,
+    ttlEnv: 'GAMES_ART_TTL_MS',
+    ttlMs: 180 * DAY_MS,
+    userAgent: 'kinoboxd/1.0 (+games-tab)',
+    note: 'IStoreBrowseService: public store-frontend API, assets.library_capsule hash; breaker key api.steampowered.com/IStoreBrowseService.',
+  },
+  steamGridDb: {
+    id: 'steamGridDb',
+    host: 'www.steamgriddb.com',
+    // Optional community grids for SKUs Steam publishes no vertical capsule
+    // for. Without `STEAMGRIDDB_API_KEY` the provider is skipped silently.
+    pauseEnv: 'GAMES_SGDB_PAUSE_MS',
+    pauseMs: 1000,
+    timeoutEnv: 'GAMES_SGDB_TIMEOUT_MS',
+    timeoutMs: 20000,
+    budgetEnv: 'GAMES_SGDB_BUDGET',
+    budgetDefault: 50,
+    breakerEnv: 'GAMES_SGDB_BREAKER_MS',
+    breakerMs: BREAKER_30M,
+    ttlMs: null,
+    userAgent: 'kinoboxd/1.0 (+games-tab)',
+    note: 'Optional artwork provider (key in STEAMGRIDDB_API_KEY): 1 s pause, 50 appids/run, 403/429 -> 30 min breaker.',
+  },
   gog: {
     id: 'gog',
     host: 'api.gog.com',
