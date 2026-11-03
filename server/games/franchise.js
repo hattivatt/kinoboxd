@@ -964,6 +964,8 @@ async function enrichFranchises(options = {}) {
   }
   const now = typeof options.now === 'function' ? options.now : () => Date.now();
   const ttlMs = Number.isFinite(Number(options.ttlMs)) ? Math.max(0, Number(options.ttlMs)) : ttlMsFromEnv();
+  // NOTE: 0 → 1 request (pre-existing; `Math.max(1, …)` predates the «0 =
+  // off» convention and is intentionally not changed here).
   const budget = Math.max(1, Number(options.limit) || budgetFromEnv());
   const force = Boolean(options.force);
 

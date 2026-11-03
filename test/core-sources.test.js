@@ -100,3 +100,59 @@ test('env overrides are read at call time, not at require time', () => {
 test('getSource throws for an unknown id instead of guessing a policy', () => {
   assert.throws(() => sources.getSource('nope'), /unknown source/);
 });
+
+test('env=0 means «off» for pause, budget, TTL, breaker and timeout', () => {
+  const names = [
+    'GAMES_SPY_PAUSE_MS',
+    'GAMES_MOBY_PAUSE_MS',
+    'GAMES_GOG_BUDGET',
+    'GAMES_MOBY_BUDGET',
+    'GAMES_SECONDARY_TTL_MS',
+    'GAMES_FRANCHISE_TTL_DAYS',
+    'GAMES_STORE_BREAKER_MS',
+    'GAMES_SECONDARY_TIMEOUT_MS',
+  ];
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) process.env[name] = '0';
+    assert.equal(sources.pauseMs('steamSpy'), 0);
+    assert.equal(sources.pauseMs('moby'), 0);
+    assert.equal(sources.budgetLimit('gog'), 0);
+    assert.equal(sources.budgetLimit('moby'), 0);
+    assert.equal(sources.ttlMs('secondary'), 0);
+    assert.equal(sources.ttlMs('wikidataFranchise'), 0);
+    assert.equal(sources.breakerMs('steamStore'), 0);
+    assert.equal(sources.timeoutMs('secondary'), 0);
+
+    // Empty is unset, not zero.
+    process.env.GAMES_SPY_PAUSE_MS = '';
+    assert.equal(sources.pauseMs('steamSpy'), 1100);
+  } finally {
+    for (const name of names) {
+      if (saved[name] == null) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  }
+});
+
+test('core/env envMs keeps the same 0 = off convention', () => {
+  const { envMs } = require('../server/core/env');
+  const name = 'KINOBOXD_TEST_TTL_MS';
+  const saved = process.env[name];
+  try {
+    process.env[name] = '0';
+    assert.equal(envMs(name, 1234), 0);
+    process.env[name] = '';
+    assert.equal(envMs(name, 1234), 1234);
+    process.env[name] = '-5';
+    assert.equal(envMs(name, 1234), 1234);
+  } finally {
+    if (saved == null) delete process.env[name];
+    else process.env[name] = saved;
+  }
+});
+
+test('the LiveLib card pause stays at the pre-P2 2 s', () => {
+  assert.equal(sources.SOURCES.livelib.cardPauseMs, 2000);
+  assert.equal(sources.pauseMs('livelib'), 1500, 'bulk import keeps its random range');
+});

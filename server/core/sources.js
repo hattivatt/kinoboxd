@@ -9,6 +9,17 @@
  * reference; `contracts/limits.md` (P9) is meant to be generated from this
  * file.
  *
+ * **Env convention (shared with `core/env.js`): `0` means «off», an unset /
+ * empty variable means the value in this table.**
+ *
+ *   pause 0    -> no pause            budget 0  -> zero requests
+ *   TTL 0      -> always stale        breaker 0 -> no cooldown
+ *   timeout 0  -> no deadline
+ *
+ * The only known deviation is `GAMES_FRANCHISE_BUDGET=0`: `franchise.js`
+ * applies `Math.max(1, …)`, so it still asks one question (pre-existing, kept
+ * on purpose and marked at the call site).
+ *
  * Entry shape:
  *
  *   id            stable key used by callers
@@ -49,7 +60,8 @@ const SOURCES = Object.freeze({
     pauseMs: 0,
     timeoutMs: 20000,
     concurrency: 12,
-    transportRetries: 4,
+    // 4 transport retries are implied by `retryDelaysMs.length`; no separate
+    // field, so P9 does not generate a phantom knob.
     retryDelaysMs: [1000, 2000, 4000, 8000],
     rateLimitRetries: 5,
     budgetEnv: null,
@@ -69,8 +81,8 @@ const SOURCES = Object.freeze({
     breakerMs: null,
     ttlMs: null,
     userAgent:
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    note: 'Manual redirect hops carry the cookie jar; random 1.5-2.5 s page delay.',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+    note: 'Manual redirect hops carry the cookie jar; random 1.5-2.5 s page delay; UA is the pre-P2 kp.js fingerprint (Chrome/128).',
   },
   wdqs: {
     id: 'wdqs',
@@ -114,7 +126,10 @@ const SOURCES = Object.freeze({
     breakerMs: BREAKER_30M,
     ttlMs: null,
     userAgent: 'kinoboxd/1.0 (games personnel; https://github.com/hattivatt/kinoboxd)',
-    note: 'Games personnel WDQS client (own persisted cooldown in personnel-wikidata.json).',
+    // Not yet wired: `games/personnel/wikidata.js` still owns these constants.
+    // Kept here as the transcription for P9; do not treat it as a runtime
+    // override until that module reads this entry.
+    note: 'Games personnel WDQS client (own persisted cooldown in personnel-wikidata.json); NOT YET WIRED.',
   },
   wikidataFranchise: {
     id: 'wikidataFranchise',
@@ -137,6 +152,9 @@ const SOURCES = Object.freeze({
     host: 'www.livelib.ru',
     pauseMs: 1500,
     pauseMaxMs: 2500,
+    // The card provider always used a fixed 2 s (pre-P2 `livelib-card.js`);
+    // the 1.5-2.5 s random range belongs to the bulk import.
+    cardPauseMs: 2000,
     timeoutMs: 45000,
     maxRedirects: 5,
     budgetEnv: 'BOOKS_LIVELIB_CARD_BUDGET',
@@ -201,6 +219,9 @@ const SOURCES = Object.freeze({
   steam: {
     id: 'steam',
     host: 'api.steampowered.com',
+    // Declarative only: the Web API path never awaits a pause, so no module
+    // reads `pauseMs('steam')` today (the community path reads
+    // `steamCommunity.pauseMs`). Not yet wired.
     pauseMs: 0,
     timeoutEnv: 'GAMES_STEAM_TIMEOUT_MS',
     timeoutMs: 20000,
@@ -346,15 +367,22 @@ function getSource(id) {
   return entry;
 }
 
-/** Finite non-negative env number, else fallback. */
+/**
+ * Finite non-negative env number, else fallback. Zero is a real value
+ * («off»); an unset or empty variable is the fallback.
+ */
 function envNonNegative(name, fallback) {
-  const raw = Number(process.env[name]);
+  const value = process.env[name];
+  if (value == null || String(value).trim() === '') return fallback;
+  const raw = Number(value);
   return Number.isFinite(raw) && raw >= 0 ? raw : fallback;
 }
 
 /** Finite positive env number, else fallback (moby-style knobs). */
 function envPositive(name, fallback) {
-  const raw = Number(process.env[name]);
+  const value = process.env[name];
+  if (value == null || String(value).trim() === '') return fallback;
+  const raw = Number(value);
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 

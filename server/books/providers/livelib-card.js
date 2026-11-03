@@ -24,7 +24,9 @@ const { detectManga, collectMangaTexts } = require('./manga');
 const { cleanText, normalizeIsbn, isbn10Of } = require('../normalize');
 
 const NAME = 'livelib-card';
-const DEFAULT_PAUSE_MS = sources.pauseMs('livelib');
+// The card provider has always used a fixed 2 s; the 1.5-2.5 s random range
+// is the bulk import's pause. `core/sources` keeps both values.
+const DEFAULT_PAUSE_MS = sources.SOURCES.livelib.cardPauseMs;
 const DEFAULT_BUDGET = sources.budgetLimit('livelib');
 const BLOCK_BREAKER_MS = sources.breakerMs('livelib');
 
