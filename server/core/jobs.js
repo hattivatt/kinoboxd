@@ -117,9 +117,10 @@ function createJobs(options = {}) {
   /* Ids and retention                                                */
   /* ---------------------------------------------------------------- */
 
-  function newId(seed) {
+  function newId(seed, prefix) {
     const part = seed == null || seed === '' ? 'job' : safeKey(seed);
-    return `${idPrefix}-${part}-${now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+    const head = prefix == null || prefix === '' ? idPrefix : String(prefix);
+    return `${head}-${part}-${now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
   }
 
   function attachMethods(job) {
@@ -179,6 +180,7 @@ function createJobs(options = {}) {
   }
 
   function remember(job) {
+    if (typeof job.setStage !== 'function') attachMethods(job);
     byId.set(job.id, job);
     order.push(job.id);
     while (maxJobs > 0 && order.length > maxJobs) {

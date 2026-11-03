@@ -15,9 +15,8 @@
  * already running coalesces into the existing job.
  */
 
-const crypto = require('crypto');
-
 const config = require('../config');
+const { createJobs } = require('../core/jobs');
 const bookCache = require('./book-cache');
 const hardcover = require('./hardcover');
 const livelib = require('./livelib');
@@ -27,9 +26,18 @@ const resolve = require('./resolve');
 const resolveLock = require('./resolve-lock');
 const scheduledResolve = require('./scheduled-resolve');
 
-const jobs = new Map();
-const jobOrder = [];
-const MAX_JOBS = 20;
+/**
+ * Job registry (core/jobs): single-flight per `(source, userKey)`, one
+ * serialization chain for every book import, and the ring of the last 20 jobs.
+ * The domain keeps its own status shape (`publicStatus`) and its stage-driven
+ * `done` semantics — a failed import is `stage: 'failed'`, `done: false`.
+ */
+const jobs = createJobs({
+  name: 'books-import',
+  idPrefix: 'books',
+  maxJobs: 20,
+  keyOf: (job) => `${job.source}:${String(job.userKey == null ? '' : job.userKey)}`,
+});
 
 // A cached LiveLib profile is considered current for 12 hours: repeat clicks
 // reuse it instead of re-scraping the whole profile (LiveLib politeness).
@@ -37,7 +45,6 @@ const LIVELIB_REIMPORT_TTL_MS = Number(process.env.KINOBOXD_LIVELIB_REIMPORT_TTL
   ? Number(process.env.KINOBOXD_LIVELIB_REIMPORT_TTL_MS)
   : 12 * 60 * 60 * 1000;
 
-let importChain = Promise.resolve();
 
 /** True when `importedAt` is a valid timestamp within the reuse window. */
 function isFreshImport(importedAt) {
@@ -52,32 +59,15 @@ function isFreshImport(importedAt) {
 /* ------------------------------------------------------------------ */
 
 function newJobId(source, userKey) {
-  return `${source}-${bookCache.safeKey(userKey)}-${Date.now().toString(36)}-${crypto
-    .randomBytes(3)
-    .toString('hex')}`;
+  return jobs.newId(userKey, source);
 }
 
 function rememberJob(job) {
-  jobs.set(job.id, job);
-  jobOrder.push(job.id);
-  while (jobOrder.length > MAX_JOBS) {
-    const stale = jobOrder.shift();
-    if (stale !== job.id) jobs.delete(stale);
-  }
+  return jobs.remember(job);
 }
 
 function findRunningJob(source, userKey) {
-  for (const job of jobs.values()) {
-    if (
-      job.source === source &&
-      String(job.userKey) === String(userKey) &&
-      !job.done &&
-      job.stage !== 'failed'
-    ) {
-      return job;
-    }
-  }
-  return null;
+  return jobs.findRunning(`${source}:${String(userKey == null ? '' : userKey)}`);
 }
 
 /**
@@ -89,7 +79,7 @@ function findRunningJob(source, userKey) {
 function findRunningHardcoverJob(requested) {
   const direct = findRunningJob('hardcover', requested);
   if (direct) return direct;
-  for (const job of jobs.values()) {
+  for (const job of jobs.list()) {
     if (job.source !== 'hardcover' || job.done || job.stage === 'failed') continue;
     if (requested === 'me' || String(job.userKey) === 'me') return job;
   }
@@ -97,39 +87,46 @@ function findRunningHardcoverJob(requested) {
 }
 
 function enqueue(job, task) {
-  importChain = importChain
-    .then(task)
-    .catch((err) => {
+  return jobs.run(job, task, {
+    onError: (self, err) => {
       const message = err && err.message ? err.message : 'неизвестная ошибка';
-      if (job.stage !== 'done' && job.stage !== 'failed') {
-        job.stage = 'failed';
-        job.error = message;
+      if (self.stage !== 'done' && self.stage !== 'failed') {
+        self.stage = 'failed';
+        self.error = message;
       }
       // A blocked source is a first-class state for the UI: it decides whether
       // to offer the cookie paste form ("plan B") or just a retry.
       if (err && err.code === 'livelib_blocked') {
-        job.code = 'livelib_blocked';
-        job.blocked = {
+        self.code = 'livelib_blocked';
+        self.blocked = {
           code: 'livelib_blocked',
           planB: 'cookieHeader',
-          cookiesPresent: Boolean(job.cookies && job.cookies.present),
+          cookiesPresent: Boolean(self.cookies && self.cookies.present),
         };
       }
-      console.error(`[books-import ${job.id}] ${message}`);
-    })
-    .then(() => {
-      job.finishedAt = Date.now();
-      job.page = null;
-      job.pageTotal = null;
-      if (!job.done && job.stage !== 'failed') job.stage = 'done';
-      job.done = job.stage === 'done';
-      if (job.done) job.percent = 100;
-      job.elapsedMs = job.finishedAt - job.startedAt;
+      console.error(`[books-import ${self.id}] ${message}`);
+    },
+    // The books job is stage-driven: `done` is false for a failed import (the
+    // UI keeps the progress screen and shows the error), so the default
+    // status/done finalizer is replaced, not extended.
+    finish: false,
+    onFinish: (self) => {
+      self.finishedAt = Date.now();
+      self.page = null;
+      self.pageTotal = null;
+      if (!self.done && self.stage !== 'failed') self.stage = 'done';
+      self.done = self.stage === 'done';
+      if (self.done) self.percent = 100;
+      self.elapsedMs = self.finishedAt - self.startedAt;
+      // Unified status field (core/jobs snapshot); nothing in the legacy shape
+      // reads it, it only makes `getStatus` comparable across domains.
+      self.status = self.stage === 'failed' ? 'failed' : self.done ? 'done' : self.status;
       console.log(
-        `[books-import ${job.id}] ${job.stage} after ${job.elapsedMs}ms ` +
-          `(events=${job.events}${job.error ? `, error=${job.error}` : ''})`
+        `[books-import ${self.id}] ${self.stage} after ${self.elapsedMs}ms ` +
+          `(events=${self.events}${self.error ? `, error=${self.error}` : ''})`
       );
-    });
+    },
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -149,6 +146,7 @@ async function resolveAllLivelibProfiles(job, options = {}) {
   job.stage = 'resolve';
   job.page = 0;
   job.pageTotal = profiles.length;
+  job.setProgress(job.page, job.pageTotal);
   // Live budget snapshot for the metadata badge: the object is mutated in
   // place by the resolve chain, so refresh the copy after every profile.
   job.liveBudget = {
@@ -348,6 +346,7 @@ function startLivelibImport(username, options = {}) {
       id: newJobId('livelib', cleanUsername),
       source: 'livelib',
       userKey: cleanUsername,
+      status: 'done',
       stage: 'done',
       page: null,
       pageTotal: null,
@@ -438,6 +437,7 @@ function startLivelibImport(username, options = {}) {
           job.stage = progress.stage === 'bulk' ? 'livelib-bulk' : 'livelib-rsc';
           job.page = progress.page;
           job.pageTotal = progress.pageTotal;
+          job.setProgress(job.page, job.pageTotal);
           job.events = progress.events;
           job.percent = percentProgressOf(progress);
         },
@@ -502,6 +502,7 @@ function startLivelibImport(username, options = {}) {
           job.stage = 'livelib-deep';
           job.page = progress.page;
           job.pageTotal = progress.pageTotal;
+          job.setProgress(job.page, job.pageTotal);
           job.events = profile.events.length;
           job.undatedEventCount = undatedCount(profile.events);
           job.percent = percentOf(progress.page, progress.pageTotal);
@@ -702,6 +703,7 @@ function startHardcoverImport(userId, options = {}) {
       job.stage = 'hardcover-journal';
       job.page = progress.page;
       job.pageTotal = progress.total ? Math.ceil(progress.total / 100) : null;
+      job.setProgress(job.page, job.pageTotal);
       job.events = progress.events;
       if (job.sync) job.sync.changedRows = progress.changedRows;
       if (job.pageTotal) {
@@ -850,7 +852,7 @@ function startHardcoverImport(userId, options = {}) {
 function startResolveJob(options = {}) {
   const coalesce = options.coalesce !== false;
   if (coalesce) {
-    const running = [...jobs.values()].find(
+    const running = jobs.list().find(
       (job) => job && job.source === 'livelib' && !job.done && job.stage === 'resolve'
     );
     if (running) return publicStatus(running);
@@ -889,6 +891,9 @@ function startResolveJob(options = {}) {
 
 function publicStatus(job) {
   return {
+    // Unified job view (id/status/stage/progress/startedAt/finishedAt/error/
+    // partial). The legacy fields below keep their exact values.
+    ...jobs.snapshot(job),
     id: job.id,
     source: job.source,
     userKey: job.userKey,
@@ -941,7 +946,7 @@ function getStatus(id) {
 
 /** Test helper: wait for the whole import chain to drain. */
 function idle() {
-  return importChain.then(() => undefined);
+  return jobs.whenIdle();
 }
 
 /**
@@ -986,7 +991,7 @@ function resolveStateFromJobs(jobList, source) {
 }
 
 function getResolveState(source, userKey) {
-  return resolveStateFromJobs(jobs.values(), source);
+  return resolveStateFromJobs(jobs.list(), source);
 }
 
 module.exports = {
