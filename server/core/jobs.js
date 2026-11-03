@@ -17,6 +17,7 @@
  *                             maskError, errorCode });
  *
  *   jobs.createJob(fields)         -> job object (NOT remembered yet)
+ *   jobs.newId(seed, prefix?)      -> `<prefix>-<safeKey(seed)>-<ts36>-<hex>`
  *   jobs.remember(job)             -> ring retention (oldest evicted)
  *   jobs.get(id)                   -> job | undefined
  *   jobs.list() / jobs.values()    -> jobs in insertion order

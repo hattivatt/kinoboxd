@@ -354,3 +354,48 @@ test('status() of an unknown id is null and never throws', () => {
   assert.equal(jobs.status(null), null);
   assert.equal(jobs.get(undefined), undefined);
 });
+
+test('ids keep the legacy shape and an explicit prefix (books per source)', () => {
+  const jobs = createJobs({ name: 'test', idPrefix: 'games-steam' });
+  const id = jobs.newId('76561198 000000001');
+  assert.match(id, /^games-steam-76561198_000000001-[0-9a-z]+-[0-9a-f]{6}$/);
+  assert.match(jobs.newId('livelib', 'resolve'), /^resolve-livelib-[0-9a-z]+-[0-9a-f]{6}$/);
+});
+
+test('remember() attaches the job methods to a plain legacy literal', async () => {
+  const jobs = createJobs({ name: 'test', keyOf: (job) => job.uploadId });
+  const job = jobs.remember({
+    id: 'upload-1',
+    uploadId: 'upload-1',
+    total: 2,
+    matched: 0,
+    failed: 0,
+    done: false,
+    startedAt: 1,
+    finishedAt: null,
+  });
+
+  job.setStage('enrich', 1, 2);
+  assert.equal(job.stage, 'enrich');
+  assert.deepEqual(job.progress, { current: 1, total: 2 });
+  assert.equal(jobs.get('upload-1'), job);
+
+  const snapshot = jobs.snapshot(job);
+  assert.equal(snapshot.status, 'running');
+  assert.equal(snapshot.progress.current, 1);
+  assert.equal(snapshot.partial, null);
+});
+
+test('cooldownRemaining accepts a per-call window override (route option)', async () => {
+  let clock = 0;
+  const jobs = createJobs({ name: 'test', keyOf: (job) => job.key, cooldownMs: 1000, now: () => clock });
+  jobs.start('p', async (job) => {
+    job.status = 'done';
+    job.stage = 'done';
+  });
+  await jobs.whenIdle();
+  clock = 500;
+  assert.equal(jobs.cooldownRemaining('p'), 500);
+  assert.equal(jobs.cooldownRemaining('p', { windowMs: 0 }), 0);
+  assert.equal(jobs.cooldownRemaining('p', { windowMs: 200 }), 0, 'the shorter window already expired');
+});
