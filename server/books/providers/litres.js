@@ -14,21 +14,21 @@
  * include response bodies, only masked query/status/counters.
  */
 
-const { fetchJson, defaultSleep } = require('./http');
-const { createBudget: createBudgetImpl, budgetFromEnv: budgetFromEnvOf } = require('../../core/budget');
-const { createBreaker } = require('../../core/breaker');
+const { fetchJson, defaultSleep, createSourceClient } = require('./http');
 const sources = require('../../core/sources');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
-const { normalizeIsbn, isbn10Of } = require('../normalize');
+const { normalizeIsbn, isbn10Of, namesOf } = require('../normalize');
 
 const NAME = 'litres';
 const ORIGIN = 'https://www.litres.ru';
 const API_BASE = 'https://api.litres.ru/foundation/api';
-const DEFAULT_BUDGET = sources.budgetLimit(NAME);
+const source = createSourceClient({ name: NAME, budgetEnv: 'BOOKS_LITRES_BUDGET' });
+const DEFAULT_BUDGET = source.budgetLimit;
 const DEFAULT_PAUSE_MS = sources.pauseMs(NAME);
-const BLOCK_BREAKER_MS = sources.breakerMs(NAME);
+const BLOCK_BREAKER_MS = source.breakerMs;
 const REQUEST_TIMEOUT_MS = sources.timeoutMs(NAME);
+const { isBreakerOpen, tripBreaker, resetBreaker, createBudget, budgetFromEnv } = source;
 const SEARCH_LIMIT = 5;
 const SEARCH_TYPES = ['text_book', 'audiobook'];
 
@@ -38,28 +38,6 @@ const HEADERS = {
   'accept-language': 'ru-RU,ru;q=0.9,en-US;q=0.8',
   'ui-language-code': 'ru',
 };
-
-const breaker = createBreaker({ cooldownMs: BLOCK_BREAKER_MS });
-
-function isBreakerOpen(now = Date.now()) {
-  return breaker.isOpen(NAME, now);
-}
-
-function tripBreaker(ms = BLOCK_BREAKER_MS) {
-  breaker.trip(NAME, { untilMs: ms });
-}
-
-function resetBreaker() {
-  breaker.reset(NAME);
-}
-
-function createBudget(limit) {
-  return createBudgetImpl(limit, DEFAULT_BUDGET);
-}
-
-function budgetFromEnv() {
-  return budgetFromEnvOf('BOOKS_LITRES_BUDGET', DEFAULT_BUDGET);
-}
 
 /* ------------------------------------------------------------------ */
 /* Parsing                                                             */
@@ -96,16 +74,6 @@ function authorNamesOf(item) {
     if (!names.includes(String(name).trim())) names.push(String(name).trim());
   }
   return names;
-}
-
-function namesOf(list) {
-  if (!Array.isArray(list)) return [];
-  const out = [];
-  for (const entry of list) {
-    const name = typeof entry === 'string' ? entry : entry && entry.name;
-    if (typeof name === 'string' && name.trim() && !out.includes(name.trim())) out.push(name.trim());
-  }
-  return out;
 }
 
 function yearOf(...values) {

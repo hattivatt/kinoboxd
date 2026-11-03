@@ -13,6 +13,22 @@ function cleanText(value) {
     .trim();
 }
 
+/**
+ * Unique non-empty names out of a provider list (`[{name}]` or `["name"]`).
+ * Shared by the Литрес and Open Library normalizers; a provider-specific list
+ * shape stays at the call site.
+ */
+function namesOf(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const entry of list) {
+    if (!entry) continue;
+    const name = typeof entry === 'string' ? entry : entry.name;
+    if (typeof name === 'string' && name.trim() && !out.includes(name.trim())) out.push(name.trim());
+  }
+  return out;
+}
+
 /** Normalize a title for comparison (display keeps the original). */
 function normalizeTitle(title) {
   let value = cleanText(title).toLowerCase();
@@ -94,6 +110,7 @@ function normalizeIsbn(value) {
 
 module.exports = {
   cleanText,
+  namesOf,
   normalizeTitle,
   tokensOf,
   tokenJaccard,

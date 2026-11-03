@@ -16,9 +16,7 @@
 const cheerio = require('cheerio');
 
 const livelib = require('../livelib');
-const { createBudget: createBudgetImpl, budgetFromEnv: budgetFromEnvOf } = require('../../core/budget');
-const { createBreaker } = require('../../core/breaker');
-const { defaultSleep } = require('../../core/http');
+const { createSourceClient, defaultSleep } = require('./http');
 const sources = require('../../core/sources');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { cleanText, normalizeIsbn, isbn10Of } = require('../normalize');
@@ -27,30 +25,16 @@ const NAME = 'livelib-card';
 // The card provider has always used a fixed 2 s; the 1.5-2.5 s random range
 // is the bulk import's pause. `core/sources` keeps both values.
 const DEFAULT_PAUSE_MS = sources.SOURCES.livelib.cardPauseMs;
-const DEFAULT_BUDGET = sources.budgetLimit('livelib');
-const BLOCK_BREAKER_MS = sources.breakerMs('livelib');
-
-const breaker = createBreaker({ cooldownMs: BLOCK_BREAKER_MS });
-
-function isBreakerOpen(now = Date.now()) {
-  return breaker.isOpen(NAME, now);
-}
-
-function tripBreaker(ms = BLOCK_BREAKER_MS) {
-  breaker.trip(NAME, { untilMs: ms });
-}
-
-function resetBreaker() {
-  breaker.reset(NAME);
-}
-
-function createBudget(limit) {
-  return createBudgetImpl(limit, DEFAULT_BUDGET);
-}
-
-function budgetFromEnv() {
-  return budgetFromEnvOf('BOOKS_LIVELIB_CARD_BUDGET', DEFAULT_BUDGET);
-}
+// Same LiveLib source row as the bulk importer, but a card-only breaker key and
+// its own budget variable.
+const source = createSourceClient({
+  name: NAME,
+  source: 'livelib',
+  budgetEnv: 'BOOKS_LIVELIB_CARD_BUDGET',
+});
+const DEFAULT_BUDGET = source.budgetLimit;
+const BLOCK_BREAKER_MS = source.breakerMs;
+const { isBreakerOpen, tripBreaker, resetBreaker, createBudget, budgetFromEnv } = source;
 
 function readDetailRows($) {
   const rows = {};

@@ -11,10 +11,10 @@
  * `Protected DAISY`, ...), so a small stop-list keeps the genre widgets clean.
  */
 
-const { fetchJson } = require('./http');
+const { fetchJson, defaultSleep } = require('./http');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
-const { normalizeIsbn, isbn10Of, normalizeTitle, surnameOf } = require('../normalize');
+const { normalizeIsbn, isbn10Of, normalizeTitle, surnameOf, namesOf } = require('../normalize');
 const sources = require('../../core/sources');
 
 const NAME = 'openlibrary';
@@ -24,19 +24,6 @@ const DEFAULT_REQUEST_DELAY_MS = sources.pauseMs('openlibrary');
 
 const SUBJECT_STOPLIST =
   /^(accessible book|protected daisy|in library|large type books|reading level-grade|open library staff picks|popular print disabled books|internet archive wishlist|browsing library|overdrive|libby|ebook|audiobook|fiction|nonfiction|general)$/i;
-
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function namesOf(list) {
-  if (!Array.isArray(list)) return [];
-  const out = [];
-  for (const entry of list) {
-    if (!entry) continue;
-    const name = typeof entry === 'string' ? entry : entry.name;
-    if (typeof name === 'string' && name.trim() && !out.includes(name.trim())) out.push(name.trim());
-  }
-  return out;
-}
 
 function subjectsOf(list, limit = 25) {
   const out = [];

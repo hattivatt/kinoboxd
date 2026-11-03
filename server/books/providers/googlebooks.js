@@ -32,9 +32,7 @@
  * cover, infoLink -> links.pageUrl.
  */
 
-const { fetchJson, defaultSleep } = require('./http');
-const { createBudget: createBudgetImpl, budgetFromEnv: budgetFromEnvOf } = require('../../core/budget');
-const { createBreaker } = require('../../core/breaker');
+const { fetchJson, defaultSleep, createSourceClient } = require('./http');
 const sources = require('../../core/sources');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
@@ -43,33 +41,13 @@ const config = require('../../config');
 
 const NAME = 'googlebooks';
 const API_URL = 'https://www.googleapis.com/books/v1/volumes';
-const BREAKER_MS = sources.breakerMs(NAME);
+const source = createSourceClient({ name: NAME, budgetEnv: 'BOOKS_GB_BUDGET' });
+const BREAKER_MS = source.breakerMs;
 const DEFAULT_REQUEST_DELAY_MS = sources.pauseMs(NAME);
-const DEFAULT_BUDGET = sources.budgetLimit(NAME);
+const DEFAULT_BUDGET = source.budgetLimit;
+const { isBreakerOpen, tripBreaker, resetBreaker, createBudget, budgetFromEnv } = source;
 const YEAR_MIN = -3000;
 const YEAR_MAX = 2100;
-
-const breaker = createBreaker({ cooldownMs: BREAKER_MS });
-
-function isBreakerOpen(now = Date.now()) {
-  return breaker.isOpen(NAME, now);
-}
-
-function tripBreaker(ms = BREAKER_MS) {
-  breaker.trip(NAME, { untilMs: ms });
-}
-
-function resetBreaker() {
-  breaker.reset(NAME);
-}
-
-function createBudget(limit) {
-  return createBudgetImpl(limit, DEFAULT_BUDGET);
-}
-
-function budgetFromEnv() {
-  return budgetFromEnvOf('BOOKS_GB_BUDGET', DEFAULT_BUDGET);
-}
 
 /**
  * `&key=…` for the query string, or '' when no key is configured.

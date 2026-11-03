@@ -46,6 +46,7 @@ const cheerio = require('cheerio');
 const { fetchOnce, defaultSleep } = require('../core/http');
 const sources = require('../core/sources');
 const { parseCookieHeader } = require('./cookie-header');
+const { cleanText } = require('./normalize');
 
 const LIVELIB_ORIGIN = 'https://www.livelib.ru';
 
@@ -101,13 +102,6 @@ const sleep = defaultSleep;
 
 function randomDelay() {
   return MIN_DELAY_MS + Math.floor(Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS + 1));
-}
-
-function cleanText(value) {
-  return String(value == null ? '' : value)
-    .replace(/\u00a0/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 /* ------------------------------------------------------------------ */
