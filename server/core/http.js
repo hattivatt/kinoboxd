@@ -32,6 +32,17 @@ const { URL } = require('url');
 
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_RETRIES = 2;
+
+/**
+ * Resolve a caller timeout. `undefined`/`null` -> the source default; `0` ->
+ * no deadline (explicitly requested, e.g. WDQS); a finite non-negative number
+ * -> that many ms. Negative/NaN is a misconfiguration and falls back.
+ */
+function resolveTimeoutMs(value, fallback = DEFAULT_TIMEOUT_MS) {
+  if (value == null) return fallback;
+  const ms = Number(value);
+  return Number.isFinite(ms) && ms >= 0 ? ms : fallback;
+}
 const BACKOFF_MS = [800, 2000];
 const MAX_RETRY_AFTER_MS = 10000;
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
@@ -96,6 +107,10 @@ function byteLength(text) {
  * Options: `fetchImpl`, `method`, `headers`, `body`, `redirect`
  * (`'follow'` default, `'manual'` returns the 3xx answer), `timeoutMs`,
  * `userAgent`, `maxBytes`, `label`.
+ *
+ * `timeoutMs` follows the project-wide env convention: `undefined`/`null`
+ * means the 15 s default, `0` means "no deadline" (the WDQS book-author bridge
+ * waits as long as the endpoint needs), a positive number is that many ms.
  */
 async function fetchOnce(url, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
@@ -110,8 +125,9 @@ async function fetchOnce(url, options = {}) {
     redirect: options.redirect === 'manual' ? 'manual' : 'follow',
   };
   if (options.body != null) init.body = options.body;
-  if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
-    init.signal = AbortSignal.timeout(options.timeoutMs || DEFAULT_TIMEOUT_MS);
+  const timeoutMs = resolveTimeoutMs(options.timeoutMs);
+  if (timeoutMs > 0 && typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
+    init.signal = AbortSignal.timeout(timeoutMs);
   }
 
   let response;
@@ -164,24 +180,36 @@ async function fetchOnce(url, options = {}) {
  *
  * Options: `method`, `headers`, `body`, `timeoutMs`, `lookup`, `maxBytes`,
  * `followRedirect` (default true), `maxRedirects` (default 0), `label`.
+ * `timeoutMs: 0` disables the deadline, like `fetchOnce`.
  *
  * Error codes: `invalid_url`, `network_error`, `timeout`, `response_too_large`,
  * `too_many_redirects`.
  */
 function nodeRequest(target, options = {}) {
   const label = options.label || 'provider';
-  const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
+  const timeoutMs = resolveTimeoutMs(options.timeoutMs);
   const redirectsLeft = options.maxRedirects == null ? 0 : Number(options.maxRedirects);
   const followRedirect = options.followRedirect !== false;
   const maxBytes = options.maxBytes == null ? DEFAULT_MAX_BYTES : Number(options.maxBytes);
   const method = options.method || 'GET';
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finishResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const finishReject = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
     let parsed;
     try {
       parsed = new URL(target);
     } catch (err) {
-      reject(new HttpTransportError(`${label} invalid URL`, 'invalid_url', null, null, err));
+      finishReject(new HttpTransportError(`${label} invalid URL`, 'invalid_url', null, null, err));
       return;
     }
     const lib = parsed.protocol === 'http:' ? http : https;
@@ -205,17 +233,17 @@ function nodeRequest(target, options = {}) {
         if (followRedirect && status >= 300 && status < 400 && location) {
           res.resume();
           if (redirectsLeft <= 0) {
-            reject(new HttpTransportError(`${label} too many redirects`, 'too_many_redirects', status));
+            finishReject(new HttpTransportError(`${label} too many redirects`, 'too_many_redirects', status));
             return;
           }
           let next;
           try {
             next = new URL(location, parsed).href;
           } catch (err) {
-            reject(new HttpTransportError(`${label} invalid redirect`, 'too_many_redirects', status, null, err));
+            finishReject(new HttpTransportError(`${label} invalid redirect`, 'too_many_redirects', status, null, err));
             return;
           }
-          resolve(
+          finishResolve(
             nodeRequest(next, {
               ...options,
               maxRedirects: redirectsLeft - 1,
@@ -227,17 +255,22 @@ function nodeRequest(target, options = {}) {
         const chunks = [];
         let size = 0;
         res.on('data', (chunk) => {
+          if (settled) return;
           size += chunk.length;
           if (size > maxBytes) {
-            req.destroy(
+            // Reject first, then abort without an error argument: passing the
+            // error to `destroy()` makes the same object surface as an
+            // uncaught stream error on some Node versions.
+            finishReject(
               new HttpTransportError(`${label} response is larger than ${maxBytes} bytes`, 'response_too_large', status)
             );
+            req.destroy();
             return;
           }
           chunks.push(chunk);
         });
         res.on('end', () => {
-          resolve({
+          finishResolve({
             status,
             headers: res.headers || {},
             body: Buffer.concat(chunks).toString('utf8'),
@@ -245,26 +278,36 @@ function nodeRequest(target, options = {}) {
           });
         });
         res.on('error', (err) => {
-          reject(new HttpTransportError(`${label} network error: ${err.message}`, 'network_error', status, null, err));
+          // A stream error we raised ourselves (`response_too_large` destroys
+          // the request) must keep its code instead of being re-labelled as a
+          // network failure.
+          if (err instanceof HttpTransportError) {
+            finishReject(err);
+            return;
+          }
+          finishReject(
+            new HttpTransportError(`${label} network error: ${err.message}`, 'network_error', status, null, err)
+          );
         });
       });
     } catch (err) {
-      reject(new HttpTransportError(`${label} network error: ${err.message}`, 'network_error', null, null, err));
+      finishReject(new HttpTransportError(`${label} network error: ${err.message}`, 'network_error', null, null, err));
       return;
     }
     req.on('timeout', () => {
-      req.destroy(
+      finishReject(
         new HttpTransportError(`${label} timeout after ${timeoutMs} ms`, 'timeout', null, null, {
           code: 'ETIMEDOUT',
         })
       );
+      req.destroy();
     });
     req.on('error', (err) => {
       if (err instanceof HttpTransportError) {
-        reject(err);
+        finishReject(err);
         return;
       }
-      reject(new HttpTransportError(`${label} network error: ${err.message}`, 'network_error', null, null, err));
+      finishReject(new HttpTransportError(`${label} network error: ${err.message}`, 'network_error', null, null, err));
     });
     if (options.body != null) req.write(String(options.body));
     req.end();
@@ -500,8 +543,9 @@ async function fetchBinary(url, options = {}) {
     redirect: options.redirect === 'manual' ? 'manual' : 'follow',
   };
   if (options.body != null) init.body = options.body;
-  if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
-    init.signal = AbortSignal.timeout(options.timeoutMs || DEFAULT_TIMEOUT_MS);
+  const timeoutMs = resolveTimeoutMs(options.timeoutMs);
+  if (timeoutMs > 0 && typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
+    init.signal = AbortSignal.timeout(timeoutMs);
   }
   let response;
   try {

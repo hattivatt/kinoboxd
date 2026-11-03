@@ -144,8 +144,11 @@ function createBreaker(options = {}) {
     const opts = typeof details === 'string' ? { reason: details } : details || {};
     const timestamp = now();
     const windowMs = opts.untilMs == null ? Number(cooldownOf()) : Number(opts.untilMs);
+    // 0 is a real window: the breaker expires immediately (the «0 = off»
+    // env convention, e.g. GAMES_STORE_BREAKER_MS=0). Only an absent/invalid
+    // window falls back to the 30 min default.
     const record = {
-      until: timestamp + (Number.isFinite(windowMs) && windowMs > 0 ? windowMs : DEFAULT_COOLDOWN_MS),
+      until: timestamp + (Number.isFinite(windowMs) && windowMs >= 0 ? windowMs : DEFAULT_COOLDOWN_MS),
       at: timestamp,
       reason: opts.reason == null ? 'blocked' : String(opts.reason),
       code: opts.code == null ? null : opts.code,

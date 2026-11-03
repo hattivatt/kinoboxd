@@ -74,6 +74,29 @@ test('secret documents are written 0600 inside a 0700 directory', () => {
   assert.deepEqual(store.readJson(file), { access_token: 'redacted' });
 });
 
+test('verifySecretFileSync repairs 0644 and refuses a non-regular file', () => {
+  const dir = tempDir();
+  const file = path.join(dir, 'secret.json');
+  fs.writeFileSync(file, '{}');
+  fs.chmodSync(file, 0o644);
+  store.verifySecretFileSync(file, 0o600);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+
+  const sub = path.join(dir, 'not-a-file');
+  fs.mkdirSync(sub);
+  assert.throws(
+    () => store.verifySecretFileSync(sub),
+    (err) => err.code === 'secret_mode_error'
+  );
+
+  const link = path.join(dir, 'link.json');
+  fs.symlinkSync(file, link);
+  assert.throws(
+    () => store.verifySecretFileSync(link),
+    (err) => err.code === 'secret_mode_error'
+  );
+});
+
 test('safeKey removes path traversal and keeps the readable part', () => {
   assert.equal(store.safeKey('../../etc/passwd'), '.._.._etc_passwd');
   assert.equal(store.safeKey('steam-76561198038369983'), 'steam-76561198038369983');

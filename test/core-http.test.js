@@ -17,6 +17,7 @@ const {
   fetchJson,
   fetchText,
   fetchOnce,
+  fetchBinary,
   postJson,
   nodeRequest,
   parseRetryAfter,
@@ -142,6 +143,33 @@ test('fetchOnce caps the body when maxBytes is given', async () => {
   );
 });
 
+test('timeoutMs: 0 means no deadline; omitted keeps the 15 s default', async () => {
+  let seen = null;
+  const fetchImpl = async (url, init) => {
+    seen = init;
+    return jsonResponse({ ok: true });
+  };
+  await fetchOnce('https://example.test/x', { fetchImpl });
+  assert.ok(seen.signal, 'the default deadline is still installed');
+  await fetchOnce('https://example.test/x', { fetchImpl, timeoutMs: 0 });
+  assert.equal(seen.signal, undefined, '0 must not install an AbortSignal');
+});
+
+test('fetchBinary reads bytes and enforces maxBytes', async () => {
+  const fetchImpl = async () => ({
+    status: 200,
+    headers: new Map(),
+    arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+    url: 'https://example.test/i',
+  });
+  const ok = await fetchBinary('https://example.test/i', { fetchImpl });
+  assert.equal(ok.buffer.length, 4);
+  await assert.rejects(
+    () => fetchBinary('https://example.test/i', { fetchImpl, maxBytes: 2 }),
+    (err) => err.code === 'response_too_large'
+  );
+});
+
 test('postJson sends a POST with a JSON body', async () => {
   let request = null;
   const fetchImpl = async (url, options) => {
@@ -214,4 +242,21 @@ test('nodeRequest reports too many redirects and an invalid URL', async () => {
     () => nodeRequest('not a url', {}),
     (err) => err.code === 'invalid_url'
   );
+});
+
+test('nodeRequest keeps response_too_large when the body cap destroys the stream', async () => {
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('x'.repeat(4096));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    await assert.rejects(
+      () => nodeRequest(`http://127.0.0.1:${port}/big`, { maxBytes: 16 }),
+      (err) => err.code === 'response_too_large'
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

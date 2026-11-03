@@ -47,6 +47,21 @@ test('memory breaker: cooldown can be a function and per-trip untilMs wins', () 
   assert.equal(breaker.entry('b').until, 100);
 });
 
+test('a zero window expires immediately (0 = breaker off)', () => {
+  let clock = 1000;
+  const breaker = createBreaker({ now: () => clock, cooldownMs: 0 });
+  const entry = breaker.trip('x');
+  assert.equal(entry.until, clock);
+  assert.equal(breaker.isOpen('x'), false, 'until == now is already expired');
+
+  // A per-trip zero overrides a positive default too.
+  const other = createBreaker({ now: () => clock, cooldownMs: 5000 });
+  other.trip('y', { untilMs: 0 });
+  assert.equal(other.isOpen('y'), false);
+  other.trip('z');
+  assert.equal(other.isOpen('z'), true);
+});
+
 test('persisted breaker keeps the epoch {until, reason, at} format', () => {
   let clock = 5_000;
   let disk = {};

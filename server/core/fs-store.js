@@ -97,6 +97,33 @@ function writeJsonAtomicSync(filePath, data, options = {}) {
 }
 
 /**
+ * Verify a secret file after the rename: it must be a regular file without
+ * group/other permission bits. A wrong mode is repaired once (best effort) and
+ * then re-checked; a symlink/directory or a repair that did not stick throws
+ * `secret_mode_error`, so the writer cannot report success for a world-readable
+ * secret.
+ */
+function verifySecretFileSync(filePath, mode = 0o600) {
+  let stat = fs.lstatSync(filePath);
+  if (stat.isFile() && (stat.mode & 0o077) === 0) return stat;
+  if (stat.isFile()) {
+    try {
+      fs.chmodSync(filePath, mode);
+    } catch (err) {
+      /* re-checked below; a read-only FS must surface as an error */
+    }
+    stat = fs.lstatSync(filePath);
+  }
+  if (!stat.isFile() || (stat.mode & 0o077) !== 0) {
+    throw Object.assign(
+      new Error(`secret file is not a regular ${mode.toString(8)} file: ${filePath}`),
+      { code: 'secret_mode_error' }
+    );
+  }
+  return stat;
+}
+
+/**
  * Atomic write of a secret document: directory 0700, file 0600.
  *
  * The tmp file is created with `O_CREAT|O_EXCL|O_NOFOLLOW` and the final mode,
@@ -135,11 +162,7 @@ function writeSecretAtomicSync(filePath, data) {
     removeQuietly(tmp);
     throw err;
   }
-  try {
-    fs.chmodSync(filePath, 0o600);
-  } catch (err) {
-    /* best-effort */
-  }
+  verifySecretFileSync(filePath, 0o600);
   return fingerprintOf(filePath);
 }
 
@@ -189,6 +212,7 @@ module.exports = {
   writeJsonAtomic,
   writeJsonAtomicSync,
   writeSecretAtomicSync,
+  verifySecretFileSync,
   ensureDir,
   ensureDirs,
   removeQuietly,
