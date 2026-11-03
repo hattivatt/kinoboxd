@@ -109,6 +109,12 @@ function publicStatus(job) {
     wdDisabledUntil: job.wdDisabledUntil,
     wdAnswered: job.wdAnswered == null ? null : job.wdAnswered,
     wdDeferred: job.wdDeferred == null ? null : job.wdDeferred,
+    // M6 follow-up: GOG/Epic-only works in the same pass.
+    secondaryGames: job.secondaryGames == null ? null : job.secondaryGames,
+    secondaryUpdated: job.secondaryUpdated || 0,
+    secondarySkippedFresh: job.secondarySkippedFresh || 0,
+    secondaryDeferred: job.secondaryDeferred || 0,
+    secondaryQueries: job.secondaryQueries || 0,
     mobyRequests: job.mobyRequests,
     enrichWait: job.enrichWait || null,
     errors: job.errors ? [...job.errors] : [],
@@ -242,6 +248,11 @@ async function runPass(job, parsed, options) {
     job.wdDisabledUntil = report.wdDisabledUntil || null;
     job.wdAnswered = report.wdAnswered || 0;
     job.wdDeferred = report.wdDeferred || 0;
+    job.secondaryGames = report.secondaryGames || 0;
+    job.secondaryUpdated = report.secondaryUpdated || 0;
+    job.secondarySkippedFresh = report.secondarySkippedFresh || 0;
+    job.secondaryDeferred = report.secondaryDeferred || 0;
+    job.secondaryQueries = report.secondaryQueries || 0;
     job.mobyRequests = report.mobyRequests;
     job.errors = [...report.errors, ...report.mobyErrors];
     if (report.wdSkipped) job.skipped = report.wdSkipped;
@@ -323,6 +334,11 @@ function startPersonnel(profileToken, options = {}) {
     wdDisabledUntil: null,
     wdAnswered: 0,
     wdDeferred: 0,
+    secondaryGames: 0,
+    secondaryUpdated: 0,
+    secondarySkippedFresh: 0,
+    secondaryDeferred: 0,
+    secondaryQueries: 0,
     mobyRequests: 0,
     errors: [],
     skipped: null,

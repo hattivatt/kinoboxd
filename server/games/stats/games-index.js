@@ -215,6 +215,11 @@ function buildGamesIndex(ctx) {
       genres: [...entry.genres],
       developers: [...entry.developers],
       publishers: [...entry.publishers],
+      // M6 follow-up: Wikidata identity + P179 series of a secondary-only
+      // work, so the union card can paint the same franchise chip a Steam
+      // row does and the drilldown can match by `workKey`.
+      qid: entry.qid || null,
+      franchise: entry.franchise ? { ...entry.franchise } : null,
       categories: [],
       dlcCount: null,
       metacritic: null,
@@ -224,7 +229,6 @@ function buildGamesIndex(ctx) {
       tags: [],
       reviewScore: null,
       reviewDesc: null,
-      franchise: null,
       releaseYearWikidata: null,
       completion: null,
       achievements: null,

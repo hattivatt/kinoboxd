@@ -72,7 +72,7 @@ const {
   readDetailsIndex,
   runningFor: secondaryDetailsRunning,
 } = require('./secondary-details');
-const { readSecondaryLinks } = require('./secondary-identity');
+const { readSecondaryLinks, readSecondaryTitleLinks } = require('./secondary-identity');
 const { buildEpicLayerSync } = require('./epic-layer');
 const franchise = require('./franchise');
 const editions = require('./editions');
@@ -242,6 +242,12 @@ function buildGamesStats(input = {}) {
       genres: [...entry.genres],
       developers: [...entry.developers],
       publishers: [...entry.publishers],
+      // M6 follow-up (03.11.2026): identity of a secondary-only work. `qid`
+      // is the Wikidata item the bridge resolved; `franchise` is the P179
+      // series (same shape as a Steam `gamesIndex` row), `null` when Wikidata
+      // answered «no series» or has not been asked yet.
+      qid: entry.qid || null,
+      franchise: entry.franchise ? { ...entry.franchise } : null,
       metadataSources: [...entry.metadataSources],
       hours: round1(entry.secondaryMinutes / 60),
       secondaryHours: round1(entry.secondaryMinutes / 60),
@@ -426,6 +432,9 @@ function buildGamesStatsFromCache(profileKey, options = {}) {
     // Stale entries are still valid identity (a QID does not expire); an
     // absent file is `{}` and the union falls back to title/slug matching.
     secondaryLinks: readSecondaryLinks({ allowStale: true }),
+    // M6 follow-up: title-matched identities (Epic exclusives such as Alan
+    // Wake 2 are resolved by the exact-label pass, not by P6278). Read-only.
+    secondaryTitleLinks: readSecondaryTitleLinks({ allowStale: true }),
     // M6b/M6c: Epic read model of the same owner. Built synchronously from the
     // cache (`buildEpicLayerSync`) because the stats route is synchronous and
     // polled; it reads only the redacted token summary, never a token value.

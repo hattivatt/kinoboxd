@@ -99,6 +99,14 @@ const sources = require('../core/sources');
 
 const LINKS_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'links');
 const STATE_PATH = path.join(gameCache.STATE_DIR, 'franchise-state.json');
+/**
+ * Franchise of works that exist only outside Steam (GOG/Epic exclusives such
+ * as Alan Wake 2). Global metadata cache (no owner dimension), keyed both by
+ * the store slug (`epic:alan_wake_2`) and by the Wikidata item (`qid:Q…`), so
+ * the payload can answer from a slug it knows and the pass can reuse an answer
+ * it already has for a QID. A miss is a settled negative for the TTL.
+ */
+const SECONDARY_FRANCHISE_PATH = path.join(LINKS_DIR, 'secondary-franchise.json');
 
 const DEFAULT_BUDGET = 450;
 const DEFAULT_TTL_DAYS = 90;
@@ -248,6 +256,95 @@ function writeLinksDoc(appid, patch) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Secondary-only works: franchise cache (slug/QID → P179)             */
+/* ------------------------------------------------------------------ */
+
+function emptySecondaryFranchise() {
+  return { schemaVersion: 1, fetchedAt: null, entries: {} };
+}
+
+/** Read `links/secondary-franchise.json` (never throws, `{}` when absent). */
+function readSecondaryFranchise() {
+  const hit = gameCache.readJsonWithFingerprint(SECONDARY_FRANCHISE_PATH);
+  if (!hit || !hit.data || typeof hit.data !== 'object') return emptySecondaryFranchise();
+  return {
+    schemaVersion: Number(hit.data.schemaVersion) || 1,
+    fetchedAt: hit.data.fetchedAt || null,
+    entries:
+      hit.data.entries && typeof hit.data.entries === 'object' ? hit.data.entries : {},
+  };
+}
+
+/**
+ * Merge entries into the cache atomically. Additive: a slug/QID written by
+ * another pass survives, and only the keys in `patch` are replaced.
+ */
+function writeSecondaryFranchiseEntries(patch, options = {}) {
+  const current = readSecondaryFranchise();
+  const entries = { ...current.entries, ...(patch || {}) };
+  const doc = {
+    schemaVersion: 1,
+    source: 'wikidata',
+    fetchedAt: options.fetchedAt || new Date().toISOString(),
+    entries,
+  };
+  gameCache.writeJsonAtomicSync(SECONDARY_FRANCHISE_PATH, doc);
+  return doc;
+}
+
+/** Is this settled franchise answer inside the TTL window? */
+function isSecondaryFranchiseFresh(entry, ttlMs, nowMs) {
+  if (!entry || typeof entry !== 'object' || entry.resolved !== true) return false;
+  const at = Date.parse(String(entry.fetchedAt || ''));
+  if (!Number.isFinite(at)) return false;
+  const ttl = Number.isFinite(Number(ttlMs)) ? Number(ttlMs) : ttlMsFromEnv();
+  return nowMs - at >= 0 && nowMs - at < ttl;
+}
+
+/**
+ * One cached answer for a secondary work, looked up by store slug first and
+ * by QID second. Pure over the document handed in.
+ */
+function secondaryFranchiseFrom(doc, { store, slug, qid } = {}) {
+  const entries = doc && doc.entries && typeof doc.entries === 'object' ? doc.entries : {};
+  const prefix = String(store == null ? '' : store).trim().toLowerCase();
+  const key = String(slug == null ? '' : slug).trim();
+  if (prefix && key) {
+    const hit = entries[`${prefix}:${key}`];
+    if (hit) return hit;
+  }
+  if (qid && /^Q\d+$/.test(String(qid))) return entries[`qid:${String(qid)}`] || null;
+  return null;
+}
+
+/** One cache entry from a WDQS hit (or an honest «no P179» answer). */
+function secondaryFranchiseEntry(hit, { store = null, slug = null, fetchedAt } = {}) {
+  const franchise =
+    hit && hit.franchise && hit.franchise.qid
+      ? {
+          qid: hit.franchise.qid,
+          labelEn: hit.franchise.labelEn || null,
+          labelRu: hit.franchise.labelRu || null,
+          labelMul: hit.franchise.labelMul || null,
+        }
+      : null;
+  return {
+    qid: hit && hit.qid ? hit.qid : null,
+    franchiseKey: franchise ? `wd:${franchise.qid}` : null,
+    franchiseLabel: franchise
+      ? franchise.labelEn || franchise.labelMul || franchise.labelRu || null
+      : null,
+    labelRu: franchise ? franchise.labelRu || null : null,
+    franchise,
+    source: 'wikidata',
+    resolved: true,
+    store: store || null,
+    slug: slug || null,
+    fetchedAt,
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* State (resumable journal)                                           */
 /* ------------------------------------------------------------------ */
 
@@ -297,6 +394,12 @@ function recordRun(profileKey, report) {
     bridgeQueries: report.bridgeQueries || 0,
     bridged: report.bridged || 0,
     bridgeMisses: report.bridgeMisses || 0,
+    // Secondary-only works (GOG/Epic): P179 by QID in the same pass.
+    secondaryTargets: report.secondaryTargets || 0,
+    secondaryCandidates: report.secondaryCandidates || 0,
+    secondaryUpdated: report.secondaryUpdated || 0,
+    secondarySkippedFresh: report.secondarySkippedFresh || 0,
+    secondaryQueries: report.secondaryQueries || 0,
     force: Boolean(report.force),
     errors: (report.errors || []).slice(0, 5),
   };
@@ -462,6 +565,90 @@ function parseFranchiseResponse(data) {
       releaseYear: date ? date.year : null,
       releasePrecision: date ? date.precision : null,
       releaseDate: date && date.precision === 'day' ? date.iso : null,
+    });
+  }
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* Secondary-only works: P179 by QID                                   */
+/* ------------------------------------------------------------------ */
+
+function qidValues(qids) {
+  return qids
+    .map((qid) => String(qid == null ? '' : qid).trim())
+    .filter((qid) => /^Q\d+$/.test(qid))
+    .map((qid) => `wd:${qid}`)
+    .join(' ');
+}
+
+/**
+ * One query for the Wikidata items of secondary-only works: the item is known
+ * (from `links/secondary.json`), only P179 + labels are missing. `OPTIONAL`
+ * keeps an item without a series in the answer, so «no franchise» is an honest
+ * settled negative instead of a retry loop.
+ */
+function qidFranchiseQuery(qids) {
+  return `SELECT ?game ?franchise ?franchiseEn ?franchiseRu ?franchiseMul WHERE {
+  VALUES ?game { ${qidValues(qids)} }
+  OPTIONAL {
+    ?game wdt:P179 ?franchise .
+    OPTIONAL { ?franchise rdfs:label ?franchiseEn . FILTER(LANG(?franchiseEn) = "en") }
+    OPTIONAL { ?franchise rdfs:label ?franchiseRu . FILTER(LANG(?franchiseRu) = "ru") }
+    OPTIONAL { ?franchise rdfs:label ?franchiseMul . FILTER(LANG(?franchiseMul) = "mul") }
+  }
+}`;
+}
+
+/**
+ * `qidFranchiseQuery` answer → `Map<QID, {qid, franchise}>`. Several P179
+ * values are reduced by the same deterministic rule as the Steam pass (lowest
+ * labelled series QID); two QIDs are never merged.
+ */
+function parseFranchiseByQid(data) {
+  const rows = data && data.results && Array.isArray(data.results.bindings)
+    ? data.results.bindings
+    : [];
+  const byQid = new Map();
+  for (const row of rows) {
+    const gameQid = row.game ? lastSegment(row.game.value) : null;
+    if (!gameQid || !/^Q\d+$/.test(gameQid)) continue;
+    if (!byQid.has(gameQid)) byQid.set(gameQid, { qid: gameQid, franchises: new Map() });
+    const game = byQid.get(gameQid);
+    const franchiseQid = row.franchise ? lastSegment(row.franchise.value) : null;
+    if (!franchiseQid || !/^Q\d+$/.test(franchiseQid)) continue;
+    if (!game.franchises.has(franchiseQid)) {
+      game.franchises.set(franchiseQid, {
+        qid: franchiseQid,
+        labelEn: null,
+        labelRu: null,
+        labelMul: null,
+      });
+    }
+    const franchise = game.franchises.get(franchiseQid);
+    if (row.franchiseEn && row.franchiseEn.value && !franchise.labelEn) {
+      franchise.labelEn = String(row.franchiseEn.value);
+    }
+    if (row.franchiseRu && row.franchiseRu.value && !franchise.labelRu) {
+      franchise.labelRu = String(row.franchiseRu.value);
+    }
+    if (row.franchiseMul && row.franchiseMul.value && !franchise.labelMul) {
+      franchise.labelMul = String(row.franchiseMul.value);
+    }
+  }
+  const result = new Map();
+  for (const [qid, game] of byQid) {
+    const series = pickSeries(game.franchises);
+    result.set(qid, {
+      qid,
+      franchise: series
+        ? {
+            qid: series.qid,
+            labelEn: series.labelEn || series.labelMul || null,
+            labelRu: series.labelRu,
+            labelMul: series.labelMul || null,
+          }
+        : null,
     });
   }
   return result;
@@ -1082,6 +1269,40 @@ async function enrichFranchises(options = {}) {
     if (!selected.length && bridge.asked) report.skipped = null;
   }
 
+  // Secondary-only works (GOG/Epic exclusives): P179 by their already-known
+  // QID. Runs in the same pass/lock with the same dispatcher, pause and
+  // breaker; the store-slug/QID cache is the progress, so a second run costs
+  // nothing unless something is missing or `force` is set.
+  if (options.secondary === false) {
+    report.secondary = { skipped: 'disabled_by_option' };
+  } else {
+    try {
+      const secondary = await enrichSecondaryFranchises({
+        ...options,
+        ownerKey: parsed.key,
+        limit: budget,
+        now,
+        ttlMs,
+      });
+      report.secondary = secondary;
+      report.secondaryTargets = secondary.targets || 0;
+      report.secondaryCandidates = secondary.candidates || 0;
+      report.secondarySelected = secondary.selected || 0;
+      report.secondaryUpdated = secondary.updated || 0;
+      report.secondarySkippedFresh = secondary.skippedFresh || 0;
+      report.secondaryQueries = secondary.queries || 0;
+      report.secondarySkipped = secondary.skipped || null;
+      report.wdQueries += secondary.queries || 0;
+      report.wdAnswered += secondary.answered || 0;
+      if (!selected.length && (secondary.queries || 0) > 0) report.skipped = null;
+      if (secondary.errors && secondary.errors.length) {
+        report.errors = [...report.errors, ...secondary.errors];
+      }
+    } catch (err) {
+      report.secondary = { skipped: 'secondary_failed', error: String((err && err.message) || '').slice(0, 200) };
+    }
+  }
+
   recordRun(parsed.key, report);
   return report;
 }
@@ -1182,9 +1403,167 @@ async function enrichBaseDetails(options = {}) {
   return report;
 }
 
+/* ------------------------------------------------------------------ */
+/* Secondary-only works: franchise pass                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Works of one owner that exist **only** outside Steam, with the Wikidata QID
+ * the secondary bridge already resolved for their store slug. A slug without
+ * a QID is not a candidate: there is nothing to ask (and the store details
+ * pass may still resolve the identity later).
+ *
+ * @returns {Array<{store:'gog'|'epic', slug:string, qid:string, title:string|null}>}
+ */
+function secondaryFranchiseTargets(ownerKey, options = {}) {
+  const key = String(ownerKey == null ? '' : ownerKey).trim();
+  if (!key) return [];
+  // Lazy requires: `secondary-details` → `secondary` → `franchise` is a cycle
+  // at module-load time, but not at call time.
+  const { targetsForOwner } = require('./secondary-details');
+  const { readSecondaryLinks, readSecondaryTitleLinks, normalizeSlug } = require('./secondary-identity');
+  const links = options.links && typeof options.links === 'object'
+    ? options.links
+    : readSecondaryLinks({ allowStale: true });
+  const titleLinks = options.titleLinks && typeof options.titleLinks === 'object'
+    ? options.titleLinks
+    : readSecondaryTitleLinks({ allowStale: true });
+  const targets = targetsForOwner(key);
+  const list = [
+    ...(targets.gog || []).map((target) => ({ store: 'gog', slug: target.slug, title: target.title })),
+    ...(targets.epic || []).map((target) => ({ store: 'epic', slug: target.slug, title: target.title })),
+  ];
+  const out = [];
+  const seen = new Set();
+  for (const target of list) {
+    const rawSlug = String(target.slug == null ? '' : target.slug).trim();
+    if (!rawSlug) continue;
+    const slug = normalizeSlug(rawSlug);
+    if (!slug) continue;
+    const link =
+      links[`${target.store}:${slug}`] ||
+      links[`${target.store}:${rawSlug}`] ||
+      titleLinks[`${target.store}:${slug}`] ||
+      titleLinks[`${target.store}:${rawSlug}`] ||
+      null;
+    const qid = link && link.qid ? String(link.qid) : null;
+    if (!qid || !/^Q\d+$/.test(qid)) continue;
+    const dedupe = `${target.store}:${slug}:${qid}`;
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
+    out.push({ store: target.store, slug, qid, title: target.title || null });
+  }
+  return out;
+}
+
+/**
+ * Ask P179 for the secondary-only works of one owner and write
+ * `links/secondary-franchise.json`.
+ *
+ * Same dispatcher as the Steam pass (`runBatched`: ≤450 QIDs, pause, shared
+ * WD breaker), same budget knob (`GAMES_FRANCHISE_BUDGET`, counted in QIDs /
+ * batches) and the same 90-day TTL. A skipped/erroring answer writes nothing
+ * for misses; a positive hit is real data and is written anyway.
+ *
+ * @param {{ownerKey?:string, profileKey?:string, targets?:Array,
+ *          limit?:number, force?:boolean, ttlMs?:number, now?:Function,
+ *          wikidata?:object, links?:object, titleLinks?:object,
+ *          fetchImpl?:Function, stateStore?:object, sleep?:Function,
+ *          pauseMs?:number}} [options]
+ */
+async function enrichSecondaryFranchises(options = {}) {
+  const now = typeof options.now === 'function' ? options.now : () => Date.now();
+  const ttlMs = Number.isFinite(Number(options.ttlMs))
+    ? Math.max(0, Number(options.ttlMs))
+    : ttlMsFromEnv();
+  const budget = Math.max(1, Number(options.limit) || budgetFromEnv());
+  const force = Boolean(options.force);
+  const ownerKey = options.ownerKey || options.profileKey || '';
+  const report = {
+    owner: ownerKey || null,
+    targets: 0,
+    candidates: 0,
+    selected: 0,
+    remaining: 0,
+    updated: 0,
+    skippedFresh: 0,
+    queries: 0,
+    answered: 0,
+    skipped: null,
+    disabledUntil: null,
+    errors: [],
+  };
+  const targets = Array.isArray(options.targets)
+    ? options.targets
+    : secondaryFranchiseTargets(ownerKey, options);
+  report.targets = targets.length;
+  const doc = readSecondaryFranchise();
+  const pending = [];
+  for (const target of targets) {
+    const entry =
+      doc.entries[`${target.store}:${target.slug}`] ||
+      (target.qid ? doc.entries[`qid:${target.qid}`] : null);
+    if (!force && isSecondaryFranchiseFresh(entry, ttlMs, now())) {
+      report.skippedFresh++;
+      continue;
+    }
+    pending.push(target);
+  }
+  report.candidates = pending.length;
+  const qids = [];
+  for (const target of pending) {
+    if (!qids.includes(target.qid)) qids.push(target.qid);
+  }
+  const selectedQids = qids.slice(0, budget);
+  report.selected = selectedQids.length;
+  report.remaining = Math.max(0, qids.length - selectedQids.length);
+  if (!selectedQids.length) {
+    report.skipped = 'nothing_to_ask';
+    return report;
+  }
+
+  const provider =
+    options.wikidata && typeof options.wikidata.runBatched === 'function'
+      ? options.wikidata
+      : wd;
+  const result = await provider.runBatched(
+    selectedQids,
+    qidFranchiseQuery,
+    'qid',
+    { ...options, parse: parseFranchiseByQid }
+  );
+  report.queries = result.queries;
+  report.answered = result.credits.size;
+  report.skipped = result.skipped || null;
+  report.disabledUntil = result.disabledUntil || null;
+  report.errors = [...(result.errors || [])];
+
+  const cleanAnswer = !result.skipped && !(result.errors || []).length;
+  const fetchedAt = new Date(now()).toISOString();
+  const patch = {};
+  for (const target of pending) {
+    if (!selectedQids.includes(target.qid)) continue;
+    const hit = result.credits.get(target.qid) || null;
+    if (!hit && !cleanAnswer) continue;
+    const entry = secondaryFranchiseEntry(hit, {
+      store: target.store,
+      slug: target.slug,
+      fetchedAt,
+    });
+    patch[`${target.store}:${target.slug}`] = entry;
+    // The QID key is the identity-level answer: another slug of the same item
+    // (GOG + Epic) reads it without a second query.
+    patch[`qid:${target.qid}`] = { ...entry, store: null, slug: null };
+    report.updated++;
+  }
+  if (Object.keys(patch).length) writeSecondaryFranchiseEntries(patch, { fetchedAt });
+  return report;
+}
+
 module.exports = {
   LINKS_DIR,
   STATE_PATH,
+  SECONDARY_FRANCHISE_PATH,
   DEFAULT_BUDGET,
   DEFAULT_TTL_DAYS,
   DEFAULT_BASE_DETAILS_BUDGET,
@@ -1195,10 +1574,17 @@ module.exports = {
   readLinks,
   readLinksMap,
   writeLinksDoc,
+  readSecondaryFranchise,
+  writeSecondaryFranchiseEntries,
+  secondaryFranchiseFrom,
+  secondaryFranchiseEntry,
+  isSecondaryFranchiseFresh,
   readFranchiseState,
   saveFranchiseState,
   appidValues,
   franchiseQuery,
+  qidFranchiseQuery,
+  parseFranchiseByQid,
   baseLabelQuery,
   labelVariants,
   labelLanguages,
@@ -1211,6 +1597,8 @@ module.exports = {
   isLinksFresh,
   budgetFromEnv,
   ttlMsFromEnv,
+  secondaryFranchiseTargets,
+  enrichSecondaryFranchises,
   enrichFranchises,
   enrichBaseDetails,
 };

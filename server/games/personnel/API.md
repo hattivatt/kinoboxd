@@ -95,7 +95,7 @@
       "sources": ["steam-store", "wikidata"]
     }
   ],
-  "totals": { "games": 340, "hours": 5862.6, "excludedNonGame": 0 },
+  "totals": { "games": 340, "secondaryWorks": 0, "hours": 5862.6, "excludedNonGame": 0 },
   "coverage": {
     "gamesTotal": 340,
     "gamesWithDetails": 340,
@@ -126,6 +126,7 @@
   "pending": {
     "details": 0,                      // игры без details/<appid>.json
     "credits": 221,                    // игры без людей-кредитов
+    "secondary": 0,                    // работы вне Steam без документа кредитов
     "staleLabels": 0,                  // документы, собранные по старому правилу имён (§4.2)
     "running": true,                   // пасс WD/импорт идёт прямо сейчас
     "jobId": "games-personnel-…",      // id пасса, если running/started
@@ -169,6 +170,7 @@
 | `details_pending` | нет ни одного `details/<appid>.json` — WD по appid спрашивать нечего | кнопка «Обогатить» (M2) |
 | `auto_disabled` | сервер запущен с `autoPersonnel:false` (тесты/отладка) | — |
 | `labels_stale` | кредиты полны, но имена собраны по старому правилу меток (`labelRule`) — пасс перезапишет их один раз | ничего, повторить запрос через несколько секунд |
+| `secondary_pending` | у работ вне Steam ещё нет документа кредитов (`pending.secondary > 0`) — пасс заберёт студии из store-деталей и, если есть QID, людей из Wikidata | ничего, повторить запрос через несколько секунд |
 | `lock_busy` | пасс идёт в другом процессе (`personnel.lock`) | повторить позже |
 | `kick_failed` | запуск пасса упал (см. лог сервера) | повторить позже |
 
@@ -192,6 +194,24 @@
   описывают, что делает сервер, чтобы виджет не показывал «пусто» молча.
 - **`sources.mobygames`** — только флаги/источник ключа, **никогда значение**.
 - **`meta.libraryPartial`** — библиотека без `STEAM_API_KEY` (только профиль).
+
+### Работы вне Steam (03.11.2026)
+
+GOG/Epic-эксклюзивы того же владельца (например, Alan Wake 2) входят в
+`items` наравне со Steam-играми, но с `appid: null`:
+
+- `items[].games[]` для такой работы несёт `workKey` (`epic:<catalogItemId>` /
+  `gog:<gogGameId>`) и `secondaryOnly: true`; у Steam-строк этих ключей нет
+  (payload остаётся аддитивным).
+- студии берутся из store-документов (`developers`/`publishers`, источники
+  `epic-store`/`gog-store`), люди — из Wikidata, только если мост
+  `links/secondary.json` уже дал QID. Кредиты пишутся в
+  `cache-games/personnel/work-<safeKey(workKey)>.json`.
+- часы работы — часы второго магазина (union `displayMinutes`); Steam-журнал
+  не суммируется повторно, потому что сюда попадают только `secondaryOnly`
+  работы.
+- `totals.secondaryWorks` — сколько таких работ; `pending.secondary` — у
+  скольких ещё нет документа кредитов (ленивый kick запускает пасс).
 
 ## Откуда берутся кредиты (WD-триггер)
 

@@ -18,6 +18,7 @@
 const gogCache = require('../gog-cache');
 const { buildSecondaryUnion } = require('../secondary-union');
 const { enrichUnionWithDetails } = require('../secondary-details');
+const { attachSecondaryIdentity } = require('../secondary-works');
 const { epicSourceBlock } = require('../epic-layer');
 
 function buildSecondaryState({ input = {}, allWorks, linkDocs }) {
@@ -40,6 +41,13 @@ function buildSecondaryState({ input = {}, allWorks, linkDocs }) {
       ? input.secondaryDetails
       : {};
   enrichUnionWithDetails(union, secondaryDetailsIndex);
+  // M6 follow-up (03.11.2026): a secondary-only work carries the QID the
+  // bridge resolved and the P179 series from `links/secondary-franchise.json`.
+  // Cache-only: `/stats` never calls WDQS.
+  attachSecondaryIdentity(union, {
+    bridge: input.secondaryLinks,
+    titleBridge: input.secondaryTitleLinks,
+  });
   const secondaryDetailTotal = union.works.filter(
     (entry) => (entry.gog && entry.gog.gogGameId) || (entry.epic && entry.epic.slug)
   ).length;

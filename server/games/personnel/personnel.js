@@ -246,6 +246,16 @@ function personnelPath(appid) {
 }
 
 /**
+ * Credits of a secondary-only work (`gog:<id>` / `epic:<id>`). A separate
+ * `work-` prefix keeps the Steam per-appid namespace untouched: the file count
+ * of `personnel/` is still the Steam pass's progress counter, and an appid can
+ * never collide with a work key.
+ */
+function secondaryPersonnelPath(workKey) {
+  return path.join(PERSONNEL_DIR, `work-${gameCache.safeKey(workKey)}.json`);
+}
+
+/**
  * Details document (M2 contract, ИГРЫ §3.6). `success: false` (region-locked
  * store answer) is not details; the game is honestly pending.
  *
@@ -310,6 +320,104 @@ async function savePersonnelDoc(appid, doc) {
   };
   const fingerprint = await gameCache.writeJsonAtomic(personnelPath(appid), payload);
   return { data: payload, fingerprint };
+}
+
+/** Read `personnel/work-<safeKey>.json` (secondary-only work credits). */
+function readSecondaryPersonnelDoc(workKey) {
+  if (!workKey) return null;
+  const doc = readJson(secondaryPersonnelPath(workKey));
+  if (!doc || typeof doc !== 'object') return null;
+  return {
+    ...doc,
+    people: Array.isArray(doc.people) ? doc.people : [],
+    studios: Array.isArray(doc.studios) ? doc.studios : [],
+    sources: Array.isArray(doc.sources) ? doc.sources : [],
+  };
+}
+
+async function saveSecondaryPersonnelDoc(workKey, doc) {
+  const payload = {
+    schemaVersion: 1,
+    workKey: String(workKey),
+    secondaryOnly: true,
+    ...doc,
+  };
+  const fingerprint = await gameCache.writeJsonAtomic(
+    secondaryPersonnelPath(workKey),
+    payload
+  );
+  return { data: payload, fingerprint };
+}
+
+/**
+ * Studios of a secondary-only work from its store detail document
+ * (`developers[]`/`publishers[]`). Provenance is the store, never Wikidata:
+ * the store page names the company, Wikidata credits are a separate source.
+ */
+function studiosFromSecondaryWork(work) {
+  const sources = Array.isArray(work && work.sources) ? work.sources : [];
+  const source = sources.includes('gog') ? 'gog-store' : 'epic-store';
+  const map = new Map();
+  const add = (name, role) => {
+    const clean = cleanName(name);
+    if (!clean) return;
+    const key = normalizeName(clean);
+    if (!key) return;
+    let item = map.get(key);
+    if (!item) {
+      item = {
+        name: clean,
+        nameEn: hasLatin(clean) && !hasCyrillic(clean) ? clean : null,
+        nameRu: hasCyrillic(clean) ? clean : null,
+        qid: null,
+        mobyId: null,
+        roles: [],
+        roleSource: source,
+        source,
+        confidence: 'high',
+      };
+      map.set(key, item);
+    }
+    if (!item.roles.includes(role)) item.roles.push(role);
+  };
+  for (const name of (work && work.developers) || []) add(name, 'developer');
+  for (const name of (work && work.publishers) || []) add(name, 'publisher');
+  return [...map.values()];
+}
+
+/**
+ * Merge studios of a secondary work without losing their store provenance.
+ * `dedupeStudios` maps any non-Wikidata source to `steam-store` (its fallback),
+ * which would mislabel a GOG/Epic credit; here the store source is preserved
+ * and two entries merge only by QID or by normalized name.
+ */
+function mergeSecondaryStudios(list) {
+  const map = new Map();
+  for (const entry of list || []) {
+    const name = cleanName(entry && entry.name);
+    if (!name) continue;
+    const key = entry.qid ? `qid:${entry.qid}` : `name:${normalizeName(name)}`;
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, { ...entry, name, roles: [...(entry.roles || [])] });
+      continue;
+    }
+    for (const role of entry.roles || []) {
+      if (!existing.roles.includes(role)) existing.roles.push(role);
+    }
+    if (!existing.qid && entry.qid) existing.qid = entry.qid;
+  }
+  return [...map.values()];
+}
+
+/** Cached secondary works of one owner (lazy: heavy union read on first use). */
+function secondaryWorksFor(profileKey, provided) {
+  if (Array.isArray(provided)) return provided;
+  try {
+    return require('../secondary-works').secondaryWorksForOwner(profileKey);
+  } catch (err) {
+    return [];
+  }
 }
 
 /** Studios credited by Steam appdetails (the base of the first block, §7.1). */
@@ -874,6 +982,47 @@ function buildPersonnel(profileKey, options = {}) {
     });
   }
 
+  // M6 follow-up (03.11.2026): works that exist only outside Steam. Alan Wake 2
+  // (Epic) must appear under Remedy Entertainment with its Epic hours. Hours
+  // are the union's display hours of that work (Steam side is absent by
+  // definition: only `secondaryOnly` works get here, so nothing is summed
+  // twice).
+  const secondaryWorks = secondaryWorksFor(profileKey, options.secondaryWorks);
+  for (const work of secondaryWorks) {
+    if (!work || !work.workKey) continue;
+    const doc = readSecondaryPersonnelDoc(work.workKey);
+    const studios = studiosFromSecondaryWork(work);
+    if (doc) studios.push(...doc.studios);
+    const people = doc
+      ? doc.people
+          .map((person) => ({
+            name: cleanName(person.name),
+            nameEn: person.nameEn || null,
+            nameRu: person.nameRu || null,
+            qid: person.qid || null,
+            mobyId: person.mobyId != null ? person.mobyId : null,
+            roles: Array.isArray(person.roles) ? person.roles : [],
+            roleSource: person.roleSource || person.source || 'wikidata',
+            source: person.source || 'wikidata',
+            confidence: person.confidence || 'high',
+          }))
+          .filter((person) => person.name && person.roles.length)
+      : [];
+    games.push({
+      appid: null,
+      workKey: work.workKey,
+      secondaryOnly: true,
+      qid: work.qid || null,
+      name: cleanName(work.name) || work.workKey,
+      hours: round2(Number(work.hours) || 0),
+      completion: null,
+      detailsResolved: true,
+      creditsResolved: Boolean(doc),
+      studios,
+      people,
+    });
+  }
+
   const totalHours = round2(games.reduce((sum, game) => sum + game.hours, 0));
   const wantStudios = STUDIO_ROLES.includes(role);
 
@@ -895,16 +1044,20 @@ function buildPersonnel(profileKey, options = {}) {
       const relevant = group.entries.filter((entry) => (entry.roles || []).includes(role));
       if (!relevant.length) continue;
       const gamesById = new Map();
+      const keyOfGame = (game) => game.workKey || String(game.appid);
       for (const entry of relevant) {
-        const existing = gamesById.get(entry.game.appid);
+        const gameKey = keyOfGame(entry.game);
+        const existing = gamesById.get(gameKey);
         if (existing) {
           for (const r of entry.roles || []) {
             if (!existing.roles.includes(r)) existing.roles.push(r);
           }
           continue;
         }
-        gamesById.set(entry.game.appid, {
-          appid: entry.game.appid,
+        gamesById.set(gameKey, {
+          appid: entry.game.appid == null ? null : entry.game.appid,
+          workKey: entry.game.workKey || null,
+          secondaryOnly: entry.game.secondaryOnly === true,
           name: entry.game.name,
           hours: entry.game.hours,
           completion: entry.game.completion,
@@ -932,7 +1085,17 @@ function buildPersonnel(profileKey, options = {}) {
           .slice()
           .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name, 'ru'))
           .slice(0, gamesLimit)
-          .map((game) => ({ appid: game.appid, name: game.name, hours: game.hours })),
+          .map((game) =>
+            game.secondaryOnly
+              ? {
+                  appid: game.appid,
+                  workKey: game.workKey || null,
+                  secondaryOnly: true,
+                  name: game.name,
+                  hours: game.hours,
+                }
+              : { appid: game.appid, name: game.name, hours: game.hours }
+          ),
         ambiguous: group.ambiguous,
         sources: group.sources.sort(),
       });
@@ -953,8 +1116,19 @@ function buildPersonnel(profileKey, options = {}) {
 
   const items = buildItems(wantStudios ? 'studio' : 'person');
 
-  const detailsResolved = games.filter((game) => game.detailsResolved).length;
-  const gamesWithCredits = games.filter((game) => game.creditsResolved && game.people.length > 0).length;
+  // Steam rows and secondary-only rows are counted separately where the
+  // number is Steam-specific (appdetails coverage, people credits). Studio
+  // coverage and the headline `games` count include the union: «игры Remedy»
+  // is a cross-store answer.
+  const steamGames = games.filter((game) => game.appid != null);
+  const secondaryGames = games.filter((game) => game.appid == null);
+  const detailsResolved = steamGames.filter((game) => game.detailsResolved).length;
+  const gamesWithCredits = steamGames.filter(
+    (game) => game.creditsResolved && game.people.length > 0
+  ).length;
+  const secondaryWithCredits = secondaryGames.filter(
+    (game) => game.creditsResolved
+  ).length;
   const studiosResolved = games.filter((game) => game.studios.length > 0).length;
   const byRole = {};
   for (const peopleRole of PEOPLE_ROLES) {
@@ -972,7 +1146,8 @@ function buildPersonnel(profileKey, options = {}) {
     ).length;
   }
   const gamesTotal = games.length;
-  const percent = gamesTotal ? Math.round((gamesWithCredits / gamesTotal) * 100) : 0;
+  const steamTotal = steamGames.length;
+  const percent = steamTotal ? Math.round((gamesWithCredits / steamTotal) * 100) : 0;
   const studioPercent = gamesTotal ? Math.round((studiosResolved / gamesTotal) * 100) : 0;
   const developerPercent = gamesTotal
     ? Math.round((byStudioRole.developer / gamesTotal) * 100)
@@ -984,7 +1159,8 @@ function buildPersonnel(profileKey, options = {}) {
   const wdState = wikidataProvider.defaultStateStore().read();
   const wdStatus = wikidataStatus(wdState, nowMs, wdEnabled);
   const mobyStatus = mobyProvider.createClient().status();
-  const pendingCredits = gamesTotal - gamesWithCredits;
+  const pendingCredits = steamTotal - gamesWithCredits;
+  const pendingSecondary = secondaryGames.length - secondaryWithCredits;
   let pendingReason = null;
   if (pendingCredits > 0) {
     if (wdStatus.state === 'cooldown') pendingReason = 'wikidata_cooldown';
@@ -992,6 +1168,8 @@ function buildPersonnel(profileKey, options = {}) {
     else if (wdStatus.state === 'never_run' && !mobyStatus.enabled) pendingReason = 'wikidata_not_run';
     else if (wdStatus.state === 'unavailable') pendingReason = 'wikidata_unavailable';
     else pendingReason = 'not_fetched';
+  } else if (pendingSecondary > 0) {
+    pendingReason = 'secondary_pending';
   } else if (staleLabels > 0) {
     pendingReason = 'labels_stale';
   }
@@ -1015,15 +1193,24 @@ function buildPersonnel(profileKey, options = {}) {
     items,
     totals: {
       games: gamesTotal,
+      // M6 follow-up: GOG/Epic-only works inside `games` (their hours are part
+      // of `hours`; nothing is summed twice because only `secondaryOnly`
+      // works are appended).
+      secondaryWorks: secondaryGames.length,
       hours: totalHours,
       excludedNonGame,
     },
     coverage: {
       gamesTotal,
+      steamGames: steamTotal,
       gamesWithDetails: detailsResolved,
-      detailsPercent: gamesTotal ? Math.round((detailsResolved / gamesTotal) * 100) : 0,
+      detailsPercent: steamTotal ? Math.round((detailsResolved / steamTotal) * 100) : 0,
       gamesWithCredits,
       percent,
+      // Secondary-only works: store details give the studios, Wikidata the
+      // people (when the bridge resolved a QID).
+      secondaryWorks: secondaryGames.length,
+      secondaryWithCredits,
       gamesWithStudios: studiosResolved,
       studioPercent,
       gamesWithDevelopers: byStudioRole.developer,
@@ -1037,8 +1224,12 @@ function buildPersonnel(profileKey, options = {}) {
       wikidata: wdStatus,
     },
     pending: {
-      details: gamesTotal - detailsResolved,
+      details: steamTotal - detailsResolved,
       credits: pendingCredits,
+      // Secondary-only works without a credits document yet (a deploy after
+      // the last import: the lazy kick fills them from the store details and,
+      // when a QID exists, from Wikidata).
+      secondary: pendingSecondary,
       // Documents whose labels were written under an older rule (§4.2): the
       // route re-fetches them once, so a truncated name («Development Studio»)
       // does not survive the 90-day TTL.
@@ -1204,6 +1395,12 @@ async function enrichPersonnel(options = {}) {
     wdDeferred: 0,
     mobyRequests: 0,
     mobyErrors: [],
+    // M6 follow-up: GOG/Epic-only works.
+    secondaryGames: 0,
+    secondaryUpdated: 0,
+    secondarySkippedFresh: 0,
+    secondaryDeferred: 0,
+    secondaryQueries: 0,
     errors: [],
   };
 
@@ -1294,6 +1491,112 @@ async function enrichPersonnel(options = {}) {
       const hit = result.credits.get(target.links.qid);
       if (hit) target.wdCredits = hit;
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Secondary-only works (GOG/Epic): studios from store details, people  */
+  /* from Wikidata when the bridge resolved a QID.                        */
+  /* ------------------------------------------------------------------ */
+  const secondaryList = secondaryWorksFor(parsed.key, options.secondaryWorks);
+  const secondaryTargets = [];
+  for (const work of secondaryList) {
+    if (!work || !work.workKey) continue;
+    const existing = readSecondaryPersonnelDoc(work.workKey);
+    const fresh = isPersonnelFresh(existing, now());
+    const labelsStale =
+      wdEnabled &&
+      Boolean(existing) &&
+      existing.wdAsked === true &&
+      existing.labelRule !== LABEL_RULE_VERSION;
+    // A work with a QID that was already asked is complete; a work without a
+    // QID only needs the store-derived studios, which the document carries.
+    const complete = Boolean(existing) && !labelsStale && (!work.qid || existing.wdAsked === true);
+    if (!force && complete && fresh) {
+      report.secondarySkippedFresh++;
+      continue;
+    }
+    const needsAsk =
+      Boolean(work.qid) &&
+      (force || !existing || existing.wdAsked !== true || labelsStale);
+    secondaryTargets.push({ work, existing, labelsStale, needsAsk });
+    if (secondaryTargets.length >= limit) break;
+  }
+  report.secondaryGames = secondaryTargets.length;
+  if (secondaryTargets.length && wdEnabled) {
+    const askedQids = [
+      ...new Set(
+        secondaryTargets
+          .filter((target) => target.needsAsk)
+          .map((target) => String(target.work.qid))
+      ),
+    ];
+    if (askedQids.length) {
+      const result = await wd.fetchCredits(askedQids, options);
+      report.secondaryQueries += result.queries;
+      report.wdQueries += result.queries;
+      report.wdSkipped = result.skipped || report.wdSkipped;
+      report.wdDisabledUntil = result.disabledUntil || report.wdDisabledUntil;
+      report.errors.push(...(result.errors || []));
+      const answered = !result.skipped && !(result.errors || []).length;
+      for (const target of secondaryTargets) {
+        const qid = target.work.qid ? String(target.work.qid) : null;
+        if (!qid || !askedQids.includes(qid)) continue;
+        const hit = result.credits.get(qid) || null;
+        if (hit) target.wdCredits = hit;
+        // Asked AND answered (even «no credits»): the negative answer is a
+        // settled 90-day cache, exactly like the Steam pass.
+        if (answered) target.wdAsked = true;
+      }
+    }
+  }
+  for (const target of secondaryTargets) {
+    const { work, existing } = target;
+    const studios = studiosFromSecondaryWork(work);
+    const people = [];
+    const sources = new Set();
+    const storeSource = (work.sources || []).includes('gog') ? 'gog-store' : 'epic-store';
+    sources.add(storeSource);
+    if (target.wdCredits) {
+      studios.push(...(target.wdCredits.studios || []));
+      people.push(...(target.wdCredits.people || []));
+      sources.add('wikidata');
+    } else if (target.wdAsked) {
+      sources.add('wikidata');
+    } else if (existing && (existing.sources || []).includes('wikidata')) {
+      // WD did not answer this run (cooldown/outage/budget): keep the cached
+      // people instead of wiping them with an empty document.
+      studios.push(...(existing.studios || []).filter((entry) => entry.source === 'wikidata'));
+      people.push(...(existing.people || []).filter((entry) => entry.source === 'wikidata'));
+      sources.add('wikidata');
+    }
+    const wdAnswered = Boolean(target.wdCredits) || target.wdAsked === true;
+    if (!wdAnswered && !existing && work.qid && !target.wdAsked) {
+      // A work with a QID but no answer and no cache: writing now would look
+      // «fresh» for 90 days. Defer, the next pass retries.
+      report.secondaryDeferred++;
+      continue;
+    }
+    const mergedPeople = dedupePeople(people);
+    const mergedStudios = mergeSecondaryStudios(studios);
+    await saveSecondaryPersonnelDoc(work.workKey, {
+      name: cleanName(work.name) || null,
+      qid: work.qid || null,
+      fetchedAt: new Date(now()).toISOString(),
+      wdAsked: wdAnswered,
+      labelRule: wdAnswered
+        ? LABEL_RULE_VERSION
+        : (existing && existing.labelRule) || null,
+      studios: mergedStudios,
+      people: mergedPeople,
+      sources: [...sources].sort(),
+      coverage: {
+        people: mergedPeople.length,
+        studios: mergedStudios.length,
+        roles: [...new Set(mergedPeople.flatMap((person) => person.roles || []))].sort(),
+      },
+      empty: mergedPeople.length === 0 && mergedStudios.length === 0,
+    });
+    report.secondaryUpdated++;
   }
 
   /** Credits already cached for a source that did not answer this run. */
@@ -1423,6 +1726,12 @@ module.exports = {
   readPersonnelDoc,
   isPersonnelFresh,
   savePersonnelDoc,
+  secondaryPersonnelPath,
+  readSecondaryPersonnelDoc,
+  saveSecondaryPersonnelDoc,
+  studiosFromSecondaryWork,
+  mergeSecondaryStudios,
+  secondaryWorksFor,
   studiosFromDetails,
   readOverrides,
   saveOverrides,

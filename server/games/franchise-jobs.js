@@ -110,6 +110,13 @@ function publicStatus(job) {
     bridgeQueries: job.bridgeQueries || 0,
     bridged: job.bridged || 0,
     bridgeMisses: job.bridgeMisses || 0,
+    // M6 follow-up: P179 of GOG/Epic-only works in the same pass.
+    secondaryTargets: job.secondaryTargets || 0,
+    secondaryCandidates: job.secondaryCandidates || 0,
+    secondaryUpdated: job.secondaryUpdated || 0,
+    secondarySkippedFresh: job.secondarySkippedFresh || 0,
+    secondaryQueries: job.secondaryQueries || 0,
+    secondarySkipped: job.secondarySkipped || null,
     baseDetails: job.baseDetails || null,
     enrichWait: job.enrichWait || null,
     lockWaitMs: job.lockWaitMs == null ? null : job.lockWaitMs,
@@ -251,6 +258,12 @@ async function runPass(job, parsed, options) {
     job.bridgeQueries = report.bridgeQueries || 0;
     job.bridged = report.bridged || 0;
     job.bridgeMisses = report.bridgeMisses || 0;
+    job.secondaryTargets = report.secondaryTargets || 0;
+    job.secondaryCandidates = report.secondaryCandidates || 0;
+    job.secondaryUpdated = report.secondaryUpdated || 0;
+    job.secondarySkippedFresh = report.secondarySkippedFresh || 0;
+    job.secondaryQueries = report.secondaryQueries || 0;
+    job.secondarySkipped = report.secondarySkipped || null;
     job.errors = [...(report.errors || [])];
     if (report.skipped) job.skipped = report.skipped;
     job.status = 'done';
