@@ -338,3 +338,30 @@ test('mergeLibrary filters UE/PRIVATE/mobile and keeps entitlement-only rows', (
   assert.deepEqual(a.sources.sort(), ['entitlement', 'library']);
   assert.equal(a.appName, 'A');
 });
+
+test('productmapping fallback by namespace covers Epic exclusives (Alan Wake 2)', () => {
+  const mapping = epic.normalizeProductMapping({
+    'dc9d2e595d0e4650b35d659f90d41059': 'some-appname-game',
+    'c4763f236d08423eb47b4c3008779c84': 'alan-wake-2',
+  });
+  assert.equal(mapping.count, 2);
+  const games = [
+    {
+      appName: 'dc9d2e595d0e4650b35d659f90d41059',
+      namespace: 'c4763f236d08423eb47b4c3008779c84',
+      slug: null,
+    },
+    {
+      appName: 'missing-from-mapping',
+      namespace: 'c4763f236d08423eb47b4c3008779c84',
+      slug: null,
+    },
+    { appName: 'missing-too', namespace: 'fn', slug: null },
+  ];
+  epicImport.mergeCatalogSlugs(games, mapping, {});
+  // appName wins when present; the namespace key is the second lookup — AW2's
+  // live productmapping record is keyed by namespace, not by its appName.
+  assert.equal(games[0].slug, 'some-appname-game');
+  assert.equal(games[1].slug, 'alan-wake-2');
+  assert.equal(games[2].slug, null);
+});

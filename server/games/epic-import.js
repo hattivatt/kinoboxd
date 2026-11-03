@@ -186,6 +186,14 @@ function mergeCatalogSlugs(games, productMapping, catalogDocs) {
       game.slug = byAppName[game.appName];
       continue;
     }
+    // `productmapping` is a flat map whose keys are *either* an appName or a
+    // namespace. Epic exclusives such as Alan Wake 2 live under the namespace
+    // key only (`c4763f…` → `alan-wake-2`), so the library record's namespace
+    // is a legitimate second lookup, not a fabricated slug.
+    if (game.namespace && byAppName[game.namespace]) {
+      game.slug = byAppName[game.namespace];
+      continue;
+    }
     const known = game.catalogItemId
       ? epicCache.getEpicSlugOverride(game.catalogItemId)
       : null;
@@ -436,12 +444,16 @@ async function runImport(job, accountId, client, options) {
   const catalogIds = merged.games.map((game) => game.catalogItemId).filter(Boolean);
   const catalogDocs = epicCache.listEpicCatalogItems(catalogIds);
   job.secondaryLinks = await secondaryIdentity.refreshForJob({
-    epicGames: merged.games.map((game) => ({
-      slug:
-        (game.catalogItemId && catalogDocs[game.catalogItemId] && catalogDocs[game.catalogItemId].slug) ||
-        game.slug ||
-        null,
-    })),
+    epicGames: merged.games.map((game) => {
+      const meta = (game.catalogItemId && catalogDocs[game.catalogItemId]) || null;
+      return {
+        slug: (meta && meta.slug) || game.slug || null,
+        // Title/date let the bridge fill a year for a store-exclusive whose
+        // CMS page and catalog both carry no date (Alan Wake 2).
+        title: (meta && meta.title) || game.name || null,
+        releaseDate: (meta && meta.releaseDate) || null,
+      };
+    }),
     options: { ...options, force: options.force === true },
   });
 

@@ -295,12 +295,26 @@ function epicLandscapeFromImages(images) {
  * `customReleaseDate: "Coming Soon"`, no tags/releaseDate/developer).
  */
 const EPIC_NON_GENRE_CATEGORIES = new Set([
+  // Product buckets, not genres. Epic's bulk catalog returns them in the same
+  // `categories` array as the genre segments, and a bucket such as `public`
+  // used to become the genre «Public» (Alan Wake 2, 02.11.2026). Comparison is
+  // case-insensitive through `epicTagCodeOf()` below.
+  'PUBLIC',
   'GAMES',
+  'GAME',
   'APPLICATIONS',
+  'APPLICATION',
+  'APP',
+  'SOFTWARE',
+  'CONTENT',
   'FREEGAMES',
   'ADDONS',
   'DLC',
   'EDITIONS',
+  'EXPANSIONS',
+  'EXPANSION',
+  'SEASON_PASS',
+  'PACK',
   'PLUGINS',
   'ASSETS',
   'PROJECTS',
@@ -310,6 +324,11 @@ const EPIC_NON_GENRE_CATEGORIES = new Set([
   'MODS',
   'BUNDLES',
   'DEMOS',
+  'TOOLS',
+  'TOOL',
+  'TEMPLATES',
+  'THEMES',
+  'MAPS',
 ]);
 
 function epicGenresFromCategories(categories) {

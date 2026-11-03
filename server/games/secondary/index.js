@@ -428,12 +428,267 @@ function parseBridgeResponse(data) {
 }
 
 /**
- * Is this cached entry a settled answer for the current schema? A miss
- * (`qid: null`) is settled — there is nothing to date. An entry with a QID but
- * no `releaseDateSource` **key** was written before the P577 column existed, so
- * its year is unknown: it is re-asked once (the deploy heal), which costs one
- * batch and no `force` over the whole library.
+ * Wikidata labels often spell a numbered sequel with a Roman numeral («Alan
+ * Wake II»), while the store says «Alan Wake 2». Exact string matching would
+ * miss the canonical Alan Wake 2 case, so a title gets a small, deterministic
+ * set of variants (Arabic ↔ Roman, up to 20). No fuzzy matching: every value
+ * still goes into a `VALUES` literal and must match a `rdfs:label`/`skos:altLabel`
+ * exactly.
  */
+const ROMAN_NUMERALS = [
+  ['XX', 20], ['XIX', 19], ['XVIII', 18], ['XVII', 17], ['XVI', 16],
+  ['XV', 15], ['XIV', 14], ['XIII', 13], ['XII', 12], ['XI', 11],
+  ['X', 10], ['IX', 9], ['VIII', 8], ['VII', 7], ['VI', 6],
+  ['V', 5], ['IV', 4], ['III', 3], ['II', 2], ['I', 1],
+];
+const ARABIC_TO_ROMAN = new Map(ROMAN_NUMERALS.map(([roman, number]) => [number, roman]));
+const ROMAN_TO_ARABIC = new Map(ROMAN_NUMERALS.map(([roman, number]) => [roman, number]));
+
+function titleVariants(title) {
+  const text = String(title == null ? '' : title).trim();
+  if (!text) return [];
+  const out = [text];
+  // Trailing Arabic number → Roman numeral: "Alan Wake 2" → "Alan Wake II".
+  const arabic = /^(.*?\D)(\d{1,2})$/.exec(text);
+  if (arabic) {
+    const roman = ARABIC_TO_ROMAN.get(Number(arabic[2]));
+    if (roman) out.push(`${arabic[1]}${roman}`);
+  }
+  // Trailing Roman numeral → Arabic: "Alan Wake II" → "Alan Wake 2".
+  const roman = /^(.*?\D)([IVX]+)$/.exec(text);
+  if (roman) {
+    const number = ROMAN_TO_ARABIC.get(roman[2]);
+    if (number) out.push(`${roman[1]}${number}`);
+  }
+  return [...new Set(out)];
+}
+
+/**
+ * The title fallback query. It is deliberately exact-literal: the title (and
+ * its bounded Roman/Arabic variants) is a `VALUES` constant on both
+ * `rdfs:label` and `skos:altLabel`, restricted to video-game items
+ * (`P31/P279* Q7889`). It is used **only** for Epic works whose store/catalog
+ * metadata has no date.
+ */
+function buildTitleQuery(titles) {
+  const values = new Set();
+  for (const title of Array.isArray(titles) ? titles : []) {
+    for (const variant of titleVariants(title)) {
+      const literal = escapeLiteral(variant);
+      for (const lang of ['en', 'ru', 'mul']) values.add(`"${literal}"@${lang}`);
+    }
+  }
+  if (!values.size) return null;
+  return `SELECT ?item ?matched ?appid ?date ?precision WHERE {
+  VALUES ?matched { ${[...values].join(' ')} }
+  { ?item rdfs:label ?matched } UNION { ?item skos:altLabel ?matched }
+  ?item wdt:P31/wdt:P279* wd:Q7889 .
+  OPTIONAL { ?item wdt:P1733 ?appid . }
+  OPTIONAL {
+    ?item p:P577 ?st .
+    ?st psv:P577 ?val .
+    ?val wikibase:timeValue ?date .
+    ?val wikibase:timePrecision ?precision .
+  }
+}`;
+}
+
+/**
+ * One entry per candidate (`epic:<normalised slug>`), but only when the exact
+ * title matched **exactly one** Wikidata item. Several different QIDs for the
+ * same label are the «Prey (2006) vs Prey (2017)» case: no link, recorded as
+ * `titleMatched: 'ambiguous'` so the pass does not ask again while the cache is
+ * fresh. A plain miss is stored the same way (`'miss'`) — in the **title map**,
+ * never in `entries`, so it cannot suppress a later `P6278` match.
+ */
+function parseTitleResponse(data, candidates) {
+  const bindings =
+    data && data.results && Array.isArray(data.results.bindings) ? data.results.bindings : [];
+  const byLabel = new Map();
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    for (const variant of titleVariants(candidate.title)) {
+      if (!byLabel.has(variant)) byLabel.set(variant, []);
+      byLabel.get(variant).push(candidate);
+    }
+  }
+  const acc = new Map();
+  for (const row of bindings) {
+    const item = row && row.item && row.item.value ? String(row.item.value) : null;
+    const qid = item ? item.slice(item.lastIndexOf('/') + 1) : null;
+    const matched = row && row.matched && row.matched.value ? String(row.matched.value) : null;
+    if (!qid || !matched || !byLabel.has(matched)) continue;
+    for (const candidate of byLabel.get(matched)) {
+      const key = `${candidate.store}:${normalizeSlug(candidate.slug)}`;
+      let entry = acc.get(key);
+      if (!entry) {
+        entry = { candidate, qids: new Set(), appid: null, dates: [], matchedLabel: matched };
+        acc.set(key, entry);
+      }
+      entry.qids.add(qid);
+      const appid = row.appid && row.appid.value ? String(row.appid.value) : null;
+      if (appid && !entry.appid) entry.appid = appid;
+      if (row.date && row.date.value) {
+        const date = parseWbDate(row.date.value, row.precision && row.precision.value);
+        if (
+          date &&
+          !entry.dates.some((known) => known.iso === date.iso && known.precision === date.precision)
+        ) {
+          entry.dates.push(date);
+        }
+      }
+    }
+  }
+  const entries = {};
+  for (const [key, entry] of acc) {
+    const ambiguous = entry.qids.size !== 1;
+    const qid = ambiguous ? null : [...entry.qids][0];
+    const date = qid ? pickDate(entry.dates) : null;
+    entries[key] = {
+      qid,
+      appid: qid ? entry.appid : null,
+      store: entry.candidate.store,
+      slug: entry.candidate.slug,
+      title: entry.candidate.title,
+      matchedLabel: entry.matchedLabel,
+      matchedBy: 'title',
+      confidence: qid ? 'medium' : 'none',
+      titleMatched: ambiguous ? 'ambiguous' : qid ? 'unique' : 'miss',
+      releaseYear: date ? date.year : null,
+      releasePrecision: date ? date.precision : null,
+      releaseDate: date && date.precision === 'day' ? date.iso : null,
+      releaseDateSource: date ? 'wikidata' : null,
+    };
+  }
+  return entries;
+}
+
+/**
+ * Candidate list for the title pass: only an Epic work with a slug and a title,
+ * whose store/catalog/known year is still empty. `releaseYear`/`releaseDate`
+ * are optional hints the caller already knows; anything non-empty excludes the
+ * work.
+ */
+function collectTitleCandidates(epicGames) {
+  const out = [];
+  const seen = new Set();
+  for (const game of Array.isArray(epicGames) ? epicGames : []) {
+    if (!game) continue;
+    const slug = String(game.slug == null ? '' : game.slug).trim();
+    const title = String(game.title == null ? '' : game.title).trim();
+    if (!slug || !title) continue;
+    if (game.releaseYear != null || game.releaseDate) continue;
+    const key = normalizeSlug(slug);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ store: 'epic', slug, title });
+  }
+  return out;
+}
+
+/**
+ * Resolve Epic titles to Wikidata items when the store slug has no `P6278`
+ * identity (or no date). The answer goes to `titleEntries`; a miss/ambiguity
+ * is cached there with `qid: null` so it is not re-asked while fresh.
+ */
+async function fetchSecondaryTitleLinks(input = {}, options = {}) {
+  const candidates = collectTitleCandidates(
+    input.epicGames || input.titles || []
+  );
+  const cached = readCache();
+  const cachedTitleEntries =
+    cached && cached.titleEntries && typeof cached.titleEntries === 'object'
+      ? cached.titleEntries
+      : {};
+  const fresh = cached && gameCache.isFresh(cached, options.ttlMs || ttlMs());
+  const covered = (candidate) =>
+    isSettledTitleEntry(cachedTitleEntries[`${candidate.store}:${normalizeSlug(candidate.slug)}`]);
+  const pending = fresh && options.force !== true
+    ? candidates.filter((candidate) => !covered(candidate))
+    : candidates;
+  const result = {
+    titleEntries: { ...cachedTitleEntries },
+    queries: 0,
+    resolved: 0,
+    ambiguous: 0,
+    cached: candidates.length - pending.length,
+    skipped: null,
+    errors: [],
+  };
+  if (!pending.length) return result;
+
+  for (const batch of chunk(pending, BATCH_SIZE)) {
+    const query = buildTitleQuery(batch.map((candidate) => candidate.title));
+    if (!query) continue;
+    result.queries++;
+    let response;
+    try {
+      response = await sparqlRequest(query, options);
+    } catch (err) {
+      result.errors.push(`wd_network:${(err && err.code) || 'failed'}`);
+      result.skipped = 'network';
+      continue;
+    }
+    if (!response || !response.ok) {
+      const status = response ? Number(response.status) || 0 : 0;
+      result.errors.push(`wd_${status || 'http'}`);
+      result.skipped = status === 429 ? 'rate_limited' : 'http';
+      continue;
+    }
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (err) {
+      result.errors.push('wd_parse');
+      result.skipped = 'parse';
+      continue;
+    }
+    const parsed = parseTitleResponse(data, batch);
+    for (const candidate of batch) {
+      const key = `${candidate.store}:${normalizeSlug(candidate.slug)}`;
+      if (parsed[key]) {
+        result.titleEntries[key] = parsed[key];
+        if (parsed[key].qid) result.resolved++;
+        else if (parsed[key].titleMatched === 'ambiguous') result.ambiguous++;
+      } else {
+        result.titleEntries[key] = {
+          qid: null,
+          appid: null,
+          store: candidate.store,
+          slug: candidate.slug,
+          title: candidate.title,
+          matchedBy: 'title',
+          confidence: 'none',
+          titleMatched: 'miss',
+          releaseYear: null,
+          releasePrecision: null,
+          releaseDate: null,
+          releaseDateSource: null,
+        };
+      }
+    }
+  }
+
+  if (!result.skipped || result.resolved > 0) {
+    writeCache(
+      cached && cached.entries && typeof cached.entries === 'object' ? cached.entries : {},
+      {
+        titleEntries: result.titleEntries,
+        stats: {
+          ...((cached && cached.stats) || {}),
+          epicTitles: candidates.length,
+          titleQueries: result.queries,
+          titleMatched: result.resolved,
+        },
+      }
+    );
+  }
+  return result;
+}
+
+function isSettledTitleEntry(entry) {
+  return Boolean(entry && typeof entry === 'object' && entry.matchedBy === 'title');
+}
+
 function isSettledEntry(entry) {
   if (!entry || typeof entry !== 'object') return false;
   if (!entry.qid) return true;
@@ -454,6 +709,19 @@ function readSecondaryLinks({ allowStale = false } = {}) {
 }
 
 /**
+ * Title-matched identities live **next to** the store-slug entries, never
+ * inside them: a unique exact-label match is honest evidence for a year, but
+ * it is not a `P6278` identity. Keeping the maps separate means a title match
+ * can never silently upgrade a work to `matchedBy: 'wikidata'`.
+ */
+function readSecondaryTitleLinks({ allowStale = false } = {}) {
+  const doc = readCache();
+  if (!doc || !doc.titleEntries || typeof doc.titleEntries !== 'object') return {};
+  if (!allowStale && !gameCache.isFresh(doc, ttlMs())) return {};
+  return doc.titleEntries;
+}
+
+/**
  * One cached entry (`{qid, appid, store, releaseYear, releasePrecision,
  * releaseDate, releaseDateSource}`) for a store slug — a cache read, never a
  * request. The key is the normalised slug, exactly like the writer.
@@ -468,13 +736,34 @@ function readSecondaryLink(store, slug, options = {}) {
   return links[`${prefix}:${key}`] || null;
 }
 
+/** A title-matched entry (separate map, `matchedBy: 'title'`). */
+function readSecondaryTitleLink(store, slug, options = {}) {
+  const key = normalizeSlug(slug);
+  const prefix = String(store == null ? '' : store).trim().toLowerCase();
+  if (!key || !prefix) return null;
+  const links = options.titleLinks && typeof options.titleLinks === 'object'
+    ? options.titleLinks
+    : readSecondaryTitleLinks(options);
+  return links[`${prefix}:${key}`] || null;
+}
+
 function writeCache(entries, extra = {}) {
+  // Title matches are a *separate* column: a write of slug entries must not
+  // drop them, and the title pass must not drop the slug entries.
+  const previous = readCache();
+  const hasTitleEntries = Object.prototype.hasOwnProperty.call(extra, 'titleEntries');
+  const titleEntries = hasTitleEntries
+    ? extra.titleEntries
+    : (previous && previous.titleEntries) || {};
+  const rest = { ...extra };
+  delete rest.titleEntries;
   const doc = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     source: 'wikidata',
     fetchedAt: new Date().toISOString(),
     entries,
-    ...extra,
+    titleEntries,
+    ...rest,
   };
   try {
     gameCache.writeJsonAtomicSync(CACHE_PATH, doc);
@@ -670,25 +959,42 @@ async function refreshForJob({ gogProducts = [], epicGames = [], options = {} } 
   if (options.wikidata === false || options.secondaryLinks === false) {
     return { skipped: 'disabled' };
   }
+  if (String(process.env.KINOBOXD_GAMES_WD || '').trim().toLowerCase() === 'off') {
+    return { skipped: 'disabled' };
+  }
   const { gogSlugs, epicSlugs } = collectSlugs({ gogProducts, epicGames });
-  if (!gogSlugs.length && !epicSlugs.length) return { skipped: 'no_slugs' };
+  const titleCandidates = collectTitleCandidates(epicGames);
+  if (!gogSlugs.length && !epicSlugs.length && !titleCandidates.length) {
+    return { skipped: 'no_slugs' };
+  }
+  const common = {
+    fetchImpl: options.fetchImpl,
+    endpoint: options.wdqsEndpoint,
+    force: options.force === true,
+  };
   try {
-    const report = await fetchSecondaryLinks(
-      { gogSlugs, epicSlugs },
-      {
-        fetchImpl: options.fetchImpl,
-        endpoint: options.wdqsEndpoint,
-        force: options.force === true,
-      }
-    );
+    let report = { queries: 0, resolved: 0, cached: 0, skipped: null, errors: [] };
+    if (gogSlugs.length || epicSlugs.length) {
+      report = await fetchSecondaryLinks({ gogSlugs, epicSlugs }, common);
+    }
+    // Separate pass: a title is not a P6278 identity, so it can only fill a
+    // year that the slug pass left empty (the Alan Wake 2 case).
+    let titleReport = { queries: 0, resolved: 0, ambiguous: 0, skipped: null, errors: [] };
+    if (titleCandidates.length && !report.skipped) {
+      titleReport = await fetchSecondaryTitleLinks({ epicGames }, common);
+    }
     return {
       gogSlugs: gogSlugs.length,
       epicSlugs: epicSlugs.length,
-      queries: report.queries,
-      resolved: report.resolved,
+      epicTitles: titleCandidates.length,
+      queries: report.queries + titleReport.queries,
+      titleQueries: titleReport.queries,
+      resolved: report.resolved + titleReport.resolved,
+      titleResolved: titleReport.resolved,
+      titleAmbiguous: titleReport.ambiguous,
       cached: report.cached,
-      skipped: report.skipped || null,
-      errors: report.errors.slice(0, 5),
+      skipped: titleReport.skipped || report.skipped || null,
+      errors: [...report.errors, ...titleReport.errors].slice(0, 5),
     };
   } catch (err) {
     return { skipped: 'error', errors: [String((err && err.code) || 'failed')] };
@@ -1295,11 +1601,24 @@ function joinGames(library, playtime, catalog) {
   } catch (err) {
     slugOverrides = {};
   }
+  // `productmapping` keys are appNames **or namespaces**; an Epic exclusive
+  // (Alan Wake 2) is present only under its namespace key. Read once.
+  let productMapping = {};
+  try {
+    const mapping = epicCache.getProductMapping();
+    productMapping = mapping && mapping.byAppName ? mapping.byAppName : {};
+  } catch (err) {
+    productMapping = {};
+  }
   return games.map((game) => {
     const meta = (game.catalogItemId && catalog[game.catalogItemId]) || null;
     const tracked = epic.playtimeForGame(game, playtime);
     const name =
       (meta && meta.title) || game.name || game.appName || game.entitlementName || null;
+    const mappedSlug =
+      (game.appName && productMapping[game.appName]) ||
+      (game.namespace && productMapping[game.namespace]) ||
+      null;
     const discovered =
       game.catalogItemId && slugOverrides[game.catalogItemId]
         ? slugOverrides[game.catalogItemId].slug || null
@@ -1320,13 +1639,13 @@ function joinGames(library, playtime, catalog) {
       // the importer; `null` means "not fetched", never a fabricated title.
       name,
       title: meta ? meta.title || null : null,
-      slug: (meta && meta.slug) || game.slug || discovered || null,
+      slug: (meta && meta.slug) || game.slug || mappedSlug || discovered || null,
       developer: meta ? meta.developer || null : null,
       publisher: meta ? meta.publisher || null : null,
       releaseDate: meta ? meta.releaseDate || null : null,
       metadataSource: meta
         ? 'epic-catalog'
-        : game.slug
+        : game.slug || mappedSlug
           ? 'epic-productmapping'
           : discovered
             ? 'epic-slug-probe'
@@ -1653,6 +1972,19 @@ function applyWikidataYear(data, options = {}) {
   let entry = null;
   try {
     entry = readSecondaryLink(store, slug, options);
+    // A slug entry is the trustworthy `P6278`/`P2725` identity. The title map
+    // is a **year-only** fallback: it is used when there is no slug entry at
+    // all (Alan Wake 2), or when both name the same QID and the slug entry has
+    // no date. Two different QIDs are never mixed.
+    const titleEntry = readSecondaryTitleLink(store, slug, options);
+    if (titleEntry && titleEntry.qid) {
+      const slugQid = entry && entry.qid ? String(entry.qid) : null;
+      const titleQid = String(titleEntry.qid);
+      const slugHasDate = Boolean(entry && entry.releaseYear != null);
+      if (!slugQid || (!slugHasDate && slugQid === titleQid)) {
+        entry = { ...(entry || {}), ...titleEntry, matchedBy: 'title' };
+      }
+    }
   } catch (err) {
     return data;
   }
@@ -1669,6 +2001,8 @@ function applyWikidataYear(data, options = {}) {
     releaseYear: entry.releaseYear,
     releaseDate: entry.releaseDate || null,
     releaseDateSource: 'wikidata',
+    // Honest provenance: a title match is weaker than a store-slug match.
+    releaseYearMatchedBy: entry.matchedBy || 'slug',
   };
 }
 
@@ -1791,13 +2125,21 @@ module.exports = {
   SecondaryIdentityError,
   buildBridgeQuery,
   parseBridgeResponse,
+  titleVariants,
+  buildTitleQuery,
+  parseTitleResponse,
+  collectTitleCandidates,
   isSettledEntry,
+  isSettledTitleEntry,
   emptyEntry,
   readSecondaryLinks,
   readSecondaryLink,
+  readSecondaryTitleLinks,
+  readSecondaryTitleLink,
   readCache,
   writeCache,
   fetchSecondaryLinks,
+  fetchSecondaryTitleLinks,
   collectSlugs,
   refreshForJob,
   // union
