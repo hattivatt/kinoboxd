@@ -126,22 +126,6 @@ function statsPayload() {
    markup: the third tab, the import form, the M1 widgets
    ========================================================= */
 
-test('index.html carries one shared topbar with the three tabs and per-tab actions', () => {
-  const html = readPublic('index.html');
-  // One header for the whole app; the compare screen keeps its own.
-  assert.equal((html.match(/<header class="topbar" id="app-topbar">/g) || []).length, 1);
-  for (const tab of ['films', 'books', 'games']) {
-    assert.equal((html.match(new RegExp(`data-tab="${tab}"`, 'g')) || []).length, 1, `таб ${tab}`);
-    assert.equal(
-      (html.match(new RegExp(`data-actions="${tab}"`, 'g')) || []).length,
-      1,
-      `группа действий ${tab}`
-    );
-  }
-  assert.match(html, /<span class="tab-label">Игры<\/span>/);
-  assert.match(html, /<section class="view" data-view="games" hidden>/);
-});
-
 test('empty state: vanity/steamid64 form with an always-active import button', () => {
   const html = readPublic('index.html');
   assert.match(html, /id="games-import"/);

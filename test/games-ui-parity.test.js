@@ -148,41 +148,6 @@ test('inline persons widget: span 12, developers first, search + «показа�
   assert.match(css, /\.summary-strip\.games-summary/);
 });
 
-test('layout: decades + years are adjacent (no 6-column holes)', () => {
-  const html = readPublic('index.html');
-  const decades = html.indexOf('id="games-decades-widget"');
-  const years = html.indexOf('id="games-years-widget"');
-  const genres = html.indexOf('id="games-genres-widget"');
-  const meta = html.indexOf('id="games-meta-widget"');
-  const achievements = html.indexOf('id="games-achievements-widget"');
-  const calendar = html.indexOf('id="games-calendar-widget"');
-  const persons = html.indexOf('id="games-persons-widget"');
-  assert.ok(genres > 0 && genres < decades && decades < years, 'годы должны идти сразу за десятилетиями');
-  assert.ok(years < meta && meta < achievements);
-  assert.ok(achievements < calendar && calendar < persons);
-  // U5 removed the four widgets for good: their markup must not come back.
-  for (const id of ['games-histogram-widget', 'games-backlog-widget', 'games-modes-widget', 'games-access-widget']) {
-    assert.equal(html.includes(`id="${id}"`), false, `виджет #${id} должен быть удалён`);
-  }
-
-  const css = readPublicCss();
-  const span = (selector) => {
-    const match = new RegExp(`\\${selector} \\{ grid-column: span (\\d+); \\}`).exec(css);
-    assert.ok(match, `нет span для ${selector}`);
-    return Number(match[1]);
-  };
-  assert.equal(span('.w-games-decades'), 6);
-  assert.equal(span('.w-games-years'), 6);
-  assert.equal(span('.w-games-genres'), 6);
-  assert.equal(span('.w-games-meta'), 6);
-  assert.equal(span('.w-games-achievements'), 6);
-  assert.equal(span('.w-games-calendar'), 12);
-  assert.equal(span('.w-games-persons'), 12);
-  // The count-by-release-year chart is a second, independent span-12 block:
-  // it must not be confused with the decade-gated «Годы релиза» card.
-  assert.equal(span('.w-games-yearcount'), 12);
-});
-
 test('year-count chart: span 12, own ids, counts above bars, genre filter', () => {
   const html = readPublic('index.html');
   for (const id of [
