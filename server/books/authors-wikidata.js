@@ -18,7 +18,7 @@
  */
 
 const { normalizeAuthorName, hasCyrillic, hasLatin, groupAuthors } = require('./authors');
-const { fetchOnce, responseFacade } = require('../core/http');
+const { fetchOnce, responseFacade, defaultSleep } = require('../core/http');
 
 const WDQS = 'https://query.wikidata.org/sparql';
 const BATCH_SIZE = 450;
@@ -139,7 +139,7 @@ async function fetchItemNames(qids, options = {}) {
  */
 async function resolveWikidataAliases(entries, options = {}) {
   const pauseMs = options.pauseMs == null ? DEFAULT_PAUSE_MS : Number(options.pauseMs);
-  const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const sleep = options.sleep || defaultSleep;
   const base = groupAuthors(entries, options.persisted || {});
   const names = [...new Set((entries || []).map((entry) => entry.name).filter(Boolean))];
   const only = Array.isArray(options.names) ? new Set(options.names.map(normalizeAuthorName)) : null;

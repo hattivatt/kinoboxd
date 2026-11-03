@@ -48,7 +48,6 @@
  * documents and why they were left alone.
  */
 
-const fs = require('fs');
 const path = require('path');
 
 const bookCache = require('./book-cache');
@@ -58,17 +57,17 @@ const openlibrary = require('./providers/openlibrary');
 const hardcover = require('./providers/hardcover');
 const editions = require('./hardcover-editions');
 const { normalizeIsbn } = require('./normalize');
+const { defaultSleep } = require('../core/http');
+const { usedOf, budgetRefused } = require('../core/budget');
+const fsStore = require('../core/fs-store');
+const sources = require('../core/sources');
 
 const DEFAULT_LIMIT = 20;
-const DEFAULT_PAUSE_MS = 2000; // Литрес politeness (AGENTS.md)
+const DEFAULT_PAUSE_MS = sources.pauseMs('litres'); // Литрес politeness (AGENTS.md)
 /** Days a "nobody knows the year" verdict stays final before re-asking. */
 const DEFAULT_RECHECK_DAYS = 30;
 
 const CYRILLIC_TITLE = /[а-яё]/i;
-
-function sleepDefault(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /** Timestamp of the last hopeless check of a document, or null. */
 function checkedAtOf(doc) {
@@ -90,21 +89,13 @@ function recentlyChecked(doc, now, recheckDays) {
 
 /** Details documents on disk (`cache-book/details/*.json`). */
 function detailDocs() {
-  let names = [];
-  try {
-    names = fs.readdirSync(bookCache.DETAILS_DIR).filter((name) => name.endsWith('.json'));
-  } catch (err) {
-    return [];
-  }
   const out = [];
-  for (const name of names) {
-    const key = path.basename(name, '.json');
-    try {
-      const doc = JSON.parse(fs.readFileSync(path.join(bookCache.DETAILS_DIR, name), 'utf8'));
-      if (doc && typeof doc === 'object') out.push({ key, doc });
-    } catch (err) {
-      // A half-written document is not a candidate; the cache reader skips it too.
-    }
+  for (const name of fsStore.listJsonFiles(bookCache.DETAILS_DIR)) {
+    // A half-written document is not a candidate; `readJson` returns null for it.
+    const doc = fsStore.readJson(path.join(bookCache.DETAILS_DIR, name), {
+      label: 'years-backfill',
+    });
+    if (doc && typeof doc === 'object') out.push({ key: path.basename(name, '.json'), doc });
   }
   return out;
 }
@@ -131,7 +122,7 @@ function workIdOf(doc) {
  *     answered yet», so the caller must not write the negative cache.
  */
 async function firstYearForDoc(doc, options = {}) {
-  const sleep = options.sleep || sleepDefault;
+  const sleep = options.sleep || defaultSleep;
   const pause = options.pause == null ? DEFAULT_PAUSE_MS : Number(options.pause);
   const lookupIsbns = options.lookupIsbns;
   const budget = options.budget || null;
@@ -191,7 +182,7 @@ async function firstYearForDoc(doc, options = {}) {
       // stop); the document stays pending for the next run.
       incomplete.push('litres-breaker');
     } else {
-      const usedBefore = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
+      const usedBefore = usedOf(budget);
       try {
         const result = await litresProvider.getWork(input, {
           budget,
@@ -200,14 +191,8 @@ async function firstYearForDoc(doc, options = {}) {
         });
         // `getWork` returns null both for "no match" and for "budget is gone".
         // Only the second one is an incomplete answer: the book was never
-        // asked. Distinguish by the mutation of the shared budget counter.
-        const usedAfter = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
-        const budgetBlocked =
-          budget &&
-          usedBefore != null &&
-          usedAfter === usedBefore &&
-          Number(budget.remaining) === 0;
-        if (budgetBlocked) incomplete.push('litres-budget');
+        // asked (`core/budget` owns the counter-mutation test).
+        if (budgetRefused(budget, usedBefore)) incomplete.push('litres-budget');
         else push(result, 'litres');
       } catch (err) {
         // Breaker/429 → the other providers still run; retry on the next run.

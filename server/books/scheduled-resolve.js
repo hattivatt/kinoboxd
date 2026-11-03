@@ -40,7 +40,6 @@
  *     linked=137 misses=41 deferred=22 budget=200/200 hc=3 requests=... remaining=318 runsLeft=2
  */
 
-const fs = require('fs');
 const path = require('path');
 
 const bookCache = require('./book-cache');
@@ -49,10 +48,12 @@ const segments = require('./segments');
 const litres = require('./providers/litres');
 const googlebooks = require('./providers/googlebooks');
 const resolveLock = require('./resolve-lock');
+const fsStore = require('../core/fs-store');
+const sources = require('../core/sources');
 
 const DEFAULT_LIMIT = 200;
 const DEFAULT_RECHECK_DAYS = 90;
-const DEFAULT_PAUSE_MS = 2000; // Литрес politeness (AGENTS.md)
+const DEFAULT_PAUSE_MS = sources.pauseMs('litres'); // Литрес politeness (AGENTS.md)
 const CANDIDATES_DIR_NAME = 'resolve-candidates';
 
 const PLAN_SHELVES = new Set(['reading', 'wish']);
@@ -71,29 +72,25 @@ function emptyCandidateState() {
 }
 
 function loadCandidateState(source, userKey) {
-  try {
-    const raw = fs.readFileSync(candidateStatePath(source, userKey), 'utf8');
-    const data = JSON.parse(raw);
-    if (!data || typeof data !== 'object') return emptyCandidateState();
-    return {
-      schemaVersion: Number(data.schemaVersion) || 1,
-      updatedAt: data.updatedAt || null,
-      recheckDays: Number.isFinite(Number(data.recheckDays))
-        ? Number(data.recheckDays)
-        : DEFAULT_RECHECK_DAYS,
-      candidates: data.candidates && typeof data.candidates === 'object' ? data.candidates : {},
-    };
-  } catch (err) {
-    return emptyCandidateState();
-  }
+  const data = fsStore.readJson(candidateStatePath(source, userKey), {
+    label: 'scheduled-resolve',
+  });
+  if (!data || typeof data !== 'object') return emptyCandidateState();
+  return {
+    schemaVersion: Number(data.schemaVersion) || 1,
+    updatedAt: data.updatedAt || null,
+    recheckDays: Number.isFinite(Number(data.recheckDays))
+      ? Number(data.recheckDays)
+      : DEFAULT_RECHECK_DAYS,
+    candidates: data.candidates && typeof data.candidates === 'object' ? data.candidates : {},
+  };
 }
 
 function saveCandidateState(source, userKey, state) {
   const filePath = candidateStatePath(source, userKey);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
-  fs.renameSync(tmp, filePath);
+  // Same pretty layout the hand-written writer used (`space: 2`), so an
+  // operator diffing `cache-book/resolve-candidates/*.json` sees no churn.
+  fsStore.writeJsonAtomicSync(filePath, state, { space: 2 });
   return filePath;
 }
 

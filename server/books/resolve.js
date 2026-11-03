@@ -32,8 +32,12 @@
  * appended to match-log.jsonl.
  */
 
+const path = require('path');
+
 const hardcover = require('./hardcover');
 const bookCache = require('./book-cache');
+const fsStore = require('../core/fs-store');
+const { usedOf, budgetRefused } = require('../core/budget');
 const {
   cleanText,
   normalizeTitle,
@@ -218,19 +222,12 @@ function bestCandidate(event, candidates) {
 /* ------------------------------------------------------------------ */
 
 function listDetailsFiles() {
-  try {
-    const fs = require('fs');
-    const path = require('path');
-    const names = fs.readdirSync(bookCache.DETAILS_DIR).filter((name) => name.endsWith('.json'));
-    const works = [];
-    for (const name of names) {
-      const found = bookCache.readJsonWithFingerprint(path.join(bookCache.DETAILS_DIR, name));
-      if (found && found.data && found.data.hcWorkId) works.push(found.data);
-    }
-    return works;
-  } catch (err) {
-    return [];
+  const works = [];
+  for (const name of fsStore.listJsonFiles(bookCache.DETAILS_DIR)) {
+    const found = bookCache.readJsonWithFingerprint(path.join(bookCache.DETAILS_DIR, name));
+    if (found && found.data && found.data.hcWorkId) works.push(found.data);
   }
+  return works;
 }
 
 /** normalized title -> details[] for the title/author strategies. */
@@ -382,13 +379,11 @@ async function tryProvider(provider, input, options, chain) {
   const key = input ? input.eventKey || input.llBookId || null : null;
   const keyString = key == null ? null : String(key);
   const budget = providerBudgetFor(options, provider);
-  const usedBefore = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
+  const usedBefore = usedOf(budget);
   stat.calls++;
   try {
     const result = await provider.getWork(input, providerOptionsFor(options, provider));
-    const usedAfter = budget && Number.isFinite(Number(budget.used)) ? Number(budget.used) : null;
-    const budgetBlocked =
-      budget && usedBefore != null && usedAfter === usedBefore && Number(budget.remaining) === 0;
+    const budgetBlocked = budgetRefused(budget, usedBefore);
     if (keyString && budgetBlocked) {
       options.budgetBlockedKeys && options.budgetBlockedKeys.add(keyString);
     }

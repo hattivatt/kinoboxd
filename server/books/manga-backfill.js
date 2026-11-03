@@ -26,12 +26,12 @@
  *   - Google Books is skipped while its 429 breaker is open.
  */
 
-const fs = require('fs');
-
 const bookCache = require('./book-cache');
 const googlebooks = require('./providers/googlebooks');
 const openlibrary = require('./providers/openlibrary');
 const { detectManga } = require('./providers/manga');
+const { defaultSleep } = require('../core/http');
+const fsStore = require('../core/fs-store');
 
 const DEFAULT_LIMIT = 20;
 const DEFAULT_PAUSE_MS = 600;
@@ -70,16 +70,11 @@ function workIdOf(doc) {
 }
 
 function detailDocs() {
-  let names = [];
-  try {
-    names = fs.readdirSync(bookCache.DETAILS_DIR).filter((name) => name.endsWith('.json')).sort();
-  } catch (err) {
-    return [];
-  }
   const docs = [];
-  for (const name of names) {
-    const doc = bookCache.getDetails(name.slice(0, -5));
-    if (doc) docs.push({ key: name.slice(0, -5), doc });
+  for (const name of fsStore.listJsonFiles(bookCache.DETAILS_DIR)) {
+    const key = name.slice(0, -5);
+    const doc = bookCache.getDetails(key);
+    if (doc) docs.push({ key, doc });
   }
   return docs;
 }
@@ -124,7 +119,7 @@ function collectTexts(doc, results) {
  */
 async function enrichDoc(doc, options = {}) {
   const pause = options.pause == null ? DEFAULT_PAUSE_MS : Number(options.pause);
-  const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const sleep = options.sleep || defaultSleep;
   const providers = Array.isArray(options.providers)
     ? options.providers
     : [openlibrary, googlebooks];
