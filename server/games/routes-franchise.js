@@ -99,7 +99,7 @@ function annotatePending(payload, scope, deps = {}) {
     payload.pending.reason = 'running';
     return payload;
   }
-  if (!(payload.pending.wikidata > 0) && !(payload.pending.bridge > 0)) {
+  if (!(payload.pending.wikidata > 0) && !(payload.pending.bridge > 0) && !(payload.pending.secondary > 0)) {
     payload.pending.reason = null;
     return payload;
   }

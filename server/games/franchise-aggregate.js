@@ -161,6 +161,27 @@ function buildFranchises(profileKey, options = {}) {
   const library = getLibrary(parsed.userKey);
   if (!profile || !library) return null;
 
+  // M6 follow-up (03.11.2026): works that exist only outside Steam (GOG/Epic
+  // exclusives) belong to the same franchises. The caller may pass them
+  // explicitly (tests/purity); production reads the cache through the union.
+  // Injected readers mean «pure unit test» — then no disk read happens.
+  let secondaryWorks = options.secondaryWorks;
+  if (secondaryWorks === undefined) {
+    const injected = Boolean(
+      options.getLibrary || options.getProfile || options.readDetails || options.readLinks
+    );
+    secondaryWorks = injected
+      ? []
+      : (() => {
+          try {
+            return require('./secondary-works').secondaryWorksForOwner(parsed.key);
+          } catch (err) {
+            return [];
+          }
+        })();
+  }
+  const secondaryList = Array.isArray(secondaryWorks) ? secondaryWorks.filter(Boolean) : [];
+
   const games = [];
   const release = { fromDetails: 0, fromWikidata: 0, fromBase: 0, unknown: 0, unavailableDetails: 0 };
   const linksCoverage = {
@@ -256,6 +277,50 @@ function buildFranchises(profileKey, options = {}) {
     });
   }
 
+  // ---- secondary-only works (GOG/Epic exclusives) ----
+  // They are owned works of the same owner, so they join the same franchise
+  // buckets by their P179 key. `appid` stays `null`; `workKey` is the identity
+  // the drilldown and the union card use. They never enter the title
+  // heuristic (a store title alone is not enough evidence).
+  let secondaryGames = 0;
+  let secondaryWithFranchise = 0;
+  let secondaryFranchisePending = 0;
+  for (const work of secondaryList) {
+    if (!work || !work.workKey) continue;
+    secondaryGames++;
+    const series = work.franchise && work.franchise.key ? work.franchise : null;
+    const wdKey = series ? series.key : null;
+    if (wdKey) secondaryWithFranchise++;
+    // Only a work whose QID is known can be asked; a QID-less store exclusive
+    // is not «pending Wikidata» forever (the bridge may resolve it later, but
+    // that is the secondary-details pass, not this kick).
+    if (work.qid && !work.franchiseChecked) secondaryFranchisePending++;
+    const year = Number(work.releaseYear);
+    games.push({
+      appid: null,
+      workKey: work.workKey,
+      secondaryOnly: true,
+      name: work.name || null,
+      hours: round1(Number(work.hours) || 0),
+      releaseYear: Number.isInteger(year) && year > 0 ? year : null,
+      releaseSource: Number.isInteger(year) && year > 0 ? 'secondary-store' : null,
+      releasePrecision: null,
+      // A secondary identity is answered by the bridge (QID) and the franchise
+      // cache; `franchiseChecked` is the TTL marker for `pending.secondary`.
+      wdResolved: Boolean(work.qid || work.franchiseChecked),
+      wdFresh: Boolean(work.franchiseChecked),
+      wdKey,
+      wdFranchise: wdKey
+        ? {
+            key: wdKey,
+            label: (series && (series.label || series.labelRu)) || null,
+            labelRu: (series && series.labelRu) || null,
+            confidence: 'high',
+          }
+        : null,
+    });
+  }
+
   // ---- minimal title heuristic (only for games Wikidata did not place) ----
   const groups = new Map();
   for (const game of games) {
@@ -338,14 +403,33 @@ function buildFranchises(profileKey, options = {}) {
           : { min: null, max: null, span: null },
         years: [...new Set(years)],
         appids: bucket.games
+          .filter((game) => game.appid != null)
           .slice()
           .sort((a, b) => b.hours - a.hours || a.appid - b.appid)
           .map((game) => game.appid),
+        // M6 follow-up: identity of the secondary-only members (a Steam row is
+        // addressed by `appid`, a GOG/Epic row by its `workKey`).
+        workKeys: bucket.games
+          .filter((game) => game.workKey)
+          .slice()
+          .sort(
+            (a, b) =>
+              b.hours - a.hours ||
+              String(a.workKey).localeCompare(String(b.workKey))
+          )
+          .map((game) => game.workKey),
         games: bucket.games
           .slice()
-          .sort((a, b) => b.hours - a.hours || a.appid - b.appid)
+          .sort(
+            (a, b) =>
+              b.hours - a.hours ||
+              (a.appid == null ? 0 : a.appid) - (b.appid == null ? 0 : b.appid) ||
+              String(a.workKey || '').localeCompare(String(b.workKey || ''))
+          )
           .map((game) => ({
-            appid: game.appid,
+            appid: game.appid == null ? null : game.appid,
+            workKey: game.workKey || null,
+            secondaryOnly: game.secondaryOnly === true,
             name: game.name,
             hours: game.hours,
             releaseYear: game.releaseYear,
@@ -362,7 +446,9 @@ function buildFranchises(profileKey, options = {}) {
 
   const gamesTotal = games.length;
   const percent = gamesTotal ? round1((gamesWithFranchise / gamesTotal) * 100) : 0;
-  const pendingWikidata = games.filter((game) => !game.wdFresh).length;
+  const pendingWikidata = games.filter(
+    (game) => !game.secondaryOnly && !game.wdFresh
+  ).length;
 
   return {
     profile: parsed.key,
@@ -370,6 +456,9 @@ function buildFranchises(profileKey, options = {}) {
     totals: {
       franchises: franchises.length,
       gamesTotal,
+      // M6 follow-up: GOG/Epic-only works are part of `gamesTotal` (they are
+      // owned works of the same owner), reported here as their own number.
+      secondaryWorks: secondaryGames,
       gamesInFranchises: franchises.reduce((sum, entry) => sum + entry.gamesCount, 0),
       hoursInFranchises: round1(franchises.reduce((sum, entry) => sum + entry.hoursSum, 0)),
       hoursTotal: round1(games.reduce((sum, game) => sum + game.hours, 0)),
@@ -379,6 +468,11 @@ function buildFranchises(profileKey, options = {}) {
       gamesWithFranchise,
       percent,
       bySource,
+      secondary: {
+        works: secondaryGames,
+        withFranchise: secondaryWithFranchise,
+        pending: secondaryFranchisePending,
+      },
       // A game can have a WD QID but no P179 — that is a real «no franchise»
       // answer, not a missing one; `links.fresh` is the 90-day cache signal.
       links: { ...linksCoverage, ttlDays: ttlMs ? Math.round(ttlMs / 86400000) : null },
@@ -390,6 +484,10 @@ function buildFranchises(profileKey, options = {}) {
       // B6: `qid: null` rows whose base version is still unknown (the bridge
       // runs in the same job, so this is part of the same kick decision).
       bridge: bridgePending,
+      // M6 follow-up: secondary-only works whose P179 answer is not cached
+      // yet. The franchise job asks them in the same pass, so this is the
+      // lazy-kick signal for a deploy that happened after the last import.
+      secondary: secondaryFranchisePending,
       // Games with no year from either source.
       releaseYears: release.unknown,
       unavailableDetails: release.unavailableDetails,
