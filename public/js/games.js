@@ -1527,6 +1527,9 @@ function renderRecentStrip(data) {
         primaryAppid: item.primaryAppid,
         iconUrl: item.iconUrl,
         coverUrl: item.coverUrl,
+        // The store header carries the post-2024 asset hash: the vertical
+        // `library_600x900.jpg` lives in the same folder (`?h=<hash>`).
+        headerImage: item.headerImage,
       },
       { className: 'games-recent-icon' },
     ));

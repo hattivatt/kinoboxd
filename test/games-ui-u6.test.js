@@ -13,9 +13,10 @@
  *      donut slices (the year-less bucket is a note button, never a slice),
  *      «Годы релиза» paints every year as a donut slice by default, a decade
  *      slice narrows it, and the note opens the year-less list;
- *   3. the Steam cover chains: the vertical `library_600x900.jpg` →
- *      header.jpg → capsule_231x87 → 32×32 icon → initials (the games tab),
- *      and the older landscape header-first chain kept for parity.
+ *   3. the Steam cover chains: the vertical `library_600x900.jpg` (in the
+ *      store-asset hash of `header_image` for post-2024 SKUs, legacy path
+ *      otherwise) → header.jpg → capsule_231x87 → 32×32 icon → initials (the
+ *      games tab), and the older landscape header-first chain kept for parity.
  *
  * The live snapshot is optional: without it the deterministic checks still
  * run (the file skips only the snapshot assertions).
@@ -344,6 +345,70 @@ test('vertical cover chain: library_600x900 first, landscape header only as fall
     gameVerticalCoverUrls({ appid: 70 }).some((url) => url.includes('library_600x900_2x')),
     false,
   );
+});
+
+test('vertical cover chain: the new-schema store header supplies the library hash', async () => {
+  const { configureGamesModals, gameVerticalCoverUrls } = await import('../public/js/games-modal.js');
+  configureGamesModals({ gamesIndex: {}, secondaryWorks: [] });
+  const art = '/api/games/steam-art';
+  const hash = '1e0c76e4253d347bb1304c3f213570251d924edf';
+  const header = `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/3669870/${hash}/header.jpg`;
+
+  // The true vertical capsule comes first, in the header's own asset folder;
+  // only then the legacy hash-less capsule and the landscape header.
+  assert.deepEqual(gameVerticalCoverUrls({ appid: 3669870, headerImage: header }), [
+    `${art}/library/3669870?h=${hash}`,
+    `${art}/library/3669870`,
+    `${art}/header/3669870?h=${hash}`,
+    `${art}/header/3669870`,
+    `${art}/capsule/3669870`,
+  ]);
+
+  // An invalid/absent hash never leaks into the query string.
+  assert.deepEqual(gameVerticalCoverUrls({
+    appid: 70,
+    headerImage: 'https://cdn.cloudflare.steamstatic.com/steam/apps/70/header.jpg',
+  }).slice(0, 2), [
+    `${art}/library/70`,
+    `${art}/header/70`,
+  ]);
+});
+
+test('steamAssetHashFromImageUrl: only the new store schema carries a hash', async () => {
+  const { steamAssetHashFromImageUrl } = await import('../public/js/games-modal.js');
+  const hash = '1e0c76e4253d347bb1304c3f213570251d924edf';
+  const store = 'store_item_assets/steam/apps';
+
+  assert.equal(
+    steamAssetHashFromImageUrl(
+      `https://shared.akamai.steamstatic.com/${store}/3669870/${hash}/header.jpg`
+    ),
+    hash,
+  );
+  // Any asset file of the same SKU lives under the same hash.
+  assert.equal(
+    steamAssetHashFromImageUrl(
+      `https://cdn.cloudflare.steamstatic.com/${store}/70/abc123/capsule_231x87.jpg`
+    ),
+    'abc123',
+  );
+  // Legacy paths, community icons and non-Steam art have no per-asset hash.
+  assert.equal(
+    steamAssetHashFromImageUrl('https://cdn.cloudflare.steamstatic.com/steam/apps/70/header.jpg'),
+    null,
+  );
+  assert.equal(
+    steamAssetHashFromImageUrl('https://media.steampowered.com/steamcommunity/public/images/apps/70/abc.jpg'),
+    null,
+  );
+  assert.equal(steamAssetHashFromImageUrl('https://images.gog-statics.com/cover.jpg'), null);
+  assert.equal(steamAssetHashFromImageUrl('/api/games/steam-art/library/70'), null);
+  // A missing hash segment or a non-numeric appid is not a store asset.
+  assert.equal(steamAssetHashFromImageUrl(`https://shared.akamai.steamstatic.com/${store}/70/header.jpg`), null);
+  assert.equal(steamAssetHashFromImageUrl(`https://shared.akamai.steamstatic.com/${store}/app/abc/header.jpg`), null);
+  assert.equal(steamAssetHashFromImageUrl(''), null);
+  assert.equal(steamAssetHashFromImageUrl(null), null);
+  assert.equal(steamAssetHashFromImageUrl(undefined), null);
 });
 
 test('vertical cover element: error walks header → capsule → icon → initials', async () => {
