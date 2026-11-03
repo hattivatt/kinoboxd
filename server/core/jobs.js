@@ -354,14 +354,17 @@ function createJobs(options = {}) {
    * `lock_busy` skip).
    */
   function cooldownRemaining(key, opts = {}) {
-    if (!(cooldownMs > 0)) return 0;
+    const windowMs = opts.windowMs == null
+      ? cooldownMs
+      : Math.max(0, Number(opts.windowMs) || 0);
+    if (!(windowMs > 0)) return 0;
     const record = finishes.get(String(key));
     if (!record) return 0;
     const ignore = typeof opts.ignore === 'function'
       ? opts.ignore
       : (entry) => entry.status === 'failed';
     if (ignore(record)) return 0;
-    const left = record.at + cooldownMs - now();
+    const left = record.at + windowMs - now();
     return left > 0 ? left : 0;
   }
 
