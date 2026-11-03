@@ -756,7 +756,7 @@
   bottom: auto;
 }
 
-/* ranked lists (authors / series / publishers) */
+/* ranked lists (authors / series) */
 .genre-row.is-ranked { grid-template-columns: 20px minmax(80px, 27%) minmax(0, 1fr) 38px; }
 .rank-num {
   padding-right: 2px;
@@ -767,40 +767,29 @@
   color: var(--muted-2);
 }
 
-/* Books stack lists of very different length, so cards keep their natural
-   height instead of stretching into tall empty plates. */
-.books-dash .widgets { align-items: start; }
+/* Books stack lists of very different length, so the row keeps one even
+   card height instead of each widget ending at its own content. */
+.books-dash .widgets { align-items: stretch; }
+/* A stretched card keeps its footer on the shared bottom edge, so the
+   hint line of every widget in a row reads as one baseline. */
+.books-dash .widgets > .widget { display: flex; flex-direction: column; }
+.books-dash .widgets > .widget > .chart-foot { margin-top: auto; }
 
-/* book widgets use the same 6-col rhythm as series/decades */
+/* book widgets use the same 6-col rhythm as series/decades; ratings and
+   genres pair as 6+6 (same as the tablet breakpoint) so both cards in the
+   row share one width. */
+.books-dash .w-ratings,
+.books-dash .w-genres,
 .w-books-series,
-.w-books-authors,
-.w-books-publishers { grid-column: span 6; }
+.w-books-authors { grid-column: span 6; }
+
+/* No series to show: the authors card takes the whole row, so the pair
+   never collapses into a half-empty one. */
+.books-dash .w-books-authors.is-wide { grid-column: span 12; }
 
 /* full-width publication-year bars, directly after the decades/years pair */
 .w-books-yearbars { grid-column: span 12; }
 #books-yearbars-chart { min-width: 0; }
-
-/* Series + publishers stack in one cell so the tall authors list on the
-   right does not leave a half-empty row. */
-.books-side-stack {
-  grid-column: span 6;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  min-width: 0;
-}
-.books-side-stack > .widget { grid-column: auto !important; }
-
-@media (max-width: 1120px) {
-  .w-books-series,
-  .w-books-authors,
-  .w-books-publishers { grid-column: span 6; }
-  .books-side-stack { grid-column: span 6; }
-}
-
-@media (max-width: 760px) {
-  .books-side-stack { grid-column: span 12; gap: 14px; }
-}
 
 @media (max-width: 900px) {
   .topbar-left { gap: 10px; }
