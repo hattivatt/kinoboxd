@@ -80,6 +80,58 @@ function headerImageOf(doc) {
   return typeof url === 'string' && /^https?:\/\//i.test(url) ? url : null;
 }
 
+const STEAM_ART_PATH = '/api/games/steam-art';
+
+/**
+ * Proxy URL of a resolved vertical capsule. The resolve document
+ * (`cache-games/art/resolved/<appid>.json`, `server/games/steam-art.js`) says
+ * which schema answered:
+ *
+ *   library-hashed  -> `/api/games/steam-art/<library|library_capsule>/<appid>?h=<hash>`
+ *   library-legacy  -> `/api/games/steam-art/library/<appid>`
+ *   sgdb            -> the https SteamGridDB CDN URL as-is
+ *   none            -> null
+ *
+ * Only the fields the resolver wrote are used, so a corrupt document can never
+ * smuggle an arbitrary URL into the payload.
+ */
+function verticalCapsuleUrlOf(doc) {
+  if (!doc || typeof doc !== 'object') return null;
+  if (doc.kind === 'sgdb') {
+    return typeof doc.url === 'string' && /^https:\/\//i.test(doc.url) ? doc.url : null;
+  }
+  const appid = Number(doc.appid);
+  if (!Number.isSafeInteger(appid) || appid <= 0) return null;
+  if (doc.kind === 'library-legacy') return `${STEAM_ART_PATH}/library/${appid}`;
+  if (doc.kind === 'library-hashed') {
+    const hash = typeof doc.h === 'string' ? doc.h : '';
+    if (!/^[A-Za-z0-9]{1,64}$/.test(hash)) return null;
+    const type = doc.proxyType === 'library_capsule' ? 'library_capsule' : 'library';
+    return `${STEAM_ART_PATH}/${type}/${appid}?h=${hash}`;
+  }
+  return null;
+}
+
+/**
+ * Additive artwork fields of one row. **No resolve document → `{}`**: an old
+ * payload (or a game the enrich pass has not reached yet) keeps exactly its
+ * previous shape and the client walks the legacy CDN chain. A resolved `none`
+ * is explicit — `verticalCapsuleKnown: false` tells the client not to retry
+ * the library paths for this SKU.
+ */
+function artFieldsOf(doc) {
+  if (!doc || typeof doc !== 'object' || !doc.kind) return {};
+  const verticalCapsule = verticalCapsuleUrlOf(doc);
+  return {
+    verticalCapsule,
+    verticalCapsuleKnown: Boolean(verticalCapsule),
+    iconFallbackUrl:
+      typeof doc.smallIconFallback === 'string' && doc.smallIconFallback
+        ? doc.smallIconFallback
+        : null,
+  };
+}
+
 function hoursHistogram(hoursList) {
   const counts = HISTOGRAM_BUCKETS.map((entry) => ({ bucket: entry.bucket, count: 0 }));
   for (const hours of hoursList) {
@@ -109,6 +161,8 @@ module.exports = {
   isoOfSeconds,
   iconUrlOf,
   headerImageOf,
+  verticalCapsuleUrlOf,
+  artFieldsOf,
   hoursHistogram,
   pushBucket,
 };

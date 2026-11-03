@@ -10,9 +10,14 @@
  * server for the artwork instead of the CDN:
  *
  *   GET /api/games/steam-art/<type>/<appid>[?h=<hash>]
- *     type  header | capsule | library | small_capsule | icon
+ *     type  header | capsule | library | library_capsule | small_capsule | icon
  *     h     community icon hash (`icon`), or the `store_item_assets` asset
  *           hash for the newer `shared.akamai.steamstatic.com` schema
+ *
+ * `library_capsule` is the post-2024 file name (`library_capsule.jpg`) that
+ * `IStoreBrowseService` publishes for a vertical capsule; `library` is the
+ * legacy `library_600x900.jpg`. Which one a SKU has is resolved once per appid
+ * by `resolveVerticalArt()` (below) and cached in `art/resolved/`.
  *
  * The upstream URL is **built here**, never passed in by the client, so the
  * route cannot be used as an open proxy. Only the five Steam CDN hostnames in
@@ -39,10 +44,13 @@ const path = require('path');
 
 const gameCache = require('./game-cache');
 const { safeKey } = require('../core/fs-store');
-const { fetchBinary } = require('../core/http');
+const { fetchBinary, fetchJson } = require('../core/http');
+const { createBreaker } = require('../core/breaker');
+const sources = require('../core/sources');
 const { HttpError } = require('../upload');
 
 const ART_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'art');
+const RESOLVED_DIR = path.join(ART_DIR, 'resolved');
 
 const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_ART_FILES = 600;
@@ -60,13 +68,33 @@ const IMAGE_TYPES = new Set([
   'image/gif',
 ]);
 
-const TYPES = new Set(['header', 'capsule', 'library', 'small_capsule', 'icon']);
+const TYPES = new Set(['header', 'capsule', 'library', 'library_capsule', 'small_capsule', 'icon']);
 const FILE_BY_TYPE = {
   header: 'header.jpg',
   capsule: 'capsule_231x87.jpg',
   library: 'library_600x900.jpg',
+  // Post-2024 SKUs put the true vertical capsule under the per-asset hash of
+  // `IStoreBrowseService.assets.library_capsule` and call the file
+  // `library_capsule.jpg` (live 03.11.2026: 3669870 has this file 200/56 KB,
+  // while every `library_600x900.jpg` path — hashed and legacy — 404s).
+  library_capsule: 'library_capsule.jpg',
   small_capsule: 'capsule_231x87.jpg',
 };
+
+// Resolve cache (`cache-games/art/resolved/<appid>.json`): one document per
+// appid saying whether a vertical capsule exists and where. A positive answer
+// is re-checked after 180 days (the store TTL); a negative one after 30 days,
+// because Valve may publish the art later.
+const RESOLVED_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+const RESOLVED_NONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const RESOLVED_SCHEMA_VERSION = 1;
+const ART_PATH = '/api/games/steam-art';
+// `IStoreBrowseService/GetItems` is the public, keyless store-frontend API; it
+// is the only place that publishes the per-asset `library_capsule` hash.
+const BROWSE_HOST = 'api.steampowered.com';
+const BROWSE_BREAKER_KEY = `${BROWSE_HOST}/IStoreBrowseService`;
+const BROWSE_URL = `https://${BROWSE_HOST}/IStoreBrowseService/GetItems/v1/`;
+const LIBRARY_CAPSULE_FILE_RE = /^([A-Za-z0-9]{1,64})\/(library_capsule(?:_2x)?|library_600x900(?:_2x)?)\.(?:jpg|jpeg|png)$/;
 
 // Every host that may ever be requested. The list is an allowlist (tested):
 // the request URL is assembled from an appid/hash that already passed the
@@ -130,6 +158,411 @@ function isAllowedArtUrl(value) {
   if (parsed.protocol !== 'https:') return false;
   return UPSTREAM_HOSTS.includes(parsed.hostname.toLowerCase());
 }
+
+/**
+ * Asset hash of a `store_item_assets/steam/apps/<appid>/<hash>/<file>` URL
+ * (`appdetails.header_image`/`capsule_image` for post-2024 SKUs). Returns
+ * `null` for a legacy path or anything that does not match the allowlisted
+ * hosts, so a foreign URL can never smuggle a hash into the proxy.
+ */
+function assetHashFromUrl(value) {
+  if (!isAllowedArtUrl(value)) return null;
+  const match = /\/store_item_assets\/steam\/apps\/\d+\/([A-Za-z0-9]{1,64})\//.exec(
+    String(value)
+  );
+  return match ? match[1] : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Vertical-art resolve (one document per appid)                       */
+/* ------------------------------------------------------------------ */
+
+function resolvedPath(appid) {
+  return path.join(RESOLVED_DIR, `${safeKey(appid)}.json`);
+}
+
+function readResolvedArt(appid) {
+  const hit = gameCache.readJsonWithFingerprint(resolvedPath(appid));
+  const doc = hit && hit.data;
+  if (!doc || Number(doc.schemaVersion) !== RESOLVED_SCHEMA_VERSION) return null;
+  return doc;
+}
+
+/** `{ [appid]: resolvedDoc }`; missing/corrupt files are simply absent. */
+function listResolvedArt(appids) {
+  const result = {};
+  if (!Array.isArray(appids)) return result;
+  for (const appid of appids) {
+    if (appid == null) continue;
+    const key = String(appid);
+    if (result[key]) continue;
+    const doc = readResolvedArt(appid);
+    if (doc) result[key] = doc;
+  }
+  return result;
+}
+
+async function saveResolvedArt(doc) {
+  return gameCache.writeJsonAtomic(resolvedPath(doc.appid), doc);
+}
+
+/** Positive answer lives 180 days, `none` 30 days (Steam may publish later). */
+function resolvedFresh(doc, now = Date.now()) {
+  if (!doc || !doc.resolvedAt) return false;
+  const ts = Date.parse(doc.resolvedAt);
+  if (!Number.isFinite(ts)) return false;
+  const ttl = doc.kind === 'none' ? RESOLVED_NONE_TTL_MS : RESOLVED_TTL_MS;
+  const age = now - ts;
+  return age >= 0 && age < ttl;
+}
+
+/**
+ * Compact probe list for the resolver (the proxy keeps the full host list for
+ * the browser path). Two hosts per schema are enough to tell «exists» from
+ * «404», and a resolver pass over 340 games must not spend five requests on
+ * each missing file.
+ */
+function resolverCandidates(type, appid, hash) {
+  if (!TYPES.has(type)) return [];
+  const file = FILE_BY_TYPE[type];
+  if (hash) {
+    return [
+      `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${appid}/${hash}/${file}`,
+      `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${appid}/${hash}/${file}`,
+    ];
+  }
+  return [
+    `https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}/${file}`,
+    `https://shared.akamai.steamstatic.com/steam/apps/${appid}/${file}`,
+  ];
+}
+
+/** Probe one candidate list. Returns the upstream result (never throws). */
+async function probeArt(type, appid, hash, options = {}) {
+  return fetchUpstream(resolverCandidates(type, appid, hash), options);
+}
+
+function artProxyUrlFor(doc) {
+  if (!doc || doc.kind === 'none') return null;
+  if (doc.kind === 'sgdb') return doc.url || null;
+  if (doc.kind === 'library-legacy') return `${ART_PATH}/library/${doc.appid}`;
+  if (doc.kind === 'library-hashed') {
+    const type = doc.proxyType || 'library';
+    return `${ART_PATH}/${type}/${doc.appid}?h=${doc.h}`;
+  }
+  return null;
+}
+
+/** Small capsule URL used when the 32×32 community icon is missing or 404s. */
+function smallIconFallbackOf(appid, hashes, browse) {
+  const smallHash =
+    (browse && browse.smallCapsuleHash) || hashes.capsule || null;
+  return smallHash
+    ? `${ART_PATH}/capsule/${appid}?h=${smallHash}`
+    : `${ART_PATH}/capsule/${appid}`;
+}
+
+let lastBrowseAt = null;
+
+async function browsePause(options = {}) {
+  const pauseMs =
+    options.pauseMs != null ? Number(options.pauseMs) : sources.pauseMs('steamBrowse');
+  if (!(pauseMs > 0)) return;
+  const now = options.now ? Number(options.now()) : Date.now();
+  if (lastBrowseAt != null) {
+    const wait = pauseMs - (now - lastBrowseAt);
+    if (wait > 0) {
+      const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+      await sleep(wait);
+    }
+  }
+  lastBrowseAt = options.now ? Number(options.now()) : Date.now();
+}
+
+/**
+ * `IStoreBrowseService/GetItems` for one appid, English assets. Returns
+ * `{ libraryCapsule: { hash, file } | null, smallCapsuleHash: string | null }`
+ * or `null` when the store has no visible item (an honest «not found»).
+ *
+ * Throws `{ code: 'art_browse_unreachable' | 'art_browse_rate_limited' |
+ * 'art_browse_budget' }` for transport/breaker/budget failures, so the caller
+ * can defer instead of caching a negative verdict (AGENTS.md §1).
+ */
+async function fetchBrowseAssets(appid, options = {}) {
+  if (options.budget && !options.budget.take()) {
+    const err = new Error('art browse budget exhausted');
+    err.code = 'art_browse_budget';
+    throw err;
+  }
+  const breaker =
+    options.breaker ||
+    createBreaker({
+      now: options.now,
+      cooldownMs: () => sources.breakerMs('steamBrowse'),
+      read: () => gameCache.readBreaker(),
+      write: (state) => gameCache.writeBreaker(state),
+    });
+  const open = breaker.entry(BROWSE_BREAKER_KEY);
+  if (open) {
+    const err = new Error(`IStoreBrowseService is resting until ${open.until}`);
+    err.code = 'art_browse_rate_limited';
+    throw err;
+  }
+  await browsePause(options);
+  const input = encodeURIComponent(
+    JSON.stringify({
+      ids: [{ appid }],
+      context: { language: 'english', country_code: 'US' },
+      data_request: { include_assets: true },
+    })
+  );
+  let payload;
+  try {
+    payload = await fetchJson(`${BROWSE_URL}?input_json=${input}`, {
+      fetchImpl: options.fetch,
+      timeoutMs:
+        options.timeoutMs != null
+          ? options.timeoutMs
+          : sources.timeoutMs('steamBrowse'),
+      userAgent: sources.userAgent('steamBrowse'),
+      label: 'steam-browse',
+      retries: options.retries != null ? options.retries : 1,
+      sleep: options.sleep,
+    });
+  } catch (err) {
+    const status = Number(err && err.status) || 0;
+    if (status === 403 || status === 429 || (err && err.code === 'provider_rate_limited')) {
+      breaker.trip(BROWSE_BREAKER_KEY, {
+        reason: status === 429 ? '429 Too Many Requests' : 'HTTP 403',
+        untilMs: sources.breakerMs('steamBrowse'),
+      });
+      const out = new Error('IStoreBrowseService is rate limited');
+      out.code = 'art_browse_rate_limited';
+      throw out;
+    }
+    if (status === 404) return null;
+    const out = new Error('IStoreBrowseService is unreachable');
+    out.code = 'art_browse_unreachable';
+    out.cause = err;
+    throw out;
+  }
+  const items = payload && payload.response && payload.response.store_items;
+  const item = Array.isArray(items) ? items[0] : null;
+  if (!item || !item.assets) return null;
+  const assets = item.assets;
+  const capsuleMatch =
+    typeof assets.library_capsule === 'string' ? LIBRARY_CAPSULE_FILE_RE.exec(assets.library_capsule) : null;
+  const libraryCapsule = capsuleMatch
+    ? { hash: capsuleMatch[1], file: capsuleMatch[2] }
+    : null;
+  const iconHash =
+    typeof assets.community_icon === 'string' && HASH_RE.test(assets.community_icon)
+      ? assets.community_icon
+      : null;
+  const smallMatch =
+    typeof assets.small_capsule === 'string'
+      ? /^([A-Za-z0-9]{1,64})\/capsule_231x87\.jpg$/.exec(assets.small_capsule)
+      : null;
+  return {
+    libraryCapsule,
+    smallCapsuleHash: smallMatch ? smallMatch[1] : null,
+    communityIconHash: iconHash,
+  };
+}
+
+/**
+ * Resolve the real vertical capsule of one appid **once** and cache the
+ * answer in `cache-games/art/resolved/<appid>.json`.
+ *
+ * Order (each step stops on the first 200 image):
+ *   a) `library_600x900.jpg` under the asset hash of `appdetails.header_image`
+ *      / `capsule_image` (≤2 hashes) — the legacy filename in the new schema;
+ *   b) legacy `/steam/apps/<appid>/library_600x900.jpg`;
+ *   c) `IStoreBrowseService` → `assets.library_capsule` →
+ *      `<hash>/library_capsule.jpg` (the file name post-2024 SKUs actually
+ *      publish; live 03.11.2026 CONTROL Resonant 3669870: 200/56 KB);
+ *   d) SteamGridDB, only when a key is configured (see `steamgriddb.js`);
+ *   e) `none` — the client must not try the library chain again for this SKU.
+ *
+ * A network/5xx/429 failure on any step returns `{ kind: 'none',
+ * deferred: true }` and writes nothing: the next enrich run retries.
+ *
+ * Options (all injectable for tests): `fetch`, `timeoutMs`, `now`, `sleep`,
+ * `budget` (GetItems per-run counter), `sgdb` ({ key, budget, ... }),
+ * `force`.
+ */
+async function resolveVerticalArt(rawAppid, info = {}) {
+  const appid = Number(rawAppid);
+  if (!Number.isSafeInteger(appid) || appid <= 0) {
+    throw new Error(`resolveVerticalArt: invalid appid ${rawAppid}`);
+  }
+  const nowFn = typeof info.now === 'function' ? info.now : () => Number(info.now) || Date.now();
+  const cached = readResolvedArt(appid);
+  if (cached && !info.force && resolvedFresh(cached, nowFn())) {
+    return { ...cached, cached: true };
+  }
+
+  const fetchOptions = { fetch: info.fetch, timeoutMs: info.timeoutMs };
+  const hashes = [];
+  for (const url of [info.headerImage, info.capsuleImage]) {
+    const hash = assetHashFromUrl(url);
+    if (hash && !hashes.includes(hash)) hashes.push(hash);
+  }
+  let reachable = false;
+  let chosen = null;
+
+  // (a) the legacy filename under a known asset hash
+  for (const hash of hashes) {
+    const probe = await probeArt('library', appid, hash, fetchOptions);
+    if (probe.status > 0) reachable = true;
+    if (probe.ok) {
+      chosen = {
+        kind: 'library-hashed',
+        h: hash,
+        file: 'library_600x900.jpg',
+        proxyType: 'library',
+        matchedBy: 'header-hash',
+      };
+      break;
+    }
+  }
+
+  // (b) legacy hash-less path
+  if (!chosen) {
+    const probe = await probeArt('library', appid, null, fetchOptions);
+    if (probe.status > 0) reachable = true;
+    if (probe.ok) {
+      chosen = {
+        kind: 'library-legacy',
+        h: null,
+        file: 'library_600x900.jpg',
+        proxyType: 'library',
+        matchedBy: 'legacy',
+      };
+    }
+  }
+
+  // (c) the store-frontend asset map: the only source of the new-schema
+  // `library_capsule.jpg` hash.
+  let browse = null;
+  let browseDeferred = false;
+  if (!chosen) {
+    try {
+      browse = await fetchBrowseAssets(appid, info);
+    } catch (err) {
+      browseDeferred = true;
+    }
+    if (browse && browse.libraryCapsule) {
+      const probe = await probeArt(
+        'library_capsule',
+        appid,
+        browse.libraryCapsule.hash,
+        fetchOptions
+      );
+      if (probe.status > 0) reachable = true;
+      if (probe.ok) {
+        chosen = {
+          kind: 'library-hashed',
+          h: browse.libraryCapsule.hash,
+          file: 'library_capsule.jpg',
+          proxyType: 'library_capsule',
+          matchedBy: 'store-browse',
+        };
+      }
+    }
+  }
+
+  // A deferred lookup (network/429/budget) is not a verdict.
+  if (!chosen && (browseDeferred || (!reachable && !browse))) {
+    return {
+      schemaVersion: RESOLVED_SCHEMA_VERSION,
+      appid,
+      kind: 'none',
+      deferred: true,
+      resolvedAt: new Date(nowFn()).toISOString(),
+      smallIconFallback: smallIconFallbackOf(appid, {
+        capsule: assetHashFromUrl(info.capsuleImage),
+      }, browse),
+    };
+  }
+
+  // (d) SteamGridDB (optional, key-gated) for a genuinely missing capsule.
+  let sgdb = null;
+  if (!chosen && info.sgdb !== false) {
+    try {
+      const { resolveSteamGridDb } = require('./steamgriddb');
+      sgdb = await resolveSteamGridDb(appid, {
+        fetch: info.fetch,
+        key: info.sgdbKey,
+        budget: info.sgdbBudget,
+        breaker: info.sgdbBreaker,
+        timeoutMs: info.sgdbTimeoutMs,
+        sleep: info.sleep,
+        now: info.now,
+      });
+    } catch (err) {
+      sgdb = { status: 'deferred' };
+    }
+    if (sgdb && sgdb.status === 'deferred') {
+      return {
+        schemaVersion: RESOLVED_SCHEMA_VERSION,
+        appid,
+        kind: 'none',
+        deferred: true,
+        resolvedAt: new Date(nowFn()).toISOString(),
+        smallIconFallback: smallIconFallbackOf(appid, {
+          capsule: assetHashFromUrl(info.capsuleImage),
+        }, browse),
+      };
+    }
+  }
+
+  if (!chosen && sgdb && sgdb.status === 'found' && sgdb.url) {
+    chosen = {
+      kind: 'sgdb',
+      h: null,
+      file: null,
+      proxyType: null,
+      matchedBy: 'steamgriddb',
+      url: sgdb.url,
+    };
+  }
+
+  if (!chosen) {
+    chosen = {
+      kind: 'none',
+      h: null,
+      file: null,
+      proxyType: null,
+      matchedBy: sgdb && sgdb.status === 'skipped' ? 'sgdb_disabled' : 'not_found',
+    };
+  }
+
+  const doc = {
+    schemaVersion: RESOLVED_SCHEMA_VERSION,
+    appid,
+    kind: chosen.kind,
+    h: chosen.h || null,
+    file: chosen.file || null,
+    proxyType: chosen.proxyType || null,
+    url: chosen.url || null,
+    matchedBy: chosen.matchedBy || null,
+    source: chosen.kind === 'sgdb' ? 'steamgriddb' : 'steam-store',
+    smallIconFallback: smallIconFallbackOf(
+      appid,
+      { capsule: assetHashFromUrl(info.capsuleImage) },
+      browse
+    ),
+    resolvedAt: new Date(nowFn()).toISOString(),
+  };
+  try {
+    await saveResolvedArt(doc);
+  } catch (err) {
+    // A read-only cache (worktree) must not break enrichment.
+  }
+  return doc;
+}
+
 
 function metaPath(key) {
   return path.join(ART_DIR, `${key}.json`);
@@ -439,7 +872,12 @@ function createSteamArtHandler(options = {}) {
 
 module.exports = {
   ART_DIR,
+  RESOLVED_DIR,
   TTL_MS,
+  RESOLVED_TTL_MS,
+  RESOLVED_NONE_TTL_MS,
+  RESOLVED_SCHEMA_VERSION,
+  ART_PATH,
   MAX_ART_FILES,
   MAX_ART_BYTES,
   MAX_ART_ENTRY_BYTES,
@@ -451,11 +889,21 @@ module.exports = {
   HASH_RE,
   artCacheKey,
   upstreamCandidates,
+  resolverCandidates,
   isAllowedArtUrl,
+  assetHashFromUrl,
   readEntry,
   writeEntry,
   pruneArtCache,
   fetchUpstream,
   parseRequest,
   createSteamArtHandler,
+  // vertical-art resolve
+  readResolvedArt,
+  listResolvedArt,
+  saveResolvedArt,
+  resolvedFresh,
+  artProxyUrlFor,
+  fetchBrowseAssets,
+  resolveVerticalArt,
 };

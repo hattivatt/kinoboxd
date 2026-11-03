@@ -156,8 +156,15 @@ function fallbackStyle(name) {
 /** Steam capsule icon (46/88 px) with a deterministic initials fallback. */
 export function gameIconEl(game, { className = 'game-icon' } = {}) {
   const name = game && game.name ? game.name : '';
-  const url = game && game.iconUrl ? steamArtOrOriginal(game.iconUrl) : '';
-  if (!url) {
+  const urls = [];
+  const primary = gameArtUrl(game && game.iconUrl);
+  if (primary) urls.push(primary);
+  // The 32×32 community icon is missing (404) for some post-2024 SKUs even
+  // when `img_icon_url` is present (live 03.11.2026: 3669870). The resolved
+  // small capsule is the next real Steam artwork before the initials.
+  const fallback = gameArtUrl(providedIconFallback(game));
+  if (fallback && !urls.includes(fallback)) urls.push(fallback);
+  if (!urls.length) {
     return el('div', {
       class: `${className} game-icon-fallback`,
       style: fallbackStyle(name),
@@ -167,13 +174,19 @@ export function gameIconEl(game, { className = 'game-icon' } = {}) {
   }
   const img = el('img', {
     class: className,
-    src: url,
+    src: urls[0],
     alt: '',
     loading: 'lazy',
     decoding: 'async',
     referrerpolicy: 'no-referrer',
   });
+  let step = 0;
   img.addEventListener('error', () => {
+    step += 1;
+    if (step < urls.length) {
+      img.setAttribute('src', urls[step]);
+      return;
+    }
     img.replaceWith(el('div', {
       class: `${className} game-icon-fallback`,
       style: fallbackStyle(name),
@@ -189,6 +202,7 @@ const STEAM_ART_FILE_TYPES = {
   'header.jpg': 'header',
   'capsule_231x87.jpg': 'capsule',
   'library_600x900.jpg': 'library',
+  'library_capsule.jpg': 'library_capsule',
 };
 const STEAM_CDN_HOST = /(^|\.)(?:steamstatic\.com|steampowered\.com)$/i;
 
@@ -220,6 +234,24 @@ export function steamArtProxyUrl(type, appid, hashOrOptions) {
     : artHash(hashOrOptions);
   const suffix = hash ? `?h=${encodeURIComponent(hash)}` : '';
   return `${STEAM_ART_PATH}/${type}/${id}${suffix}`;
+}
+
+/** A server-built proxy path is already same-origin; anything else goes through the usual mapping. */
+function gameArtUrl(value) {
+  const url = value == null ? '' : String(value).trim();
+  if (/^\/api\/games\/steam-art\//.test(url)) return url;
+  return steamArtOrOriginal(url);
+}
+
+/**
+ * The `gamesIndex` row of this game's canonical work. Two editions of one work
+ * paint the same cover, so `primaryAppid` wins over the row's own appid.
+ */
+function indexEntryFor(game) {
+  const appid = positiveId(game && (game.primaryAppid ?? game.appid));
+  if (appid == null) return null;
+  const index = context.gamesIndex || {};
+  return index[appid] || index[String(appid)] || null;
 }
 
 /**
@@ -327,11 +359,46 @@ function pushUnique(urls, url) {
  * the payload's own `headerImage` is the second source for older payloads.
  */
 function providedHeaderImage(game) {
-  const appid = positiveId(game && (game.primaryAppid ?? game.appid));
-  const index = context.gamesIndex || {};
-  const entry = appid != null ? index[appid] || index[String(appid)] : null;
+  const entry = indexEntryFor(game);
   return httpUrl(entry && entry.headerImage)
     || httpUrl(game && (game.headerImage || (game.details && game.details.headerImage)));
+}
+
+/**
+ * Vertical capsule resolved by the server (`cache-games/art/resolved/`). The
+ * payload row wins; `gamesIndex` (same canonical appid) fills it for rows that
+ * only carry the header. A relative `/api/games/steam-art/...` path is the
+ * normal case; SteamGridDB rows are absolute https URLs.
+ */
+function providedVerticalCapsule(game) {
+  const own = gameArtUrl(game && game.verticalCapsule);
+  if (own) return own;
+  const entry = indexEntryFor(game);
+  return gameArtUrl(entry && entry.verticalCapsule);
+}
+
+/**
+ * `true` — a vertical capsule exists; `false` — the resolver asked Steam and
+ * there is none (do not retry the library chain); `null`/`undefined` — not
+ * resolved yet (legacy payload, keep the old chain).
+ */
+function verticalCapsuleKnownOf(game) {
+  const own = game && game.verticalCapsuleKnown;
+  if (own === true || own === false) return own;
+  const entry = indexEntryFor(game);
+  const value = entry && entry.verticalCapsuleKnown;
+  return value === true || value === false ? value : null;
+}
+
+/** Small-capsule proxy URL used when the 32×32 community icon is absent/404. */
+function providedIconFallback(game) {
+  const own = game && game.iconFallbackUrl;
+  if (own && /^\/api\/games\/steam-art\//.test(String(own).trim())) return String(own).trim();
+  const entry = indexEntryFor(game);
+  const value = entry && entry.iconFallbackUrl;
+  return value && /^\/api\/games\/steam-art\//.test(String(value).trim())
+    ? String(value).trim()
+    : '';
 }
 
 function providedCapsuleImage(game) {
@@ -416,8 +483,18 @@ export function gameVerticalCoverUrls(game) {
   const urls = [];
   const header = providedHeaderImage(game);
   const storeHash = steamAssetHashFromImageUrl(header);
-  if (appid && storeHash) urls.push(steamArtProxyUrl('library', appid, { h: storeHash }));
-  if (appid) urls.push(steamArtProxyUrl('library', appid));
+  // Server-resolved vertical capsule (one probe per appid on the enrich pass).
+  // When present it replaces the guessed library chain; when the resolver says
+  // `known: false` (Steam published no vertical art for this SKU) the library
+  // paths are not tried at all — every one of them would 404 on each render.
+  const vertical = providedVerticalCapsule(game);
+  const known = verticalCapsuleKnownOf(game);
+  if (vertical) {
+    pushUnique(urls, vertical);
+  } else if (known !== false) {
+    if (appid && storeHash) urls.push(steamArtProxyUrl('library', appid, { h: storeHash }));
+    if (appid) urls.push(steamArtProxyUrl('library', appid));
+  }
   if (header) pushUrl(urls, header);
   if (appid) pushUnique(urls, steamArtProxyUrl('header', appid));
   pushUrl(urls, providedCapsuleImage(game));

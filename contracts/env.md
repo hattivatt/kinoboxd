@@ -3,7 +3,7 @@
 
 Все имена переменных окружения, которые читает сервер (P9, план §3.5). Источник — `process.env.*`, поля `*Env` таблицы `server/core/sources.js` и алиасы `server/config.js`.
 
-Имён: **109**. Конвенция таблицы источников: `0` = «выключено», пустое/незаданное значение = значение по умолчанию (`server/core/sources.js`). Секреты не эхоятся: в отчётах только имя и источник.
+Имён: **119**. Конвенция таблицы источников: `0` = «выключено», пустое/незаданное значение = значение по умолчанию (`server/core/sources.js`). Секреты не эхоятся: в отчётах только имя и источник.
 
 ## Секреты и алиасы (`server/config.js`)
 
@@ -13,6 +13,7 @@
 | `hardcover` | `HARDCOVER_API_TOKEN`, `HARDCOVER_READ_TOKEN` | `config/hardcover-token` |
 | `gbooks` | `GB_API_KEY`, `BOOKS_GOOGLE_API_KEY` | `config/gbooks-token` |
 | `steam` | `STEAM_API_KEY` | `config/steam-token` |
+| `steamgriddb` | `STEAMGRIDDB_API_KEY` | `config/steamgriddb-token` |
 | ``server/games/personnel/moby.js` (key_ENV_KEYS)` | `MOBYGAMES_API_KEY`, `MOBY_API_KEY` | `app/config/moby-token` |
 
 ## Все переменные
@@ -32,7 +33,12 @@
 | `EPIC_CLIENT_ID` | `process.env.GAMES_EPIC_CLIENT_ID` (server/games/epic.js) | `server/games/epic.js:741` | const envId = process.env.EPIC_CLIENT_ID \|\| process.env.GAMES_EPIC_CLIENT_ID; |
 | `EPIC_CLIENT_SECRET` | `process.env.GAMES_EPIC_CLIENT_SECRET` (server/games/epic.js) | `server/games/epic.js:742` | const envSecret = process.env.EPIC_CLIENT_SECRET \|\| process.env.GAMES_EPIC_CLIENT_SECRET; |
 | `GAMES_ACHIEVEMENTS_TTL_MS` | см. файл | `server/games/game-cache.js:191` | const raw = Number(process.env.GAMES_ACHIEVEMENTS_TTL_MS); |
+| `GAMES_ART_TTL_MS` | ttlMs = 15552000000 ms (180 d) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | ttlEnv: 'GAMES_ART_TTL_MS', |
 | `GAMES_BASE_DETAILS_BUDGET` | `20 (DEFAULT_BASE_DETAILS_BUDGET)` (server/games/franchise.js) | `server/games/franchise.js:1094` | return budgetLimitFromEnv('GAMES_BASE_DETAILS_BUDGET', DEFAULT_BASE_DETAILS_BUDGET); |
+| `GAMES_BROWSE_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | breakerEnv: 'GAMES_BROWSE_BREAKER_MS', |
+| `GAMES_BROWSE_BUDGET` | budget = 340 (0 = off) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | budgetEnv: 'GAMES_BROWSE_BUDGET', |
+| `GAMES_BROWSE_PAUSE_MS` | pauseMs = 150 ms (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | The per-asset hash of the new-schema vertical capsule is published only by the store-frontend method `IStoreBrowseService/GetItems` (no key). One request per appid per 180-day resolve, 150 ms apart. |
+| `GAMES_BROWSE_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | timeoutEnv: 'GAMES_BROWSE_TIMEOUT_MS', |
 | `GAMES_EPIC_ACCOUNT_HOST` | `account-public-service-prod03.ol.epicgames.com (ACCOUNT_HOST)` (server/games/epic.js) | `server/games/epic.js:789` | const accountHost = options.accountHost \|\| process.env.GAMES_EPIC_ACCOUNT_HOST \|\| ACCOUNT_HOST; |
 | `GAMES_EPIC_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`epic`) | `server/core/sources.js` (epic) | breakerEnv: 'GAMES_EPIC_BREAKER_MS', |
 | `GAMES_EPIC_CATALOG_HOST` | `catalog-public-service-prod06.ol.epicgames.com (CATALOG_HOST)` (server/games/epic.js) | `server/games/epic.js:795` | const catalogHost = options.catalogHost \|\| process.env.GAMES_EPIC_CATALOG_HOST \|\| CATALOG_HOST; |
@@ -68,7 +74,7 @@
 | `GAMES_REVIEWS_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`steamReviews`) | `server/core/sources.js` (steamReviews) | breakerEnv: 'GAMES_REVIEWS_BREAKER_MS', |
 | `GAMES_REVIEWS_BUDGET` | budget = 340 (0 = off) (`steamReviews`) | `server/core/sources.js` (steamReviews) | budgetEnv: 'GAMES_REVIEWS_BUDGET', |
 | `GAMES_REVIEWS_PAUSE_MS` | pauseMs = 1700 ms (`steamReviews`) | `server/core/sources.js` (steamReviews) | pauseEnv: 'GAMES_REVIEWS_PAUSE_MS', |
-| `GAMES_REVIEWS_RECHECK_DAYS` | см. файл | `server/games/enrich.js:127` | recheckEnv: 'GAMES_REVIEWS_RECHECK_DAYS', |
+| `GAMES_REVIEWS_RECHECK_DAYS` | см. файл | `server/games/enrich.js:128` | recheckEnv: 'GAMES_REVIEWS_RECHECK_DAYS', |
 | `GAMES_REVIEWS_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`steamReviews`) | `server/core/sources.js` (steamReviews) | timeoutEnv: 'GAMES_REVIEWS_TIMEOUT_MS', |
 | `GAMES_REVIEWS_TTL_MS` | ttlMs = 2592000000 ms (30 d) (`steamReviews`) | `server/core/sources.js` (steamReviews) | ttlEnv: 'GAMES_REVIEWS_TTL_MS', |
 | `GAMES_SECONDARY_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`secondary`) | `server/core/sources.js` (secondary) | breakerEnv: 'GAMES_SECONDARY_BREAKER_MS', |
@@ -82,10 +88,14 @@
 | `GAMES_SECONDARY_PROBE_TTL_MS` | `604800000 ms (7 d) (DEFAULT_PROBE_TTL_MS)` (server/games/secondary/store.js) | `server/games/secondary/store.js:95` | return envMs('GAMES_SECONDARY_PROBE_TTL_MS', DEFAULT_PROBE_TTL_MS); |
 | `GAMES_SECONDARY_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`secondary`) | `server/core/sources.js` (secondary) | timeoutEnv: 'GAMES_SECONDARY_TIMEOUT_MS', |
 | `GAMES_SECONDARY_TTL_MS` | ttlMs = 2592000000 ms (30 d) (`secondary`) | `server/core/sources.js` (secondary) | ttlEnv: 'GAMES_SECONDARY_TTL_MS', |
+| `GAMES_SGDB_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`steamGridDb`) | `server/core/sources.js` (steamGridDb) | breakerEnv: 'GAMES_SGDB_BREAKER_MS', |
+| `GAMES_SGDB_BUDGET` | budget = 50 (0 = off) (`steamGridDb`) | `server/core/sources.js` (steamGridDb) | budgetEnv: 'GAMES_SGDB_BUDGET', |
+| `GAMES_SGDB_PAUSE_MS` | pauseMs = 1000 ms (1 s) (`steamGridDb`) | `server/core/sources.js` (steamGridDb) | Optional community grids for SKUs Steam publishes no vertical capsule for. Without `STEAMGRIDDB_API_KEY` the provider is skipped silently. |
+| `GAMES_SGDB_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`steamGridDb`) | `server/core/sources.js` (steamGridDb) | timeoutEnv: 'GAMES_SGDB_TIMEOUT_MS', |
 | `GAMES_SPY_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`steamSpy`) | `server/core/sources.js` (steamSpy) | breakerEnv: 'GAMES_SPY_BREAKER_MS', |
 | `GAMES_SPY_BUDGET` | budget = 340 (0 = off) (`steamSpy`) | `server/core/sources.js` (steamSpy) | budgetEnv: 'GAMES_SPY_BUDGET', |
 | `GAMES_SPY_PAUSE_MS` | pauseMs = 1100 ms (`steamSpy`) | `server/core/sources.js` (steamSpy) | pauseEnv: 'GAMES_SPY_PAUSE_MS', |
-| `GAMES_SPY_RECHECK_DAYS` | см. файл | `server/games/enrich.js:109` | recheckEnv: 'GAMES_SPY_RECHECK_DAYS', |
+| `GAMES_SPY_RECHECK_DAYS` | см. файл | `server/games/enrich.js:110` | recheckEnv: 'GAMES_SPY_RECHECK_DAYS', |
 | `GAMES_SPY_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`steamSpy`) | `server/core/sources.js` (steamSpy) | timeoutEnv: 'GAMES_SPY_TIMEOUT_MS', |
 | `GAMES_SPY_TTL_MS` | ttlMs = 2592000000 ms (30 d) (`steamSpy`) | `server/core/sources.js` (steamSpy) | ttlEnv: 'GAMES_SPY_TTL_MS', |
 | `GAMES_STEAM_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`steam`); breakerMs = 1800000 ms (30 min) (`steamCommunity`) | `server/core/sources.js` (steam, steamCommunity) | breakerEnv: 'GAMES_STEAM_BREAKER_MS', |
@@ -96,7 +106,7 @@
 | `GAMES_STORE_BUDGET` | budget = 340 (0 = off) (`steamStore`) | `server/core/sources.js` (steamStore) | budgetEnv: 'GAMES_STORE_BUDGET', |
 | `GAMES_STORE_CC` | `''` (server/games/store.js) | `server/games/store.js:446` | const cc = String(process.env.GAMES_STORE_CC \|\| '').trim(); |
 | `GAMES_STORE_PAUSE_MS` | pauseMs = 1700 ms (`steamStore`) | `server/core/sources.js` (steamStore) | pauseEnv: 'GAMES_STORE_PAUSE_MS', |
-| `GAMES_STORE_RECHECK_DAYS` | см. файл | `server/games/enrich.js:82` | recheckEnv: 'GAMES_STORE_RECHECK_DAYS', |
+| `GAMES_STORE_RECHECK_DAYS` | см. файл | `server/games/enrich.js:83` | recheckEnv: 'GAMES_STORE_RECHECK_DAYS', |
 | `GAMES_STORE_TTL_MS` | ttlMs = 15552000000 ms (180 d) (`steamStore`) | `server/core/sources.js` (steamStore) | ttlEnv: 'GAMES_STORE_TTL_MS', |
 | `GB_API_KEY` | env или файл `config/gbooks-token` (значение не эхоится) | `server/config.js` (gbooks) | const GBOOKS_ENV_KEYS = ['GB_API_KEY', 'BOOKS_GOOGLE_API_KEY']; |
 | `GOG_CLIENT_ID` | см. файл | `server/games/gog.js:287` | const envId = process.env.GOG_CLIENT_ID; |
@@ -125,6 +135,7 @@
 | `REMATCH_DRY_RUN` | см. файл | `server/rematch.js:40` | const DRY_RUN = process.env.REMATCH_DRY_RUN === '1'; |
 | `SMOKE_TMP` | см. файл | `scripts/smoke-preload.js:21` | const outDir = process.env.SMOKE_TMP; |
 | `STEAM_API_KEY` | env или файл `config/steam-token` (значение не эхоится) | `server/config.js` (steam) | const STEAM_ENV_KEYS = ['STEAM_API_KEY']; |
+| `STEAMGRIDDB_API_KEY` | env или файл `config/steamgriddb-token` (значение не эхоится) | `server/config.js` (steamgriddb) | const STEAMGRIDDB_ENV_KEYS = ['STEAMGRIDDB_API_KEY']; |
 | `TMDB_API_BASE` | `'https://api.themoviedb.org/3'` (server/tmdb.js) | `server/tmdb.js:11` | `TMDB_API_BASE` lets a local backfill use TMDB's alternate API host when the canonical `api.themoviedb.org` endpoint is blocked by the network. Production keeps the documented default. |
 | `TMDB_API_TOKEN` | env или файл `config/tmdb-token` (значение не эхоится) | `server/config.js` (tmdb) | const ENV_KEYS = ['TMDB_API_TOKEN', 'TMDB_READ_ACCESS_TOKEN']; |
 | `WIKIDATA_REFRESH` | см. файл | `server/wikidata.js:740` | options.force === true \|\| String(process.env.WIKIDATA_REFRESH \|\| '') === '1'; |

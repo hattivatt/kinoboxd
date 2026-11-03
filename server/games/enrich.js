@@ -55,6 +55,7 @@ const { createJobs } = require('../core/jobs');
 const steam = require('./steam');
 const store = require('./store');
 const spy = require('./spy');
+const steamArt = require('./steam-art');
 const { createBudget: createBudgetImpl, budgetLimitFromEnv: budgetLimitFromEnvImpl } = require('../core/budget');
 const sources = require('../core/sources');
 
@@ -252,6 +253,10 @@ function emptyPhase(name) {
     skippedFresh: null,
     healCandidates: null,
     healed: 0,
+    artCandidates: null,
+    artResolved: 0,
+    artNone: 0,
+    artDeferred: 0,
     ok: 0,
     unavailable: 0,
     deferred: 0,
@@ -283,6 +288,14 @@ function publicPhase(phase) {
     skippedFresh: phase.skippedFresh,
     healCandidates: phase.healCandidates,
     healed: phase.healed,
+    artCandidates: phase.artCandidates,
+    artResolved: phase.artResolved,
+    artNone: phase.artNone,
+    artDeferred: phase.artDeferred,
+    artCandidates: phase.artCandidates,
+    artResolved: phase.artResolved,
+    artNone: phase.artNone,
+    artDeferred: phase.artDeferred,
     ok: phase.ok,
     unavailable: phase.unavailable,
     deferred: phase.deferred,
@@ -429,6 +442,100 @@ function phaseCoverage(spec, appids) {
 /* One phase                                                           */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Vertical-art resolve (details phase, one pass per appid)            */
+/* ------------------------------------------------------------------ */
+
+function artBrowseBudgetLimit() {
+  const spec = sources.SOURCES.steamBrowse;
+  return budgetLimitFromEnvImpl(spec.budgetEnv, spec.budgetDefault);
+}
+
+/**
+ * The resolver the details phase uses. Production talks to the public Steam
+ * CDN/store-frontend API; a test must opt in explicitly (`artResolver` or a
+ * `fetch`), so the suite never opens a socket. `artResolve: false` disables the
+ * sweep entirely.
+ */
+function artResolverFor(options) {
+  if (options.artResolve === false) return null;
+  if (typeof options.artResolver === 'function') return options.artResolver;
+  if (options.artResolver && typeof options.artResolver.resolve === 'function') {
+    return options.artResolver.resolve.bind(options.artResolver);
+  }
+  const passThrough = (appid, info) =>
+    steamArt.resolveVerticalArt(appid, {
+      ...info,
+      fetch: options.fetch,
+      sleep: options.sleep,
+      now: options.now,
+      sgdbKey: options.sgdbKey,
+    });
+  if (typeof options.fetch === 'function') return passThrough;
+  // A unit test that does not inject a resolver must not accidentally hit the
+  // live Steam CDN: under `node --test` the test file itself is `require.main`.
+  const mainFile = require.main && require.main.filename ? require.main.filename : '';
+  if (/\.test\.js$/.test(mainFile)) return null;
+  return passThrough;
+}
+
+/**
+ * Resolve the vertical capsule for every library appid whose `details`
+ * document carries `header_image` and whose resolve document is missing or
+ * older than its TTL (180 days positive / 30 days `none`). One pass per
+ * appid; the result lives in `cache-games/art/resolved/<appid>.json`.
+ *
+ * Counters are additive on the phase: `artCandidates`, `artResolved`,
+ * `artNone`, `artDeferred`. A deferred lookup is not a verdict and is retried
+ * on the next run.
+ */
+async function resolveArtForLibrary(job, phase, appids, options = {}) {
+  const resolver = artResolverFor(options);
+  if (!resolver) return;
+  const now = Date.now();
+  const candidates = [];
+  for (const appid of appids) {
+    const doc = gameCache.getDetails(appid);
+    if (!doc || !doc.headerImage) continue;
+    const resolved = steamArt.readResolvedArt(appid);
+    if (resolved && !options.forceArt && steamArt.resolvedFresh(resolved, now)) continue;
+    candidates.push({ appid, doc });
+  }
+  phase.artCandidates = candidates.length;
+  if (!candidates.length) return;
+
+  const browseBudget = createBudgetImpl(
+    artBrowseBudgetLimit(),
+    sources.SOURCES.steamBrowse.budgetDefault
+  );
+  const sgdbSpec = sources.SOURCES.steamGridDb;
+  const sgdbBudget = createBudgetImpl(
+    budgetLimitFromEnvImpl(sgdbSpec.budgetEnv, sgdbSpec.budgetDefault),
+    sgdbSpec.budgetDefault
+  );
+
+  for (const { appid, doc } of candidates) {
+    try {
+      const resolved = await resolver(appid, {
+        headerImage: doc.headerImage,
+        capsuleImage: doc.capsuleImage || null,
+        budget: browseBudget,
+        sgdbBudget,
+      });
+      if (!resolved || resolved.deferred) {
+        phase.artDeferred++;
+      } else if (resolved.kind === 'none') {
+        phase.artNone++;
+      } else {
+        phase.artResolved++;
+      }
+    } catch (err) {
+      phase.artDeferred++;
+      if (!job.errors.includes('art_resolve_error')) job.errors.push('art_resolve_error');
+    }
+  }
+}
+
 /**
  * Run one phase. Pure-ish: all I/O goes through gameCache / the injected
  * client, so tests never touch the network.
@@ -521,6 +628,7 @@ async function runPhase(job, phaseName, scope, options) {
     const coverage = phaseCoverage(spec, appids);
     phase.resolved = coverage.resolved;
     phase.percent = coverage.percent;
+    if (phaseName === 'details') await resolveArtForLibrary(job, phase, appids, options);
     phase.elapsedMs = Date.now() - startedAt;
     return phase;
   }
@@ -612,6 +720,10 @@ async function runPhase(job, phaseName, scope, options) {
       skippedFresh: phase.skippedFresh,
       healCandidates: phase.healCandidates,
       healed: phase.healed,
+    artCandidates: phase.artCandidates,
+    artResolved: phase.artResolved,
+    artNone: phase.artNone,
+    artDeferred: phase.artDeferred,
       budgetRemaining: budget.remaining,
       attempted: [...attempted],
       deferredAppids: [...deferredAppids],
@@ -626,6 +738,7 @@ async function runPhase(job, phaseName, scope, options) {
 
   phase.remaining = stale.length - selected.length + phase.deferred;
   phase.budgetRemaining = budget.remaining;
+  if (phaseName === 'details') await resolveArtForLibrary(job, phase, appids, options);
   phase.stage = 'done';
   phase.status = 'done';
   phase.percent = 100;
@@ -649,6 +762,14 @@ async function runPhase(job, phaseName, scope, options) {
     skippedFresh: phase.skippedFresh,
     healCandidates: phase.healCandidates,
     healed: phase.healed,
+    artCandidates: phase.artCandidates,
+    artResolved: phase.artResolved,
+    artNone: phase.artNone,
+    artDeferred: phase.artDeferred,
+    artCandidates: phase.artCandidates,
+    artResolved: phase.artResolved,
+    artNone: phase.artNone,
+    artDeferred: phase.artDeferred,
     ok: phase.ok,
     unavailable: phase.unavailable,
     deferred: phase.deferred,
@@ -678,6 +799,10 @@ async function runPhase(job, phaseName, scope, options) {
     skippedFresh: phase.skippedFresh,
     healCandidates: phase.healCandidates,
     healed: phase.healed,
+    artCandidates: phase.artCandidates,
+    artResolved: phase.artResolved,
+    artNone: phase.artNone,
+    artDeferred: phase.artDeferred,
     budgetRemaining: budget.remaining,
     attempted: [...attempted],
     deferredAppids: [...deferredAppids],
