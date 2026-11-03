@@ -18,8 +18,10 @@
  *     assets.library_capsule = <hash>/library_capsule.jpg
  *     <hash>/library_capsule.jpg                    200/56 KB
  *
- * The resolver must therefore try the briefed chain first, then the
- * store-frontend asset map, and cache a negative answer for 30 days.
+ * The resolver therefore probes one hashed `library_600x900.jpg` and, on a
+ * 404, goes straight to the store-frontend asset map; the hash-less legacy
+ * path is only kept for old-schema SKUs, where it is the primary source.
+ * A negative answer is cached for 30 days.
  *
  * No live request: every `fetch` is injected.
  */
@@ -112,6 +114,10 @@ function clearResolved() {
 }
 
 const isBrowse = (url) => url.includes('IStoreBrowseService');
+// The legacy hash-less path — the one the new schema must never spend a
+// request on. A hashed URL contains `store_item_assets/steam/apps/<id>/<hash>/`
+// and therefore cannot match.
+const isLegacyLibrary = (url) => /\/steam\/apps\/\d+\/library_600x900\.jpg$/.test(url);
 
 /* =========================================================
    1. hashed / legacy / store-frontend / none
@@ -142,22 +148,23 @@ test('resolve: hashed library_600x900 under header_image wins (legacy SKUs in th
   );
 });
 
-test('resolve: hashed 404 → legacy library_600x900.jpg', async () => {
+test('resolve: legacy-scheme header → legacy library_600x900.jpg, no GetItems', async () => {
   clearResolved();
+  const legacyHeader = `https://cdn.cloudflare.steamstatic.com/steam/apps/${APPID}/header.jpg?t=1793357289`;
   const fetchImpl = recordingFetch(async (url) => {
     if (isBrowse(url)) return json(500, {});
-    return url.includes('/steam/apps/') && !url.includes('store_item_assets')
-      ? binary(200)
-      : binary(404, 'nope');
+    return isLegacyLibrary(url) ? binary(200) : binary(404, 'nope');
   });
   const doc = await art.resolveVerticalArt(APPID, {
-    headerImage: HEADER,
+    headerImage: legacyHeader,
     fetch: fetchImpl,
   });
   assert.equal(doc.kind, 'library-legacy');
   assert.equal(doc.h, null);
+  assert.equal(doc.matchedBy, 'legacy');
   assert.equal(art.artProxyUrlFor(doc), `/api/games/steam-art/library/${APPID}`);
-  assert.equal(fetchImpl.calls.length, 3, 'two hashed hosts 404, first legacy host 200');
+  assert.equal(fetchImpl.calls.length, 1, 'first legacy host 200, no hashed probe, no GetItems');
+  assert.ok(!fetchImpl.calls.some(isBrowse), 'the legacy path never asks the store frontend');
 });
 
 test('resolve: GetItems library_capsule fixes CONTROL Resonant (no library_600x900 anywhere)', async () => {
@@ -193,6 +200,14 @@ test('resolve: GetItems library_capsule fixes CONTROL Resonant (no library_600x9
     `/api/games/steam-art/capsule/${APPID}?h=${CAPSULE_HASH}`
   );
   assert.ok(fetchImpl.calls.some(isBrowse), 'the store-frontend asset map was asked');
+  assert.ok(
+    !fetchImpl.calls.some(isLegacyLibrary),
+    'the new schema never probes the hash-less legacy path'
+  );
+  // One hashed `library_600x900.jpg` probe (single host), one GetItems call,
+  // one 200 for the published capsule: the two guaranteed-404 legacy requests
+  // are gone.
+  assert.equal(fetchImpl.calls.length, 3);
 });
 
 test('resolve: every path 404 and GetItems without library_capsule → none, small icon still points at the capsule', async () => {
