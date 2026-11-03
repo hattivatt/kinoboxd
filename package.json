@@ -16,6 +16,7 @@
     "backfill:manga": "node server/books/manga-backfill.js",
     "backfill:years": "node server/books/years-backfill.js",
     "backfill:authors": "node server/books/authors-backfill.js",
+    "gen:contracts": "node scripts/gen-contracts.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {
