@@ -69,6 +69,10 @@ function detailDoc(appid, name) {
     dlc: [],
     dlcCount: 0,
     metadataSource: 'steam-store',
+    // Complete enough that the enrich `heal` phase does not re-fetch it
+    // (`heal.missing` is `success && !headerImage`); without this the test
+    // reaches store.steampowered.com and the personnel pass sees no details.
+    headerImage: 'https://cdn.example.invalid/header.jpg',
   };
 }
 
@@ -210,6 +214,9 @@ test('import kicks enrich, then personnel: the composer role is filled', async (
   });
   assert.equal(job.reused, true, 'a fresh cached library is reused');
   await importJobs.whenIdle();
+  // The personnel pass waits for the store enrich internally; under a loaded
+  // full-suite run the enrich job may still be in flight here.
+  await enrichJobs.whenIdle();
   await personnelJobs.whenIdle();
 
   const imported = importJobs.getStatus(job.jobId);
