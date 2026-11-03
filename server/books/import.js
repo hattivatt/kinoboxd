@@ -560,11 +560,6 @@ function undatedCount(events) {
   ).length;
 }
 
-/** Dated (exact day) events of a LiveLib profile. */
-function deepCount(profile) {
-  return profile.events.filter((event) => event && event.finishedAt).length;
-}
-
 function percentOf(page, pageTotal) {
   const done = Number(page);
   const total = Number(pageTotal);

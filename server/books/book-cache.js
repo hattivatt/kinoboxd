@@ -31,7 +31,6 @@
  */
 
 const fs = require('fs');
-const fsp = fs.promises;
 const path = require('path');
 
 const BOOK_CACHE_DIR = process.env.KINOBOXD_CACHE_BOOK_DIR
@@ -86,43 +85,64 @@ function writeJsonAtomicSync(filePath, data) {
   return fsStore.writeJsonAtomicSync(filePath, data);
 }
 
+/**
+ * Fingerprint-checked one-document-per-key cache.
+ *
+ * Every `get` revalidates the memory entry with one stat() (module header) and
+ * falls back to a fresh read; every `save` writes atomically and refreshes the
+ * entry. Profiles, details, links and resolve-state each carried the same loop
+ * verbatim; `keyOf`/`pathOf`/`accept` are the only per-document parts.
+ */
+function createDocCache({ keyOf, pathOf, accept }) {
+  const memory = new Map();
+  return {
+    get(...args) {
+      const key = keyOf(...args);
+      const filePath = pathOf(...args);
+      const cached = memory.get(key);
+      if (cached && fingerprintOf(cached.path) === cached.fingerprint) return cached.data;
+      if (cached) memory.delete(key);
+      const found = readJsonWithFingerprint(filePath);
+      if (!found || (accept && !accept(found.data))) return null;
+      memory.set(key, { data: found.data, path: filePath, fingerprint: found.fingerprint });
+      return found.data;
+    },
+    async save(data, ...args) {
+      const key = keyOf(...args);
+      const filePath = pathOf(...args);
+      const fingerprint = await writeJsonAtomic(filePath, data);
+      memory.set(key, { data, path: filePath, fingerprint });
+      return filePath;
+    },
+    clear() {
+      memory.clear();
+    },
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* Profiles: one file per (source, userKey)                            */
 /* ------------------------------------------------------------------ */
-
-const profileMemory = new Map(); // "source:userKey" -> { data, path, fingerprint }
 
 function profilePath(source, userKey) {
   return path.join(PROFILES_DIR, `${safeKey(source)}-${safeKey(userKey)}.json`);
 }
 
-function profileMemoryKey(source, userKey) {
-  return `${source}:${userKey}`;
-}
+const profileDocs = createDocCache({
+  keyOf: (source, userKey) => `${source}:${userKey}`,
+  pathOf: profilePath,
+});
 
 /**
  * Cached reading profile of one source. Returns the parsed document or null.
  * The memory entry is only trusted while its fingerprint still matches.
  */
 function getProfile(source, userKey) {
-  const filePath = profilePath(source, userKey);
-  const memoryKey = profileMemoryKey(source, userKey);
-  const cached = profileMemory.get(memoryKey);
-  if (cached && fingerprintOf(cached.path) === cached.fingerprint) {
-    return cached.data;
-  }
-  if (cached) profileMemory.delete(memoryKey);
-  const found = readJsonWithFingerprint(filePath);
-  if (!found) return null;
-  profileMemory.set(memoryKey, { data: found.data, path: filePath, fingerprint: found.fingerprint });
-  return found.data;
+  return profileDocs.get(source, userKey);
 }
 
 async function saveProfile(source, userKey, data) {
-  const filePath = profilePath(source, userKey);
-  const fingerprint = await writeJsonAtomic(filePath, data);
-  profileMemory.set(profileMemoryKey(source, userKey), { data, path: filePath, fingerprint });
-  return filePath;
+  return profileDocs.save(data, source, userKey);
 }
 
 /** All cached profiles, tolerant to individual broken files. */
@@ -171,8 +191,6 @@ function listProfiles() {
 /* Details: cache-book/details/{hcWorkId}.json                         */
 /* ------------------------------------------------------------------ */
 
-const detailsMemory = new Map(); // "123" -> { data, path, fingerprint }
-
 function detailsPath(hcWorkId) {
   return path.join(DETAILS_DIR, `${safeKey(hcWorkId)}.json`);
 }
@@ -190,20 +208,17 @@ function detailsKeyForWork(workId) {
   return safeKey(value.replace(':', '-'));
 }
 
+const detailDocs = createDocCache({
+  keyOf: (hcWorkId) => String(hcWorkId),
+  pathOf: (hcWorkId) => detailsPath(String(hcWorkId)),
+});
+
 function getWorkDetails(workId) {
   return getDetails(detailsKeyForWork(workId));
 }
 
 function getDetails(hcWorkId) {
-  const key = String(hcWorkId);
-  const filePath = detailsPath(key);
-  const cached = detailsMemory.get(key);
-  if (cached && fingerprintOf(cached.path) === cached.fingerprint) return cached.data;
-  if (cached) detailsMemory.delete(key);
-  const found = readJsonWithFingerprint(filePath);
-  if (!found) return null;
-  detailsMemory.set(key, { data: found.data, path: filePath, fingerprint: found.fingerprint });
-  return found.data;
+  return detailDocs.get(hcWorkId);
 }
 
 function hasDetails(hcWorkId) {
@@ -211,39 +226,28 @@ function hasDetails(hcWorkId) {
 }
 
 async function saveDetails(hcWorkId, data) {
-  const filePath = detailsPath(hcWorkId);
-  const fingerprint = await writeJsonAtomic(filePath, data);
-  detailsMemory.set(String(hcWorkId), { data, path: filePath, fingerprint });
-  return filePath;
+  return detailDocs.save(data, hcWorkId);
 }
 
 /* ------------------------------------------------------------------ */
 /* Cross-source links: cache-book/links/{livelibBookId}.json           */
 /* ------------------------------------------------------------------ */
 
-const linkMemory = new Map(); // livelibBookId -> { data, path, fingerprint }
-
 function linkPath(livelibBookId) {
   return path.join(LINKS_DIR, `${safeKey(livelibBookId)}.json`);
 }
 
+const linkDocs = createDocCache({
+  keyOf: (livelibBookId) => String(livelibBookId),
+  pathOf: (livelibBookId) => linkPath(String(livelibBookId)),
+});
+
 function getLink(livelibBookId) {
-  const key = String(livelibBookId);
-  const filePath = linkPath(key);
-  const cached = linkMemory.get(key);
-  if (cached && fingerprintOf(cached.path) === cached.fingerprint) return cached.data;
-  if (cached) linkMemory.delete(key);
-  const found = readJsonWithFingerprint(filePath);
-  if (!found) return null;
-  linkMemory.set(key, { data: found.data, path: filePath, fingerprint: found.fingerprint });
-  return found.data;
+  return linkDocs.get(livelibBookId);
 }
 
 async function saveLink(livelibBookId, data) {
-  const filePath = linkPath(livelibBookId);
-  const fingerprint = await writeJsonAtomic(filePath, data);
-  linkMemory.set(String(livelibBookId), { data, path: filePath, fingerprint });
-  return filePath;
+  return linkDocs.save(data, livelibBookId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -306,10 +310,7 @@ let indexSaving = Promise.resolve();
 
 async function writeIndexNow() {
   refreshIndexIfChanged();
-  const tmp = `${INDEX_PATH}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(index), 'utf8');
-  await fsp.rename(tmp, INDEX_PATH);
-  indexFingerprint = fingerprintOf(INDEX_PATH);
+  indexFingerprint = await writeJsonAtomic(INDEX_PATH, index);
   for (const [key, value] of indexPending) {
     if (index[key] === value) indexPending.delete(key);
   }
@@ -335,10 +336,7 @@ function persistIndex() {
 function flushIndex() {
   try {
     refreshIndexIfChanged();
-    const tmp = `${INDEX_PATH}.${process.pid}.flush.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(index), 'utf8');
-    fs.renameSync(tmp, INDEX_PATH);
-    indexFingerprint = fingerprintOf(INDEX_PATH);
+    indexFingerprint = writeJsonAtomicSync(INDEX_PATH, index);
     indexPending.clear();
   } catch (err) {
     console.error(`[book-cache] Failed to flush index.json: ${err.message}`);
@@ -405,14 +403,10 @@ function setWorkLink(workId, value) {
         .then(() => {
           if (linksPending.size === 0) return null;
           refreshLinksIfChanged();
-          const tmp = `${LINKS_JSON_PATH}.${process.pid}.${Date.now()}.tmp`;
-          return fsp
-            .writeFile(tmp, JSON.stringify(links), 'utf8')
-            .then(() => fsp.rename(tmp, LINKS_JSON_PATH))
-            .then(() => {
-              linksFingerprint = fingerprintOf(LINKS_JSON_PATH);
-              linksPending.clear();
-            });
+          return writeJsonAtomic(LINKS_JSON_PATH, links).then((fingerprint) => {
+            linksFingerprint = fingerprint;
+            linksPending.clear();
+          });
         })
         .catch((err) => {
           console.error(`[book-cache] Failed to save links.json: ${err.message}`);
@@ -428,8 +422,7 @@ function flushLinks() {
   try {
     refreshLinksIfChanged();
     if (linksPending.size === 0) return;
-    writeJsonAtomicSync(LINKS_JSON_PATH, links);
-    linksFingerprint = fingerprintOf(LINKS_JSON_PATH);
+    linksFingerprint = writeJsonAtomicSync(LINKS_JSON_PATH, links);
     linksPending.clear();
   } catch (err) {
     console.error(`[book-cache] Failed to flush links.json: ${err.message}`);
@@ -627,13 +620,6 @@ function getYearOverrides(source, userKey) {
   refreshYearOverridesIfChanged(source, userKey);
   const cached = yearOverridesMemory.get(`${source}:${userKey}`);
   return cached ? cached.data.overrides : {};
-}
-
-/** One override entry or null. */
-function getYearOverride(source, userKey, workId) {
-  const overrides = getYearOverrides(source, userKey);
-  const key = String(workId == null ? '' : workId);
-  return Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : null;
 }
 
 function enqueueYearOverridesWrite(task) {
@@ -847,25 +833,18 @@ function resolveStatePath(source, userKey) {
   return path.join(RESOLVE_STATE_DIR, `${safeKey(source)}-${safeKey(userKey)}.json`);
 }
 
-const resolveStateMemory = new Map();
+const resolveStateDocs = createDocCache({
+  keyOf: (source, userKey) => `${source}:${userKey}`,
+  pathOf: resolveStatePath,
+  accept: (data) => Boolean(data) && typeof data === 'object',
+});
 
 function getResolveState(source, userKey) {
-  const key = `${source}:${userKey}`;
-  const filePath = resolveStatePath(source, userKey);
-  const cached = resolveStateMemory.get(key);
-  if (cached && fingerprintOf(cached.path) === cached.fingerprint) return cached.data;
-  if (cached) resolveStateMemory.delete(key);
-  const found = readJsonWithFingerprint(filePath);
-  if (!found || !found.data || typeof found.data !== 'object') return null;
-  resolveStateMemory.set(key, { data: found.data, path: filePath, fingerprint: found.fingerprint });
-  return found.data;
+  return resolveStateDocs.get(source, userKey);
 }
 
 async function saveResolveState(source, userKey, data) {
-  const filePath = resolveStatePath(source, userKey);
-  const fingerprint = await writeJsonAtomic(filePath, data);
-  resolveStateMemory.set(`${source}:${userKey}`, { data, path: filePath, fingerprint });
-  return filePath;
+  return resolveStateDocs.save(data, source, userKey);
 }
 
 /** Append one broad-match audit record. Never throws into the job. */
@@ -880,9 +859,10 @@ function appendMatchLog(entry) {
 
 /** Drop all memory caches (tests). Disk files are untouched. */
 function clearMemory() {
-  profileMemory.clear();
-  detailsMemory.clear();
-  linkMemory.clear();
+  profileDocs.clear();
+  detailDocs.clear();
+  linkDocs.clear();
+  resolveStateDocs.clear();
   index = {};
   indexFingerprint = null;
   indexPending.clear();
@@ -894,7 +874,6 @@ function clearMemory() {
   flagsSaving = Promise.resolve();
   authorsMap = null;
   authorsMapFingerprint = null;
-  resolveStateMemory.clear();
   yearOverridesMemory.clear();
 }
 
@@ -903,14 +882,8 @@ module.exports = {
   PROFILES_DIR,
   DETAILS_DIR,
   LINKS_DIR,
-  IMPORTS_DIR,
-  RESOLVE_STATE_DIR,
   INDEX_PATH,
-  LINKS_JSON_PATH,
-  MATCH_LOG_PATH,
-  FLAGS_DIR,
   FLAGS_PATH,
-  YEAR_OVERRIDES_DIR,
   AUTHORS_PATH,
   fingerprintOf,
   readJsonWithFingerprint,
@@ -936,7 +909,6 @@ module.exports = {
   getWorkLink,
   setWorkLink,
   flushLinks,
-  refreshFlagsIfChanged,
   getMangaFlags,
   getMangaFlag,
   setMangaFlag,
@@ -945,7 +917,6 @@ module.exports = {
   saveAuthorsMap,
   yearOverridesPath,
   getYearOverrides,
-  getYearOverride,
   setYearOverride,
   clearYearOverride,
   saveRawImport,
