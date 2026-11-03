@@ -52,6 +52,7 @@ try {
 const { HttpError, createUpload } = require('./upload');
 const cache = require('./cache');
 const enrich = require('./enrich');
+const { createJobs } = require('./core/jobs');
 const { fetchOnce, defaultSleep } = require('./core/http');
 const sources = require('./core/sources');
 
@@ -78,7 +79,12 @@ const PER_PAGE = 200;
 const PER_PAGE_COOKIE = 'my_perpages';
 const PER_PAGE_COOKIE_KEY = '79votes'; // KinoPoisk's list type id for "оценки"
 
-const jobs = new Map(); // uploadId -> kp job
+const jobs = createJobs({
+  name: 'films-kp',
+  idPrefix: 'films-kp',
+  maxJobs: 0,
+  keyOf: (job) => job.uploadId,
+}); // uploadId -> kp job
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                              */
@@ -1067,8 +1073,6 @@ function startEnrichment(upload, job) {
 /* ------------------------------------------------------------------ */
 
 // KinoPoisk requests are serialized across all imports so that a second
-// import never runs in parallel with the first one.
-let scrapeChain = Promise.resolve();
 
 function startImport(rawUrl) {
   const userId = parseUserId(rawUrl);
@@ -1082,7 +1086,8 @@ function startImport(rawUrl) {
 
   // Coalesce concurrent imports of the same profile: do not scrape, refresh
   // (or enrich) one user twice in parallel.
-  for (const [existingId, existingJob] of jobs) {
+  for (const existingJob of jobs.list()) {
+    const existingId = existingJob.uploadId;
     if (
       existingJob.userId === userId &&
       (existingJob.stage === 'scrape' ||
@@ -1114,7 +1119,8 @@ function startImport(rawUrl) {
 
   const cached = readKpCache(userId);
 
-  const job = {
+  const job = jobs.createJob({
+    id: upload.uploadId,
     uploadId: upload.uploadId,
     userId,
     stage: cached ? 'refresh' : 'scrape',
@@ -1124,8 +1130,8 @@ function startImport(rawUrl) {
     error: null,
     warning: null,
     startedAt: Date.now(),
-  };
-  jobs.set(upload.uploadId, job);
+  });
+  jobs.remember(job);
 
   if (cached) {
     console.log(
@@ -1135,19 +1141,32 @@ function startImport(rawUrl) {
 
   // Both a full scrape and a delta refresh are serialized through the same
   // chain: KinoPoisk requests never run in parallel across imports.
-  scrapeChain = scrapeChain
-    .then(() => runImport(upload, job, cached))
-    .catch((err) => {
+  jobs.run(job, () => runImport(upload, job, cached), {
+    // The job is stage-driven (like the books import): a failed scrape is
+    // `stage: 'failed'`, and `getStatus` derives `done` from the stage.
+    finish: false,
+    onError: (self, err) => {
       console.error('[kp] import queue error:', err);
       // A throw outside scrapeVotes' own try/catch (e.g. a disk error while
       // merging the delta) must not leave the job stuck in "refresh" forever.
-      if (job.stage !== 'done' && job.stage !== 'failed') {
-        job.stage = 'failed';
-        job.error = `Не удалось импортировать профиль Кинопоиска: ${
+      if (self.stage !== 'done' && self.stage !== 'failed') {
+        self.stage = 'failed';
+        self.error = `Не удалось импортировать профиль Кинопоиска: ${
           err && err.message ? err.message : 'неизвестная ошибка'
         }`;
       }
-    });
+      self.status = self.stage === 'done' ? 'done' : 'failed';
+      self.finishedAt = Date.now();
+    },
+    onFinish: (self) => {
+      if (self.stage === 'done' || self.stage === 'failed') {
+        self.status = self.stage === 'done' ? 'done' : 'failed';
+        if (self.finishedAt == null) self.finishedAt = Date.now();
+      } else {
+        self.status = 'running';
+      }
+    },
+  });
 
   return { uploadId: upload.uploadId, userId, ...getStatus(upload.uploadId) };
 }
@@ -1164,6 +1183,7 @@ async function runImport(upload, job, cached) {
   job.stage = 'refresh';
   job.page = 1;
   job.pageTotal = 1;
+  job.setProgress(1, 1);
   job.total = Array.isArray(cached.entries) ? cached.entries.length : 0;
 
   let result;
@@ -1171,6 +1191,7 @@ async function runImport(upload, job, cached) {
     result = await refreshVotes(job.userId, cached, (progress) => {
       job.page = progress.page;
       if (progress.pageTotal != null) job.pageTotal = progress.pageTotal;
+      job.setProgress(job.page, job.pageTotal);
     });
   } catch (err) {
     // KinoPoisk is unavailable (captcha, network, parser): the cached
@@ -1222,6 +1243,7 @@ async function runImport(upload, job, cached) {
   applyDataset(upload, buildDataset(job.userId, data));
   job.page = result.pagesFetched || 1;
   job.pageTotal = job.page;
+  job.setProgress(job.page, job.pageTotal);
   job.total = data.entries.length;
   startEnrichment(upload, job);
 }
@@ -1234,6 +1256,7 @@ async function runScrape(upload, job) {
     const result = await scrapeVotes(job.userId, (progress) => {
       job.page = progress.page;
       if (progress.pageTotal != null) job.pageTotal = progress.pageTotal;
+      job.setProgress(job.page, job.pageTotal);
       job.total = progress.total;
     });
     const data = {
@@ -1245,6 +1268,7 @@ async function runScrape(upload, job) {
     applyDataset(upload, buildDataset(job.userId, data));
     job.page = result.pageTotal;
     job.pageTotal = result.pageTotal;
+    job.setProgress(job.page, job.pageTotal);
     job.total = result.entries.length;
     startEnrichment(upload, job);
   } catch (err) {
@@ -1269,8 +1293,16 @@ function getStatus(uploadId) {
     stage = 'done';
     job.stage = 'done';
   }
+  if (stage === 'done' && job.status !== 'done') {
+    job.status = 'done';
+    if (job.finishedAt == null) job.finishedAt = Date.now();
+  }
 
+  const snapshot = jobs.snapshot(job);
+  // Legacy: `error` only appears on a failed import (not as `error: null`).
+  if (!job.error) delete snapshot.error;
   const status = {
+    ...snapshot,
     stage,
     page: job.page,
     pageTotal: job.pageTotal,

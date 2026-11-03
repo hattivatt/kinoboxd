@@ -2,8 +2,20 @@
 
 const cache = require('./cache');
 const tmdb = require('./tmdb');
+const { createJobs } = require('./core/jobs');
 
-const jobs = new Map();
+/**
+ * Film enrich job registry (core/jobs). Keyed by `uploadId` — the upload is
+ * the job, so the id *is* the upload id and there is no retention ring: a
+ * status may be asked long after the run, and `kp.js` reads the same entry.
+ */
+const jobs = createJobs({
+  name: 'films-enrich',
+  idPrefix: 'films-enrich',
+  maxJobs: 0,
+  keyOf: (job) => job.uploadId,
+});
+
 const inflight = new Map();
 
 const CONCURRENCY = tmdb.MAX_CONCURRENCY;
@@ -102,8 +114,11 @@ function startEnrich(upload) {
     return { accepted: true, total: existing.total, cached: existing.cached };
   }
 
-  const job = {
+  const job = jobs.createJob({
+    id: uploadId,
     uploadId,
+    status: films.length === 0 ? 'done' : 'running',
+    stage: films.length === 0 ? 'done' : 'enrich',
     total: films.length,
     matched: 0,
     failed: 0,
@@ -113,19 +128,33 @@ function startEnrich(upload) {
     cached: countCached(films),
     films: new Map(), // slug -> { tmdbId, matched }
     inFlight: 0,
-  };
-  jobs.set(uploadId, job);
+  });
+  jobs.remember(job);
 
   if (films.length === 0) {
     cache.flushIndex();
     return { accepted: true, total: 0, cached: 0 };
   }
 
-  runJob(job, films).catch((err) => {
-    console.error(`[enrich] Job ${uploadId} crashed unexpectedly:`, err);
-    job.done = true;
-    job.finishedAt = Date.now();
-    cache.flushIndex();
+  jobs.run(job, () => runJob(job, films), {
+    // One upload = one job; the per-upload chain keeps two uploads running in
+    // parallel exactly like the direct call did.
+    chainKey: uploadId,
+    finish: false,
+    onError: (self, err) => {
+      console.error(`[enrich] Job ${uploadId} crashed unexpectedly:`, err);
+      self.status = 'failed';
+      self.stage = 'failed';
+      self.done = true;
+      self.finishedAt = Date.now();
+      self.error = err && err.message ? String(err.message) : 'enrich crashed';
+      cache.flushIndex();
+    },
+    onFinish: (self) => {
+      if (self.finishedAt == null) self.finishedAt = Date.now();
+      self.status = self.done ? 'done' : 'failed';
+      if (self.status === 'done') self.stage = 'done';
+    },
   });
 
   return { accepted: true, total: job.total, cached: job.cached };
@@ -178,6 +207,7 @@ async function runJob(job, films) {
       processed++;
       job.processed = processed;
       logProgress(job, processed, startedAt);
+      job.setProgress(processed, job.total);
     }
   }
 
@@ -273,6 +303,9 @@ function getStatus(uploadId, totalHint) {
     };
   }
   return {
+    // Unified job view (id/status/stage/progress/startedAt/finishedAt/error/
+    // partial). The legacy fields keep their exact values.
+    ...jobs.snapshot(job),
     total: job.total,
     matched: job.matched,
     failed: job.failed,
