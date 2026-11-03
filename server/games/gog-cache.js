@@ -53,7 +53,6 @@ const DEBUG_DIR = path.join(CACHE_DIR, 'debug', 'gog');
 
 const LIBRARY_TTL_MS = 24 * 60 * 60 * 1000;
 const PLAYTIME_TTL_MS = 24 * 60 * 60 * 1000;
-const PROFILE_TTL_MS = 6 * 60 * 60 * 1000;
 
 /** Silent refresh starts this long before `expiresAt` (5 min, brief §2). */
 const DEFAULT_REFRESH_MARGIN_MS = 5 * 60 * 1000;
@@ -128,10 +127,6 @@ function libraryTtlMs() {
 
 function playtimeTtlMs() {
   return envMs('GAMES_GOG_PLAYTIME_TTL_MS', PLAYTIME_TTL_MS);
-}
-
-function profileTtlMs() {
-  return envMs('GAMES_GOG_PROFILE_TTL_MS', PROFILE_TTL_MS);
 }
 
 function isFresh(doc, ttlMs) {
@@ -581,7 +576,6 @@ module.exports = {
   DEBUG_DIR,
   LIBRARY_TTL_MS,
   PLAYTIME_TTL_MS,
-  PROFILE_TTL_MS,
   DEFAULT_REFRESH_MARGIN_MS,
   EXPIRES_IN_SECONDS_MAX,
   TERMINAL_REFRESH_CODES,
@@ -589,7 +583,6 @@ module.exports = {
   AUTH_LIFECYCLE_MAX_EVENTS,
   libraryTtlMs,
   playtimeTtlMs,
-  profileTtlMs,
   refreshMarginMs,
   parseExpiresAt,
   expiresInMs,
