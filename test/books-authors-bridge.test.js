@@ -32,6 +32,7 @@ process.env.KINOBOXD_CACHE_BOOK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kin
 const bookCache = require('../server/books/book-cache');
 const authors = require('../server/books/authors');
 const bridge = require('../server/books/authors-bridge');
+const authorsWikidata = require('../server/books/authors-wikidata');
 const { buildBooksStats } = require('../server/books/stats');
 
 const MOEM_RU = 'Уильям Сомерсет Моэм';
@@ -367,4 +368,19 @@ test('buildBooksStats kicks the bridge without waiting for it', async () => {
     },
   });
   assert.equal(safe.summary.bookCount, 1);
+});
+
+test('the author WDQS client asks without a deadline (timeoutMs: 0)', async () => {
+  let init = null;
+  const fetchImpl = async (url, options) => {
+    init = options;
+    return {
+      status: 200,
+      headers: new Map(),
+      text: async () => JSON.stringify({ results: { bindings: [] } }),
+    };
+  };
+  await authorsWikidata.fetchNameQids(['Моэм'], { fetchImpl });
+  assert.ok(init, 'WDQS was asked');
+  assert.equal(init.signal, undefined, 'a 15 s default deadline must not be installed');
 });

@@ -181,6 +181,19 @@ test('GOG routes', async (t) => {
     assert.equal(body.budget, 200);
   });
 
+  await t.test('status reports GAMES_GOG_BUDGET=0 as 0, not the 200 default', async () => {
+    const previous = process.env.GAMES_GOG_BUDGET;
+    process.env.GAMES_GOG_BUDGET = '0';
+    try {
+      const { status, body } = await call('/api/games/gog/status');
+      assert.equal(status, 200);
+      assert.equal(body.budget, 0);
+    } finally {
+      if (previous == null) delete process.env.GAMES_GOG_BUDGET;
+      else process.env.GAMES_GOG_BUDGET = previous;
+    }
+  });
+
   await t.test('import → job done → library/playtime snapshots', async () => {
     const started = await call('/api/games/gog/import', {
       method: 'POST',

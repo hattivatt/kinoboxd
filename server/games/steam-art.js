@@ -285,7 +285,12 @@ async function fetchUpstream(candidates, options = {}) {
       response = await fetchBinary(url, {
         fetchImpl: options.fetch,
         headers: { Accept: 'image/avif,image/webp,image/jpeg,image/png,image/*' },
-        timeoutMs: timeout > 0 ? timeout : undefined,
+        // `0` = no deadline (shared convention); an unset option keeps the
+        // 12 s default via `FETCH_TIMEOUT_MS`.
+        timeoutMs: timeout,
+        // Cap 404/403/HTML bodies while streaming instead of buffering them
+        // whole and rejecting after the fact.
+        maxBytes: MAX_ART_ENTRY_BYTES,
         label: 'steam-art',
       });
     } catch (err) {

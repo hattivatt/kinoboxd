@@ -1270,7 +1270,9 @@ function catalogFailure(err, kind, context = {}) {
 /* ------------------------------------------------------------------ */
 
 function httpGetJson(target, options = {}) {
-  const timeout = options.timeoutMs || timeoutMs();
+  // `0` is a real «no deadline» value now; only an absent option falls back
+  // to the table/env default.
+  const timeout = options.timeoutMs == null ? timeoutMs() : Number(options.timeoutMs);
   const userAgent = options.userAgent || sources.userAgent('secondary');
   let host = null;
   try {

@@ -19,6 +19,7 @@
 
 const express = require('express');
 
+const { budgetLimitFromEnv } = require('../core/budget');
 const { HttpError } = require('../core/errors');
 const { assertOnlyParams, parseForce } = require('../core/params');
 const gameCache = require('./game-cache');
@@ -147,7 +148,9 @@ function createRouter(deps = {}) {
           key: entry.key,
           label: entry.label || entry.personaName || null,
         })),
-        budget: Number(process.env.GAMES_GOG_BUDGET) > 0 ? Number(process.env.GAMES_GOG_BUDGET) : 200,
+        // Same reader as the import (`gog-import.js`): 0 is a real value
+        // («no GOG requests»), not a cue to fall back to 200.
+        budget: budgetLimitFromEnv('GAMES_GOG_BUDGET', 200),
         libraryTtlHours: Math.round(gogCache.libraryTtlMs() / 3600000),
         playtimeTtlHours: Math.round(gogCache.playtimeTtlMs() / 3600000),
         // Where the masked auth trail lives: the file to attach to a bug

@@ -42,6 +42,11 @@ function sparql(query, options = {}) {
       'user-agent': USER_AGENT,
     },
     body: new URLSearchParams({ query, format: 'json' }).toString(),
+    // WDQS regularly takes longer than the shared 15 s default on a 450-label
+    // batch. The pre-P2 client had no deadline at all; `0` restores that
+    // contract (`undefined` would silently re-introduce the 15 s cut-off and
+    // turn a slow answer into a cooldown).
+    timeoutMs: 0,
     label: 'authors-wikidata',
   }).then(responseFacade);
 }
