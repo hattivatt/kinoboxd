@@ -29,6 +29,7 @@ const {
 const livelibCookies = require('./livelib-cookies');
 const { HardcoverError } = require('./hardcover');
 const { LivelibError } = require('./livelib');
+const profileRegistry = require('../core/profile');
 
 const router = express.Router();
 
@@ -67,6 +68,59 @@ function hardcoverTokenInfo() {
 }
 
 /**
+ * Unified owner snapshot of the books domain (`core/profile`, U8).
+ *
+ * A books owner is ONE source + ONE account (§6): LiveLib-Margaret and
+ * Hardcover-34748 are two different owners and their events never merge, so
+ * every owner has exactly one `primary` and no `enrichers` — the Hardcover
+ * metadata chain is a reference provider, not a second journal of the same
+ * person.
+ *
+ * Additive on top of the legacy entry: `id` equals the `?profile=` token
+ * (`key`), `label` is `null` (book labels live in the browser registry only),
+ * `updatedAt` is the persisted `importedAt` of the profile document, and
+ * `metrics` is the very object `summary` carries.
+ */
+function listBookProfileOwners() {
+  const profiles = bookCache.listProfiles().map((meta) => {
+    const data = bookCache.getProfile(meta.source, meta.userKey);
+    const key = `${meta.source}-${meta.userKey}`;
+    const summary = profileSummary(data);
+    return Object.assign({}, meta, {
+      key,
+      sourceKey: `${meta.source}/${meta.userKey}`,
+      summary,
+      // `/api/books/stats?profile=` tokens. One profile = one source.
+      deepScan: (data && data.deepScan) || null,
+      cookies:
+        meta.source === 'livelib'
+          ? livelibCookies.cookieStatus('livelib', meta.userKey)
+          : { present: false, savedAt: null, count: 0 },
+      id: key,
+      label: null,
+      primary: {
+        source: meta.source,
+        userKey: String(meta.userKey),
+        status: 'connected',
+        updatedAt: meta.importedAt || null,
+      },
+      enrichers: [],
+      metrics: summary,
+    });
+  });
+  // Both sources can own a journal (`PROFILE_SOURCES`), so both are `primary`;
+  // a source that has no cached profile yet is advertised as `missing` so the
+  // connections screen can offer it.
+  const sources = PROFILE_SOURCES.map((source) => {
+    const connected = profiles.some((profile) => profile.source === source);
+    return { id: source, role: 'primary', connected, state: connected ? 'ready' : 'missing' };
+  });
+  return { profiles, sources };
+}
+
+profileRegistry.registerDomainProfiles('books', listBookProfileOwners);
+
+/**
  * GET /api/books/profiles — cached source profiles for the switcher/badges.
  *
  * Each entry carries:
@@ -74,23 +128,12 @@ function hardcoverTokenInfo() {
  *   - `sourceKey` — the minimal provider-qualified key for docs
  *                   (`livelib/Margaret`, `hardcover/34748`),
  *   - `summary`   — compact aggregates (books/events/dates/avgRating),
- *   - `cookies`   — masked cookie-store status (LiveLib only; `present`/`count`).
+ *   - `cookies`   — masked cookie-store status (LiveLib only; `present`/`count`),
+ * plus the unified owner fields of `core/profile` (`id`/`label`/`primary`/
+ * `enrichers`/`metrics`). `sources` is the domain-level source table.
  */
 router.get('/profiles', (req, res) => {
-  const profiles = bookCache.listProfiles().map((meta) => {
-    const data = bookCache.getProfile(meta.source, meta.userKey);
-    return Object.assign({}, meta, {
-      key: `${meta.source}-${meta.userKey}`,
-      sourceKey: `${meta.source}/${meta.userKey}`,
-      summary: profileSummary(data),
-      // `/api/books/stats?profile=` tokens. One profile = one source.
-      deepScan: (data && data.deepScan) || null,
-      cookies:
-        meta.source === 'livelib'
-          ? livelibCookies.cookieStatus('livelib', meta.userKey)
-          : { present: false, savedAt: null, count: 0 },
-    });
-  });
+  const { profiles, sources } = profileRegistry.snapshot('books');
   res.status(200).json({
     profiles,
     connected: [...new Set(profiles.map((profile) => profile.source))],
@@ -98,6 +141,7 @@ router.get('/profiles', (req, res) => {
     availableProfileKeys: profiles.map((profile) => profile.key),
     hardcoverToken: hardcoverTokenInfo(),
     cacheDir: bookCache.BOOK_CACHE_DIR,
+    sources,
   });
 });
 

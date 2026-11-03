@@ -24,9 +24,14 @@ const cache = require('./cache');
 const kp = require('./kp');
 const { HttpError } = require('./upload');
 const { buildStats } = require('./stats');
+const profileRegistry = require('./core/profile');
 
 const KP_DIR = path.join(cache.CACHE_DIR, 'kp');
 const ATTACHMENT_DIR = path.join(cache.CACHE_DIR, 'profile-lb');
+
+// Source ids of the films domain (same spelling as `core/sources.js`).
+const KP_SOURCE = 'kinopoisk';
+const LB_SOURCE = 'letterboxd';
 
 // A compare request rebuilds a couple of thousand counters per side. Cache the
 // derived model for as long as the profile file does not change; the cache is
@@ -282,6 +287,86 @@ function listProfiles() {
   return profiles;
 }
 
+/** File mtime as an ISO string (the only honest `updatedAt` a cache file has). */
+function mtimeIso(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    return stat.isFile() ? stat.mtime.toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `GET /api/profiles` in the unified owner shape (U8/U15).
+ *
+ * The flat array is kept: `public/js/compare.js` and `public/js/main.js` both
+ * read this endpoint as `Array.isArray(list) ? list : []`, so wrapping it into
+ * `{ profiles, sources }` would silently empty the comparison picker (the
+ * client migration is P8). The unified fields are therefore additive on every
+ * entry, and the two sources of the domain are visible through each owner's
+ * `primary`/`enrichers`.
+ *
+ * - `id`        `kinopoisk-<kpUserId>`; `/api/compare` still takes the bare id.
+ * - `label`     always `null`: the film labels live only in the browser's
+ *               IndexedDB registry, the server has never stored one.
+ * - `updatedAt` the `cache/kp/<id>.json` mtime (the import write), ISO.
+ * - `metrics`   the two counters the flat list already carried.
+ */
+function listProfileOwners() {
+  const profiles = listProfiles().map((entry) => {
+    const userKey = String(entry.kpUserId);
+    const attachedLbUpdatedAt = entry.attachedLb
+      ? mtimeIso(path.join(ATTACHMENT_DIR, `${userKey}.json`))
+      : null;
+    return {
+      ...entry,
+      id: `${KP_SOURCE}-${userKey}`,
+      label: null,
+      primary: {
+        source: KP_SOURCE,
+        userKey,
+        status: 'connected',
+        updatedAt: mtimeIso(profilePath(userKey)),
+      },
+      enrichers: entry.attachedLb
+        ? [
+            {
+              source: LB_SOURCE,
+              userKey,
+              status: 'connected',
+              updatedAt: attachedLbUpdatedAt,
+            },
+          ]
+        : [],
+      metrics: { entries: entry.entries, ratedCount: entry.ratedCount },
+    };
+  });
+
+  const hasAttachmentAny = profiles.some((entry) => entry.attachedLb);
+  return {
+    profiles,
+    sources: [
+      {
+        id: KP_SOURCE,
+        role: 'primary',
+        connected: profiles.length > 0,
+        state: profiles.length > 0 ? 'ready' : 'missing',
+      },
+      {
+        id: LB_SOURCE,
+        role: 'enricher',
+        connected: hasAttachmentAny,
+        state: hasAttachmentAny ? 'ready' : 'missing',
+      },
+    ],
+  };
+}
+
+// Registered here, read by `GET /api/profiles` in server/index.js: the route
+// stays where it was, only the shape comes from the shared registry.
+profileRegistry.registerDomainProfiles('films', listProfileOwners);
+
 /**
  * Build the comparison payload for two cached profiles.
  * Throws HttpError(400) for a missing/same pair and HttpError(404) for ids
@@ -351,6 +436,7 @@ function compareProfiles(rawA, rawB) {
 
 module.exports = {
   listProfiles,
+  listProfileOwners,
   compareProfiles,
   // exported for tests / diagnostics
   buildModel,

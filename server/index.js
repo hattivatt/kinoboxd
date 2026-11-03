@@ -17,6 +17,7 @@ const cache = require('./cache');
 const tmdb = require('./tmdb');
 const auth = require('./auth');
 const kpCompare = require('./compare');
+const profileRegistry = require('./core/profile');
 const { buildStats, listUnmatched } = require('./stats');
 const booksRouter = require('./books/routes');
 const gamesRouter = require('./games/routes');
@@ -354,10 +355,15 @@ app.get('/api/stats', (req, res, next) => {
  * Cached KinoPoisk profiles (one per cache/kp/{userId}.json). The list is
  * independent of the browser registry and survives server restarts, so the
  * comparison screen can always use it.
+ *
+ * The payload stays a flat array (the compare picker reads it as an array);
+ * every entry also carries the unified owner fields of `core/profile`
+ * (`id`/`label`/`primary`/`enrichers`/`metrics`). The domain registers itself
+ * in `compare.js`, so the shape has one owner.
  */
 app.get('/api/profiles', (req, res, next) => {
   try {
-    res.status(200).json(kpCompare.listProfiles());
+    res.status(200).json(profileRegistry.listOwners('films'));
   } catch (err) {
     next(err);
   }
