@@ -12,6 +12,7 @@ import { $, el, clear, icon, fmtInt, plural, toast, shortErrorMessage } from './
 
 let handlers = {
   getUploadId: null,
+  getKpUserId: null,
   getAttachment: null,
   onAttached: null,
 };
@@ -64,7 +65,8 @@ function pluralEvents(count) {
 
 export function openAttachModal() {
   const uploadId = typeof handlers.getUploadId === 'function' ? handlers.getUploadId() : null;
-  if (!uploadId) {
+  const kpUserId = typeof handlers.getKpUserId === 'function' ? handlers.getKpUserId() : null;
+  if (!uploadId && !kpUserId) {
     toast('Сначала импортируйте профиль Кинопоиска — архив прикрепляется к нему.', 'info');
     return;
   }
@@ -167,7 +169,7 @@ export function openAttachModal() {
     errorHost.hidden = true;
     setBusy(true, `Прикрепляем «${file.name}»…`);
     try {
-      const result = await attachLbZip(uploadId, file);
+      const result = await attachLbZip(uploadId, file, { kpUserId });
       if (closed) return;
       const events = Number(result && result.events) || 0;
       const rewatches = Number(result && result.rewatchCount) || 0;

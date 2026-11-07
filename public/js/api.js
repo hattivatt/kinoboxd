@@ -98,18 +98,29 @@ export function matchFilm({ uploadId, slug, tmdbId, kind }) {
 }
 
 /**
- * Attach a Letterboxd ZIP to the active KinoPoisk import.
- * The server resolves kpUserId from uploadId and persists the attachment.
+ * Attach a Letterboxd ZIP to the active KinoPoisk profile.
+ *
+ * `uploadId` is the live import; `kpUserId` is the persistent owner fallback
+ * (after a server restart the in-memory upload is gone, but the profile and
+ * its attachment cache are not). Either one is enough.
  */
-export function attachLbZip(uploadId, file, { signal } = {}) {
+export function attachLbZip(uploadId, file, { kpUserId = '', signal } = {}) {
   const form = new FormData();
-  form.append('uploadId', uploadId);
+  if (uploadId) form.append('uploadId', uploadId);
+  if (kpUserId) form.append('kpUserId', String(kpUserId));
   form.append('file', file, file.name || 'letterboxd-export.zip');
   return request('/api/attach/lbzip', { method: 'POST', body: form, signal });
 }
 
-export function getStats(uploadId, { signal } = {}) {
-  return request(`/api/stats?uploadId=${encodeURIComponent(uploadId)}`, { signal });
+/**
+ * Dashboard payload. When the server no longer knows `uploadId` (restart,
+ * upload eviction) it rebuilds the payload from `cache/kp/{kpUserId}.json`
+ * instead of answering 404, so the cached dashboard stays interactive.
+ */
+export function getStats(uploadId, { kpUserId = '', signal } = {}) {
+  const params = new URLSearchParams({ uploadId: String(uploadId || '') });
+  if (kpUserId) params.set('kpUserId', String(kpUserId));
+  return request(`/api/stats?${params.toString()}`, { signal });
 }
 
 /* ---------------- cached profiles + comparison ---------------- */

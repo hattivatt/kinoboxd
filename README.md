@@ -181,10 +181,17 @@ curl -X POST "http://localhost:3000/api/attach/lbzip?uploadId=$UPLOAD_ID" \
   -F "file=@letterboxd-export.zip"
 ```
 
-The endpoint requires the `uploadId` of a live KinoPoisk import (the server
-resolves `kpUserId` from that job), a valid ZIP and both `diary.csv` and
-`watched.csv`; otherwise it returns 400. Re-posting replaces the whole
-attachment atomically (idempotent — no duplicate events).
+The endpoint requires a valid ZIP and both `diary.csv` and `watched.csv`;
+otherwise it returns 400. The owner is resolved from the live KinoPoisk
+`uploadId`, or — after a server restart, when the in-memory upload is gone —
+from the persistent `kpUserId` (form field or query parameter). The attachment
+is keyed by that id, so a cached profile can be re-attached without replaying
+the KinoPoisk import. Re-posting replaces the whole attachment atomically
+(idempotent — no duplicate events).
+
+`/api/stats` accepts the same `kpUserId` fallback: if the browser still shows
+a cached dashboard but the server forgot `uploadId`, the payload is rebuilt
+from `cache/kp/{kpUserId}.json` and the TMDB index instead of answering 404.
 
 Response (extra fields are informational):
 

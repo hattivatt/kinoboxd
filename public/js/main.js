@@ -313,10 +313,10 @@ function renderProfiles() {
   renderCompareAvailability(state.serverProfiles);
   updateProfileRefreshButton();
   updateAttachButton({
-    active: state.importSource === 'kinopoisk' && Boolean(state.uploadId),
+    active: state.importSource === 'kinopoisk' && (Boolean(state.uploadId) || Boolean(activeKpUserId())),
     attachment: state.attachedLb,
   });
-  setAttachAvailable(state.importSource === 'kinopoisk' && Boolean(state.uploadId));
+  setAttachAvailable(state.importSource === 'kinopoisk' && (Boolean(state.uploadId) || Boolean(activeKpUserId())));
 }
 
 /* =========================================================
@@ -683,7 +683,7 @@ async function boot() {
   }
 
   try {
-    const stats = await getStats(state.uploadId, { signal: flow.signal });
+    const stats = await getStats(state.uploadId, { signal: flow.signal, kpUserId: activeKpUserId() });
     if (!isFlow(flow)) return;
     applyStats(stats);
   } catch (error) {
@@ -765,7 +765,7 @@ const dashboardHooks = {
 async function refreshStats() {
   if (!state.uploadId) return null;
   try {
-    const stats = await getStats(state.uploadId);
+    const stats = await getStats(state.uploadId, { kpUserId: activeKpUserId() });
     state.stats = stats;
     state.dashboardReady = true;
     renderDashboard(stats, dashboardHooks);
@@ -1064,7 +1064,7 @@ async function switchProfile(id) {
   }
 
   try {
-    const stats = await getStats(state.uploadId, { signal: flow.signal });
+    const stats = await getStats(state.uploadId, { signal: flow.signal, kpUserId: activeKpUserId() });
     if (!isFlow(flow)) return;
     applyStats(stats, { profile });
   } catch (error) {
@@ -1142,7 +1142,8 @@ function openUploadScreen() {
   resetUpload();
   const hasSession = Boolean(state.stats && state.dashboardReady);
   setHasSession(hasSession);
-  setAttachAvailable(hasSession && state.importSource === 'kinopoisk' && Boolean(state.uploadId));
+  setAttachAvailable(hasSession && state.importSource === 'kinopoisk'
+    && (Boolean(state.uploadId) || Boolean(activeKpUserId())));
   showView('upload');
 }
 
@@ -1676,7 +1677,7 @@ function retryKinopoiskImport() {
 async function finishStats(attempt = 0) {
   if (state.view !== 'enrich' || !state.uploadId) return;
   try {
-    const stats = await getStats(state.uploadId);
+    const stats = await getStats(state.uploadId, { kpUserId: activeKpUserId() });
     if (state.view !== 'enrich') return;
     applyStats(stats);
     if (state.refreshContext) {
@@ -1780,6 +1781,7 @@ function bindUi() {
 
   initAttach({
     getUploadId: () => (state.importSource === 'kinopoisk' ? state.uploadId : null),
+    getKpUserId: () => activeKpUserId(),
     getAttachment: () => state.attachedLb,
     onAttached: async () => {
       await refreshStats();

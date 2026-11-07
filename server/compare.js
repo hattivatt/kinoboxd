@@ -24,6 +24,7 @@ const cache = require('./cache');
 const kp = require('./kp');
 const { HttpError } = require('./upload');
 const { buildStats } = require('./stats');
+const { buildEphemeralJob } = require('./films/profile-cache');
 const profileRegistry = require('./core/profile');
 
 const KP_DIR = path.join(cache.CACHE_DIR, 'kp');
@@ -65,29 +66,6 @@ function hasAttachment(userId) {
   } catch {
     return false;
   }
-}
-
-/**
- * Resolve the cached TMDB match for every film of a dataset, using the same
- * index keys enrich.js uses. Details are required too: a stale index entry
- * without cached details is treated as unmatched exactly like /api/stats does
- * (cache.getDetails() returns null there).
- */
-function buildEphemeralJob(dataset) {
-  const films = new Map();
-  for (const film of dataset.films || []) {
-    const kind = film.kind === 'tv' ? 'tv' : 'movie';
-    const entry = cache.getIndexEntry(cache.makeKindKey(film.title, film.year, kind));
-    if (entry && entry !== false) {
-      const entryKind = entry.kind || kind;
-      if (cache.hasDetails(entry.id, entryKind)) {
-        films.set(film.slug, { tmdbId: entry.id, matched: true, kind: entryKind });
-        continue;
-      }
-    }
-    films.set(film.slug, { tmdbId: null, matched: false, kind });
-  }
-  return { done: true, films };
 }
 
 function round2(value) {

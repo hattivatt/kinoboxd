@@ -326,6 +326,7 @@ export function shortErrorMessage(error) {
   if (!error) return 'Неизвестная ошибка.';
   const message = typeof error.message === 'string' ? error.message.trim() : '';
   if (error.code === 'network') return 'Нет связи с сервером. Проверь, что он запущен, и попробуй ещё раз.';
+  if (error.code === 'unknown_profile') return 'Кинопрофиль не найден на сервере — сначала обнови профиль Кинопоиска.';
   if (error.status === 413) return 'Архив слишком большой для загрузки.';
   if (error.status === 404) return 'Выгрузка не найдена на сервере — возможно, сервер перезапускался.';
   if (error.status === 400) return 'Данные ещё не готовы. Попробуй через пару секунд.';

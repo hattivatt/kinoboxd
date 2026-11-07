@@ -42,6 +42,7 @@ const tmdb = require('../tmdb');
 const kpCompare = require('../compare');
 const profileRegistry = require('../core/profile');
 const { buildStats, listUnmatched } = require('../stats');
+const { normalizeUserId: normalizeCachedUserId, buildCachedProfileStats } = require('./profile-cache');
 
 const router = express.Router();
 
@@ -198,25 +199,53 @@ router.get('/import/kinopoisk/status', (req, res, next) => {
  * watched.csv / watchlist.csv, matches every film through the shared TMDB
  * matcher and stores cache/profile-lb/{kpUserId}.json atomically. Repeating
  * the call replaces the whole attachment (idempotent) — no duplicate events.
+ *
+ * `kpUserId` is the persistent fallback of `uploadId`: the attachment belongs
+ * to the owner (cache/profile-lb/{kpUserId}.json), not to the ephemeral
+ * in-memory upload. After a server restart the browser still shows the cached
+ * dashboard, so it sends the profile id together with the stale upload id and
+ * the attach keeps working instead of answering 404.
  */
 router.post('/attach/lbzip', singleFile, async (req, res, next) => {
   try {
     const uploadId = (req.body && req.body.uploadId) || req.query.uploadId;
-    if (!uploadId || typeof uploadId !== 'string') {
+    const rawKpUserId = (req.body && req.body.kpUserId) || req.query.kpUserId;
+    if ((!uploadId || typeof uploadId !== 'string') &&
+        (!rawKpUserId || typeof rawKpUserId !== 'string')) {
       throw new HttpError(400, 'Body must contain "uploadId".', 'upload_id_required');
     }
-    const upload = getUpload(uploadId);
-    if (!upload) {
-      throw new HttpError(404, 'Unknown uploadId. Start the KinoPoisk import again.', 'unknown_upload');
+
+    const upload = uploadId ? getUpload(uploadId) : null;
+    const job = uploadId ? kp.getJob(uploadId) : null;
+    let kpUserId = job && job.userId ? String(job.userId) : null;
+
+    if (!kpUserId) {
+      // A live upload/job is gone (server restart, 30-upload window), but the
+      // votes of the profile are persisted. Attaching to that profile is
+      // exactly as valid: the attachment is keyed by kpUserId and read on
+      // every stats build.
+      const cachedId = normalizeCachedUserId(rawKpUserId);
+      if (cachedId && kp.readKpCache(cachedId)) kpUserId = cachedId;
     }
-    const job = kp.getJob(uploadId);
-    if (!job || !job.userId) {
+
+    if (!kpUserId) {
+      if (uploadId && !upload) {
+        throw new HttpError(404, 'Unknown uploadId. Start the KinoPoisk import again.', 'unknown_upload');
+      }
+      if (rawKpUserId) {
+        throw new HttpError(
+          404,
+          'No cached KinoPoisk profile for this kpUserId. Import the profile first.',
+          'unknown_profile'
+        );
+      }
       throw new HttpError(
         400,
         'Letterboxd archives can only be attached to a KinoPoisk import.',
         'not_kinopoisk_import'
       );
     }
+
     if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
       throw new HttpError(
         400,
@@ -229,20 +258,22 @@ router.post('/attach/lbzip', singleFile, async (req, res, next) => {
       req.file.buffer,
       req.file.originalname || req.file.name || 'letterboxd-export.zip'
     );
-    await attachment.writeAttachment(job.userId, built.attachment);
+    await attachment.writeAttachment(kpUserId, built.attachment);
 
     // Keep the in-memory job pointed at the fresh attachment; stats.js reads
     // the persisted file, so this is only metadata for status responses.
-    upload.attachment = built.attachment;
-    job.attachment = {
-      fileName: built.attachment.fileName,
-      attachedAt: built.attachment.attachedAt,
-      events: built.stats.events,
-      watchlist: built.stats.watchlist,
-    };
+    if (upload) upload.attachment = built.attachment;
+    if (job) {
+      job.attachment = {
+        fileName: built.attachment.fileName,
+        attachedAt: built.attachment.attachedAt,
+        events: built.stats.events,
+        watchlist: built.stats.watchlist,
+      };
+    }
 
     console.log(
-      `[attach ${job.userId}] ${built.stats.events} events ` +
+      `[attach ${kpUserId}] ${built.stats.events} events ` +
         `(${built.stats.diaryEvents} diary), matched ${built.stats.matched}, ` +
         `watchlist ${built.stats.watchlist}, rewatches ${built.stats.rewatchCount}`
     );
@@ -250,6 +281,7 @@ router.post('/attach/lbzip', singleFile, async (req, res, next) => {
     res.status(200).json({
       attached: true,
       fileName: built.attachment.fileName,
+      kpUserId,
       ...built.stats,
     });
   } catch (err) {
@@ -269,6 +301,13 @@ router.get('/stats', (req, res, next) => {
     }
     const upload = getUpload(uploadId);
     if (!upload) {
+      // The in-memory upload is gone after a restart (or was evicted from the
+      // 30-upload window), but the KinoPoisk profile and its Letterboxd
+      // attachment are on disk. The browser remembers the profile, so it can
+      // send `kpUserId` and keep the cached dashboard fresh instead of being
+      // stuck with a dead uploadId.
+      const cachedStats = buildCachedProfileStats(req.query.kpUserId);
+      if (cachedStats) return res.status(200).json(cachedStats);
       throw new HttpError(404, 'Unknown uploadId. Upload the ZIP again.', 'unknown_upload');
     }
 
