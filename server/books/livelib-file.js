@@ -8,7 +8,7 @@
  * The service reads the reader's public pages in a browser session and hands
  * the user a JSON/CSV file; we only ever parse that file. No request to
  * livelib.ru is made by this module, so importing a file can never look like
- * automated access from our IP (see §9 «ban risk» in КНИГИ-АРХИТЕКТУРА.md).
+ * automated access from our IP (see AGENTS.md §10: LiveLib ban risk).
  *
  * Formats accepted (verified against the service sources, 28.10.2026):
  *

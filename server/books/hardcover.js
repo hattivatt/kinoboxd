@@ -298,7 +298,7 @@ async function resolveUser(input) {
 
 /**
  * `user_books.status_id` -> internal status. Mapping is the P0 spike reading
- * (КНИГИ-АРХИТЕКТУРА.md §2.2): 1 want, 2 reading, 3 read, 4 paused, 5 dnf.
+ * (AGENTS.md §5.2): 1 want, 2 reading, 3 read, 4 paused, 5 dnf.
  */
 const HARDCOVER_STATUS_LABELS = {
   1: 'wish',

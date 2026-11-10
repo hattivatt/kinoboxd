@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Author identity for the books tab (КНИГИ-АРХИТЕКТУРА §7.2).
+ * Author identity for the books tab (AGENTS.md §5.2).
  *
  * A LiveLib profile lists authors in the Russian spelling the user saw
  * («Агата Кристи»), while the metadata chain returns the canonical English one

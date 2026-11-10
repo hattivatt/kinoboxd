@@ -11,7 +11,7 @@
  *   - every write is atomic (tmp + rename);
  *   - every JSON file carries `schemaVersion`.
  *
- * Layout (see КНИГИ-АРХИТЕКТУРА.md §3.2):
+ * Layout (see AGENTS.md §5.2):
  *
  *   cache-book/
  *     profiles/{source}-{userKey}.json   reading events of one source

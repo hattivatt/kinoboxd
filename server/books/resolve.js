@@ -7,7 +7,7 @@
  * the canonical work namespace (`books.id` = work id, `hc:{id}`). Matching is
  * deliberately asymmetric — hardcover events need no matching at all.
  *
- * Order (КНИГИ-АРХИТЕКТУРА.md §4.0, v2 multi-source chain):
+ * Order (AGENTS.md §5.2):
  *   1. cached link `links/{livelibBookId}.json` (positive results only);
  *   2. ISBN-13/ISBN-10 bulk lookup against Hardcover `editions` (batches of 100);
  *   3. strict title + first-author surname + year (±1) over the local corpus;

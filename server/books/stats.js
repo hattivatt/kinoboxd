@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * /api/books/stats payload (КНИГИ-АРХИТЕКТУРА.md §5, v4: single-profile).
+ * /api/books/stats payload (AGENTS.md §5.2).
  *
  * A books profile IS one source + one account: `livelib-Margaret` OR
  * `hardcover-34748`. Two readers never merge, and two services never merge

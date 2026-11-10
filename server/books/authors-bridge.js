@@ -2,7 +2,7 @@
 
 /**
  * Default-on Wikidata bridge for author spellings the offline rule cannot
- * connect (КНИГИ-АРХИТЕКТУРА §7.2).
+ * connect (AGENTS.md §5.2).
  *
  * The offline rule in `authors.js` (normalize + ids + transliteration) proves
  * most RU/EN pairs, but an established exonym has nothing to prove:

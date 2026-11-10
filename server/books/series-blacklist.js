@@ -2,7 +2,7 @@
 
 /**
  * «Series» that are catalogue tags, not literary series
- * (КНИГИ-АРХИТЕКТУРА §7.4.1, 28.10.2026).
+ * (AGENTS.md §5.2, 28.10.2026).
  *
  * A `livelib-backup` export carries the user's own «Серия» column, and the file
  * column IS the authority for bibliographic values — but it is not an authority
