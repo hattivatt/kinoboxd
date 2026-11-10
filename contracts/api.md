@@ -47,18 +47,18 @@
 | POST | `/api/games/enrich` | — | 400:invalid_recheckDays | `server/games/endpoints/enrich.js:21` |
 | GET | `/api/games/enrich/:jobId` | — | 404:unknown_job | `server/games/endpoints/enrich.js:107` |
 | GET | `/api/games/enrich/status` | — | 400:job_id_required, 404:unknown_job | `server/games/endpoints/enrich.js:93` |
-| POST | `/api/games/epic/auth` | — | — | `server/games/routes-epic.js:282` |
-| GET | `/api/games/epic/auth-url` | — | — | `server/games/routes-epic.js:228` |
-| DELETE | `/api/games/epic/auth/:authId` | — | 404:unknown_auth | `server/games/routes-epic.js:325` |
-| GET | `/api/games/epic/auth/:authId` | — | 404:unknown_auth | `server/games/routes-epic.js:307` |
-| POST | `/api/games/epic/connect` | — | 400:epic_code_required | `server/games/routes-epic.js:248` |
-| POST | `/api/games/epic/disconnect` | — | 400:epic_account_required | `server/games/routes-epic.js:451` |
-| GET | `/api/games/epic/exported` | `accountId`, `owner` | 400:owner_required | `server/games/routes-epic.js:419` |
-| POST | `/api/games/epic/import` | `force` | — | `server/games/routes-epic.js:369` |
-| GET | `/api/games/epic/import/:jobId` | — | 404:unknown_job | `server/games/routes-epic.js:402` |
-| GET | `/api/games/epic/import/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/routes-epic.js:387` |
-| POST | `/api/games/epic/refresh` | — | — | `server/games/routes-epic.js:378` |
-| GET | `/api/games/epic/status` | `accountId`, `owner` | — | `server/games/routes-epic.js:166` |
+| POST | `/api/games/epic/auth` | — | — | `server/games/endpoints/epic/auth.js:71` |
+| GET | `/api/games/epic/auth-url` | — | — | `server/games/endpoints/epic/auth.js:17` |
+| DELETE | `/api/games/epic/auth/:authId` | — | 404:unknown_auth | `server/games/endpoints/epic/auth.js:114` |
+| GET | `/api/games/epic/auth/:authId` | — | 404:unknown_auth | `server/games/endpoints/epic/auth.js:96` |
+| POST | `/api/games/epic/connect` | — | 400:epic_code_required | `server/games/endpoints/epic/auth.js:37` |
+| POST | `/api/games/epic/disconnect` | — | 400:epic_account_required | `server/games/endpoints/epic/disconnect.js:13` |
+| GET | `/api/games/epic/exported` | `accountId`, `owner` | 400:owner_required | `server/games/endpoints/epic/exported.js:17` |
+| POST | `/api/games/epic/import` | `force` | — | `server/games/endpoints/epic/import.js:40` |
+| GET | `/api/games/epic/import/:jobId` | — | 404:unknown_job | `server/games/endpoints/epic/import.js:73` |
+| GET | `/api/games/epic/import/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/endpoints/epic/import.js:58` |
+| POST | `/api/games/epic/refresh` | — | — | `server/games/endpoints/epic/import.js:49` |
+| GET | `/api/games/epic/status` | `accountId`, `owner` | — | `server/games/endpoints/epic/status.js:13` |
 | POST | `/api/games/franchise-enrich` | — | — | `server/games/routes-franchise.js:166` |
 | GET | `/api/games/franchise-enrich/:jobId` | — | 404:unknown_job | `server/games/routes-franchise.js:200` |
 | GET | `/api/games/franchise-enrich/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/routes-franchise.js:185` |
@@ -274,81 +274,81 @@
 
 ### `POST /api/games/epic/auth`
 
-- файл: `server/games/routes-epic.js:282`
+- файл: `server/games/endpoints/epic/auth.js:71`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/games/epic/auth-url`
 
-- файл: `server/games/routes-epic.js:228`
+- файл: `server/games/endpoints/epic/auth.js:17`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 - описание: Login URL for the authorization-code flow. No network call: the client id is public and the page is the official Epic login. The user copies the `code` from the redirect page and posts it to `/epic/connect`.
 
 ### `DELETE /api/games/epic/auth/:authId`
 
-- файл: `server/games/routes-epic.js:325`
+- файл: `server/games/endpoints/epic/auth.js:114`
 - path-параметры: `authId`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `404` `unknown_auth`: 'Unknown Epic auth session.'
 
 ### `GET /api/games/epic/auth/:authId`
 
-- файл: `server/games/routes-epic.js:307`
+- файл: `server/games/endpoints/epic/auth.js:96`
 - path-параметры: `authId`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `404` `unknown_auth`: 'Unknown Epic auth session.'
 
 ### `POST /api/games/epic/connect`
 
-- файл: `server/games/routes-epic.js:248`
+- файл: `server/games/endpoints/epic/auth.js:37`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `code` — см. модуль
 - ошибка `400` `epic_code_required`: 'Body must contain "code" — the one-time code from the Epic login redirect ' + '(epicgames.com/id/api/redirect?code=…).'
 
 ### `POST /api/games/epic/disconnect`
 
-- файл: `server/games/routes-epic.js:451`
+- файл: `server/games/endpoints/epic/disconnect.js:13`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `epic_account_required`: 'Body must contain "accountId" or "owner" (steam-<steamid64>).'
 - описание: ------------------------- disconnect -------------------------
 
 ### `GET /api/games/epic/exported`
 
-- файл: `server/games/routes-epic.js:419`
+- файл: `server/games/endpoints/epic/exported.js:17`
 - query (строгий список): `accountId`, `owner`
 - ошибка `400` `owner_required`: 'Query parameter "owner" (steam-<steamid64>) or "accountId" is required.'
 - описание: The isolated contract for the M6c integration: one entry per Epic game, with `workKey`/`steamAppId` deliberately `null` (the union is built by the integration round, not here). `hoursBySource` stays split.
 
 ### `POST /api/games/epic/import`
 
-- файл: `server/games/routes-epic.js:369`
+- файл: `server/games/endpoints/epic/import.js:40`
 - query (строгий список): `force`
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/games/epic/import/:jobId`
 
-- файл: `server/games/routes-epic.js:402`
+- файл: `server/games/endpoints/epic/import.js:73`
 - path-параметры: `jobId`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `404` `unknown_job`: 'Unknown Epic import job id.'
 
 ### `GET /api/games/epic/import/status`
 
-- файл: `server/games/routes-epic.js:387`
+- файл: `server/games/endpoints/epic/import.js:58`
 - query (строгий список): `id`
 - ошибка `400` `job_id_required`: 'Query parameter "id" is required.'
 - ошибка `404` `unknown_job`: 'Unknown Epic import job id.'
 
 ### `POST /api/games/epic/refresh`
 
-- файл: `server/games/routes-epic.js:378`
+- файл: `server/games/endpoints/epic/import.js:49`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/games/epic/status`
 
-- файл: `server/games/routes-epic.js:166`
+- файл: `server/games/endpoints/epic/status.js:13`
 - query (строгий список): `accountId`, `owner`
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 - описание: --------------------------- status ---------------------------

@@ -32,9 +32,11 @@ const PACKAGE_NIX = path.join(REPO_ROOT, '..', 'package.nix');
 function extractPrepareState(source) {
   const start = source.indexOf('prepare_state() {');
   assert.ok(start > 0, 'prepare_state() not found');
-  const end = source.indexOf('\n}', start);
+  const indent = start - (source.lastIndexOf('\n', start) + 1);
+  const closer = `\n${' '.repeat(indent)}}`;
+  const end = source.indexOf(closer, start);
   assert.ok(end > start, 'prepare_state() body is not terminated');
-  return source.slice(start, end + 2).replace(/''\$\{/g, '${');
+  return source.slice(start, end + closer.length + 1).replace(/''\$\{/g, '${');
 }
 
 /** A throwaway store tree shaped like $out/share/kinoboxd. */
