@@ -5,9 +5,9 @@
  * per-instance request pipeline (breaker, politeness pause, bearer header,
  * authenticated GET).
  *
- * Everything stateful lives in `createRequestPipeline`, which closes over one
- * breaker store and the two `lastRequestAt` marks, exactly like the original
- * single-factory module did. No endpoint body lives here.
+ * Everything stateful lives in `createRequestPipeline`: one source gate (the
+ * breaker) and the two `lastRequestAt` marks; the two pauses stay local, they
+ * are independent full sleeps. No endpoint body lives here.
  */
 
 const fs = require('fs');
@@ -15,8 +15,8 @@ const path = require('path');
 const { URL } = require('url');
 
 const gogCache = require('../gog-cache');
-const { createBreaker } = require('../../core/breaker');
 const { nodeRequest } = require('../../core/http');
+const { createSourceGate } = require('../../core/source-client');
 const {
   GogError,
   maskSecrets,
@@ -184,30 +184,29 @@ function createRequestPipeline(context) {
 
   let lastLibraryAt = null;
   let lastPlaytimeAt = null;
-  const breaker = createBreaker({
+  const gate = createSourceGate({
     now,
-    cooldownMs: () => breakerMs,
-    read: () => breakerStore.read(),
-    write: (state) => breakerStore.write(state),
+    breakerMs: () => breakerMs,
+    breakerStore,
+    createError: (host, entry) =>
+      new GogError(
+        `GOG (${host}) временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
+          `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
+        'gog_rate_limited',
+        { host, retryAt: new Date(entry.until).toISOString() }
+      ),
   });
 
   function breakerFor(host) {
-    return breaker.entry(host);
+    return gate.breakerFor(host);
   }
 
   function tripBreaker(host, reason) {
-    return breaker.trip(host, reason);
+    return gate.tripBreaker(host, reason);
   }
 
   function assertNotBlocked(host) {
-    const entry = breakerFor(host);
-    if (!entry) return;
-    throw new GogError(
-      `GOG (${host}) временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
-        `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
-      'gog_rate_limited',
-      { host, retryAt: new Date(entry.until).toISOString() }
-    );
+    return gate.assertNotBlocked(host);
   }
 
   async function pause(kind) {

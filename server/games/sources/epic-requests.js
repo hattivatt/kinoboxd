@@ -11,7 +11,7 @@
  */
 
 const gameCache = require('../game-cache');
-const { createBreaker } = require('../../core/breaker');
+const { createSourceGate } = require('../../core/source-client');
 const { nodeRequest } = require('../../core/http');
 const sources = require('../../core/sources');
 const {
@@ -112,41 +112,35 @@ function resolveClientOptions(options = {}, creds) {
 function createRequestPipeline(context) {
   const { request, sleep, now, pauseMs, breakerMs, breakerStore, timeoutMs, accountHosts } = context;
 
-  let lastRequestAt = null;
-  const breaker = createBreaker({
+  const gate = createSourceGate({
     now,
-    cooldownMs: () => breakerMs,
-    read: () => breakerStore.read(),
-    write: (state) => breakerStore.write(state),
+    sleep,
+    pauseMs,
+    breakerMs,
+    breakerStore,
+    createError(host, entry) {
+      return new EpicError(
+        `Epic (${host}) временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
+          `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
+        'epic_rate_limited',
+        { host, retryAt: new Date(entry.until).toISOString() }
+      );
+    },
+    mapTransportError(err, context) {
+      return networkError(err, context && context.url);
+    },
   });
 
   function breakerFor(host) {
-    return breaker.entry(host);
+    return gate.breakerFor(host);
   }
 
   function tripBreaker(host, reason) {
-    return breaker.trip(host, reason);
+    return gate.tripBreaker(host, reason);
   }
 
   function assertNotBlocked(host) {
-    const entry = breakerFor(host);
-    if (!entry) return;
-    throw new EpicError(
-      `Epic (${host}) временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
-        `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
-      'epic_rate_limited',
-      { host, retryAt: new Date(entry.until).toISOString() }
-    );
-  }
-
-  async function throttle() {
-    if (pauseMs <= 0) return;
-    if (lastRequestAt != null) {
-      const wait = pauseMs - (now() - lastRequestAt);
-      if (wait > 0) await sleep(wait);
-    }
-    // Reserve the slot before awaiting so concurrent callers also space out.
-    lastRequestAt = now();
+    return gate.assertNotBlocked(host);
   }
 
   function headersFor({ token, contentType, basic } = {}) {
@@ -162,20 +156,18 @@ function createRequestPipeline(context) {
 
   /** Raw HTTP response; throttle + breaker, but no status classification. */
   async function requestRaw({ method = 'GET', url, host, token, basic, contentType, body }) {
-    assertNotBlocked(host);
-    await throttle();
-    let response;
-    try {
-      response = await request({
-        method,
-        url,
-        headers: headersFor({ token, contentType, basic }),
-        body: body == null ? null : String(body),
-        timeoutMs,
-      });
-    } catch (err) {
-      throw err instanceof EpicError ? err : networkError(err, url);
-    }
+    const response = await gate.request(
+      host,
+      () =>
+        request({
+          method,
+          url,
+          headers: headersFor({ token, contentType, basic }),
+          body: body == null ? null : String(body),
+          timeoutMs,
+        }),
+      { url }
+    );
     const status = Number(response.status) || 0;
     if (status === 403 || status === 429) {
       tripBreaker(host, status === 429 ? '429 Too Many Requests' : 'HTTP 403');

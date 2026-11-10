@@ -45,7 +45,7 @@ const path = require('path');
 const gameCache = require('./game-cache');
 const { safeKey } = require('../core/fs-store');
 const { fetchBinary, fetchJson } = require('../core/http');
-const { createBreaker } = require('../core/breaker');
+const { createSourceGate } = require('../core/source-client');
 const sources = require('../core/sources');
 const { HttpError } = require('../upload');
 
@@ -296,15 +296,16 @@ async function fetchBrowseAssets(appid, options = {}) {
     err.code = 'art_browse_budget';
     throw err;
   }
-  const breaker =
-    options.breaker ||
-    createBreaker({
-      now: options.now,
-      cooldownMs: () => sources.breakerMs('steamBrowse'),
+  const gate = createSourceGate({
+    breaker: options.breaker,
+    now: options.now,
+    breakerMs: () => sources.breakerMs('steamBrowse'),
+    breakerStore: {
       read: () => gameCache.readBreaker(),
       write: (state) => gameCache.writeBreaker(state),
-    });
-  const open = breaker.entry(BROWSE_BREAKER_KEY);
+    },
+  });
+  const open = gate.breakerFor(BROWSE_BREAKER_KEY);
   if (open) {
     const err = new Error(`IStoreBrowseService is resting until ${open.until}`);
     err.code = 'art_browse_rate_limited';
@@ -334,7 +335,7 @@ async function fetchBrowseAssets(appid, options = {}) {
   } catch (err) {
     const status = Number(err && err.status) || 0;
     if (status === 403 || status === 429 || (err && err.code === 'provider_rate_limited')) {
-      breaker.trip(BROWSE_BREAKER_KEY, {
+      gate.tripBreaker(BROWSE_BREAKER_KEY, {
         reason: status === 429 ? '429 Too Many Requests' : 'HTTP 403',
         untilMs: sources.breakerMs('steamBrowse'),
       });

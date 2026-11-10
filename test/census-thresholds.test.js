@@ -28,7 +28,7 @@ const MODULE_ALLOWLIST = {
   'server/games/sources/epic.js': 1003,
   'server/books/hardcover.js': 992,
   'public/js/modal.js': 982,
-  'server/games/steam-art.js': 955,
+  'server/games/steam-art.js': 956,
   'server/books/book-cache.js': 927,
   'server/wikidata.js': 918,
   'server/games/steam.js': 878,

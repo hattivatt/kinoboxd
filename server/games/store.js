@@ -31,7 +31,7 @@
 
 const steam = require('./steam');
 const gameCache = require('./game-cache');
-const { createBreaker } = require('../core/breaker');
+const { createSourceGate } = require('../core/source-client');
 const sources = require('../core/sources');
 
 const STORE_HOST = 'store.steampowered.com';
@@ -475,21 +475,68 @@ function createClient(options = {}) {
       ? options.reviewsBreakerMs
       : sources.breakerMs('steamReviews');
 
-  let lastRequestAt = null;
-  let lastReviewsAt = null;
-  const breaker = createBreaker({
-    now,
-    cooldownMs: () => breakerMs,
+  const breakerStore = {
     read: () => gameCache.readBreaker(),
     write: (state) => gameCache.writeBreaker(state),
+  };
+
+  function rateLimitedError(host, entry) {
+    return new StoreError(
+      `${host} временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
+        `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
+      host === REVIEWS_BREAKER_KEY ? 'reviews_rate_limited' : 'store_rate_limited',
+      { host, retryAt: new Date(entry.until).toISOString() }
+    );
+  }
+
+  const detailsGate = createSourceGate({
+    now,
+    sleep,
+    pauseMs,
+    breakerMs,
+    breakerStore,
+    createError: rateLimitedError,
+    mapTransportError(err) {
+      if (err instanceof StoreError) return err;
+      if (err && err.code === 'steam_unreachable') {
+        return new StoreError(err.message, 'store_unreachable', { host: STORE_HOST });
+      }
+      return new StoreError(
+        `Steam Store недоступен (${STORE_HOST}, ${(err && err.code) || 'ENETWORK'}). ` +
+          'Это сеть/DNS/TLS, не повод считать игру «без деталей» — повторите позже.',
+        'store_unreachable',
+        { host: STORE_HOST }
+      );
+    },
+  });
+
+  const reviewsGate = createSourceGate({
+    now,
+    sleep,
+    pauseMs: reviewsPauseMs,
+    breakerMs: reviewsBreakerMs,
+    breakerStore,
+    createError: rateLimitedError,
+    mapTransportError(err) {
+      if (err instanceof StoreError) return err;
+      if (err && err.code === 'steam_unreachable') {
+        return new StoreError(err.message, 'reviews_unreachable', { host: REVIEWS_HOST });
+      }
+      return new StoreError(
+        `Steam reviews недоступны (${REVIEWS_HOST}, ${(err && err.code) || 'ENETWORK'}). ` +
+          'Это сеть/DNS/TLS, не повод считать игру «без отзывов» — повторите позже.',
+        'reviews_unreachable',
+        { host: REVIEWS_HOST }
+      );
+    },
   });
 
   function breakerEntryFor(host) {
-    return breaker.entry(host);
+    return detailsGate.breakerFor(host);
   }
 
   function tripBreakerFor(host, reason, windowMs) {
-    return breaker.trip(host, { reason, untilMs: windowMs });
+    return detailsGate.tripBreaker(host, { reason, untilMs: windowMs });
   }
 
   function breakerEntry() {
@@ -500,31 +547,8 @@ function createClient(options = {}) {
     tripBreakerFor(STORE_HOST, reason, breakerMs);
   }
 
-  function assertNotBlockedFor(host, code) {
-    const entry = breakerEntryFor(host);
-    if (!entry) return;
-    throw new StoreError(
-      `${host} временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
-        `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
-      code,
-      { host, retryAt: new Date(entry.until).toISOString() }
-    );
-  }
-
   function assertNotBlocked() {
-    assertNotBlockedFor(STORE_HOST, 'store_rate_limited');
-  }
-
-  async function pause() {
-    if (pauseMs <= 0 || lastRequestAt == null) return;
-    const wait = pauseMs - (now() - lastRequestAt);
-    if (wait > 0) await sleep(wait);
-  }
-
-  async function pauseReviews() {
-    if (reviewsPauseMs <= 0 || lastReviewsAt == null) return;
-    const wait = reviewsPauseMs - (now() - lastReviewsAt);
-    if (wait > 0) await sleep(wait);
+    return detailsGate.assertNotBlocked(STORE_HOST);
   }
 
   /**
@@ -536,26 +560,13 @@ function createClient(options = {}) {
     if (!Number.isInteger(appid) || appid <= 0) {
       throw new StoreError(`Некорректный appid: ${rawAppid}`, 'store_invalid_appid');
     }
-    assertNotBlocked();
-    await pause();
-    lastRequestAt = now();
-    let response;
-    try {
-      response = await request(storeUrl(appid), {
-        timeoutMs: envInt('GAMES_STEAM_TIMEOUT_MS', 20000),
-      });
-    } catch (err) {
-      if (err instanceof StoreError) throw err;
-      if (err && err.code === 'steam_unreachable') {
-        throw new StoreError(err.message, 'store_unreachable', { host: STORE_HOST });
-      }
-      throw new StoreError(
-        `Steam Store недоступен (${STORE_HOST}, ${(err && err.code) || 'ENETWORK'}). ` +
-          'Это сеть/DNS/TLS, не повод считать игру «без деталей» — повторите позже.',
-        'store_unreachable',
-        { host: STORE_HOST }
-      );
-    }
+    const response = await detailsGate.request(
+      STORE_HOST,
+      () =>
+        request(storeUrl(appid), {
+          timeoutMs: envInt('GAMES_STEAM_TIMEOUT_MS', 20000),
+        })
+    );
     const status = Number(response && response.status) || 0;
     if (status === 403 || status === 429) {
       tripBreaker(status === 429 ? '429 Too Many Requests' : 'HTTP 403');
@@ -603,7 +614,7 @@ function createClient(options = {}) {
   }
 
   function assertReviewsNotBlocked() {
-    assertNotBlockedFor(REVIEWS_BREAKER_KEY, 'reviews_rate_limited');
+    return reviewsGate.assertNotBlocked(REVIEWS_BREAKER_KEY);
   }
 
   /**
@@ -616,26 +627,13 @@ function createClient(options = {}) {
     if (!Number.isInteger(appid) || appid <= 0) {
       throw new StoreError(`Некорректный appid: ${rawAppid}`, 'reviews_invalid_appid');
     }
-    assertReviewsNotBlocked();
-    await pauseReviews();
-    lastReviewsAt = now();
-    let response;
-    try {
-      response = await request(reviewsUrl(appid), {
-        timeoutMs: envInt('GAMES_REVIEWS_TIMEOUT_MS', 20000),
-      });
-    } catch (err) {
-      if (err instanceof StoreError) throw err;
-      if (err && err.code === 'steam_unreachable') {
-        throw new StoreError(err.message, 'reviews_unreachable', { host: REVIEWS_HOST });
-      }
-      throw new StoreError(
-        `Steam reviews недоступны (${REVIEWS_HOST}, ${(err && err.code) || 'ENETWORK'}). ` +
-          'Это сеть/DNS/TLS, не повод считать игру «без отзывов» — повторите позже.',
-        'reviews_unreachable',
-        { host: REVIEWS_HOST }
-      );
-    }
+    const response = await reviewsGate.request(
+      REVIEWS_BREAKER_KEY,
+      () =>
+        request(reviewsUrl(appid), {
+          timeoutMs: envInt('GAMES_REVIEWS_TIMEOUT_MS', 20000),
+        })
+    );
     const status = Number(response && response.status) || 0;
     if (status === 403 || status === 429) {
       tripReviewsBreaker(status === 429 ? '429 Too Many Requests' : 'HTTP 403');

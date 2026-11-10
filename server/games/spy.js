@@ -27,7 +27,7 @@
 
 const steam = require('./steam');
 const gameCache = require('./game-cache');
-const { createBreaker } = require('../core/breaker');
+const { createSourceGate } = require('../core/source-client');
 const sources = require('../core/sources');
 
 const SPY_HOST = 'steamspy.com';
@@ -167,37 +167,48 @@ function createClient(options = {}) {
   const breakerMs =
     options.breakerMs != null ? options.breakerMs : sources.breakerMs('steamSpy');
 
-  let lastRequestAt = null;
-  const breaker = createBreaker({
+  const gate = createSourceGate({
     now,
-    cooldownMs: () => breakerMs,
-    read: () => gameCache.readBreaker(),
-    write: (state) => gameCache.writeBreaker(state),
+    sleep,
+    pauseMs,
+    breakerMs,
+    breakerStore: {
+      read: () => gameCache.readBreaker(),
+      write: (state) => gameCache.writeBreaker(state),
+    },
+    createError(host, entry) {
+      return new SpyError(
+        `SteamSpy (${host}) временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
+          `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
+        'spy_rate_limited',
+        { host, retryAt: new Date(entry.until).toISOString() }
+      );
+    },
+    mapTransportError(err) {
+      if (err instanceof SpyError) return err;
+      const host = SPY_HOST;
+      if (err && err.code === 'steam_unreachable') {
+        return new SpyError(err.message, 'spy_unreachable', { host });
+      }
+      return new SpyError(
+        `SteamSpy недоступен (${host}, ${(err && err.code) || 'ENETWORK'}). ` +
+          'Это сеть/DNS/TLS, не повод считать игру «без тегов» — повторите позже.',
+        'spy_unreachable',
+        { host }
+      );
+    },
   });
 
   function breakerEntry() {
-    return breaker.entry(SPY_HOST);
+    return gate.breakerFor(SPY_HOST);
   }
 
   function tripBreaker(reason) {
-    return breaker.trip(SPY_HOST, reason);
+    return gate.tripBreaker(SPY_HOST, reason);
   }
 
   function assertNotBlocked() {
-    const entry = breakerEntry();
-    if (!entry) return;
-    throw new SpyError(
-      `SteamSpy (${SPY_HOST}) временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
-        `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
-      'spy_rate_limited',
-      { host: SPY_HOST, retryAt: new Date(entry.until).toISOString() }
-    );
-  }
-
-  async function pause() {
-    if (pauseMs <= 0 || lastRequestAt == null) return;
-    const wait = pauseMs - (now() - lastRequestAt);
-    if (wait > 0) await sleep(wait);
+    return gate.assertNotBlocked(SPY_HOST);
   }
 
   /**
@@ -209,26 +220,13 @@ function createClient(options = {}) {
     if (!Number.isInteger(appid) || appid <= 0) {
       throw new SpyError(`Некорректный appid: ${rawAppid}`, 'spy_invalid_appid');
     }
-    assertNotBlocked();
-    await pause();
-    lastRequestAt = now();
-    let response;
-    try {
-      response = await request(spyUrl(appid), {
-        timeoutMs: envInt('GAMES_SPY_TIMEOUT_MS', 20000),
-      });
-    } catch (err) {
-      if (err instanceof SpyError) throw err;
-      if (err && err.code === 'steam_unreachable') {
-        throw new SpyError(err.message, 'spy_unreachable', { host: SPY_HOST });
-      }
-      throw new SpyError(
-        `SteamSpy недоступен (${SPY_HOST}, ${(err && err.code) || 'ENETWORK'}). ` +
-          'Это сеть/DNS/TLS, не повод считать игру «без тегов» — повторите позже.',
-        'spy_unreachable',
-        { host: SPY_HOST }
-      );
-    }
+    const response = await gate.request(
+      SPY_HOST,
+      () =>
+        request(spyUrl(appid), {
+          timeoutMs: envInt('GAMES_SPY_TIMEOUT_MS', 20000),
+        })
+    );
     const status = Number(response && response.status) || 0;
     if (status === 403 || status === 429) {
       tripBreaker(status === 429 ? '429 Too Many Requests' : 'HTTP 403');
