@@ -1386,7 +1386,7 @@ function secondaryFranchiseTargets(ownerKey, options = {}) {
   // Lazy requires: `secondary-details` → `secondary` → `franchise` is a cycle
   // at module-load time, but not at call time.
   const { targetsForOwner } = require('./secondary-details');
-  const { readSecondaryLinks, readSecondaryTitleLinks, normalizeSlug } = require('./secondary-identity');
+  const { readSecondaryLinks, readSecondaryTitleLinks, normalizeSlug } = require('./secondary');
   const links = options.links && typeof options.links === 'object'
     ? options.links
     : readSecondaryLinks({ allowStale: true });

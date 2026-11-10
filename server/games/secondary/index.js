@@ -4,10 +4,10 @@
  * The secondary-library model: **one** place where a GOG/Epic product gets its
  * identity (`workKey`) and where the same owner's libraries are unioned.
  *
- * This module absorbs the four modules the domain used to have
- * (`gog-union.js`, `secondary-union.js`, `secondary-identity.js`,
- * `epic-layer.js`); their old paths stay as thin re-export facades until the
- * tests move. Everything here is pure plain-objects-in/plain-objects-out apart
+ * This module is one barrel over the model modules the domain used to keep
+ * as separate files (`identity.js`, `union.js`, `bridge.js`, `epic.js`,
+ * `cache.js`, `title-genres.js`, `enrich.js`, `normalize.js`). Everything here
+ * is pure plain-objects-in/plain-objects-out apart
  * from explicit cache reads and the one WDQS batch, so it is unit-testable
  * without HTTP or the filesystem.
  *

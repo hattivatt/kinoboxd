@@ -48,7 +48,7 @@ function gogSnapshotsForOwner(ownerKey) {
 /** Epic read model of the owner, or `null` when no account is bound. */
 function epicLayerForOwner(ownerKey) {
   try {
-    return require('./epic-layer').buildEpicLayerSync({ ownerKey });
+    return require('./secondary/epic').buildEpicLayerSync({ ownerKey });
   } catch (err) {
     return null;
   }
@@ -80,7 +80,7 @@ function editionDocFor(profileKey, library, games, details, links) {
  */
 function secondaryIdentityOf(entry, options = {}) {
   const franchise = require('./franchise');
-  const { normalizeSlug } = require('./secondary-identity');
+  const { normalizeSlug } = require('./secondary/identity');
   const store = entry && entry.epic ? 'epic' : entry && entry.gog ? 'gog' : null;
   const rawSlug = entry && entry.epic ? entry.epic.slug : entry && entry.gog ? entry.gog.slug : null;
   const slug = rawSlug ? normalizeSlug(rawSlug) : null;
@@ -177,11 +177,8 @@ function secondaryWorksForOwner(ownerKey, options = {}) {
     profileKey: parsed.key,
     library,
   });
-  const {
-    buildSecondaryUnion,
-    readSecondaryLinks,
-    readSecondaryTitleLinks,
-  } = require('./secondary-identity');
+  const { buildSecondaryUnion } = require('./secondary/union');
+  const { readSecondaryLinks, readSecondaryTitleLinks } = require('./secondary/cache');
   const bridge = options.secondaryLinks || readSecondaryLinks({ allowStale: true });
   const titleBridge =
     options.secondaryTitleLinks || readSecondaryTitleLinks({ allowStale: true });

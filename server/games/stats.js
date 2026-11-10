@@ -50,7 +50,7 @@
  * "time under stats tracking", not full playtime (§2.1 п. 3).
  *
  * M6c (GOG/Epic as same-owner secondary libraries, 01.11.2026):
- *   - the union (`secondary-union.js`) joins GOG/Epic products to Steam works
+ *   - the union (`secondary/union.js`) joins GOG/Epic products to Steam works
  *     by `workKey` (Wikidata P2725/P6278 → P1733, then an exact title match);
  *   - a work that exists **only** outside Steam is a real owned game: it is
  *     counted in `gameCount`/`worksTotal`, its hours go into `totalHours`,
@@ -72,8 +72,8 @@ const {
   readDetailsIndex,
   runningFor: secondaryDetailsRunning,
 } = require('./secondary-details');
-const { readSecondaryLinks, readSecondaryTitleLinks } = require('./secondary-identity');
-const { buildEpicLayerSync } = require('./epic-layer');
+const { readSecondaryLinks, readSecondaryTitleLinks } = require('./secondary/cache');
+const { buildEpicLayerSync } = require('./secondary/epic');
 const franchise = require('./franchise');
 const editions = require('./editions');
 

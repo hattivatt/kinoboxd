@@ -8,7 +8,7 @@ const { normalizeSlug, uniqueSlugs } = require('./identity');
 const { readCache, writeCache, emptyEntry, isSettledEntry, ttlMs } = require('./cache');
 
 /* ------------------------------------------------------------------ */
-/* identity bridge (was `secondary-identity.js`)                       */
+/* identity bridge                                                      */
 /* ------------------------------------------------------------------ */
 
 const WDQS = 'https://query.wikidata.org/sparql';
@@ -138,7 +138,7 @@ function sparqlRequest(query, options = {}) {
     },
     body: new URLSearchParams({ query, format: 'json' }).toString(),
     timeoutMs,
-    label: 'secondary-identity',
+    label: 'secondary-bridge',
   }).then(responseFacade);
 }
 

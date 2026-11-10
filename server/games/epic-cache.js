@@ -456,7 +456,7 @@ function getProductMapping() {
  * absent from it *and* from the catalog's `productSlug`/`urlSlug`. When the
  * secondary-details job discovers the CMS slug by a validated title probe
  * (`Alan Wake 2` → `alan-wake-2`, checked against `productName`), it stores it
- * here. Both the read model (`epic-layer.joinGames`) and the job targets read
+ * here. Both the read model (`secondary/epic.joinGames`) and the job targets read
  * this file, so one discovery is enough and a re-import does not lose it.
  *
  * It is deliberately **not** written into the catalog document: that document

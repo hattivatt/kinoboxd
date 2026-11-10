@@ -5,7 +5,7 @@ const { yearOfDate } = require('./normalize');
 const { normalizeTitle, normalizeSlug, slugsOfLink } = require('./identity');
 
 /* ------------------------------------------------------------------ */
-/* cross-store union (was `secondary-union.js`)                        */
+/* cross-store union                                                   */
 /* ------------------------------------------------------------------ */
 
 /** `[{name}]` | `['Action']` | `'Action'` → `['Action']`. */

@@ -16,10 +16,10 @@
  */
 
 const gogCache = require('../gog-cache');
-const { buildSecondaryUnion } = require('../secondary-union');
+const { buildSecondaryUnion } = require('../secondary/union');
 const { enrichUnionWithDetails } = require('../secondary-details');
 const { attachSecondaryIdentity } = require('../secondary-works');
-const { epicSourceBlock } = require('../epic-layer');
+const { epicSourceBlock } = require('../secondary/epic');
 
 function buildSecondaryState({ input = {}, allWorks, linkDocs }) {
   const gogAccounts = Array.isArray(input.gogAccounts) ? input.gogAccounts : [];
@@ -176,7 +176,7 @@ function buildSecondaryState({ input = {}, allWorks, linkDocs }) {
   };
 
   /* ---------------- M6b/M6c: Epic same-owner secondary library ------------ */
-  // The Epic read model is assembled by `epic-layer.js` (status, catalog
+  // The Epic read model is assembled by `secondary/epic.js` (status, catalog
   // coverage, playtime). M6c joins its games into the union above: a game with
   // a Wikidata `P6278`/title match becomes part of the Steam work, the rest is
   // a secondary-only work (`epic:<catalogItemId>`). These constants only feed

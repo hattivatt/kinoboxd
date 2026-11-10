@@ -23,7 +23,7 @@ const epic = require('../server/games/epic');
 const gameCache = require('../server/games/game-cache');
 const epicCache = require('../server/games/epic-cache');
 const epicImport = require('../server/games/epic-import');
-const epicLayer = require('../server/games/epic-layer');
+const epicLayer = require('../server/games/secondary/epic');
 const tokenStore = require('../server/games/epic-token-store');
 const { createFakeEpicClient } = require('./fixtures/games/epic/fake-client');
 

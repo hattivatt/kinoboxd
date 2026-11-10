@@ -28,7 +28,7 @@ const gameCache = require('../server/games/game-cache');
 const epicCache = require('../server/games/epic-cache');
 const tokenStore = require('../server/games/epic-token-store');
 const details = require('../server/games/secondary-details');
-const identity = require('../server/games/secondary-identity');
+const identity = require('../server/games/secondary');
 const { portFor } = require('./helpers/port');
 
 /* ---- was games-secondary-catalog-heal.test.js ---- */

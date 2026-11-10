@@ -21,7 +21,6 @@ const MODULE_ALLOWLIST = {
   'server/kp.js': 1337,
   'server/books/livelib-file.js': 1284,
   'server/tmdb.js': 1187,
-  'server/games/secondary-details.js': 1156,
   'server/books/import.js': 1008,
   'server/games/enrich.js': 1005,
   'server/games/sources/epic.js': 1003,

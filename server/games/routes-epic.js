@@ -34,7 +34,7 @@ const epic = require('./epic');
 const epicCache = require('./epic-cache');
 const epicAuth = require('./epic-auth');
 const epicImport = require('./epic-import');
-const epicLayer = require('./epic-layer');
+const epicLayer = require('./secondary/epic');
 const tokenStore = require('./epic-token-store');
 
 const EPIC_ERROR_STATUS = {
