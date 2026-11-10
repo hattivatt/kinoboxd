@@ -28,7 +28,7 @@
  */
 
 const gameCache = require('./game-cache');
-const { createBreaker } = require('../core/breaker');
+const { createSourceGate } = require('../core/source-client');
 const { fetchJson } = require('../core/http');
 const sources = require('../core/sources');
 const config = require('../config');
@@ -110,15 +110,16 @@ async function resolveSteamGridDb(rawAppid, options = {}) {
   const budget = options.budget || null;
   if (budget && !budget.take()) return { status: 'deferred', reason: 'budget' };
 
-  const breaker =
-    options.breaker ||
-    createBreaker({
-      now: options.now,
-      cooldownMs: () => sources.breakerMs('steamGridDb'),
+  const gate = createSourceGate({
+    breaker: options.breaker,
+    now: options.now,
+    breakerMs: () => sources.breakerMs('steamGridDb'),
+    breakerStore: {
       read: () => gameCache.readBreaker(),
       write: (state) => gameCache.writeBreaker(state),
-    });
-  const open = breaker.entry(BREAKER_KEY);
+    },
+  });
+  const open = gate.breakerFor(BREAKER_KEY);
   if (open) return { status: 'deferred', reason: 'breaker' };
 
   const request = async (url) => {
@@ -141,7 +142,7 @@ async function resolveSteamGridDb(rawAppid, options = {}) {
   } catch (err) {
     const status = Number(err && err.status) || 0;
     if (status === 403 || status === 429 || (err && err.code === 'provider_rate_limited')) {
-      breaker.trip(BREAKER_KEY, {
+      gate.tripBreaker(BREAKER_KEY, {
         reason: status === 429 ? '429 Too Many Requests' : 'HTTP 403',
         untilMs: sources.breakerMs('steamGridDb'),
       });
@@ -163,7 +164,7 @@ async function resolveSteamGridDb(rawAppid, options = {}) {
   } catch (err) {
     const status = Number(err && err.status) || 0;
     if (status === 403 || status === 429 || (err && err.code === 'provider_rate_limited')) {
-      breaker.trip(BREAKER_KEY, {
+      gate.tripBreaker(BREAKER_KEY, {
         reason: status === 429 ? '429 Too Many Requests' : 'HTTP 403',
         untilMs: sources.breakerMs('steamGridDb'),
       });
