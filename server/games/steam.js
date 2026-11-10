@@ -593,32 +593,19 @@ function createClient(options = {}) {
     );
   }
 
-  function transportError(err, context) {
-    return err instanceof SteamError ? err : networkError(err, context && context.url);
-  }
-
-  const breakerGate = createSourceGate({
-    now,
-    breakerMs,
-    breakerStore,
-    createError: rateLimitedError,
-  });
-  const communityGate = createSourceGate({
-    now,
-    sleep,
-    pauseMs,
-    breaker: breakerGate.breaker,
-    createError: rateLimitedError,
-    mapTransportError: transportError,
-  });
-  const apiGate = createSourceGate({
-    now,
-    sleep,
-    pauseMs: 0,
-    breaker: breakerGate.breaker,
-    createError: rateLimitedError,
-    mapTransportError: transportError,
-  });
+  const breakerGate = createSourceGate({ now, breakerMs, breakerStore, createError: rateLimitedError });
+  const lane = (pauseMs) =>
+    createSourceGate({
+      now,
+      sleep,
+      pauseMs,
+      breaker: breakerGate.breaker,
+      createError: rateLimitedError,
+      mapTransportError: (err, context) =>
+        err instanceof SteamError ? err : networkError(err, context && context.url),
+    });
+  const communityGate = lane(pauseMs);
+  const apiGate = lane(0);
 
   function breakerFor(host) {
     return breakerGate.breakerFor(host);
