@@ -46,7 +46,7 @@
 
             inherit src;
 
-            npmDepsHash = "sha256-ARouZ8hT/EbihEMKiwzwo/PpFF9iOuGEMsveFlzphbQ=";
+            npmDepsHash = "sha256-X6rMqzNU1oXT0h1oc7Ak3dxP6Yb90frXXbiIra52Qag=";
 
             nativeBuildInputs = [ pkgs.makeWrapper ];
 

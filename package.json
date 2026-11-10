@@ -26,7 +26,6 @@
   "dependencies": {
     "adm-zip": "^0.5.16",
     "cheerio": "^1.2.0",
-    "compression": "^1.8.2",
     "express": "^4.21.2",
     "multer": "^2.4.0"
   }
