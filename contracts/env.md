@@ -30,8 +30,8 @@
 | `DEBUG_BROAD` | см. файл | `server/tmdb.js:626` | if (process.env.DEBUG_BROAD) { |
 | `DEBUG_REMATCH` | см. файл | `server/rematch.js:240` | The new id is still valid; a later enrich/backfill can fetch details. |
 | `DEBUG_RETRY` | см. файл | `server/tmdb.js:129` | if (process.env.DEBUG_RETRY) { |
-| `EPIC_CLIENT_ID` | `process.env.GAMES_EPIC_CLIENT_ID` (server/games/epic.js) | `server/games/epic.js:741` | const envId = process.env.EPIC_CLIENT_ID \|\| process.env.GAMES_EPIC_CLIENT_ID; |
-| `EPIC_CLIENT_SECRET` | `process.env.GAMES_EPIC_CLIENT_SECRET` (server/games/epic.js) | `server/games/epic.js:742` | const envSecret = process.env.EPIC_CLIENT_SECRET \|\| process.env.GAMES_EPIC_CLIENT_SECRET; |
+| `EPIC_CLIENT_ID` | `process.env.GAMES_EPIC_CLIENT_ID` (server/games/epic.js) | `server/games/epic.js:145` | const envId = process.env.EPIC_CLIENT_ID \|\| process.env.GAMES_EPIC_CLIENT_ID; |
+| `EPIC_CLIENT_SECRET` | `process.env.GAMES_EPIC_CLIENT_SECRET` (server/games/epic.js) | `server/games/epic.js:146` | const envSecret = process.env.EPIC_CLIENT_SECRET \|\| process.env.GAMES_EPIC_CLIENT_SECRET; |
 | `GAMES_ACHIEVEMENTS_TTL_MS` | см. файл | `server/games/game-cache.js:191` | const raw = Number(process.env.GAMES_ACHIEVEMENTS_TTL_MS); |
 | `GAMES_ART_TTL_MS` | ttlMs = 15552000000 ms (180 d) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | ttlEnv: 'GAMES_ART_TTL_MS', |
 | `GAMES_BASE_DETAILS_BUDGET` | `20 (DEFAULT_BASE_DETAILS_BUDGET)` (server/games/franchise.js) | `server/games/franchise.js:1315` | return budgetLimitFromEnv('GAMES_BASE_DETAILS_BUDGET', DEFAULT_BASE_DETAILS_BUDGET); |
@@ -39,21 +39,21 @@
 | `GAMES_BROWSE_BUDGET` | budget = 340 (0 = off) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | budgetEnv: 'GAMES_BROWSE_BUDGET', |
 | `GAMES_BROWSE_PAUSE_MS` | pauseMs = 150 ms (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | The per-asset hash of the new-schema vertical capsule is published only by the store-frontend method `IStoreBrowseService/GetItems` (no key). One request per appid per 180-day resolve, 150 ms apart. |
 | `GAMES_BROWSE_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | timeoutEnv: 'GAMES_BROWSE_TIMEOUT_MS', |
-| `GAMES_EPIC_ACCOUNT_HOST` | `account-public-service-prod03.ol.epicgames.com (ACCOUNT_HOST)` (server/games/epic.js) | `server/games/epic.js:789` | const accountHost = options.accountHost \|\| process.env.GAMES_EPIC_ACCOUNT_HOST \|\| ACCOUNT_HOST; |
+| `GAMES_EPIC_ACCOUNT_HOST` | `account-public-service-prod03.ol.epicgames.com (ACCOUNT_HOST)` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:85` | const accountHost = options.accountHost \|\| process.env.GAMES_EPIC_ACCOUNT_HOST \|\| ACCOUNT_HOST; |
 | `GAMES_EPIC_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`epic`) | `server/core/sources.js` (epic) | breakerEnv: 'GAMES_EPIC_BREAKER_MS', |
-| `GAMES_EPIC_CATALOG_HOST` | `catalog-public-service-prod06.ol.epicgames.com (CATALOG_HOST)` (server/games/epic.js) | `server/games/epic.js:795` | const catalogHost = options.catalogHost \|\| process.env.GAMES_EPIC_CATALOG_HOST \|\| CATALOG_HOST; |
+| `GAMES_EPIC_CATALOG_HOST` | `catalog-public-service-prod06.ol.epicgames.com (CATALOG_HOST)` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:100` | catalogHost: options.catalogHost \|\| process.env.GAMES_EPIC_CATALOG_HOST \|\| CATALOG_HOST, |
 | `GAMES_EPIC_CATALOG_TTL_MS` | `15552000000 ms (180 d) (CATALOG_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:521` | return envTtl('GAMES_EPIC_CATALOG_TTL_MS', CATALOG_TTL_MS); |
-| `GAMES_EPIC_CLIENT_ID` | см. файл | `server/games/epic.js:741` | const envId = process.env.EPIC_CLIENT_ID \|\| process.env.GAMES_EPIC_CLIENT_ID; |
-| `GAMES_EPIC_CLIENT_SECRET` | см. файл | `server/games/epic.js:742` | const envSecret = process.env.EPIC_CLIENT_SECRET \|\| process.env.GAMES_EPIC_CLIENT_SECRET; |
-| `GAMES_EPIC_COUNTRY` | `'US'` (server/games/epic.js) | `server/games/epic.js:800` | const country = options.country \|\| process.env.GAMES_EPIC_COUNTRY \|\| 'US'; |
-| `GAMES_EPIC_ENTITLEMENT_HOST` | `entitlement-public-service-prod08.ol.epicgames.com (ENTITLEMENT_HOST)` (server/games/epic.js) | `server/games/epic.js:797` | options.entitlementHost \|\| process.env.GAMES_EPIC_ENTITLEMENT_HOST \|\| ENTITLEMENT_HOST; |
-| `GAMES_EPIC_LIBRARY_HOST` | `library-service.live.use1a.on.epicgames.com (LIBRARY_HOST)` (server/games/epic.js) | `server/games/epic.js:794` | const libraryHost = options.libraryHost \|\| process.env.GAMES_EPIC_LIBRARY_HOST \|\| LIBRARY_HOST; |
+| `GAMES_EPIC_CLIENT_ID` | см. файл | `server/games/epic.js:145` | const envId = process.env.EPIC_CLIENT_ID \|\| process.env.GAMES_EPIC_CLIENT_ID; |
+| `GAMES_EPIC_CLIENT_SECRET` | см. файл | `server/games/epic.js:146` | const envSecret = process.env.EPIC_CLIENT_SECRET \|\| process.env.GAMES_EPIC_CLIENT_SECRET; |
+| `GAMES_EPIC_COUNTRY` | `'US'` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:105` | country: options.country \|\| process.env.GAMES_EPIC_COUNTRY \|\| 'US', |
+| `GAMES_EPIC_ENTITLEMENT_HOST` | `entitlement-public-service-prod08.ol.epicgames.com (ENTITLEMENT_HOST)` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:102` | options.entitlementHost \|\| process.env.GAMES_EPIC_ENTITLEMENT_HOST \|\| ENTITLEMENT_HOST, |
+| `GAMES_EPIC_LIBRARY_HOST` | `library-service.live.use1a.on.epicgames.com (LIBRARY_HOST)` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:99` | libraryHost: options.libraryHost \|\| process.env.GAMES_EPIC_LIBRARY_HOST \|\| LIBRARY_HOST, |
 | `GAMES_EPIC_LIBRARY_TTL_MS` | `86400000 ms (1 d) (LIBRARY_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:513` | return envTtl('GAMES_EPIC_LIBRARY_TTL_MS', LIBRARY_TTL_MS); |
-| `GAMES_EPIC_LOCALE` | `'en-US'` (server/games/epic.js) | `server/games/epic.js:801` | const locale = options.locale \|\| process.env.GAMES_EPIC_LOCALE \|\| 'en-US'; |
+| `GAMES_EPIC_LOCALE` | `'en-US'` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:106` | locale: options.locale \|\| process.env.GAMES_EPIC_LOCALE \|\| 'en-US', |
 | `GAMES_EPIC_PAUSE_MS` | pauseMs = 300 ms (`epic`) | `server/core/sources.js` (epic) | pauseEnv: 'GAMES_EPIC_PAUSE_MS', |
 | `GAMES_EPIC_PLAYTIME_TTL_MS` | `86400000 ms (1 d) (PLAYTIME_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:517` | return envTtl('GAMES_EPIC_PLAYTIME_TTL_MS', PLAYTIME_TTL_MS); |
 | `GAMES_EPIC_PRODUCTMAPPING_TTL_MS` | `604800000 ms (7 d) (PRODUCT_MAPPING_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:525` | return envTtl('GAMES_EPIC_PRODUCTMAPPING_TTL_MS', PRODUCT_MAPPING_TTL_MS); |
-| `GAMES_EPIC_STORE_CONTENT_HOST` | `store-content.ak.epicgames.com (STORE_CONTENT_HOST)` (server/games/epic.js) | `server/games/epic.js:799` | options.storeContentHost \|\| process.env.GAMES_EPIC_STORE_CONTENT_HOST \|\| STORE_CONTENT_HOST; |
+| `GAMES_EPIC_STORE_CONTENT_HOST` | `store-content.ak.epicgames.com (STORE_CONTENT_HOST)` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:104` | options.storeContentHost \|\| process.env.GAMES_EPIC_STORE_CONTENT_HOST \|\| STORE_CONTENT_HOST, |
 | `GAMES_EPIC_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`epic`) | `server/core/sources.js` (epic) | timeoutEnv: 'GAMES_EPIC_TIMEOUT_MS', |
 | `GAMES_FRANCHISE_BUDGET` | budget = 450 (0 = off) (`wikidataFranchise`) | `server/core/sources.js` (wikidataFranchise) | budgetEnv: 'GAMES_FRANCHISE_BUDGET', |
 | `GAMES_FRANCHISE_TTL_DAYS` | ttlMs = 7776000000 ms (90 d) (env in days) (`wikidataFranchise`) | `server/core/sources.js` (wikidataFranchise) | ttlEnv: 'GAMES_FRANCHISE_TTL_DAYS', |
@@ -117,7 +117,7 @@
 | `KINOBOXD_CACHE_BOOK_DIR` | см. файл | `server/books/book-cache.js:36` | const BOOK_CACHE_DIR = process.env.KINOBOXD_CACHE_BOOK_DIR |
 | `KINOBOXD_CACHE_DIR` | см. файл | `server/cache.js:10` | KINOBOXD_CACHE_DIR lets tests / alternative deployments point the whole TMDB + KinoPoisk cache tree somewhere else. Defaults to app/cache so the normal launcher (and the Nix wrapper, which copies server/ next to cache/)… |
 | `KINOBOXD_CACHE_GAMES_DIR` | см. файл | `server/games/game-cache.js:50` | const GAMES_CACHE_DIR = process.env.KINOBOXD_CACHE_GAMES_DIR |
-| `KINOBOXD_EPIC_CLIENT_FILE` | см. файл | `server/games/epic.js:88` | const CLIENT_FILE_ENV = 'KINOBOXD_EPIC_CLIENT_FILE'; |
+| `KINOBOXD_EPIC_CLIENT_FILE` | см. файл | `server/games/epic.js:103` | const CLIENT_FILE_ENV = 'KINOBOXD_EPIC_CLIENT_FILE'; |
 | `KINOBOXD_EPIC_TOKENS_DIR` | см. файл | `server/games/epic-token-store.js:38` | const TOKENS_DIR = process.env.KINOBOXD_EPIC_TOKENS_DIR |
 | `KINOBOXD_GAMES_MOBY` | `''` (server/games/personnel/moby.js) | `server/games/personnel/moby.js:124` | const raw = String(process.env.KINOBOXD_GAMES_MOBY \|\| '').trim().toLowerCase(); |
 | `KINOBOXD_GAMES_WD` | `''` (server/games/personnel/wikidata.js) | `server/games/personnel/wikidata.js:97` | const raw = String(process.env.KINOBOXD_GAMES_WD \|\| '').trim().toLowerCase(); |
