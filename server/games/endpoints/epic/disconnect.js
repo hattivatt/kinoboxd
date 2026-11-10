@@ -1,12 +1,13 @@
 'use strict';
 
+const { mapDomainError } = require('../../../core/errors');
 const { HttpError } = require('../../../upload');
 const epic = require('../../epic');
 const epicCache = require('../../epic-cache');
 const { assertOnlyParams, resolveAccount } = require('./params');
 
 function register(router, ctx) {
-  const { deps, store, mapError } = ctx;
+  const { deps, store, errorProfile } = ctx;
 
   /* ------------------------- disconnect ------------------------- */
 
@@ -47,7 +48,7 @@ function register(router, ctx) {
         status: 'not_connected',
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 }

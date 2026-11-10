@@ -3,10 +3,11 @@
 const epicCache = require('../../epic-cache');
 const epicLayer = require('../../secondary/epic');
 const tokenStore = require('../../epic-token-store');
+const { mapDomainError } = require('../../../core/errors');
 const { assertOnlyParams, parseAccountId, parseOwner } = require('./params');
 
 function register(router, ctx) {
-  const { store, mapError } = ctx;
+  const { store, errorProfile } = ctx;
 
   /* --------------------------- status --------------------------- */
 
@@ -61,7 +62,7 @@ function register(router, ctx) {
         libraryTtlHours: Math.round(epicCache.epicLibraryTtlMs() / 3600000),
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 }

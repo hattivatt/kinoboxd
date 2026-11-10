@@ -1,11 +1,12 @@
 'use strict';
 
+const { mapDomainError } = require('../../../core/errors');
 const { HttpError } = require('../../../upload');
 const epic = require('../../epic');
 const { assertOnlyParams, parseOwner } = require('./params');
 
 function register(router, ctx) {
-  const { deps, store, auth, mapError } = ctx;
+  const { deps, store, auth, errorProfile } = ctx;
 
   /* ------------------------ device auth ------------------------- */
 
@@ -30,7 +31,7 @@ function register(router, ctx) {
           'Код одноразовый и живёт несколько минут.',
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -64,7 +65,7 @@ function register(router, ctx) {
       });
       res.status(200).json({ connected: true, source: 'epic', ...result });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -89,7 +90,7 @@ function register(router, ctx) {
       });
       res.status(201).json(session);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -107,7 +108,7 @@ function register(router, ctx) {
       }
       res.status(200).json(session);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -120,7 +121,7 @@ function register(router, ctx) {
       }
       res.status(200).json({ cancelled: true, authId: req.params.authId, source: 'epic' });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 }

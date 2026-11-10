@@ -1,7 +1,7 @@
 {
   "domain": "books",
-  "bytes": 12545,
-  "sha256": "a412ea7a9caec13177aa64def626c6a9750e12a2c8ed845129e740c627cb058b",
+  "bytes": 11931,
+  "sha256": "4c93a448362d174310c1dbf390e91bb7c2fed5c55c226165fefa98ac61709ebc",
   "topLevelKeys": [
     "authors",
     "booksIndex",
@@ -9,7 +9,6 @@
     "genres",
     "meta",
     "pagesHistogram",
-    "publishers",
     "ratings",
     "readDays",
     "recentlyFinished",
@@ -49,9 +48,6 @@
     ],
     "pagesHistogram": {
       "array": 8
-    },
-    "publishers": {
-      "array": 4
     },
     "ratings": [
       "merged",

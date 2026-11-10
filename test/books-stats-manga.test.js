@@ -186,7 +186,6 @@ test('default payload excludes manga works but keeps unknown flags', () => {
   assert.equal(stats.genres.some((entry) => entry.name === 'Manga'), false);
   assert.equal(stats.authors.some((entry) => entry.name === 'Масаси Кисимото'), false);
   assert.equal(stats.series.some((entry) => entry.name === 'Наруто'), false);
-  assert.equal(stats.publishers.some((entry) => entry.name === 'Jump'), false);
   assert.equal(stats.years.some((entry) => entry.year === 1999), false);
   assert.equal(stats.readDays.some((entry) => entry.date === '2024-03-03'), false);
 
@@ -335,7 +334,6 @@ test('payload schema stays compatible: single-profile fields keep their place', 
     'recentlyFinished',
     'authors',
     'series',
-    'publishers',
     'pagesHistogram',
     'booksIndex',
     'unmatchedCount',

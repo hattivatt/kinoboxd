@@ -29,15 +29,15 @@ function addRole(bucket, person, filmSlug, counted, extra) {
   const entry = bucketAdd(bucket, person);
   const existing = entry.films.get(filmSlug);
   if (!existing) {
-    entry.films.set(filmSlug, {
-      filmSlug,
-      counted,
-      reason: counted ? null : (extra && extra.reason) || null,
-      ...extra,
-    });
+    const row = { filmSlug, counted, ...extra };
+    if (!counted) {
+      const reason = (extra && extra.reason) || null;
+      if (reason) row.reason = reason;
+    }
+    entry.films.set(filmSlug, row);
   } else if (counted && !existing.counted) {
     existing.counted = true;
-    existing.reason = null;
+    delete existing.reason;
     Object.assign(existing, extra);
   }
 }

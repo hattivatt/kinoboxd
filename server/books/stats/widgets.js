@@ -221,22 +221,6 @@ function buildSeries(ctx, deps) {
   );
 }
 
-function buildPublishers(ctx) {
-  const { works } = ctx;
-  const publisherMap = new Map();
-  for (const work of works.values()) {
-    if (!work.publisher) continue;
-    pushWorks(publisherMap, work.publisher, { name: work.publisher }, work);
-  }
-  return [...publisherMap.values()]
-    .map((entry) => ({
-      name: entry.name,
-      count: entry.count,
-      avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
-      works: entry.works,
-    }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-}
 
 function buildPagesHistogram(ctx) {
   const { works } = ctx;
@@ -258,6 +242,5 @@ module.exports = {
   buildYearBuckets,
   buildAuthors,
   buildSeries,
-  buildPublishers,
   buildPagesHistogram,
 };

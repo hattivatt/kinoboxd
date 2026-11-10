@@ -187,10 +187,9 @@ test('?profile= scopes every widget to exactly one profile document', async () =
   assert.equal(alpha.booksIndex['hc:900'].rating, 7);
   assert.equal(alpha.booksIndex['hc:901'], undefined);
 
-  // Genres / series / publishers / years / pages — all from Alpha only.
+  // Genres / series / years / pages — all from Alpha only.
   assert.deepEqual(alpha.genres.map((entry) => entry.name), ['Fantasy']);
   assert.deepEqual(alpha.series.map((entry) => entry.name), ['AlphaSaga']);
-  assert.deepEqual(alpha.publishers.map((entry) => entry.name), ['AlphaPub']);
   // The chart year is the *work's first publication*: hc:900 knows 2001, while
   // ll:102 has only a 2010 print run and no first-publication claim. Since the
   // 29.10.2026 verdict the print-run year is an honest fallback marked

@@ -227,7 +227,6 @@ test('a LiveLib profile aggregates only its own events (metadata may come from H
   assert.equal(herbert.count, 1);
   assert.equal(herbert.avgRating, 7);
   assert.equal(stats.series.find((entry) => entry.name === 'Дюны').count, 1);
-  assert.equal(stats.publishers.find((entry) => entry.name === 'Chilton').count, 1);
   assert.equal(stats.summary.pagesTotal, 512);
   assert.equal(stats.summary.avgPages, 512);
   assert.equal(stats.summary.pageCount, stats.summary.pagesTotal);

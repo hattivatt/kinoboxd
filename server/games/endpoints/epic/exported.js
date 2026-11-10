@@ -1,11 +1,12 @@
 'use strict';
 
+const { mapDomainError } = require('../../../core/errors');
 const { HttpError } = require('../../../upload');
 const epicLayer = require('../../secondary/epic');
 const { assertOnlyParams, parseAccountId, parseOwner } = require('./params');
 
 function register(router, ctx) {
-  const { mapError } = ctx;
+  const { errorProfile } = ctx;
 
   /* -------------------------- contract -------------------------- */
 
@@ -40,7 +41,7 @@ function register(router, ctx) {
         meta: layer.meta,
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 }

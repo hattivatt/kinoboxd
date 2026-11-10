@@ -1,10 +1,11 @@
 'use strict';
 
+const { mapDomainError } = require('../../../core/errors');
 const { HttpError } = require('../../../upload');
 const { assertOnlyParams, parseAccountId, parseBool, parseOwner } = require('./params');
 
 function register(router, ctx) {
-  const { deps, store, importer, mapError } = ctx;
+  const { deps, store, importer, errorProfile } = ctx;
 
   /* --------------------------- import --------------------------- */
 
@@ -42,7 +43,7 @@ function register(router, ctx) {
       assertOnlyParams(req, ['force'], 'POST /api/games/epic/import');
       await startFromRequest(req, res, false);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -51,7 +52,7 @@ function register(router, ctx) {
       assertOnlyParams(req, [], 'POST /api/games/epic/refresh');
       await startFromRequest(req, res, true);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -66,7 +67,7 @@ function register(router, ctx) {
       if (!status) throw new HttpError(404, 'Unknown Epic import job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -76,7 +77,7 @@ function register(router, ctx) {
       if (!status) throw new HttpError(404, 'Unknown Epic import job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 }

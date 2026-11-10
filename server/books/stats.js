@@ -73,7 +73,6 @@ const {
   buildYearBuckets,
   buildAuthors,
   buildSeries,
-  buildPublishers,
   buildPagesHistogram,
 } = require('./stats/widgets');
 const { buildTimeline, buildRecentlyFinished, buildRecentlyReading } = require('./stats/timeline');
@@ -130,7 +129,6 @@ function buildBooksStats(options = {}) {
   // The literal already created `seriesCount`; re-assigning keeps the key in
   // place. The final number is post-`dedupeSeriesSubsets`, as before.
   summary.seriesCount = series.length;
-  const publishers = buildPublishers(ctx);
   const pagesHistogram = buildPagesHistogram(ctx);
   const { timeline, readDays, streaks } = buildTimeline(ctx);
   const recentlyFinished = buildRecentlyFinished(ctx);
@@ -176,7 +174,6 @@ function buildBooksStats(options = {}) {
     recentlyReading,
     authors: authorsList,
     series,
-    publishers,
     pagesHistogram,
     booksIndex,
     unmatchedCount: unmatched.length,
