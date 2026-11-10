@@ -35,9 +35,7 @@ const MODULE_ALLOWLIST = {
   'server/taxonomy.js': 827,
 };
 
-const FUNCTION_ALLOWLIST = {
-  'server/games/gog-import.js:runImport': 308,
-};
+const FUNCTION_ALLOWLIST = {};
 
 const HELPER_BASELINE = {
   mapError: 6,
