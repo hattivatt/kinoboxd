@@ -32,7 +32,7 @@ const {
   defaultSleep,
 } = require('../../core/http');
 const { createBudget, budgetFromEnv } = require('../../core/budget');
-const { createBreaker } = require('../../core/breaker');
+const { createSourceGate } = require('../../core/source-client');
 const sources = require('../../core/sources');
 
 /**
@@ -44,19 +44,19 @@ function createSourceClient(options = {}) {
   const budgetEnv = options.budgetEnv;
   const breakerMs = sources.breakerMs(source);
   const budgetLimit = sources.budgetLimit(source);
-  const breaker = createBreaker({ cooldownMs: breakerMs });
+  const gate = createSourceGate({ breakerMs });
 
   return {
     breakerMs,
     budgetLimit,
     isBreakerOpen(now = Date.now()) {
-      return breaker.isOpen(name, now);
+      return Boolean(gate.breakerFor(name, now));
     },
     tripBreaker(ms = breakerMs) {
-      breaker.trip(name, { untilMs: ms });
+      gate.tripBreaker(name, { untilMs: ms });
     },
     resetBreaker() {
-      breaker.reset(name);
+      gate.breaker.reset(name);
     },
     createBudget(limit) {
       return createBudget(limit, budgetLimit);
