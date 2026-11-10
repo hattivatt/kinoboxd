@@ -125,7 +125,7 @@
 | `KINOBOXD_LIVELIB_REIMPORT_TTL_MS` | см. файл | `server/books/import.js:44` | A cached LiveLib profile is considered current for 12 hours: repeat clicks reuse it instead of re-scraping the whole profile (LiveLib politeness). |
 | `KINOBOXD_MOBY_KEY_FILE` | см. файл | `server/games/personnel/moby.js:44` | const KEY_FILE_ENV = 'KINOBOXD_MOBY_KEY_FILE'; |
 | `KINOBOXD_PASSWORD` | см. файл | `server/auth.js:22` | typeof process.env.KINOBOXD_PASSWORD === 'string' ? process.env.KINOBOXD_PASSWORD : ''; |
-| `KINOBOXD_SEGMENTS_INCLUDE_MEDIUM` | `''` (server/books/stats.js) | `server/books/stats.js:372` | const raw = String(process.env.KINOBOXD_SEGMENTS_INCLUDE_MEDIUM \|\| '').trim().toLowerCase(); |
+| `KINOBOXD_SEGMENTS_INCLUDE_MEDIUM` | `''` (server/books/stats/events.js) | `server/books/stats/events.js:182` | const raw = String(process.env.KINOBOXD_SEGMENTS_INCLUDE_MEDIUM \|\| '').trim().toLowerCase(); |
 | `KINOBOXD_STATE_DIR` | см. файл | `server/games/game-cache.js:54` | const STATE_DIR = process.env.KINOBOXD_STATE_DIR |
 | `KINOBOXD_STEAM_KEY_FILE` | см. файл | `server/config.js:41` | Tests point this at a non-existent file so the local dev fallback (`config/steam-token`, present in the main tree) cannot change their result. |
 | `KINOBOXD_WDQS_ENDPOINT` | `https://query.wikidata.org/sparql (WDQS)` (server/books/authors-wikidata.js) | `server/books/authors-wikidata.js:36` | POST, not GET: a batch of 450 labels does not fit an URL (WDQS answers `414 URI Too Long` around ~8 KB). The endpoint accepts a form-encoded `query=` body for exactly this case. |
