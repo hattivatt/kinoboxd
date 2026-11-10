@@ -82,7 +82,7 @@
 | `GAMES_SECONDARY_CATALOG_PROBE_TTL_MS` | `2592000000 ms (30 d) (DEFAULT_CATALOG_PROBE_TTL_MS)` (server/games/secondary/store.js) | `server/games/secondary/store.js:104` | return envMs('GAMES_SECONDARY_CATALOG_PROBE_TTL_MS', DEFAULT_CATALOG_PROBE_TTL_MS); |
 | `GAMES_SECONDARY_KICK_COOLDOWN_MS` | `600000 ms (10 min) (DEFAULT_KICK_COOLDOWN_MS)` (server/games/secondary-details.js) | `server/games/secondary-details.js:137` | return envMs('GAMES_SECONDARY_KICK_COOLDOWN_MS', DEFAULT_KICK_COOLDOWN_MS); |
 | `GAMES_SECONDARY_LAZY_KICK` | `''` (server/games/secondary-details.js) | `server/games/secondary-details.js:998` | if (String(process.env.GAMES_SECONDARY_LAZY_KICK \|\| '').trim() === '0') { |
-| `GAMES_SECONDARY_LINKS_TTL_MS` | см. файл | `server/games/secondary/index.js:336` | const raw = Number(process.env.GAMES_SECONDARY_LINKS_TTL_MS); |
+| `GAMES_SECONDARY_LINKS_TTL_MS` | см. файл | `server/games/secondary/cache.js:14` | const raw = Number(process.env.GAMES_SECONDARY_LINKS_TTL_MS); |
 | `GAMES_SECONDARY_NOT_FOUND_TTL_MS` | `2592000000 ms (30 d) (DEFAULT_NOT_FOUND_TTL_MS)` (server/games/secondary/store.js) | `server/games/secondary/store.js:91` | return envMs('GAMES_SECONDARY_NOT_FOUND_TTL_MS', DEFAULT_NOT_FOUND_TTL_MS); |
 | `GAMES_SECONDARY_PAUSE_MS` | pauseMs = 2000 ms (2 s) (`secondary`) | `server/core/sources.js` (secondary) | pauseEnv: 'GAMES_SECONDARY_PAUSE_MS', |
 | `GAMES_SECONDARY_PROBE_TTL_MS` | `604800000 ms (7 d) (DEFAULT_PROBE_TTL_MS)` (server/games/secondary/store.js) | `server/games/secondary/store.js:96` | return envMs('GAMES_SECONDARY_PROBE_TTL_MS', DEFAULT_PROBE_TTL_MS); |
