@@ -30,7 +30,7 @@ const path = require('path');
 const gameCache = require('../game-cache');
 const { safeKey } = require('../../core/fs-store');
 const { envMs } = require('../../core/env');
-const { createBreaker } = require('../../core/breaker');
+const { createSourceGate } = require('../../core/source-client');
 const sources = require('../../core/sources');
 const { maskSecrets } = require('./errors');
 const {
@@ -501,11 +501,13 @@ function writeBreaker(state) {
  * Breaker entries keep the ISO `{until, at, code, status}` format this module
  * has always written; `core/breaker` only supplies the logic.
  */
-const breaker = createBreaker({
+const breakerGate = createSourceGate({
   now: () => nowMs(),
-  cooldownMs: () => breakerMs(),
-  read: () => readBreaker(),
-  write: (state) => writeBreaker(state),
+  breakerMs: () => breakerMs(),
+  breakerStore: {
+    read: readBreaker,
+    write: writeBreaker,
+  },
   encode: (entry) => ({
     until: isoOf(entry.until),
     at: isoOf(entry.at),
@@ -527,13 +529,13 @@ const breaker = createBreaker({
 
 /** `null` when the host may be queried; `{until, code}` when it is blocked. */
 function breakerBlock(source, now = nowMs()) {
-  const entry = breaker.entry(source, now);
+  const entry = breakerGate.breakerFor(source, now);
   if (!entry) return null;
   return { until: isoOf(entry.until), code: entry.code || entry.reason || 'blocked' };
 }
 
 function tripBreaker(source, code, status) {
-  breaker.trip(source, { code: code || 'blocked', status });
+  breakerGate.tripBreaker(source, { code: code || 'blocked', status });
   return readBreaker()[source];
 }
 
