@@ -27,6 +27,9 @@ process.env.KINOBOXD_CACHE_BOOK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kin
 
 const bookCache = require('../server/books/book-cache');
 const { buildBooksStats, resolveProfileScope, profileSummary } = require('../server/books/stats');
+const { portFor } = require('./helpers/port');
+
+const PORT = portFor(80);
 
 function profile(source, userKey, events) {
   return {
@@ -344,9 +347,9 @@ test('HTTP routes: strict profile= validation, /profiles and /unmatched', async 
   app.use((err, req, res, next) => {
     res.status(err.status || err.statusCode || 500).json({ code: err.code, error: err.message });
   });
-  const server = app.listen(6311);
+  const server = app.listen(PORT);
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const base = 'http://127.0.0.1:6311/api/books';
+  const base = `http://127.0.0.1:${PORT}/api/books`;
 
   const ok = await fetch(`${base}/stats?profile=livelib-Alpha`);
   assert.equal(ok.status, 200);

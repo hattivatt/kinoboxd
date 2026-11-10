@@ -44,7 +44,8 @@ async function badgeOf(meta) {
   return metadataBadge(meta);
 }
 
-const PORT = 6811;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(30);
 const FIXTURES = path.join(__dirname, 'fixtures');
 const mangaFixture = fs.readFileSync(path.join(FIXTURES, 'livelib-file-export-manga.json'));
 

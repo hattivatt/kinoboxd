@@ -34,7 +34,9 @@ const livelibFile = require('../server/books/livelib-file');
 const resolve = require('../server/books/resolve');
 const importJobs = require('../server/books/import');
 const { buildBooksStats } = require('../server/books/stats');
+const { portFor } = require('./helpers/port');
 
+const PORT = portFor(40);
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 /** `livelib-backup` JSON rows: no «Ссылка на книгу» column at all. */
@@ -404,9 +406,9 @@ test('POST /api/books/import/livelib-file starts the resolve job unless opted ou
   app.use((err, req, res, next) => {
     res.status(err.status || err.statusCode || 500).json({ code: err.code, error: err.message });
   });
-  const server = app.listen(6933);
+  const server = app.listen(PORT);
   await new Promise((done) => server.once('listening', done));
-  const base = 'http://127.0.0.1:6933/api/books';
+  const base = `http://127.0.0.1:${PORT}/api/books`;
   t.after(() => new Promise((done) => server.close(done)));
 
   const fixture = fs.readFileSync(path.join(FIXTURES, 'livelib-file-export.json'));

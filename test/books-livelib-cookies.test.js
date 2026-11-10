@@ -29,7 +29,10 @@ const bookCache = require('../server/books/book-cache');
 const cookies = require('../server/books/livelib-cookies');
 const livelib = require('../server/books/livelib');
 const importJobs = require('../server/books/import');
+const { portFor } = require('./helpers/port');
 
+const PORT_PASTE = portFor(10);
+const PORT_DELETE = portFor(11);
 const HEADER = 'Cookie: __ddg1_=abc123; __ddg2_=def456';
 
 /*
@@ -253,9 +256,9 @@ test('DELETE cookies: removes the file, 404 when absent, 400 on junk, 409 while 
   app.use((err, req, res, next) => {
     res.status(err.status || err.statusCode || 500).json({ code: err.code, error: err.message });
   });
-  const server = app.listen(6313);
+  const server = app.listen(PORT_DELETE);
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const base = 'http://127.0.0.1:6313/api/books';
+  const base = `http://127.0.0.1:${PORT_DELETE}/api/books`;
 
   await cookies.saveCookies('livelib', 'Deletable', '__ddg1_=secret1; __ddg2_=secret2', {
     now: '2026-10-28T11:00:00.000Z',
@@ -388,9 +391,9 @@ test('HTTP route accepts cookieHeader, stores it 0600 and masks the response', a
   app.use((err, req, res, next) => {
     res.status(err.status || err.statusCode || 500).json({ code: err.code, error: err.message });
   });
-  const server = app.listen(6312);
+  const server = app.listen(PORT_PASTE);
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const base = 'http://127.0.0.1:6312/api/books';
+  const base = `http://127.0.0.1:${PORT_PASTE}/api/books`;
 
   const accepted = await fetch(`${base}/import/livelib`, {
     method: 'POST',

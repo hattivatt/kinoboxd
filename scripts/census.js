@@ -461,6 +461,64 @@ function duplicatePorts(ports = testPorts()) {
   return duplicates;
 }
 
+function portHelperSlots(dir = 'test') {
+  const result = [];
+  for (const file of listJsFiles(dir).filter((name) => name.endsWith('.test.js'))) {
+    const text = readSource(file);
+    const starts = lineIndex(text);
+    for (const match of text.matchAll(/portFor\(\s*(\d+)\s*\)/g)) {
+      result.push({
+        file,
+        line: lineAt(starts, match.index),
+        slot: Number(match[1]),
+      });
+    }
+  }
+  return result;
+}
+
+function duplicatePortSlots(slots = portHelperSlots()) {
+  const owners = new Map();
+  for (const entry of slots) {
+    if (!owners.has(entry.slot)) owners.set(entry.slot, new Set());
+    owners.get(entry.slot).add(entry.file);
+  }
+  const duplicates = [];
+  for (const [slot, files] of [...owners.entries()].sort((a, b) => a[0] - b[0])) {
+    if (files.size < 2) continue;
+    duplicates.push({
+      slot,
+      sites: slots.filter((entry) => entry.slot === slot),
+    });
+  }
+  return duplicates;
+}
+
+function hardcodedPortLiterals(dir = 'test') {
+  const result = [];
+  for (const file of listJsFiles(dir).filter((name) => name.endsWith('.test.js'))) {
+    const text = readSource(file);
+    const starts = lineIndex(text);
+    for (const match of text.matchAll(/(?:^|[^A-Za-z0-9])(?:PREFERRED_)?PORT\s*=\s*['"]?\d+/g)) {
+      result.push({ file, line: lineAt(starts, match.index), literal: match[0].trim() });
+    }
+  }
+  return result;
+}
+
+function hardcodedListenPorts(dir = 'test') {
+  const result = [];
+  for (const file of listJsFiles(dir).filter((name) => name.endsWith('.test.js'))) {
+    const text = readSource(file);
+    const starts = lineIndex(text);
+    for (const match of text.matchAll(/\.listen\(\s*(\d+)\b/g)) {
+      if (Number(match[1]) === 0) continue;
+      result.push({ file, line: lineAt(starts, match.index), port: Number(match[1]) });
+    }
+  }
+  return result;
+}
+
 function pad(value, width) {
   return String(value).padStart(width, ' ');
 }
@@ -516,7 +574,14 @@ function formatCensus() {
 
   const ports = testPorts();
   const duplicates = duplicatePorts(ports);
-  const portLines = [`declared const PORT: ${ports.length}`];
+  const slots = portHelperSlots();
+  const duplicateSlots = duplicatePortSlots(slots);
+  const portLines = [
+    `declared const PORT: ${ports.length}`,
+    `portFor slots: ${slots.length}`,
+    `hardcoded PORT literals: ${hardcodedPortLiterals().length}`,
+    `hardcoded listen(N): ${hardcodedListenPorts().length}`,
+  ];
   for (const entry of ports) portLines.push(`    ${pad(entry.port, 5)}  ${entry.file}:${entry.line}`);
   if (duplicates.length) {
     for (const duplicate of duplicates) {
@@ -525,6 +590,10 @@ function formatCensus() {
     }
   } else {
     portLines.push('duplicates: none');
+  }
+  for (const duplicate of duplicateSlots) {
+    portLines.push(`  DUPLICATE SLOT ${duplicate.slot}:`);
+    for (const site of duplicate.sites) portLines.push(`      ${site.file}:${site.line}`);
   }
   lines.push(...reportSection('test ports:', portLines));
 
@@ -545,8 +614,11 @@ module.exports = {
   deadModuleReport,
   deadModules,
   duplicatePorts,
+  duplicatePortSlots,
   formatCensus,
   functionsInText,
+  hardcodedListenPorts,
+  hardcodedPortLiterals,
   helperCounts,
   helperDefinitions,
   listJsFiles,
@@ -554,6 +626,7 @@ module.exports = {
   maskSource,
   moduleSizes,
   modulesOver,
+  portHelperSlots,
   readSource,
   requireEdges,
   testPorts,

@@ -26,7 +26,8 @@ const livelib = require('../server/books/livelib');
 const resolve = require('../server/books/resolve');
 const importJobs = require('../server/books/import');
 
-const PORT = Number(process.env.BOOKS_REFRESH_TEST_PORT) || 6211;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(60);
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 let importCalls = 0;

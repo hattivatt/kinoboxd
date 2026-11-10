@@ -3,7 +3,8 @@
 /**
  * M2 wiring over HTTP: import → POST /api/games/enrich → stats/card.
  * The router is mounted on a throwaway express app with an injected fake Steam
- * client and an injected fake store client (no live requests), port 7040.
+ * client and an injected fake store client (no live requests), port from
+ * `test/helpers/port.js`.
  */
 
 const test = require('node:test');
@@ -26,7 +27,8 @@ const { createFakeClient } = require('./fixtures/games/fake-client');
 
 const ID = '76561198000000001';
 const PROFILE_KEY = `steam-${ID}`;
-const PORT = 7040;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(120);
 
 function detailDoc(appid) {
   return {

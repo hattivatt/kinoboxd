@@ -40,7 +40,8 @@ process.env.KINOBOXD_STEAM_KEY_FILE = path.join(
 const art = require('../server/games/steam-art');
 const { createRouter } = require('../server/games/routes');
 
-const PORT = 7113;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(260);
 const BASE = `http://127.0.0.1:${PORT}`;
 const APPID = 292030;
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);

@@ -3,7 +3,7 @@
 /**
  * `/api/games/*` routes (M1): import job → stats → per-game achievements.
  * The router is mounted on a throwaway express app with an injected fake Steam
- * client (no live requests), port 7035 per the round brief.
+ * client (no live requests), port from `test/helpers/port.js`.
  */
 
 const test = require('node:test');
@@ -33,7 +33,8 @@ const { createFakeClient } = require('./fixtures/games/fake-client');
 
 const ID = '76561198000000001';
 const PROFILE_KEY = `steam-${ID}`;
-const PORT = 7035;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(200);
 
 function buildApp(client) {
   const app = express();
@@ -223,7 +224,7 @@ test('import → stats → achievements over HTTP', async (t) => {
 test('strict query contract and error mapping', async (t) => {
   const client = createFakeClient();
   // A separate port: undici keeps the previous server's socket alive briefly.
-  const port = PORT + 1;
+  const port = portFor(201);
   const server = buildApp(client).listen(port);
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${port}`;
@@ -299,7 +300,7 @@ test('strict query contract and error mapping', async (t) => {
 test('POST /refresh re-imports the cached profile with force', async (t) => {
   const client = createFakeClient();
   // 7037 is the round smoke port and may be taken by a dev server.
-  const port = PORT + 22;
+  const port = portFor(222);
   const server = buildApp(client).listen(port);
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${port}`;
@@ -350,7 +351,7 @@ test('a second import for a running target coalesces (200, same jobId)', async (
     return original(target);
   };
 
-  const port = PORT + 23;
+  const port = portFor(223);
   const server = buildApp(client).listen(port);
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${port}`;

@@ -16,6 +16,9 @@ process.env.KINOBOXD_CACHE_BOOK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kin
 
 const bookCache = require('../server/books/book-cache');
 const { buildBooksStats } = require('../server/books/stats');
+const { portFor } = require('./helpers/port');
+
+const PORT = portFor(70);
 
 async function details(workId, doc) {
   await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), {
@@ -237,9 +240,9 @@ test('HTTP route: includeMangaComics default off, 1 includes, invalid rejected',
   app.use((err, req, res, next) => {
     res.status(err.status || err.statusCode || 500).json({ code: err.code, error: err.message });
   });
-  const server = app.listen(5811);
+  const server = app.listen(PORT);
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const base = 'http://127.0.0.1:5811/api/books/stats?profile=livelib-tester';
+  const base = `http://127.0.0.1:${PORT}/api/books/stats?profile=livelib-tester`;
 
   const off = await fetch(base);
   assert.equal(off.status, 200);

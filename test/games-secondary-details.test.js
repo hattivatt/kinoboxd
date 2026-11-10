@@ -1914,7 +1914,8 @@ function fixture(relative) {
 }
 const EPIC_AW2 = fixture('epic/product-alan-wake-2.json');
 
-const PORT = 7109;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(250);
 const STEAM_ID = '76561198000000710';
 const OWNER = `steam-${STEAM_ID}`;
 const EPIC_ACCOUNT = 'epic-wife';

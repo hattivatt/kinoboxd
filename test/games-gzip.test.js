@@ -14,7 +14,8 @@ const zlib = require('node:zlib');
 
 const gzip = require('../server/gzip');
 
-const PORT = 7071;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(170);
 
 function request(port, pathName, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -137,12 +138,12 @@ test('middleware: an already-encoded or non-compressible response passes through
     res.setHeader('Content-Type', 'image/png');
     res.end(Buffer.alloc(4096, 7));
   });
-  const server = app.listen(PORT + 1);
+  const server = app.listen(portFor(171));
   t.after(() => new Promise((resolve) => server.close(resolve)));
 
-  const pre = await request(PORT + 1, '/api/games/pre', { 'Accept-Encoding': 'gzip' });
+  const pre = await request(portFor(171), '/api/games/pre', { 'Accept-Encoding': 'gzip' });
   assert.equal(pre.headers['content-encoding'], 'br');
-  const image = await request(PORT + 1, '/api/games/image', { 'Accept-Encoding': 'gzip' });
+  const image = await request(portFor(171), '/api/games/image', { 'Accept-Encoding': 'gzip' });
   assert.equal(image.headers['content-encoding'], undefined);
   assert.equal(image.body.length, 4096);
 });
@@ -153,10 +154,10 @@ test('middleware: past maxBuffer it falls back to identity without losing bytes'
   const app = express();
   app.use('/api/games', gzip({ maxBuffer: 1024 }));
   app.get('/api/games/big', (req, res) => res.status(200).json(payload));
-  const server = app.listen(PORT + 2);
+  const server = app.listen(portFor(172));
   t.after(() => new Promise((resolve) => server.close(resolve)));
 
-  const response = await request(PORT + 2, '/api/games/big', { 'Accept-Encoding': 'gzip' });
+  const response = await request(portFor(172), '/api/games/big', { 'Accept-Encoding': 'gzip' });
   assert.equal(response.status, 200);
   assert.equal(response.headers['content-encoding'], undefined);
   assert.deepEqual(JSON.parse(response.body.toString('utf8')), payload);
@@ -167,10 +168,10 @@ test('middleware: HEAD and 204 stay bodyless', async (t) => {
   const app = express();
   app.use('/api/games', gzip());
   app.get('/api/games/empty', (req, res) => res.status(204).end());
-  const server = app.listen(PORT + 3);
+  const server = app.listen(portFor(173));
   t.after(() => new Promise((resolve) => server.close(resolve)));
 
-  const head = await request(PORT + 3, '/api/games/empty', { 'Accept-Encoding': 'gzip' });
+  const head = await request(portFor(173), '/api/games/empty', { 'Accept-Encoding': 'gzip' });
   assert.equal(head.status, 204);
   assert.equal(head.body.length, 0);
   assert.equal(head.headers['content-encoding'], undefined);

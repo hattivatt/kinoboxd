@@ -34,7 +34,8 @@ const importJobs = require('../server/books/import');
 const livelib = require('../server/books/livelib');
 const { buildBooksStats } = require('../server/books/stats');
 
-const PORT = 6721;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(20);
 const FIXTURES = path.join(__dirname, 'fixtures');
 const jsonFixture = fs.readFileSync(path.join(FIXTURES, 'livelib-file-export.json'));
 const csvFixture = fs.readFileSync(path.join(FIXTURES, 'livelib-file-export.csv'));

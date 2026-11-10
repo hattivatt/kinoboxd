@@ -128,12 +128,37 @@ test('dead modules: nothing but the allowlisted orphan', () => {
   assert.deepEqual(unexpected, [], `dead modules found: ${dead.join(', ') || '(none)'}`);
 });
 
-test('test ports: no two test files declare the same const PORT', () => {
+test('test ports: declared PORTs and portFor slots are unique, every port comes from the helper', () => {
   const duplicates = census.duplicatePorts();
   const described = duplicates
     .map((entry) => `port ${entry.port} used by ${entry.sites.map((site) => `${site.file}:${site.line}`).join(', ')}`)
     .join('; ');
   assert.deepEqual(duplicates, [], `test-port uniqueness: ${duplicates.length} duplicate(s); ${described}`);
+
+  const literals = census.hardcodedPortLiterals();
+  const literalSites = literals.map((entry) => `${entry.file}:${entry.line} ${entry.literal}`).join('; ');
+  assert.deepEqual(
+    literals,
+    [],
+    `helper-only ports: ${literals.length} hardcoded PORT literal(s); ${literalSites}`,
+  );
+
+  const listens = census.hardcodedListenPorts();
+  const listenSites = listens.map((entry) => `${entry.file}:${entry.line} listen(${entry.port})`).join('; ');
+  assert.deepEqual(
+    listens,
+    [],
+    `helper-only listen: ${listens.length} fixed .listen(N) port(s); ${listenSites}`,
+  );
+
+  const slots = census.duplicatePortSlots();
+  const slotSites = slots
+    .map((entry) => `slot ${entry.slot} used by ${entry.sites.map((site) => `${site.file}:${site.line}`).join(', ')}`)
+    .join('; ');
+  assert.deepEqual(slots, [], `portFor slot uniqueness: ${slots.length} duplicate(s); ${slotSites}`);
+
+  const declared = census.portHelperSlots();
+  assert.ok(declared.length >= 20, `portFor census found only ${declared.length} slots`);
 });
 
 test('census walks only the app tree and skips cache and dependency dirs', () => {
