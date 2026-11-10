@@ -14,8 +14,7 @@ const MODULE_ALLOWLIST = {
   'public/js/games.js': 3465,
   'public/js/widgets.js': 1971,
   'public/js/main.js': 1819,
-  'server/books/stats.js': 1720,
-  'server/games/franchise.js': 1604,
+  'server/games/franchise.js': 1569,
   'server/books/livelib.js': 1508,
   'public/js/games-modal.js': 1474,
   'scripts/gen-contracts.js': 1342,
@@ -31,14 +30,13 @@ const MODULE_ALLOWLIST = {
   'server/games/steam-art.js': 956,
   'server/books/book-cache.js': 927,
   'server/wikidata.js': 918,
-  'server/games/steam.js': 878,
+  'server/games/steam.js': 876,
   'server/books/routes.js': 844,
   'server/games/editions.js': 841,
   'server/taxonomy.js': 827,
 };
 
 const FUNCTION_ALLOWLIST = {
-  'server/games/franchise-aggregate.js:buildFranchises': 365,
   'server/games/routes-epic.js:createRouter': 354,
   'server/core/jobs.js:createJobs': 333,
   'server/games/gog-import.js:runImport': 308,
