@@ -1,4 +1,4 @@
-/* Books profile registry (IndexedDB, per browser) + pure helpers.
+/* Books profile registry (shared client store) + pure helpers.
  *
  * A *books profile* is one reading account of one service — the user's model
  * (28.10.2026): Hardcover-34748 and LiveLib-Margaret are DIFFERENT profiles,
@@ -12,10 +12,10 @@
  * accepts exactly one `profile=` token (`livelib-<username>` or
  * `hardcover-<id>`), so switching profiles changes the request, not the cache.
  *
- * Storage: a dedicated DB «kinoboxd-books» (version 1, store `profiles`) so
- * the film registry («kinoboxd») is never upgraded/migrated by this module.
- * The active profile id lives in localStorage (readable synchronously at boot)
- * with an in-memory fallback for private mode.
+ * Storage: the shared client registry (./core/profile-store.js — one IndexedDB
+ * database, legacy book labels copied over on first run). The active profile id
+ * lives in localStorage (`kinoboxd.books.profile.v1`, readable synchronously at
+ * boot) with an in-memory fallback for private mode.
  *
  * K6 wrote profiles with two sources (`sources: [livelib, hardcover]`); those
  * legacy records are split into two single-source profiles by `loadRegistry`
@@ -25,20 +25,17 @@
  * the server and only kept by the backend.
  */
 
-const DB_NAME = 'kinoboxd-books';
-const DB_VERSION = 1;
-const PROFILE_STORE = 'profiles';
+import {
+  getStore, getActive, setActive, ready as storeReady, storageMode as storeStorageMode,
+} from './core/profile-store.js';
 
 export const ACTIVE_KEY = 'kinoboxd.books.profile.v1';
 export const LEGACY_ACCOUNTS_KEY = 'kinoboxd.books.accounts.v1';
 export const MAX_PROFILES = 8;
 
 const SOURCES = ['livelib', 'hardcover'];
-
-let mode = 'pending'; // 'pending' | 'idb' | 'memory'
-let dbPromise = null;
-const memory = new Map(); // id -> record
-let memoryActive = null;
+const DOMAIN = 'books';
+const profiles = getStore(DOMAIN);
 
 /* =========================================================
    pure helpers (unit-tested without a browser)
@@ -366,102 +363,15 @@ export function looksLikeCookieHeader(raw) {
 }
 
 /* =========================================================
-   IndexedDB plumbing (memory fallback)
+   registry (shared client store; IndexedDB, memory fallback)
    ========================================================= */
 
-function idbGlobal() {
-  try {
-    return typeof indexedDB !== 'undefined' && indexedDB ? indexedDB : null;
-  } catch {
-    return null;
-  }
-}
-
-function openDb() {
-  if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    let request;
-    try {
-      const factory = idbGlobal();
-      if (!factory) throw new Error('indexedDB unavailable');
-      request = factory.open(DB_NAME, DB_VERSION);
-    } catch (error) {
-      reject(error);
-      return;
-    }
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      reject(new Error('indexedDB open timeout'));
-    }, 5000);
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { fn(value); } catch { /* ignore */ }
-    };
-    request.onupgradeneeded = () => {
-      try {
-        const db = request.result;
-        if (!db.objectStoreNames.contains(PROFILE_STORE)) {
-          db.createObjectStore(PROFILE_STORE, { keyPath: 'id' });
-        }
-      } catch {
-        /* a broken upgrade surfaces through onerror/onblocked */
-      }
-    };
-    request.onsuccess = () => finish(resolve, request.result);
-    request.onerror = () => finish(reject, request.error || new Error('indexedDB open failed'));
-    request.onblocked = () => finish(reject, new Error('indexedDB blocked'));
-  });
-  return dbPromise;
-}
-
-async function txWork(storeName, transactionMode, work) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    let transaction;
-    try {
-      transaction = db.transaction(storeName, transactionMode);
-    } catch (error) {
-      reject(error);
-      return;
-    }
-    let value;
-    try {
-      value = work(transaction.objectStore(storeName));
-    } catch (error) {
-      reject(error);
-      return;
-    }
-    transaction.oncomplete = () => resolve(value);
-    transaction.onerror = () => reject(transaction.error || new Error('indexedDB transaction failed'));
-    transaction.onabort = () => reject(transaction.error || new Error('indexedDB transaction aborted'));
-  });
-}
-
-function requestValue(request) {
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('indexedDB request failed'));
-  });
-}
-
-/** Open once; never throws (private mode → memory mode). */
 export async function ready() {
-  if (mode === 'idb' || mode === 'memory') return { available: mode === 'idb', mode };
-  try {
-    await openDb();
-    mode = 'idb';
-  } catch {
-    mode = 'memory';
-  }
-  return { available: mode === 'idb', mode };
+  return storeReady();
 }
 
 export function storageMode() {
-  return mode;
+  return storeStorageMode();
 }
 
 function bySavedDesc(a, b) {
@@ -469,49 +379,15 @@ function bySavedDesc(a, b) {
 }
 
 export async function listProfiles() {
-  await ready();
-  if (mode === 'idb') {
-    try {
-      const records = await txWork(PROFILE_STORE, 'readonly', (store) => requestValue(store.getAll()));
-      return (Array.isArray(records) ? records : []).map(normalizeProfile).sort(bySavedDesc);
-    } catch {
-      mode = 'memory';
-    }
-  }
-  return Array.from(memory.values()).map(normalizeProfile).sort(bySavedDesc);
+  const records = await profiles.load();
+  return records.map(normalizeProfile).sort(bySavedDesc);
 }
 
 export async function getProfile(id) {
   const key = trim(id);
   if (!key) return null;
-  await ready();
-  if (mode === 'idb') {
-    try {
-      const record = await txWork(PROFILE_STORE, 'readonly', (store) => requestValue(store.get(key)));
-      return record ? normalizeProfile(record) : null;
-    } catch {
-      mode = 'memory';
-    }
-  }
-  const record = memory.get(key);
+  const record = await profiles.get(key);
   return record ? normalizeProfile(record) : null;
-}
-
-export async function saveProfile(input, { keepId = null } = {}) {
-  await ready();
-  const record = normalizeProfile(input);
-  memory.set(record.id, record);
-  if (mode === 'idb') {
-    try {
-      await txWork(PROFILE_STORE, 'readwrite', (store) => {
-        store.put(record);
-      });
-    } catch {
-      mode = 'memory';
-    }
-  }
-  await trimProfiles(keepId || record.id);
-  return record;
 }
 
 async function trimProfiles(keepId) {
@@ -528,20 +404,17 @@ async function trimProfiles(keepId) {
   }
 }
 
+export async function saveProfile(input, { keepId = null } = {}) {
+  const record = normalizeProfile(input);
+  await profiles.put(record);
+  await trimProfiles(keepId || record.id);
+  return record;
+}
+
 export async function removeProfile(id) {
   const key = trim(id);
   if (!key) return false;
-  await ready();
-  memory.delete(key);
-  if (mode === 'idb') {
-    try {
-      await txWork(PROFILE_STORE, 'readwrite', (store) => {
-        store.delete(key);
-      });
-    } catch {
-      mode = 'memory';
-    }
-  }
+  await profiles.remove(key);
   if (getActiveId() === key) setActiveId(null);
   return true;
 }
@@ -551,30 +424,16 @@ export async function removeProfile(id) {
    ========================================================= */
 
 export function getActiveId() {
-  if (memoryActive) return memoryActive;
-  try {
-    const value = window.localStorage.getItem(ACTIVE_KEY);
-    return value && value.trim() ? value.trim() : null;
-  } catch {
-    return null;
-  }
+  return getActive(DOMAIN);
 }
 
 export function setActiveId(id) {
-  const value = trim(id) || null;
-  memoryActive = value;
-  try {
-    if (value) window.localStorage.setItem(ACTIVE_KEY, value);
-    else window.localStorage.removeItem(ACTIVE_KEY);
-  } catch {
-    /* private mode — the current tab still remembers it in memoryActive */
-  }
-  return value;
+  return setActive(DOMAIN, id);
 }
 
 /** Split legacy two-source records into single-source profiles. */
-async function migrateMultiSourceRecords(profiles) {
-  const multi = profiles.filter((profile) => profileSources(profile).length > 1);
+async function migrateMultiSourceRecords(records) {
+  const multi = records.filter((profile) => profileSources(profile).length > 1);
   if (!multi.length) return false;
   for (const record of multi) {
     const { records } = splitMultiSourceProfile(record);
@@ -588,18 +447,18 @@ async function migrateMultiSourceRecords(profiles) {
 
 /** Local registry snapshot used by the UI: { profiles, active }. */
 export async function loadRegistry() {
-  let profiles = await listProfiles();
+  let list = await listProfiles();
   // K6 wrote union profiles (livelib + hardcover in one record). The single-
   // profile contract splits them once, on first load after the upgrade.
-  if (await migrateMultiSourceRecords(profiles)) {
-    profiles = await listProfiles();
+  if (await migrateMultiSourceRecords(list)) {
+    list = await listProfiles();
   }
   const wanted = getActiveId();
-  let active = profiles.find((profile) => profile.id === wanted) || null;
-  if (!active && profiles.length) {
+  const active = list.find((profile) => profile.id === wanted) || null;
+  if (!active && list.length) {
     // Never resurrect a deleted profile id: keep "no active profile" honest
     // instead of silently picking someone else's data.
     setActiveId(null);
   }
-  return { profiles, active };
+  return { profiles: list, active };
 }
