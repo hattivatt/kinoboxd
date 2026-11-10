@@ -12,7 +12,7 @@
 const express = require('express');
 const multer = require('multer');
 
-const { HttpError } = require('../core/errors');
+const { HttpError, mapDomainError } = require('../core/errors');
 const { assertOnlyParams } = require('../core/params');
 const config = require('../config');
 const bookCache = require('./book-cache');
@@ -33,29 +33,26 @@ const profileRegistry = require('../core/profile');
 
 const router = express.Router();
 
-function mapError(err) {
-  if (err instanceof HttpError) return err;
-  if (err instanceof livelibCookies.CookieError) {
-    return new HttpError(400, err.message, err.code);
-  }
-  if (err instanceof livelibFile.LivelibFileError) {
-    return new HttpError(400, err.message, err.code);
-  }
-  if (err instanceof LivelibError) {
-    if (err.code === 'livelib_invalid_username') return new HttpError(400, err.message, err.code);
-    if (err.code === 'livelib_import_running') return new HttpError(409, err.message, err.code);
-    if (err.code === 'livelib_blocked') return new HttpError(429, err.message, err.code);
-    if (err.code === 'livelib_bulk_error') return new HttpError(404, err.message, err.code);
-    return new HttpError(502, err.message, err.code);
-  }
-  if (err instanceof HardcoverError) {
-    if (err.code === 'hardcover_token_missing' || err.code === 'hardcover_foreign_user') {
-      return new HttpError(400, err.message, err.code);
-    }
-    return new HttpError(502, err.message, err.code);
-  }
-  return err;
-}
+const LIVELIB_ERROR_STATUS = {
+  livelib_invalid_username: 400,
+  livelib_import_running: 409,
+  livelib_blocked: 429,
+  livelib_bulk_error: 404,
+};
+
+const HARDCOVER_ERROR_STATUS = {
+  hardcover_token_missing: 400,
+  hardcover_foreign_user: 400,
+};
+
+const BOOKS_ERROR_PROFILE = {
+  rules: [
+    { is: livelibCookies.CookieError, defaultStatus: 400 },
+    { is: livelibFile.LivelibFileError, defaultStatus: 400 },
+    { is: LivelibError, statuses: LIVELIB_ERROR_STATUS, defaultStatus: 502 },
+    { is: HardcoverError, statuses: HARDCOVER_ERROR_STATUS, defaultStatus: 502 },
+  ],
+};
 
 function hardcoverTokenInfo() {
   try {
@@ -225,7 +222,7 @@ router.post('/import/livelib', (req, res, next) => {
     const job = importJobs.startLivelibImport(value, { force, deep, cookieHeader });
     res.status(202).json(job);
   } catch (err) {
-    next(mapError(err));
+    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
   }
 });
 
@@ -239,7 +236,7 @@ router.post('/import/hardcover', (req, res, next) => {
     const job = importJobs.startHardcoverImport(body.userId, { force });
     res.status(202).json(job);
   } catch (err) {
-    next(mapError(err));
+    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
   }
 });
 
@@ -369,7 +366,9 @@ router.post('/import/livelib-file', (req, res, next) => {
         new HttpError(400, `Не удалось принять файл: ${uploadError.message}`, 'upload_failed')
       );
     }
-    handleLivelibFileImport(req, res).catch((err) => next(mapError(err)));
+    handleLivelibFileImport(req, res).catch((err) =>
+      next(mapDomainError(err, BOOKS_ERROR_PROFILE))
+    );
   });
 });
 
@@ -576,7 +575,7 @@ router.delete('/import/livelib/cookies', async (req, res, next) => {
       cookies: livelibCookies.cookieStatus('livelib', userKey),
     });
   } catch (err) {
-    next(mapError(err));
+    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
   }
 });
 
@@ -593,7 +592,7 @@ router.get('/import/status', (req, res, next) => {
     }
     res.status(200).json(status);
   } catch (err) {
-    next(mapError(err));
+    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
   }
 });
 
@@ -697,7 +696,7 @@ router.get('/stats', (req, res, next) => {
     res.set('X-Books-Build-Ms', String(stats.meta.buildMs));
     res.status(200).json(stats);
   } catch (err) {
-    next(mapError(err));
+    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
   }
 });
 
@@ -723,7 +722,7 @@ router.post('/work/flag', async (req, res, next) => {
     const entry = await bookCache.setMangaFlag(workId, body.mangaComics);
     res.status(200).json({ workId, ...entry });
   } catch (err) {
-    next(mapError(err));
+    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
   }
 });
 
@@ -737,7 +736,7 @@ router.delete('/work/flag', async (req, res, next) => {
     const removed = await bookCache.clearMangaFlag(workId);
     res.status(200).json({ workId, removed });
   } catch (err) {
-    next(mapError(err));
+    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
   }
 });
 
@@ -826,7 +825,7 @@ router.post('/year-override', async (req, res, next) => {
       removed: false,
     });
   } catch (err) {
-    next(mapError(err));
+    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
   }
 });
 
@@ -837,7 +836,7 @@ router.get('/unmatched', (req, res, next) => {
     const scope = resolveProfileScopeOrThrow(req);
     res.status(200).json(listUnmatched({ profileScope: scope }));
   } catch (err) {
-    next(mapError(err));
+    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
   }
 });
 

@@ -28,7 +28,7 @@
 
 const express = require('express');
 
-const { HttpError } = require('../upload');
+const { HttpError, mapDomainError } = require('../core/errors');
 const epic = require('./epic');
 const epicAuth = require('./epic-auth');
 const epicImport = require('./epic-import');
@@ -65,29 +65,32 @@ const EPIC_ERROR_STATUS = {
   unknown_auth: 404,
 };
 
-function mapError(err) {
-  if (err instanceof HttpError) return err;
-  if (err instanceof epic.EpicError || (err && err.code && EPIC_ERROR_STATUS[err.code])) {
-    const status =
-      Number.isInteger(err.status) && err.status >= 400
-        ? err.status
-        : EPIC_ERROR_STATUS[err.code] || 502;
-    const mapped = new HttpError(status, epic.maskSecrets(err.message || 'Epic error'), err.code);
-    if (err.retryAt) mapped.retryAt = err.retryAt;
-    return mapped;
-  }
-  if (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600) {
-    return new HttpError(err.status, epic.maskSecrets(err.message || 'Epic error'), err.code);
-  }
-  return err;
-}
+const EPIC_ERROR_PROFILE = {
+  rules: [
+    {
+      is: epic.EpicError,
+      statuses: EPIC_ERROR_STATUS,
+      defaultStatus: 502,
+      ownStatus: 'whenAtLeast400',
+    },
+    {
+      codeIn: EPIC_ERROR_STATUS,
+      statuses: EPIC_ERROR_STATUS,
+      defaultStatus: 502,
+      ownStatus: 'whenAtLeast400',
+    },
+  ],
+  fallback: {},
+  retryAt: true,
+  message: { mask: epic.maskSecrets, fallback: 'Epic error' },
+};
 
 function createRouter(deps = {}) {
   const store = deps.tokenStore || tokenStore;
   const importer = deps.importer || epicImport;
   const auth = deps.auth || epicAuth;
   const router = express.Router();
-  const ctx = { deps, store, importer, auth, mapError };
+  const ctx = { deps, store, importer, auth, errorProfile: EPIC_ERROR_PROFILE };
 
   status.register(router, ctx);
   authRoutes.register(router, ctx);

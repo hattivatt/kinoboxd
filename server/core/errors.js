@@ -29,6 +29,10 @@ function isHttpError(err) {
   return err instanceof HttpError;
 }
 
+function isHttpStatus(value) {
+  return Number.isInteger(value) && value >= 400 && value < 600;
+}
+
 /**
  * Wrap an error that already carries an explicit status (`err.status`) into an
  * `HttpError`. Job starters throw such plain errors instead of importing the
@@ -36,10 +40,46 @@ function isHttpError(err) {
  */
 function fromStatus(err, fallbackCode = 'error') {
   if (err instanceof HttpError) return err;
-  if (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600) {
+  if (err && isHttpStatus(err.status)) {
     return new HttpError(err.status, err.message, err.code || fallbackCode);
   }
   return err;
+}
+
+function ruleStatus(err, rule) {
+  if (rule.ownStatus === 'whenSet' && err.status) return err.status;
+  if (rule.ownStatus === 'whenAtLeast400' && Number.isInteger(err.status) && err.status >= 400) {
+    return err.status;
+  }
+  const fromTable = rule.statuses ? rule.statuses[err.code] : null;
+  return fromTable || rule.defaultStatus;
+}
+
+function profileMessage(err, profile) {
+  if (!profile.message) return err.message;
+  return profile.message.mask(err.message || profile.message.fallback);
+}
+
+function wrapDomainError(err, status, code, profile) {
+  const mapped = new HttpError(status, profileMessage(err, profile), code);
+  if (profile.retryAt && err.retryAt) mapped.retryAt = err.retryAt;
+  return mapped;
+}
+
+function ruleMatches(err, rule) {
+  if (rule.is) {
+    const types = Array.isArray(rule.is) ? rule.is : [rule.is];
+    return types.some((type) => err instanceof type);
+  }
+  return Boolean(rule.codeIn && err.code && rule.codeIn[err.code]);
+}
+
+function mapDomainError(err, profile) {
+  if (!profile || !err || err instanceof HttpError) return err;
+  const rule = profile.rules.find((entry) => ruleMatches(err, entry));
+  if (rule) return wrapDomainError(err, ruleStatus(err, rule), err.code, profile);
+  if (!profile.fallback || !isHttpStatus(err.status)) return err;
+  return wrapDomainError(err, err.status, err.code || profile.fallback.code, profile);
 }
 
 /** Send one error response in the documented shape. */
@@ -63,6 +103,7 @@ module.exports = {
   HttpError,
   isHttpError,
   fromStatus,
+  mapDomainError,
   respondError,
   errorMiddleware,
 };

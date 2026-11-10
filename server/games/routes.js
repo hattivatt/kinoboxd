@@ -21,7 +21,7 @@
 
 const express = require('express');
 
-const { HttpError } = require('../core/errors');
+const { HttpError, mapDomainError } = require('../core/errors');
 const gameCache = require('./game-cache');
 const steam = require('./steam');
 const store = require('./store');
@@ -62,27 +62,19 @@ const STEAM_ERROR_STATUS = {
   reviews_invalid_appid: 400,
 };
 
-function mapError(err) {
-  if (err instanceof HttpError) return err;
-  if (err instanceof steam.SteamError || err instanceof store.StoreError) {
-    const status = STEAM_ERROR_STATUS[err.code] || 502;
-    const mapped = new HttpError(status, err.message, err.code);
-    if (err.retryAt) mapped.retryAt = err.retryAt;
-    return mapped;
-  }
-  if (err instanceof spy.SpyError) {
-    const status = STEAM_ERROR_STATUS[err.code] || 502;
-    const mapped = new HttpError(status, err.message, err.code);
-    if (err.retryAt) mapped.retryAt = err.retryAt;
-    return mapped;
-  }
+const GAMES_ERROR_PROFILE = {
+  rules: [
+    {
+      is: [steam.SteamError, store.StoreError, spy.SpyError],
+      statuses: STEAM_ERROR_STATUS,
+      defaultStatus: 502,
+    },
+  ],
   // Job starters throw plain errors with an explicit HTTP status
   // (`invalid_profile`/`unknown_profile` from the enrich job).
-  if (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600) {
-    return new HttpError(err.status, err.message, err.code || 'games_error');
-  }
-  return err;
-}
+  fallback: { code: 'games_error' },
+  retryAt: true,
+};
 
 /**
  * Resolve `?profile=` to exactly one cached games profile. Mirrors the books
@@ -132,7 +124,14 @@ function createRouter(deps = {}) {
   const importer = deps.importer || importJobs;
   const storeClient = deps.storeClient || null;
   const router = express.Router();
-  const ctx = { deps, client, importer, storeClient, mapError, resolveProfileOrThrow };
+  const ctx = {
+    deps,
+    client,
+    importer,
+    storeClient,
+    errorProfile: GAMES_ERROR_PROFILE,
+    resolveProfileOrThrow,
+  };
 
   profiles.register(router);
   imports.register(router, ctx);
