@@ -41,7 +41,6 @@ scripts/       contract generator, census, HTTP smoke
 contracts/     generated API/env/limits/cache docs
 spec/          short pointers into AGENTS.md
 nix/           package.nix (build recipe) and module.nix (NixOS service)
-examples/      nixos-site.nix — site config template for the module
 devenv.nix     dev shell (node, git, jq, curl, ripgrep, nixfmt)
 flake.nix      flake wrapper around nix/package.nix + devShell + checks
 ```

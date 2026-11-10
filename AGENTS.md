@@ -2,7 +2,7 @@
 
 **Этот файл — единственный документ проекта.** Здесь и текущая архитектура сервиса, и правила, по которым работают агенты-исполнители. Других архитектурных/плановых документов нет: backlog, история решений и остатки — в §11, эмпирика по источникам — в §10, числа лимитов — в `contracts/limits.md` (генерируется).
 
-**Раскладка.** Git-репозиторий — корень проекта. В нём лежит всё, что нужно для разработки и деплоя: `server/`, `public/`, `test/`, `scripts/`, `contracts/`, `spec/`, `nix/` (сборка и NixOS-модуль), `examples/` (site-конфиг), `devenv.*` (dev-shell), `flake.nix`. Вне git остаётся только то, что генерируется или является личным: `node_modules/`, `cache*/`, `config/*-token`, `.devenv/`, `result`, `state/`. Имя `AGENTS.md` выбрано как конвенция, которую автоматически читают agent-тулзы.
+**Раскладка.** Git-репозиторий — корень проекта. В нём лежит всё, что нужно для разработки и деплоя: `server/`, `public/`, `test/`, `scripts/`, `contracts/`, `spec/`, `nix/` (сборка и NixOS-модуль), `devenv.*` (dev-shell), `flake.nix`. Вне git остаётся только то, что генерируется или является личным: `node_modules/`, `cache*/`, `config/*-token`, `.devenv/`, `result`, `state/`, а также личный site-конфиг `kinoboxd.nix` (в `~/.nixos`). Имя `AGENTS.md` выбрано как конвенция, которую автоматически читают agent-тулзы.
 
 **Статус:** v3.1, 10.11.2026, `main` @ `c04b97c`. v3.1: dev- и deploy-файлы перенесены внутрь репозитория, `flake.nix` вызывает `nix/package.nix` вместо дублирования рецепта. Заменяет `АРХИТЕКТУРА.md`, `ПЛАНЫ.md` и `РЕФАКТОРИНГ-ПЛАН.md` (их содержимое сведено сюда, сами файлы удалены; история — в git).
 
@@ -54,8 +54,6 @@
   nix/
     package.nix           единственный рецепт сборки (пин + лаунчеры + prepare_state)
     module.nix            NixOS-модуль services.kinoboxd
-  examples/
-    nixos-site.nix        site-конфиг: sops-секреты, порт, state, таймеры
   flake.nix               обёртка: callPackage nix/package.nix + devShell + checks
   devenv.nix  devenv.lock dev-shell (node 24, git, jq, curl, rg, nixfmt)
   AGENTS.md               этот документ
@@ -307,7 +305,7 @@ Letterboxd — не отдельный профиль: он обогащает �
 
 - `nix/package.nix` — пин `fetchFromGitHub` (`rev`, `hash`) + `buildNpmPackage` (`npmDeps.hash`). Пин обновляется **только здесь**.
 - `nix/module.nix` — systemd: сервер, бэкфилл фильмов (`allTargets`: `imdb`, `keywords`, `wikidata`, `rematch`, `collections`, `mcu`), бэкфилл книг, resolve-таймер, юниты игр; `EnvironmentFile`, state-раскладка. `authors`/`manga` — ручные миграции, юнитов нет.
-- `examples/nixos-site.nix` — пример site-конфига (sops-ключи, порт, state); копируется в `~/.nixos` рядом с модулем.
+- Личный site-конфиг (`services.kinoboxd`: sops-секреты, порт, state, таймеры) живёт вне репозитория — в `~/.nixos`; в repo его нет.
 - Переменные: `KINOBOXD_CACHE_DIR`, `KINOBOXD_CACHE_BOOK_DIR`, `KINOBOXD_CACHE_GAMES_DIR`, `KINOBOXD_STATE_DIR`, `KINOBOXD_PASSWORD`, `PORT` (боевой `3000`; в тестах не использовать).
 - Текущий пин: `rev = 2416813408ff9e25df829cb8a2765849fa29dd99`, `hash = sha256-UWtj0qTf3AcJKNzMck6R1WwTxvBtS9Tntw0L7MWqLJI=`, `npmDeps.hash = sha256-X6rMqzNU1oXT0h1oc7Ak3dxP6Yb90frXXbiIra52Qag=`, store `/nix/store/6cjby7wpcf4gawir94ypi29cvgpp1cbg-kinoboxd-1.0.0`.
 - `flake.nix` больше **не дублирует** рецепт: он делает `pkgs.callPackage ./nix/package.nix { source = <local tree>; }`, поэтому лаунчеры, `prepare_state` и `meta` живут в одном файле. Пин `rev` всегда отстаёт на один коммит: коммит не может запинить собственный архив, поэтому `rev` указывает на последний запушенный. `nix build .#` пин не использует.
@@ -322,7 +320,7 @@ Letterboxd — не отдельный профиль: он обогащает �
 
 **Обязательный шот-лист отчёта:**
 
-- **Deploy-файлы:** какие из `nix/package.nix` / `nix/module.nix` / `examples/nixos-site.nix` изменены + готовые `install -Dm644`-команды для `~/.nixos` (модуль → `modules/services/kinoboxd/module.nix`, пакет → `packages/kinoboxd/package.nix`). «Пин обновлён» без команд — не отчёт.
+- **Deploy-файлы:** какие из `nix/package.nix` / `nix/module.nix` изменены + готовые `install -Dm644`-команды для `~/.nixos` (модуль → `modules/services/kinoboxd/module.nix`, пакет → `packages/kinoboxd/package.nix`). «Пин обновлён» без команд — не отчёт.
 - **Тест-числа:** сколько тестов, что проверено, реальные цифры (payload ±байты, счётчики, тайминги), а не «стало быстрее».
 - **Git:** commit SHA(ы), файлы, ветка; `pin` (rev в `nix/package.nix`) и store-путь.
 - **Риски:** что не проверено, где данные могли устареть, какие допущения приняты.
@@ -344,7 +342,7 @@ ln -s "$REPO/cache"        ../kb-wt-<name>/cache
 - Корень worktree — это корень репозитория: `server/`, `public/`, `package.json`, `nix/` лежат прямо в `kb-wt-<name>/`.
 - Каждый раунд гоняет тесты со **своей** базой: `KINOBOXD_TEST_PORT_BASE=<уникальный>` (6000–9800 или 11000–19000; 9900–10999 запрещены).
 - Мутирующие кэш/бэкфилл прогоны — **только в main-дереве**; в worktree допустимы unit/mock/live-read тесты.
-- Ветки не трогают `nix/`, `examples/`, `flake.nix`, `devenv.*`, `AGENTS.md`.
+- Ветки не трогают `nix/`, `flake.nix`, `devenv.*`, `AGENTS.md`.
 - Перед началом: `git -C <worktree> branch --show-current` → `agent/<name>`.
 - Hot-set, который **нельзя** параллелить между собой: `server/stats.js` + `server/stats/`, `server/taxonomy.js`, `public/js/widgets.js`, `public/index.html`.
 - Конфликт по `package-lock.json` — ошибка планирования раундов, а не рутинная работа.
