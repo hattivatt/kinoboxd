@@ -25,7 +25,7 @@
 
 const express = require('express');
 
-const { HttpError } = require('../../core/errors');
+const { HttpError, mapDomainError } = require('../../core/errors');
 const { assertOnlyParams } = require('../../core/params');
 const gameCache = require('../game-cache');
 const enrichJobs = require('../enrich');
@@ -34,16 +34,16 @@ const personnelJobs = require('./jobs');
 
 const ENDPOINT = 'GET /api/games/personnel';
 
-function mapError(err) {
-  if (err instanceof HttpError) return err;
-  if (err instanceof personnel.PersonnelError) {
-    return new HttpError(err.status || 400, err.message, err.code);
-  }
-  if (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600) {
-    return new HttpError(err.status, err.message, err.code || 'games_personnel_error');
-  }
-  return err;
-}
+const PERSONNEL_ERROR_PROFILE = {
+  rules: [
+    {
+      is: personnel.PersonnelError,
+      defaultStatus: 400,
+      ownStatus: 'whenSet',
+    },
+  ],
+  fallback: { code: 'games_personnel_error' },
+};
 
 
 /** Exactly one cached games profile (same contract as `/api/games/stats`). */
@@ -197,7 +197,7 @@ function createRouter(deps = {}) {
       res.set('X-Games-Personnel-Pending', String(payload.pending.credits));
       res.status(200).json(payload);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, PERSONNEL_ERROR_PROFILE));
     }
   });
 
@@ -212,7 +212,7 @@ function createRouter(deps = {}) {
       if (!status) throw new HttpError(404, 'Unknown personnel job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, PERSONNEL_ERROR_PROFILE));
     }
   });
 
@@ -234,7 +234,7 @@ function createRouter(deps = {}) {
         },
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, PERSONNEL_ERROR_PROFILE));
     }
   });
 

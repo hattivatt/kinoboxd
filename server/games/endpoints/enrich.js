@@ -1,13 +1,13 @@
 'use strict';
 
-const { HttpError } = require('../../core/errors');
+const { HttpError, mapDomainError } = require('../../core/errors');
 const { parseForce } = require('../../core/params');
 const enrichJobs = require('../enrich');
 const franchiseJobs = require('../franchise-jobs');
 const personnelJobs = require('../personnel/jobs');
 
 function register(router, ctx) {
-  const { deps, storeClient, mapError, resolveProfileOrThrow } = ctx;
+  const { deps, storeClient, errorProfile, resolveProfileOrThrow } = ctx;
 
   /* --------------------------- enrich ------------------------- */
 
@@ -86,7 +86,7 @@ function register(router, ctx) {
         franchiseSkipped: franchiseJob ? franchiseJob.skipped || null : null,
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -100,7 +100,7 @@ function register(router, ctx) {
       if (!status) throw new HttpError(404, 'Unknown enrich job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -110,7 +110,7 @@ function register(router, ctx) {
       if (!status) throw new HttpError(404, 'Unknown enrich job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 }

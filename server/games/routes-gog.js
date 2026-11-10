@@ -20,7 +20,7 @@
 const express = require('express');
 
 const { budgetLimitFromEnv } = require('../core/budget');
-const { HttpError } = require('../core/errors');
+const { HttpError, mapDomainError } = require('../core/errors');
 const { assertOnlyParams, parseForce } = require('../core/params');
 const gameCache = require('./game-cache');
 const gogCache = require('./gog-cache');
@@ -49,19 +49,18 @@ const GOG_ERROR_STATUS = {
   gog_owner_mismatch: 400,
 };
 
-function mapError(err) {
-  if (err instanceof HttpError) return err;
-  if (err instanceof gog.GogError) {
-    const status = err.status || GOG_ERROR_STATUS[err.code] || 502;
-    const mapped = new HttpError(status, err.message, err.code);
-    if (err.retryAt) mapped.retryAt = err.retryAt;
-    return mapped;
-  }
-  if (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600) {
-    return new HttpError(err.status, err.message, err.code || 'games_gog_error');
-  }
-  return err;
-}
+const GOG_ERROR_PROFILE = {
+  rules: [
+    {
+      is: gog.GogError,
+      statuses: GOG_ERROR_STATUS,
+      defaultStatus: 502,
+      ownStatus: 'whenSet',
+    },
+  ],
+  fallback: { code: 'games_gog_error' },
+  retryAt: true,
+};
 
 
 
@@ -88,7 +87,7 @@ function createRouter(deps = {}) {
           'Вставьте в поле «code» сам code или всю ссылку: сервер разберёт её сам.',
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, GOG_ERROR_PROFILE));
     }
   });
 
@@ -112,7 +111,7 @@ function createRouter(deps = {}) {
       });
       res.status(200).json({ connected: true, ...result });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, GOG_ERROR_PROFILE));
     }
   });
 
@@ -161,7 +160,7 @@ function createRouter(deps = {}) {
         },
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, GOG_ERROR_PROFILE));
     }
   });
 
@@ -182,7 +181,7 @@ function createRouter(deps = {}) {
       const created = job.status === 'running' && !job.reused && job.stage === 'queued';
       res.status(created ? 201 : 200).json(job);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, GOG_ERROR_PROFILE));
     }
   });
 
@@ -197,7 +196,7 @@ function createRouter(deps = {}) {
       if (!status) throw new HttpError(404, 'Unknown GOG import job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, GOG_ERROR_PROFILE));
     }
   });
 
@@ -207,7 +206,7 @@ function createRouter(deps = {}) {
       if (!status) throw new HttpError(404, 'Unknown GOG import job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, GOG_ERROR_PROFILE));
     }
   });
 
@@ -237,7 +236,7 @@ function createRouter(deps = {}) {
         snapshotKept: Boolean(gogCache.getLibrary(userKey)),
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, GOG_ERROR_PROFILE));
     }
   });
 
@@ -246,4 +245,3 @@ function createRouter(deps = {}) {
 
 module.exports = createRouter();
 module.exports.createRouter = createRouter;
-module.exports.mapError = mapError;

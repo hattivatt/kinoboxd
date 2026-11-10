@@ -1,6 +1,6 @@
 'use strict';
 
-const { HttpError } = require('../../core/errors');
+const { HttpError, mapDomainError } = require('../../core/errors');
 const { assertOnlyParams } = require('../../core/params');
 const franchise = require('../franchise');
 const gameCache = require('../game-cache');
@@ -9,7 +9,7 @@ const steamArt = require('../steam-art');
 const { genreNamesOf, categoryNamesOf, minutesToHours } = require('../stats');
 
 function register(router, ctx) {
-  const { deps, mapError, resolveProfileOrThrow } = ctx;
+  const { deps, errorProfile, resolveProfileOrThrow } = ctx;
   const artHandler = steamArt.createSteamArtHandler({
     fetch: deps.steamArtFetch || deps.fetch,
   });
@@ -184,7 +184,7 @@ function register(router, ctx) {
         },
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 }

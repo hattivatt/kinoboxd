@@ -28,7 +28,7 @@
 
 const express = require('express');
 
-const { HttpError } = require('../upload');
+const { HttpError, mapDomainError } = require('../core/errors');
 const gameCache = require('./game-cache');
 const epic = require('./epic');
 const epicCache = require('./epic-cache');
@@ -63,22 +63,25 @@ const EPIC_ERROR_STATUS = {
   unknown_auth: 404,
 };
 
-function mapError(err) {
-  if (err instanceof HttpError) return err;
-  if (err instanceof epic.EpicError || (err && err.code && EPIC_ERROR_STATUS[err.code])) {
-    const status =
-      Number.isInteger(err.status) && err.status >= 400
-        ? err.status
-        : EPIC_ERROR_STATUS[err.code] || 502;
-    const mapped = new HttpError(status, epic.maskSecrets(err.message || 'Epic error'), err.code);
-    if (err.retryAt) mapped.retryAt = err.retryAt;
-    return mapped;
-  }
-  if (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600) {
-    return new HttpError(err.status, epic.maskSecrets(err.message || 'Epic error'), err.code);
-  }
-  return err;
-}
+const EPIC_ERROR_PROFILE = {
+  rules: [
+    {
+      is: epic.EpicError,
+      statuses: EPIC_ERROR_STATUS,
+      defaultStatus: 502,
+      ownStatus: 'whenAtLeast400',
+    },
+    {
+      codeIn: EPIC_ERROR_STATUS,
+      statuses: EPIC_ERROR_STATUS,
+      defaultStatus: 502,
+      ownStatus: 'whenAtLeast400',
+    },
+  ],
+  fallback: {},
+  retryAt: true,
+  message: { mask: epic.maskSecrets, fallback: 'Epic error' },
+};
 
 function assertOnlyParams(req, allowed, endpoint) {
   const keys = Object.keys(req.query || {});
@@ -214,7 +217,7 @@ function createRouter(deps = {}) {
         libraryTtlHours: Math.round(epicCache.epicLibraryTtlMs() / 3600000),
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -241,7 +244,7 @@ function createRouter(deps = {}) {
           'Код одноразовый и живёт несколько минут.',
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -275,7 +278,7 @@ function createRouter(deps = {}) {
       });
       res.status(200).json({ connected: true, source: 'epic', ...result });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -300,7 +303,7 @@ function createRouter(deps = {}) {
       });
       res.status(201).json(session);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -318,7 +321,7 @@ function createRouter(deps = {}) {
       }
       res.status(200).json(session);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -331,7 +334,7 @@ function createRouter(deps = {}) {
       }
       res.status(200).json({ cancelled: true, authId: req.params.authId, source: 'epic' });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -371,7 +374,7 @@ function createRouter(deps = {}) {
       assertOnlyParams(req, ['force'], 'POST /api/games/epic/import');
       await startFromRequest(req, res, false);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -380,7 +383,7 @@ function createRouter(deps = {}) {
       assertOnlyParams(req, [], 'POST /api/games/epic/refresh');
       await startFromRequest(req, res, true);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -395,7 +398,7 @@ function createRouter(deps = {}) {
       if (!status) throw new HttpError(404, 'Unknown Epic import job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -405,7 +408,7 @@ function createRouter(deps = {}) {
       if (!status) throw new HttpError(404, 'Unknown Epic import job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -442,7 +445,7 @@ function createRouter(deps = {}) {
         meta: layer.meta,
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 
@@ -485,7 +488,7 @@ function createRouter(deps = {}) {
         status: 'not_connected',
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, EPIC_ERROR_PROFILE));
     }
   });
 

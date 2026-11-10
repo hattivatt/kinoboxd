@@ -1,11 +1,11 @@
 'use strict';
 
-const { HttpError } = require('../../core/errors');
+const { HttpError, mapDomainError } = require('../../core/errors');
 const { assertOnlyParams, parseBoolParam } = require('../../core/params');
 const gameCache = require('../game-cache');
 
 function register(router, ctx) {
-  const { client, mapError, resolveProfileOrThrow } = ctx;
+  const { client, errorProfile, resolveProfileOrThrow } = ctx;
 
   /* ----------------------- achievements ----------------------- */
 
@@ -92,7 +92,7 @@ function register(router, ctx) {
         globalError,
       });
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 }

@@ -23,7 +23,7 @@
 
 const express = require('express');
 
-const { HttpError } = require('../core/errors');
+const { HttpError, mapDomainError } = require('../core/errors');
 const { assertOnlyParams, parseForce } = require('../core/params');
 const gameCache = require('./game-cache');
 const franchise = require('./franchise');
@@ -32,16 +32,16 @@ const franchiseJobs = require('./franchise-jobs');
 
 const ENDPOINT = 'GET /api/games/franchises';
 
-function mapError(err) {
-  if (err instanceof HttpError) return err;
-  if (err instanceof franchise.FranchiseError) {
-    return new HttpError(err.status || 400, err.message, err.code);
-  }
-  if (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600) {
-    return new HttpError(err.status, err.message, err.code || 'games_franchise_error');
-  }
-  return err;
-}
+const FRANCHISE_ERROR_PROFILE = {
+  rules: [
+    {
+      is: franchise.FranchiseError,
+      defaultStatus: 400,
+      ownStatus: 'whenSet',
+    },
+  ],
+  fallback: { code: 'games_franchise_error' },
+};
 
 
 
@@ -159,7 +159,7 @@ function createRouter(deps = {}) {
       res.set('X-Games-Franchises-Pending', String(payload.pending.wikidata));
       res.status(200).json(payload);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, FRANCHISE_ERROR_PROFILE));
     }
   });
 
@@ -178,7 +178,7 @@ function createRouter(deps = {}) {
       const created = job.status === 'running' && job.stage === 'queued';
       res.status(created ? 202 : 200).json(job);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, FRANCHISE_ERROR_PROFILE));
     }
   });
 
@@ -193,7 +193,7 @@ function createRouter(deps = {}) {
       if (!status) throw new HttpError(404, 'Unknown franchise job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, FRANCHISE_ERROR_PROFILE));
     }
   });
 
@@ -203,7 +203,7 @@ function createRouter(deps = {}) {
       if (!status) throw new HttpError(404, 'Unknown franchise job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, FRANCHISE_ERROR_PROFILE));
     }
   });
 

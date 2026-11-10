@@ -1,10 +1,10 @@
 'use strict';
 
-const { HttpError } = require('../../core/errors');
+const { HttpError, mapDomainError } = require('../../core/errors');
 const { parseForce } = require('../../core/params');
 
 function register(router, ctx) {
-  const { deps, client, importer, storeClient, mapError, resolveProfileOrThrow } = ctx;
+  const { deps, client, importer, storeClient, errorProfile, resolveProfileOrThrow } = ctx;
 
   /* ------------------------- import -------------------------- */
 
@@ -54,7 +54,7 @@ function register(router, ctx) {
     try {
       startFromRequest(req, res);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -62,7 +62,7 @@ function register(router, ctx) {
     try {
       startFromRequest(req, res);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -92,7 +92,7 @@ function register(router, ctx) {
       const created = job.status === 'running' && !job.reused && job.stage === 'queued';
       res.status(created ? 201 : 200).json(job);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -106,7 +106,7 @@ function register(router, ctx) {
       if (!status) throw new HttpError(404, 'Unknown import job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -116,7 +116,7 @@ function register(router, ctx) {
       if (!status) throw new HttpError(404, 'Unknown import job id.', 'unknown_job');
       res.status(200).json(status);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 }

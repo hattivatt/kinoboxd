@@ -29,17 +29,17 @@
 | POST | `/api/auth/login` | — | 401:wrong_password | `server/auth.js:130` |
 | POST | `/api/auth/logout` | — | — | `server/auth.js:149` |
 | GET | `/api/auth/session` | — | — | `server/auth.js:155` |
-| POST | `/api/books/import/hardcover` | — | — | `server/books/routes.js:233` |
-| POST | `/api/books/import/livelib` | — | 400:username_required | `server/books/routes.js:208` |
-| POST | `/api/books/import/livelib-file` | — | 400:upload_failed, 413:file_too_large | `server/books/routes.js:356` |
-| DELETE | `/api/books/import/livelib/cookies` | — | 400:invalid_user_key, 400:user_key_required, 404:cookies_not_found, 409:livelib_import_running | `server/books/routes.js:539` |
-| GET | `/api/books/import/status` | — | 400:job_id_required, 404:unknown_job | `server/books/routes.js:584` |
-| GET | `/api/books/profiles` | — | — | `server/books/routes.js:135` |
-| GET | `/api/books/stats` | `includeMangaComics`, `profile` | 400:invalid_include_manga | `server/books/routes.js:669` |
-| GET | `/api/books/unmatched` | `profile` | — | `server/books/routes.js:834` |
-| DELETE | `/api/books/work/flag` | — | 400:work_id_required | `server/books/routes.js:731` |
-| POST | `/api/books/work/flag` | — | 400:manga_flag_required, 400:work_id_required | `server/books/routes.js:709` |
-| POST | `/api/books/year-override` | `profile` | 400:invalid_year, 400:profile_required, 400:unknown_work, 400:work_id_required | `server/books/routes.js:762` |
+| POST | `/api/books/import/hardcover` | — | — | `server/books/routes.js:230` |
+| POST | `/api/books/import/livelib` | — | 400:username_required | `server/books/routes.js:205` |
+| POST | `/api/books/import/livelib-file` | — | 400:upload_failed, 413:file_too_large | `server/books/routes.js:353` |
+| DELETE | `/api/books/import/livelib/cookies` | — | 400:invalid_user_key, 400:user_key_required, 404:cookies_not_found, 409:livelib_import_running | `server/books/routes.js:538` |
+| GET | `/api/books/import/status` | — | 400:job_id_required, 404:unknown_job | `server/books/routes.js:583` |
+| GET | `/api/books/profiles` | — | — | `server/books/routes.js:132` |
+| GET | `/api/books/stats` | `includeMangaComics`, `profile` | 400:invalid_include_manga | `server/books/routes.js:668` |
+| GET | `/api/books/unmatched` | `profile` | — | `server/books/routes.js:833` |
+| DELETE | `/api/books/work/flag` | — | 400:work_id_required | `server/books/routes.js:730` |
+| POST | `/api/books/work/flag` | — | 400:manga_flag_required, 400:work_id_required | `server/books/routes.js:708` |
+| POST | `/api/books/year-override` | `profile` | 400:invalid_year, 400:profile_required, 400:unknown_work, 400:work_id_required | `server/books/routes.js:761` |
 | GET | `/api/compare` | — | — | `server/films/routes.js:358` |
 | POST | `/api/enrich` | — | 400:upload_id_required, 404:unknown_upload | `server/films/routes.js:107` |
 | GET | `/api/enrich/status` | — | 400:upload_id_required, 404:unknown_upload | `server/films/routes.js:125` |
@@ -47,30 +47,30 @@
 | POST | `/api/games/enrich` | — | 400:invalid_recheckDays | `server/games/endpoints/enrich.js:21` |
 | GET | `/api/games/enrich/:jobId` | — | 404:unknown_job | `server/games/endpoints/enrich.js:107` |
 | GET | `/api/games/enrich/status` | — | 400:job_id_required, 404:unknown_job | `server/games/endpoints/enrich.js:93` |
-| POST | `/api/games/epic/auth` | — | — | `server/games/routes-epic.js:282` |
-| GET | `/api/games/epic/auth-url` | — | — | `server/games/routes-epic.js:228` |
-| DELETE | `/api/games/epic/auth/:authId` | — | 404:unknown_auth | `server/games/routes-epic.js:325` |
-| GET | `/api/games/epic/auth/:authId` | — | 404:unknown_auth | `server/games/routes-epic.js:307` |
-| POST | `/api/games/epic/connect` | — | 400:epic_code_required | `server/games/routes-epic.js:248` |
-| POST | `/api/games/epic/disconnect` | — | 400:epic_account_required | `server/games/routes-epic.js:451` |
-| GET | `/api/games/epic/exported` | `accountId`, `owner` | 400:owner_required | `server/games/routes-epic.js:419` |
-| POST | `/api/games/epic/import` | `force` | — | `server/games/routes-epic.js:369` |
-| GET | `/api/games/epic/import/:jobId` | — | 404:unknown_job | `server/games/routes-epic.js:402` |
-| GET | `/api/games/epic/import/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/routes-epic.js:387` |
-| POST | `/api/games/epic/refresh` | — | — | `server/games/routes-epic.js:378` |
-| GET | `/api/games/epic/status` | `accountId`, `owner` | — | `server/games/routes-epic.js:166` |
+| POST | `/api/games/epic/auth` | — | — | `server/games/routes-epic.js:285` |
+| GET | `/api/games/epic/auth-url` | — | — | `server/games/routes-epic.js:231` |
+| DELETE | `/api/games/epic/auth/:authId` | — | 404:unknown_auth | `server/games/routes-epic.js:328` |
+| GET | `/api/games/epic/auth/:authId` | — | 404:unknown_auth | `server/games/routes-epic.js:310` |
+| POST | `/api/games/epic/connect` | — | 400:epic_code_required | `server/games/routes-epic.js:251` |
+| POST | `/api/games/epic/disconnect` | — | 400:epic_account_required | `server/games/routes-epic.js:454` |
+| GET | `/api/games/epic/exported` | `accountId`, `owner` | 400:owner_required | `server/games/routes-epic.js:422` |
+| POST | `/api/games/epic/import` | `force` | — | `server/games/routes-epic.js:372` |
+| GET | `/api/games/epic/import/:jobId` | — | 404:unknown_job | `server/games/routes-epic.js:405` |
+| GET | `/api/games/epic/import/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/routes-epic.js:390` |
+| POST | `/api/games/epic/refresh` | — | — | `server/games/routes-epic.js:381` |
+| GET | `/api/games/epic/status` | `accountId`, `owner` | — | `server/games/routes-epic.js:169` |
 | POST | `/api/games/franchise-enrich` | — | — | `server/games/routes-franchise.js:166` |
 | GET | `/api/games/franchise-enrich/:jobId` | — | 404:unknown_job | `server/games/routes-franchise.js:200` |
 | GET | `/api/games/franchise-enrich/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/routes-franchise.js:185` |
 | GET | `/api/games/franchises` | `profile` | 400:profile_not_imported | `server/games/routes-franchise.js:145` |
 | GET | `/api/games/game/:appid` | `profile` | 400:invalid_appid, 404:game_not_in_library | `server/games/endpoints/game.js:35` |
-| POST | `/api/games/gog/auth` | `code`, `profile` | 400:gog_code_required | `server/games/routes-gog.js:95` |
-| GET | `/api/games/gog/auth-url` | — | — | `server/games/routes-gog.js:76` |
-| POST | `/api/games/gog/import` | `account`, `force`, `profile` | — | `server/games/routes-gog.js:168` |
-| GET | `/api/games/gog/import/:jobId` | — | 404:unknown_job | `server/games/routes-gog.js:204` |
-| GET | `/api/games/gog/import/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/routes-gog.js:189` |
-| POST | `/api/games/gog/logout` | `account`, `profile` | — | `server/games/routes-gog.js:214` |
-| GET | `/api/games/gog/status` | — | — | `server/games/routes-gog.js:119` |
+| POST | `/api/games/gog/auth` | `code`, `profile` | 400:gog_code_required | `server/games/routes-gog.js:94` |
+| GET | `/api/games/gog/auth-url` | — | — | `server/games/routes-gog.js:75` |
+| POST | `/api/games/gog/import` | `account`, `force`, `profile` | — | `server/games/routes-gog.js:167` |
+| GET | `/api/games/gog/import/:jobId` | — | 404:unknown_job | `server/games/routes-gog.js:203` |
+| GET | `/api/games/gog/import/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/routes-gog.js:188` |
+| POST | `/api/games/gog/logout` | `account`, `profile` | — | `server/games/routes-gog.js:213` |
+| GET | `/api/games/gog/status` | — | — | `server/games/routes-gog.js:118` |
 | POST | `/api/games/import` | — | — | `server/games/endpoints/import.js:53` |
 | GET | `/api/games/import/:jobId` | — | 404:unknown_job | `server/games/endpoints/import.js:113` |
 | GET | `/api/games/import/status` | — | 400:job_id_required, 404:unknown_job | `server/games/endpoints/import.js:99` |
@@ -132,7 +132,7 @@
 
 ### `POST /api/books/import/hardcover`
 
-- файл: `server/books/routes.js:233`
+- файл: `server/books/routes.js:230`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `force` — см. модуль
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
@@ -140,7 +140,7 @@
 
 ### `POST /api/books/import/livelib`
 
-- файл: `server/books/routes.js:208`
+- файл: `server/books/routes.js:205`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `deep`, `force` — см. модуль
 - ошибка `400` `username_required`: 'Body must contain "username" (LiveLib reader name or profile URL).'
@@ -148,7 +148,7 @@
 
 ### `POST /api/books/import/livelib-file`
 
-- файл: `server/books/routes.js:356`
+- файл: `server/books/routes.js:353`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `upload_failed`: `Не удалось принять файл: ${uploadError.message}`
 - ошибка `413` `file_too_large`: `Файл больше ${Math.round(FILE_IMPORT_MAX_BYTES / (1024 * 1024))} МБ.`
@@ -156,7 +156,7 @@
 
 ### `DELETE /api/books/import/livelib/cookies`
 
-- файл: `server/books/routes.js:539`
+- файл: `server/books/routes.js:538`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `sourceUserKey`, `userKey` — см. модуль
 - ошибка `400` `invalid_user_key`: 'Query parameter "userKey" must be 1-120 chars of letters, digits, ".", "_" or "-".'
@@ -167,7 +167,7 @@
 
 ### `GET /api/books/import/status`
 
-- файл: `server/books/routes.js:584`
+- файл: `server/books/routes.js:583`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `id` — см. модуль
 - ошибка `400` `job_id_required`: 'Query parameter "id" is required.'
@@ -176,28 +176,28 @@
 
 ### `GET /api/books/profiles`
 
-- файл: `server/books/routes.js:135`
+- файл: `server/books/routes.js:132`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 - описание: GET /api/books/profiles — cached source profiles for the switcher/badges. Each entry carries: - `key` — the exact `?profile=` token (`livelib-Margaret`), - `sourceKey` — the minimal provider-qualified key for docs (`liv…
 
 ### `GET /api/books/stats`
 
-- файл: `server/books/routes.js:669`
+- файл: `server/books/routes.js:668`
 - query (строгий список): `includeMangaComics`, `profile`
 - ошибка `400` `invalid_include_manga`: 'Query parameter "includeMangaComics" must be 0 or 1 (default 0).'
 - описание: GET /api/books/stats?profile=livelib-Margaret&includeMangaComics=0|1 `profile` is mandatory and single: the payload is built from that profile's events only (no union with another account/service). Any other query param…
 
 ### `GET /api/books/unmatched`
 
-- файл: `server/books/routes.js:834`
+- файл: `server/books/routes.js:833`
 - query (строгий список): `profile`
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 - описание: GET /api/books/unmatched?profile=livelib-Margaret (single profile).
 
 ### `DELETE /api/books/work/flag`
 
-- файл: `server/books/routes.js:731`
+- файл: `server/books/routes.js:730`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `workId` — см. модуль
 - ошибка `400` `work_id_required`: 'Query parameter "workId" is required.'
@@ -205,7 +205,7 @@
 
 ### `POST /api/books/work/flag`
 
-- файл: `server/books/routes.js:709`
+- файл: `server/books/routes.js:708`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `manga_flag_required`: 'Body must contain "mangaComics" as a boolean (true = hide, false = show).'
 - ошибка `400` `work_id_required`: 'Body must contain "workId".'
@@ -213,7 +213,7 @@
 
 ### `POST /api/books/year-override`
 
-- файл: `server/books/routes.js:762`
+- файл: `server/books/routes.js:761`
 - query (строгий список): `profile`
 - ошибка `400` `invalid_year`: `Body field "year" must be an integer in ${YEAR_OVERRIDE_MIN}..${YEAR_OVERRIDE_MAX} ` + 'or null to remove the correction.'
 - ошибка `400` `profile_required`: 'Body must contain "profile".'
@@ -274,81 +274,81 @@
 
 ### `POST /api/games/epic/auth`
 
-- файл: `server/games/routes-epic.js:282`
+- файл: `server/games/routes-epic.js:285`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/games/epic/auth-url`
 
-- файл: `server/games/routes-epic.js:228`
+- файл: `server/games/routes-epic.js:231`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 - описание: Login URL for the authorization-code flow. No network call: the client id is public and the page is the official Epic login. The user copies the `code` from the redirect page and posts it to `/epic/connect`.
 
 ### `DELETE /api/games/epic/auth/:authId`
 
-- файл: `server/games/routes-epic.js:325`
+- файл: `server/games/routes-epic.js:328`
 - path-параметры: `authId`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `404` `unknown_auth`: 'Unknown Epic auth session.'
 
 ### `GET /api/games/epic/auth/:authId`
 
-- файл: `server/games/routes-epic.js:307`
+- файл: `server/games/routes-epic.js:310`
 - path-параметры: `authId`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `404` `unknown_auth`: 'Unknown Epic auth session.'
 
 ### `POST /api/games/epic/connect`
 
-- файл: `server/games/routes-epic.js:248`
+- файл: `server/games/routes-epic.js:251`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `code` — см. модуль
 - ошибка `400` `epic_code_required`: 'Body must contain "code" — the one-time code from the Epic login redirect ' + '(epicgames.com/id/api/redirect?code=…).'
 
 ### `POST /api/games/epic/disconnect`
 
-- файл: `server/games/routes-epic.js:451`
+- файл: `server/games/routes-epic.js:454`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `epic_account_required`: 'Body must contain "accountId" or "owner" (steam-<steamid64>).'
 - описание: ------------------------- disconnect -------------------------
 
 ### `GET /api/games/epic/exported`
 
-- файл: `server/games/routes-epic.js:419`
+- файл: `server/games/routes-epic.js:422`
 - query (строгий список): `accountId`, `owner`
 - ошибка `400` `owner_required`: 'Query parameter "owner" (steam-<steamid64>) or "accountId" is required.'
 - описание: The isolated contract for the M6c integration: one entry per Epic game, with `workKey`/`steamAppId` deliberately `null` (the union is built by the integration round, not here). `hoursBySource` stays split.
 
 ### `POST /api/games/epic/import`
 
-- файл: `server/games/routes-epic.js:369`
+- файл: `server/games/routes-epic.js:372`
 - query (строгий список): `force`
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/games/epic/import/:jobId`
 
-- файл: `server/games/routes-epic.js:402`
+- файл: `server/games/routes-epic.js:405`
 - path-параметры: `jobId`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `404` `unknown_job`: 'Unknown Epic import job id.'
 
 ### `GET /api/games/epic/import/status`
 
-- файл: `server/games/routes-epic.js:387`
+- файл: `server/games/routes-epic.js:390`
 - query (строгий список): `id`
 - ошибка `400` `job_id_required`: 'Query parameter "id" is required.'
 - ошибка `404` `unknown_job`: 'Unknown Epic import job id.'
 
 ### `POST /api/games/epic/refresh`
 
-- файл: `server/games/routes-epic.js:378`
+- файл: `server/games/routes-epic.js:381`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/games/epic/status`
 
-- файл: `server/games/routes-epic.js:166`
+- файл: `server/games/routes-epic.js:169`
 - query (строгий список): `accountId`, `owner`
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 - описание: --------------------------- status ---------------------------
@@ -390,45 +390,45 @@
 
 ### `POST /api/games/gog/auth`
 
-- файл: `server/games/routes-gog.js:95`
+- файл: `server/games/routes-gog.js:94`
 - query (строгий список): `code`, `profile`
 - ошибка `400` `gog_code_required`: 'Body must contain "code" — the one-time code from the GOG login redirect.'
 
 ### `GET /api/games/gog/auth-url`
 
-- файл: `server/games/routes-gog.js:76`
+- файл: `server/games/routes-gog.js:75`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `POST /api/games/gog/import`
 
-- файл: `server/games/routes-gog.js:168`
+- файл: `server/games/routes-gog.js:167`
 - query (строгий список): `account`, `force`, `profile`
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/games/gog/import/:jobId`
 
-- файл: `server/games/routes-gog.js:204`
+- файл: `server/games/routes-gog.js:203`
 - path-параметры: `jobId`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `404` `unknown_job`: 'Unknown GOG import job id.'
 
 ### `GET /api/games/gog/import/status`
 
-- файл: `server/games/routes-gog.js:189`
+- файл: `server/games/routes-gog.js:188`
 - query (строгий список): `id`
 - ошибка `400` `job_id_required`: 'Query parameter "id" is required.'
 - ошибка `404` `unknown_job`: 'Unknown GOG import job id.'
 
 ### `POST /api/games/gog/logout`
 
-- файл: `server/games/routes-gog.js:214`
+- файл: `server/games/routes-gog.js:213`
 - query (строгий список): `account`, `profile`
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/games/gog/status`
 
-- файл: `server/games/routes-gog.js:119`
+- файл: `server/games/routes-gog.js:118`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 

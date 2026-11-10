@@ -1,13 +1,13 @@
 'use strict';
 
-const { HttpError } = require('../../core/errors');
+const { HttpError, mapDomainError } = require('../../core/errors');
 const { assertOnlyParams, parseBoolParam, parseMinHours } = require('../../core/params');
 const enrichJobs = require('../enrich');
 const secondaryDetails = require('../secondary-details');
 const { buildGamesStatsFromCache } = require('../stats');
 
 function register(router, ctx) {
-  const { deps, mapError, resolveProfileOrThrow } = ctx;
+  const { deps, errorProfile, resolveProfileOrThrow } = ctx;
 
   /* --------------------------- stats -------------------------- */
 
@@ -32,7 +32,7 @@ function register(router, ctx) {
       const scope = resolveProfileOrThrow(req.query.profile);
       res.status(200).json(secondaryDetails.statusForOwner(scope.parsed.key));
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 
@@ -88,7 +88,7 @@ function register(router, ctx) {
       res.set('X-Games-Build-Ms', String(stats.meta.buildMs));
       res.status(200).json(stats);
     } catch (err) {
-      next(mapError(err));
+      next(mapDomainError(err, errorProfile));
     }
   });
 }
