@@ -22,7 +22,7 @@ process.env.KINOBOXD_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd
 const gog = require('../server/games/gog');
 const gogCache = require('../server/games/gog-cache');
 
-const PORT = 7084;
+const PORT = 6311;
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'games', 'gog');
 
 function fixture(name) {
