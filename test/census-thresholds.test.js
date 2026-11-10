@@ -45,7 +45,7 @@ const FUNCTION_ALLOWLIST = {
 };
 
 const HELPER_BASELINE = {
-  mapError: 6,
+  mapError: 0,
   round2: 6,
   dayNumber: 3,
   computeStreaks: 2,
