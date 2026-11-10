@@ -53,6 +53,10 @@
  * | KINOBOXD_MOBY_KEY_FILE=...    | same for the Moby key                |
  *
  * Test port rule (AGENTS §1): never 3000; pick a free 5xxx/6xxx port.
+ *
+ * Tmp-dir hygiene: every root this module hands out (`makeTmpCache`,
+ * `tmpDir`) is remembered, so a merged suite ends with ONE
+ * `test.after(() => env.cleanupTmpDirs())` and leaves no directory behind.
  */
 
 const fs = require('node:fs');
@@ -94,6 +98,68 @@ const BUDGET_ENV = Object.freeze([
 ]);
 
 let counter = 0;
+const pending = [];
+
+function ensureBase() {
+  fs.mkdirSync(TMP_BASE, { recursive: true });
+}
+
+function remember(dir) {
+  assertTmp(dir, 'tmp root');
+  pending.push(dir);
+  return dir;
+}
+
+/**
+ * A tracked replacement for a hand-rolled `fs.mkdtempSync(...)` block: the
+ * directory lives under `TMP_BASE` and is removed by `cleanupTmpDirs()`.
+ *
+ * @param {string} [label] short label used in the directory name
+ * @returns {string} the created directory
+ */
+function tmpDir(label) {
+  ensureBase();
+  const safe = String(label || 'tmp')
+    .replace(/[^a-zA-Z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return remember(fs.mkdtempSync(path.join(TMP_BASE, `${safe || 'tmp'}-`)));
+}
+
+/**
+ * Drop the mutable, cross-block state a merged suite must not inherit: host
+ * breakers, job journals and resolve locks. Data fixtures (cached profiles,
+ * details, links) stay — they are the files' own seeds; a tripped 30 minute
+ * breaker or a stale job, on the other hand, only ever means «the previous
+ * block left the process poisoned».
+ */
+function resetMutableState() {
+  const stateRoots = [
+    process.env[ENV_VARS.state],
+    ...[ENV_VARS.films, ENV_VARS.books, ENV_VARS.games].map((name) =>
+      process.env[name] ? path.join(process.env[name], 'state') : null,
+    ),
+  ].filter(Boolean);
+  for (const dir of stateRoots) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  for (const name of [ENV_VARS.films, ENV_VARS.books, ENV_VARS.games]) {
+    const root = process.env[name];
+    if (!root) continue;
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith('.lock')) {
+        fs.rmSync(path.join(root, entry.name), { force: true });
+      }
+    }
+  }
+  return stateRoots.length;
+}
+
+/** Remove every root handed out by this module; returns how many it owns. */
+function cleanupTmpDirs() {
+  for (const dir of pending) fs.rmSync(dir, { recursive: true, force: true });
+  return pending.length;
+}
 
 function uniqueRoot(domain) {
   counter += 1;
@@ -156,6 +222,8 @@ function makeTmpCache(domain, options = {}) {
     stateDir: path.join(root, SUBDIRS.state),
     epicTokensDir: path.join(root, SUBDIRS.epicTokens),
   };
+  assertTmp(root, 'run root');
+  remember(root);
   for (const dir of [
     dirs.cacheDir,
     dirs.cacheBookDir,
@@ -173,6 +241,24 @@ function makeTmpCache(domain, options = {}) {
     cleanup() {
       fs.rmSync(root, { recursive: true, force: true });
     },
+  };
+}
+
+/**
+ * The roots the process is currently running on, shaped like `makeTmpCache`'s
+ * answer with a no-op `cleanup()`. A merged suite calls `makeTmpCache` once at
+ * module scope; the blocks that used to build their own tmp cache ask for
+ * these instead, so no module ever diverges from the run root.
+ */
+function currentDirs() {
+  return {
+    root: process.env[ENV_VARS.films],
+    cacheDir: process.env[ENV_VARS.films],
+    cacheBookDir: process.env[ENV_VARS.books],
+    cacheGamesDir: process.env[ENV_VARS.games],
+    stateDir: process.env[ENV_VARS.state],
+    epicTokensDir: process.env[ENV_VARS.epicTokens],
+    cleanup() {},
   };
 }
 
@@ -207,6 +293,10 @@ module.exports = {
   insideTmp,
   assertTmp,
   assertNoProdPaths,
+  tmpDir,
+  cleanupTmpDirs,
+  resetMutableState,
+  currentDirs,
   makeTmpCache,
   applyEnv,
   zeroBudgets,
