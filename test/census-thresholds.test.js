@@ -50,7 +50,6 @@ const FUNCTION_ALLOWLIST = {
   'server/games/personnel/personnel.js:enrichPersonnel': 360,
   'server/games/routes-epic.js:createRouter': 354,
   'server/core/jobs.js:createJobs': 333,
-  'public/js/charts.js:renderYearBars': 320,
   'server/games/gog-import.js:runImport': 308,
 };
 
@@ -108,8 +107,18 @@ test('census function lengths calibrate on the two known giants', () => {
     census.longestFunctions({ minLines: 1 }).map((entry) => [functionKey(entry), entry.length]),
   );
   assert.equal(measured.get('server/games/epic.js:createClient'), 38, 'epic createClient');
-  assert.equal(measured.get('public/js/charts.js:renderYearBars'), 320, 'charts renderYearBars');
   assert.equal(measured.get('server/books/resolve.js:resolveProfile'), 17, 'books resolveProfile');
+});
+
+test('charts renderYearBars stays within the split budget', () => {
+  const renderYearBars = census
+    .longestFunctions({ minLines: 1 })
+    .find((entry) => entry.file === 'public/js/charts/year-bars.js' && entry.name === 'renderYearBars');
+  assert.ok(renderYearBars, 'charts renderYearBars is still measured by the census');
+  assert.ok(
+    renderYearBars.length <= 150,
+    `charts renderYearBars is ${renderYearBars.length} lines, budget 150`,
+  );
 });
 
 test('helper copies do not multiply: definition counts equal the pinned baseline', () => {

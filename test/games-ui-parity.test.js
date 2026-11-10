@@ -185,7 +185,7 @@ test('year-count chart: span 12, own ids, counts above bars, genre filter', () =
   // This card never reads the decade selection: the pair above owns it.
   assert.doesNotMatch(games, /function renderYearCount\(data\)[\s\S]{0,3000}selectedDecade/);
 
-  const charts = readJs('charts.js');
+  const charts = readJs('charts/year-bars.js');
   assert.match(charts, /barLabels = false/);
   assert.match(charts, /class: 'tl-bar-count'/);
 });

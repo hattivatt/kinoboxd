@@ -192,7 +192,7 @@ test('a profile of nothing but ancient works keeps a valid (empty) year axis', a
 
 test('UI: both charts open the same list and the bar slot stays off the year axis', () => {
   const booksSource = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'books.js'), 'utf8');
-  const chartsSource = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'charts.js'), 'utf8');
+  const chartsSource = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'charts', 'year-bars.js'), 'utf8');
   const cssSource = readPublicCss();
 
   // One drilldown for the decade slice and the year column.
@@ -207,7 +207,7 @@ test('UI: both charts open the same list and the bar slot stays off the year axi
   assert.match(booksSource, /onAncientClick: \(bucket\) => openAncientYearModal\(bucket\)/);
   assert.match(booksSource, /const realYears = years\.filter\(\(item\) => !item\.ancient\)/);
 
-  // charts.js: the bucket is a separate slot with its own hit area.
+  // charts/year-bars.js: the bucket is a separate slot with its own hit area.
   assert.match(chartsSource, /const ANCIENT_SLOT_W/);
   assert.match(chartsSource, /onAncientClick/);
   assert.match(chartsSource, /class: 'tl-bar is-ancient'/);
