@@ -4,8 +4,7 @@
  * Secondary-library **model** (U10): identity, cross-store union, title/edition
  * matching.
  *
- * Merged from `games-secondary-union.test.js`, `games-secondary-identity.test.js`
- * and `games-gog-union.test.js` — one model, one file. Every assertion of the
+ * Merged from three model suites — one model, one file. Every assertion of the
  * three files is kept; each block is scoped so the helper names cannot clash.
  */
 
@@ -22,13 +21,15 @@ process.env.KINOBOXD_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd
 const gameCache = require('../server/games/game-cache');
 const gogCache = require('../server/games/gog-cache');
 const epicCache = require('../server/games/epic-cache');
-const { buildSecondaryUnion, yearOfDate, genreNames } = require('../server/games/secondary-union');
+const { buildSecondaryUnion, genreNames } = require('../server/games/secondary/union');
+const { yearOfDate } = require('../server/games/secondary/normalize');
 const { buildGamesStatsFromCache } = require('../server/games/stats');
-const { buildBridgeQuery, parseBridgeResponse, collectSlugs } = require('../server/games/secondary-identity');
-const identity = require('../server/games/secondary-identity');
-const { normalizeTitle, normalizeSlug, buildGogUnion } = require('../server/games/gog-union');
+const { buildBridgeQuery, parseBridgeResponse } = require('../server/games/secondary/bridge');
+const { collectSlugs } = require('../server/games/secondary/identity');
+const identity = require('../server/games/secondary');
+const { normalizeTitle, normalizeSlug, buildGogUnion } = require('../server/games/secondary/identity');
 
-/* ---- was games-secondary-union.test.js ---- */
+/* ---- cross-store union ---- */
 {const STEAM_ID = '76561198000000021';
 const OWNER = `steam-${STEAM_ID}`;
 const GOG_KEY = '1234500000';
@@ -850,7 +851,7 @@ test('secondary works in every aggregate', async (t) => {
 
 }
 
-/* ---- was games-secondary-identity.test.js ---- */
+/* ---- identity bridge ---- */
 {
 const RESPONSE = {
   results: {
@@ -1361,7 +1362,7 @@ test('secondary identity bridge', async (t) => {
 
 }
 
-/* ---- was games-gog-union.test.js ---- */
+/* ---- GOG union / title model ---- */
 {
 function steamWorks() {
   return [

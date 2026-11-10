@@ -6,7 +6,7 @@ const tokenStore = require('../epic-token-store');
 const epic = require('../epic');
 
 /* ------------------------------------------------------------------ */
-/* Epic read model (was `epic-layer.js`)                               */
+/* Epic read model                                                     */
 /* ------------------------------------------------------------------ */
 
 const CONTRACT_VERSION = 1;

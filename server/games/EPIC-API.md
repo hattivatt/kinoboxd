@@ -10,7 +10,8 @@
 
 Реализация: `server/games/sources/epic.js` (сеть/бюджет/breaker),
 `server/games/secondary/index.js` (идентичность и объединение);
-`epic-layer.js` — реэкспорт-фасад для старых импортёров.
+фасадов старых путей больше нет — импортёры берут конкретный модуль из
+`server/games/secondary/`.
 
 ## 1. Модель
 

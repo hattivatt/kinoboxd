@@ -33,9 +33,9 @@ const gogCache = require('../server/games/gog-cache');
 const epicCache = require('../server/games/epic-cache');
 const tokenStore = require('../server/games/epic-token-store');
 const details = require('../server/games/secondary-details');
-const identity = require('../server/games/secondary-identity');
-const epicLayer = require('../server/games/epic-layer');
-const { buildSecondaryUnion } = require('../server/games/secondary-union');
+const identity = require('../server/games/secondary');
+const epicLayer = require('../server/games/secondary/epic');
+const { buildSecondaryUnion } = require('../server/games/secondary/union');
 const { buildGamesStatsFromCache } = require('../server/games/stats');
 
 /**

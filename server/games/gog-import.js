@@ -44,7 +44,7 @@ const { createJobs } = require('../core/jobs');
 const gogCache = require('./gog-cache');
 const gog = require('./gog');
 const gogAuth = require('./gog-auth');
-const secondaryIdentity = require('./secondary-identity');
+const { refreshForJob } = require('./secondary/title-genres');
 const secondaryDetails = require('./secondary-details');
 const { budgetLimitFromEnv } = require('../core/budget');
 
@@ -662,7 +662,7 @@ async function runImport(job, api, options) {
     // injected client (tests stay hermetic).
     job.stage = 'identity';
     job.percent = 96;
-    job.secondaryLinks = await secondaryIdentity.refreshForJob({
+    job.secondaryLinks = await refreshForJob({
       gogProducts: products,
       options: { ...options, force: job.force },
     });

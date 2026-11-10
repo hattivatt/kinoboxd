@@ -1,7 +1,7 @@
 'use strict';
 
 /* ------------------------------------------------------------------ */
-/* titles, slugs, edition markers (was `gog-union.js`)                 */
+/* titles, slugs, edition markers                                      */
 /* ------------------------------------------------------------------ */
 
 const EDITION_SUFFIXES = [

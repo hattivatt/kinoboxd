@@ -20,7 +20,7 @@
  *
  * The job never writes to the Steam cache and never changes Steam hours: the
  * Epic snapshot is a separate file (`library/epic-<accountId>.json`), and the
- * read model (`epic-layer.js`) keeps `hoursBySource` separate.
+ * read model (`secondary/epic.js`) keeps `hoursBySource` separate.
  */
 
 const crypto = require('crypto');
@@ -30,7 +30,7 @@ const { createJobs } = require('../core/jobs');
 const epicCache = require('./epic-cache');
 const gameCache = require('./game-cache');
 const tokenStore = require('./epic-token-store');
-const secondaryIdentity = require('./secondary-identity');
+const { refreshForJob } = require('./secondary/title-genres');
 const secondaryDetails = require('./secondary-details');
 
 /**
@@ -443,7 +443,7 @@ async function runImport(job, accountId, client, options) {
   job.percent = 96;
   const catalogIds = merged.games.map((game) => game.catalogItemId).filter(Boolean);
   const catalogDocs = epicCache.listEpicCatalogItems(catalogIds);
-  job.secondaryLinks = await secondaryIdentity.refreshForJob({
+  job.secondaryLinks = await refreshForJob({
     epicGames: merged.games.map((game) => {
       const meta = (game.catalogItemId && catalogDocs[game.catalogItemId]) || null;
       return {
