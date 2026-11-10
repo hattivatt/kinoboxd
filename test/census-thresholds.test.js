@@ -38,7 +38,6 @@ const MODULE_ALLOWLIST = {
 
 const FUNCTION_ALLOWLIST = {
   'server/games/routes-epic.js:createRouter': 354,
-  'server/core/jobs.js:createJobs': 333,
   'server/games/gog-import.js:runImport': 308,
 };
 
