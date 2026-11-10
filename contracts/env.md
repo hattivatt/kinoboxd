@@ -64,7 +64,7 @@
 | `GAMES_GOG_LIBRARY_TTL_MS` | `86400000 ms (1 d) (LIBRARY_TTL_MS)` (server/games/gog-cache.js) | `server/games/gog-cache.js:125` | return envMs('GAMES_GOG_LIBRARY_TTL_MS', LIBRARY_TTL_MS); |
 | `GAMES_GOG_PLAYTIME_PAUSE_MS` | playtimePauseMs = 500 ms (`gog`) | `server/core/sources.js` (gog) | playtimePauseEnv: 'GAMES_GOG_PLAYTIME_PAUSE_MS', |
 | `GAMES_GOG_PLAYTIME_TTL_MS` | `86400000 ms (1 d) (PLAYTIME_TTL_MS)` (server/games/gog-cache.js) | `server/games/gog-cache.js:129` | return envMs('GAMES_GOG_PLAYTIME_TTL_MS', PLAYTIME_TTL_MS); |
-| `GAMES_GOG_RECHECK_ZERO_MS` | см. файл | `server/games/gog-import.js:76` | const raw = Number(process.env.GAMES_GOG_RECHECK_ZERO_MS); |
+| `GAMES_GOG_RECHECK_ZERO_MS` | см. файл | `server/games/gog-import-stages/playtime-stage.js:16` | const raw = Number(process.env.GAMES_GOG_RECHECK_ZERO_MS); |
 | `GAMES_GOG_REFRESH_MARGIN_MS` | `300000 ms (5 min) (DEFAULT_REFRESH_MARGIN_MS)` (server/games/gog-cache.js) | `server/games/gog-cache.js:141` | return envMs('GAMES_GOG_REFRESH_MARGIN_MS', DEFAULT_REFRESH_MARGIN_MS); |
 | `GAMES_GOG_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`gog`) | `server/core/sources.js` (gog) | timeoutEnv: 'GAMES_GOG_TIMEOUT_MS', |
 | `GAMES_LIBRARY_TTL_MS` | см. файл | `server/games/game-cache.js:186` | const raw = Number(process.env.GAMES_LIBRARY_TTL_MS); |
