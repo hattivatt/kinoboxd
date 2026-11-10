@@ -43,10 +43,10 @@
 | GET | `/api/compare` | — | — | `server/films/routes.js:358` |
 | POST | `/api/enrich` | — | 400:upload_id_required, 404:unknown_upload | `server/films/routes.js:107` |
 | GET | `/api/enrich/status` | — | 400:upload_id_required, 404:unknown_upload | `server/films/routes.js:125` |
-| GET | `/api/games/achievements` | `appid`, `profile`, `refresh` | 400:invalid_appid | `server/games/routes.js:606` |
-| POST | `/api/games/enrich` | — | 400:invalid_recheckDays | `server/games/routes.js:418` |
-| GET | `/api/games/enrich/:jobId` | — | 404:unknown_job | `server/games/routes.js:504` |
-| GET | `/api/games/enrich/status` | — | 400:job_id_required, 404:unknown_job | `server/games/routes.js:490` |
+| GET | `/api/games/achievements` | `appid`, `profile`, `refresh` | 400:invalid_appid | `server/games/endpoints/achievements.js:19` |
+| POST | `/api/games/enrich` | — | 400:invalid_recheckDays | `server/games/endpoints/enrich.js:21` |
+| GET | `/api/games/enrich/:jobId` | — | 404:unknown_job | `server/games/endpoints/enrich.js:107` |
+| GET | `/api/games/enrich/status` | — | 400:job_id_required, 404:unknown_job | `server/games/endpoints/enrich.js:93` |
 | POST | `/api/games/epic/auth` | — | — | `server/games/routes-epic.js:282` |
 | GET | `/api/games/epic/auth-url` | — | — | `server/games/routes-epic.js:228` |
 | DELETE | `/api/games/epic/auth/:authId` | — | 404:unknown_auth | `server/games/routes-epic.js:325` |
@@ -63,7 +63,7 @@
 | GET | `/api/games/franchise-enrich/:jobId` | — | 404:unknown_job | `server/games/routes-franchise.js:200` |
 | GET | `/api/games/franchise-enrich/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/routes-franchise.js:185` |
 | GET | `/api/games/franchises` | `profile` | 400:profile_not_imported | `server/games/routes-franchise.js:145` |
-| GET | `/api/games/game/:appid` | `profile` | 400:invalid_appid, 404:game_not_in_library | `server/games/routes.js:704` |
+| GET | `/api/games/game/:appid` | `profile` | 400:invalid_appid, 404:game_not_in_library | `server/games/endpoints/game.js:35` |
 | POST | `/api/games/gog/auth` | `code`, `profile` | 400:gog_code_required | `server/games/routes-gog.js:95` |
 | GET | `/api/games/gog/auth-url` | — | — | `server/games/routes-gog.js:76` |
 | POST | `/api/games/gog/import` | `account`, `force`, `profile` | — | `server/games/routes-gog.js:168` |
@@ -71,18 +71,18 @@
 | GET | `/api/games/gog/import/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/routes-gog.js:189` |
 | POST | `/api/games/gog/logout` | `account`, `profile` | — | `server/games/routes-gog.js:214` |
 | GET | `/api/games/gog/status` | — | — | `server/games/routes-gog.js:119` |
-| POST | `/api/games/import` | — | — | `server/games/routes.js:339` |
-| GET | `/api/games/import/:jobId` | — | 404:unknown_job | `server/games/routes.js:399` |
-| GET | `/api/games/import/status` | — | 400:job_id_required, 404:unknown_job | `server/games/routes.js:385` |
-| POST | `/api/games/import/steam` | — | — | `server/games/routes.js:347` |
+| POST | `/api/games/import` | — | — | `server/games/endpoints/import.js:53` |
+| GET | `/api/games/import/:jobId` | — | 404:unknown_job | `server/games/endpoints/import.js:113` |
+| GET | `/api/games/import/status` | — | 400:job_id_required, 404:unknown_job | `server/games/endpoints/import.js:99` |
+| POST | `/api/games/import/steam` | — | — | `server/games/endpoints/import.js:61` |
 | POST | `/api/games/override` | — | — | `server/games/personnel/routes-personnel.js:219` |
 | GET | `/api/games/personnel` | `limit`, `profile`, `role`, `sort` | 400:invalid_limit, 400:profile_not_imported | `server/games/personnel/routes-personnel.js:157` |
 | GET | `/api/games/personnel/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/personnel/routes-personnel.js:204` |
-| GET | `/api/games/profiles` | — | — | `server/games/routes.js:272` |
-| POST | `/api/games/refresh` | — | — | `server/games/routes.js:361` |
-| GET | `/api/games/secondary-details/status` | `profile` | — | `server/games/routes.js:527` |
-| GET | `/api/games/stats` | `includeDlc`, `includeFree`, `minHours`, `profile` | 400:profile_not_imported | `server/games/routes.js:541` |
-| GET | `/api/games/steam-art/:type/:appid` | `h` | — | `server/games/routes.js:692` |
+| GET | `/api/games/profiles` | — | — | `server/games/endpoints/profiles.js:120` |
+| POST | `/api/games/refresh` | — | — | `server/games/endpoints/import.js:75` |
+| GET | `/api/games/secondary-details/status` | `profile` | — | `server/games/endpoints/stats.js:25` |
+| GET | `/api/games/stats` | `includeDlc`, `includeFree`, `minHours`, `profile` | 400:profile_not_imported | `server/games/endpoints/stats.js:39` |
+| GET | `/api/games/steam-art/:type/:appid` | `h` | — | `server/games/endpoints/game.js:23` |
 | GET | `/api/health` | — | — | `server/index.js:74` |
 | POST | `/api/import/kinopoisk` | — | 400:url_required | `server/films/routes.js:145` |
 | GET | `/api/import/kinopoisk/status` | — | 400:upload_id_required, 404:unknown_kinopoisk_import, 404:unknown_upload | `server/films/routes.js:162` |
@@ -245,13 +245,13 @@
 
 ### `GET /api/games/achievements`
 
-- файл: `server/games/routes.js:606`
+- файл: `server/games/endpoints/achievements.js:19`
 - query (строгий список): `appid`, `profile`, `refresh`
 - ошибка `400` `invalid_appid`: 'Query parameter "appid" must be a positive integer.'
 
 ### `POST /api/games/enrich`
 
-- файл: `server/games/routes.js:418`
+- файл: `server/games/endpoints/enrich.js:21`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `force`, `phase`, `phases`, `profile`, `recheckDays` — см. модуль
 - ошибка `400` `invalid_recheckDays`: 'Parameter "recheckDays" must be a non-negative number of days.'
@@ -259,14 +259,14 @@
 
 ### `GET /api/games/enrich/:jobId`
 
-- файл: `server/games/routes.js:504`
+- файл: `server/games/endpoints/enrich.js:107`
 - path-параметры: `jobId`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `404` `unknown_job`: 'Unknown enrich job id.'
 
 ### `GET /api/games/enrich/status`
 
-- файл: `server/games/routes.js:490`
+- файл: `server/games/endpoints/enrich.js:93`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `id` — см. модуль
 - ошибка `400` `job_id_required`: 'Query parameter "id" is required.'
@@ -382,7 +382,7 @@
 
 ### `GET /api/games/game/:appid`
 
-- файл: `server/games/routes.js:704`
+- файл: `server/games/endpoints/game.js:35`
 - path-параметры: `appid`
 - query (строгий список): `profile`
 - ошибка `400` `invalid_appid`: 'Path parameter "appid" must be a positive integer.'
@@ -434,20 +434,20 @@
 
 ### `POST /api/games/import`
 
-- файл: `server/games/routes.js:339`
+- файл: `server/games/endpoints/import.js:53`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/games/import/:jobId`
 
-- файл: `server/games/routes.js:399`
+- файл: `server/games/endpoints/import.js:113`
 - path-параметры: `jobId`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `404` `unknown_job`: 'Unknown import job id.'
 
 ### `GET /api/games/import/status`
 
-- файл: `server/games/routes.js:385`
+- файл: `server/games/endpoints/import.js:99`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `id` — см. модуль
 - ошибка `400` `job_id_required`: 'Query parameter "id" is required.'
@@ -455,7 +455,7 @@
 
 ### `POST /api/games/import/steam`
 
-- файл: `server/games/routes.js:347`
+- файл: `server/games/endpoints/import.js:61`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
@@ -481,14 +481,14 @@
 
 ### `GET /api/games/profiles`
 
-- файл: `server/games/routes.js:272`
+- файл: `server/games/endpoints/profiles.js:120`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 - описание: ------------------------- profiles -------------------------
 
 ### `POST /api/games/refresh`
 
-- файл: `server/games/routes.js:361`
+- файл: `server/games/endpoints/import.js:75`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `profile` — см. модуль
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
@@ -496,20 +496,20 @@
 
 ### `GET /api/games/secondary-details/status`
 
-- файл: `server/games/routes.js:527`
+- файл: `server/games/endpoints/stats.js:25`
 - query (строгий список): `profile`
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 - описание: `GET /api/games/secondary-details/status?profile=…` — the owner-facing diagnostic for «вне Steam» metadata (M6d). Answers only from the cache and the job/breaker state, never with a network request: { resolved, total, r…
 
 ### `GET /api/games/stats`
 
-- файл: `server/games/routes.js:541`
+- файл: `server/games/endpoints/stats.js:39`
 - query (строгий список): `includeDlc`, `includeFree`, `minHours`, `profile`
 - ошибка `400` `profile_not_imported`: `"profile": no library snapshot for ${scope.parsed.key}; run the import first.`
 
 ### `GET /api/games/steam-art/:type/:appid`
 
-- файл: `server/games/routes.js:692`
+- файл: `server/games/endpoints/game.js:23`
 - path-параметры: `type`, `appid`
 - query (строгий список): `h`
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
