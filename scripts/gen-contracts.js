@@ -228,6 +228,10 @@ const MOUNTED_ROUTE_FILES = [
   'server/games/personnel/routes-personnel.js',
 ];
 
+const ROUTE_BODY_DIRS = [
+  { file: 'server/games/routes.js', dir: 'server/games/endpoints' },
+];
+
 /**
  * `app.use('/prefix', someRouter)` in index.js -> { file: [prefixes] }.
  * Only router-shaped targets are considered (`*Router` or `x.router`), so
@@ -346,6 +350,14 @@ function collectRoutes() {
   for (const file of MOUNTED_ROUTE_FILES) {
     const prefixes = mounts.get(file);
     files.push({ file, prefixes: prefixes ? [...prefixes].sort() : [''] });
+  }
+  for (const { file, dir } of ROUTE_BODY_DIRS) {
+    const prefixes = [...(mounts.get(file) || [''])].sort();
+    const names = fs
+      .readdirSync(path.join(APP_ROOT, dir))
+      .filter((name) => name.endsWith('.js'))
+      .sort();
+    for (const name of names) files.push({ file: `${dir}/${name}`, prefixes });
   }
 
   const routes = [];
