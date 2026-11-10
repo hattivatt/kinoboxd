@@ -559,6 +559,118 @@ test('personnel: a plain error with a status keeps its code or falls back to gam
   );
 });
 
+/* ----------------------------- full code tables ---------------------------- */
+
+const STEAM_CODE_STATUS = [
+  ['invalid_steamid', 400],
+  ['steamid_mismatch', 400],
+  ['profile_private', 400],
+  ['library_private', 400],
+  ['steam_key_missing', 400],
+  ['stats_private', 400],
+  ['stats_not_found', 404],
+  ['steam_unreachable', 502],
+  ['steam_rate_limited', 429],
+  ['steam_key_invalid', 502],
+  ['steam_forbidden', 502],
+  ['steam_http_error', 502],
+  ['steam_invalid_url', 400],
+  ['store_rate_limited', 429],
+  ['store_unreachable', 502],
+  ['store_http_error', 502],
+  ['store_invalid_appid', 400],
+  ['spy_rate_limited', 429],
+  ['spy_unreachable', 502],
+  ['spy_http_error', 502],
+  ['spy_invalid_appid', 400],
+  ['reviews_rate_limited', 429],
+  ['reviews_unreachable', 502],
+  ['reviews_http_error', 502],
+  ['reviews_invalid_appid', 400],
+];
+
+const EPIC_CODE_STATUS = [
+  ['invalid_owner', 400],
+  ['unknown_owner', 400],
+  ['epic_account_required', 400],
+  ['epic_not_connected', 400],
+  ['owner_mismatch', 400],
+  ['epic_invalid_account', 400],
+  ['epic_auth_failed', 400],
+  ['epic_auth_cancelled', 400],
+  ['epic_auth_pending', 409],
+  ['epic_auth_expired', 401],
+  ['epic_rate_limited', 429],
+  ['epic_unreachable', 502],
+  ['epic_http_error', 502],
+  ['epic_invalid_url', 400],
+  ['epic_client_invalid', 502],
+  ['epic_device_grant_unavailable', 400],
+  ['epic_code_required', 400],
+  ['epic_invalid_code', 400],
+  ['epic_library_empty', 400],
+  ['epic_token_store_error', 500],
+  ['epic_invalid_catalog_item', 400],
+  ['epic_import_failed', 502],
+  ['unknown_auth', 404],
+];
+
+const GOG_CODE_STATUS = [
+  ['gog_auth_required', 401],
+  ['gog_auth_expired', 401],
+  ['gog_not_connected', 400],
+  ['gog_invalid_code', 400],
+  ['gog_invalid_request', 400],
+  ['gog_code_required', 400],
+  ['gog_client_rejected', 502],
+  ['gog_invalid_user', 400],
+  ['gog_invalid_url', 400],
+  ['gog_rate_limited', 429],
+  ['gog_unreachable', 502],
+  ['gog_http_error', 502],
+  ['unknown_profile', 400],
+  ['steam_profile_required', 400],
+  ['owner_required', 400],
+  ['owner_mismatch', 400],
+  ['gog_already_connected', 400],
+  ['account_required', 400],
+  ['gog_owner_mismatch', 400],
+];
+
+function gamesErrorFor(code) {
+  if (code.startsWith('store_') || code.startsWith('reviews_')) {
+    return new store.StoreError(`store says ${code}`, code);
+  }
+  if (code.startsWith('spy_')) return new spy.SpyError(`spy says ${code}`, code);
+  return new steam.SteamError(`steam says ${code}`, code);
+}
+
+test('games: every games code in the table maps to its status', async (t) => {
+  await ensureSeed();
+  for (const [code, status] of STEAM_CODE_STATUS) {
+    const err = gamesErrorFor(code);
+    const base = await gamesApp(t, throwingClient(err));
+    const response = await fetch(`${base}/achievements?profile=${PROFILE}&appid=${APPID}`);
+    await expectError(t, response, status, code, err.message);
+  }
+});
+
+test('epic: every Epic code in the table maps to its status', async (t) => {
+  for (const [code, status] of EPIC_CODE_STATUS) {
+    const err = new epic.EpicError(`epic says ${code}`, code);
+    const base = await epicApp(t, err);
+    await expectError(t, await epicConnect(base), status, code, err.message);
+  }
+});
+
+test('gog: every GOG code in the table maps to its status', async (t) => {
+  for (const [code, status] of GOG_CODE_STATUS) {
+    const err = new gog.GogError(`gog says ${code}`, code);
+    const base = await gogApp(t, err);
+    await expectError(t, await gogAuth(base), status, code, err.message);
+  }
+});
+
 /* ------------------------------ helper API -------------------------------- */
 
 const { mapDomainError } = require('../server/core/errors');
