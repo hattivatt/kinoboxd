@@ -303,7 +303,7 @@ test('UI texts mark edition/manual years honestly and offer the correction', () 
   const path = require('node:path');
   const booksSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'books.js'), 'utf8');
   const apiSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'api.js'), 'utf8');
-  const chartsSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'charts.js'), 'utf8');
+  const chartsSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'charts', 'year-bars.js'), 'utf8');
 
   // The card marks an edition year with `*` and a manual correction with `✎`.
   assert.match(booksSource, /entry\.yearSource === 'edition'\) return `\$\{entry\.year\}\*`/);
