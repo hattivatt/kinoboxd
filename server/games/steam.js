@@ -43,7 +43,7 @@ const cheerio = require('cheerio');
 
 const config = require('../config');
 const gameCache = require('./game-cache');
-const { createBreaker } = require('../core/breaker');
+const { createSourceGate } = require('../core/source-client');
 const { nodeRequest } = require('../core/http');
 const sources = require('../core/sources');
 
@@ -584,26 +584,8 @@ function createClient(options = {}) {
     options.keyProvider ||
     (() => ({ key: config.loadSteamKey(), source: config.steamKeySource() }));
 
-  let lastCommunityAt = null;
-  const breaker = createBreaker({
-    now,
-    cooldownMs: () => breakerMs,
-    read: () => breakerStore.read(),
-    write: (state) => breakerStore.write(state),
-  });
-
-  function breakerFor(host) {
-    return breaker.entry(host);
-  }
-
-  function tripBreaker(host, reason) {
-    return breaker.trip(host, reason);
-  }
-
-  function assertNotBlocked(host) {
-    const entry = breakerFor(host);
-    if (!entry) return;
-    throw new SteamError(
+  function rateLimitedError(host, entry) {
+    return new SteamError(
       `Steam (${host}) временно не опрашивается: предыдущий ответ ${entry.reason}. ` +
         `Повтор через ${Math.max(1, Math.ceil((entry.until - now()) / 60000))} мин.`,
       'steam_rate_limited',
@@ -611,20 +593,51 @@ function createClient(options = {}) {
     );
   }
 
+  function transportError(err, context) {
+    return err instanceof SteamError ? err : networkError(err, context && context.url);
+  }
+
+  const breakerGate = createSourceGate({
+    now,
+    breakerMs,
+    breakerStore,
+    createError: rateLimitedError,
+  });
+  const communityGate = createSourceGate({
+    now,
+    sleep,
+    pauseMs,
+    breaker: breakerGate.breaker,
+    createError: rateLimitedError,
+    mapTransportError: transportError,
+  });
+  const apiGate = createSourceGate({
+    now,
+    sleep,
+    pauseMs: 0,
+    breaker: breakerGate.breaker,
+    createError: rateLimitedError,
+    mapTransportError: transportError,
+  });
+
+  function breakerFor(host) {
+    return breakerGate.breakerFor(host);
+  }
+
+  function tripBreaker(host, reason) {
+    return breakerGate.tripBreaker(host, reason);
+  }
+
+  function assertNotBlocked(host) {
+    return breakerGate.assertNotBlocked(host);
+  }
+
   async function communityGet(url) {
-    assertNotBlocked(COMMUNITY_HOST);
-    if (pauseMs > 0 && lastCommunityAt != null) {
-      const wait = pauseMs - (now() - lastCommunityAt);
-      if (wait > 0) await sleep(wait);
-    }
-    // Reserve the slot before awaiting so concurrent callers also space out.
-    lastCommunityAt = now();
-    let response;
-    try {
-      response = await request(url, { timeoutMs: envInt('GAMES_STEAM_TIMEOUT_MS', DEFAULT_TIMEOUT_MS) });
-    } catch (err) {
-      throw err instanceof SteamError ? err : networkError(err, url);
-    }
+    const response = await communityGate.request(
+      COMMUNITY_HOST,
+      () => request(url, { timeoutMs: envInt('GAMES_STEAM_TIMEOUT_MS', DEFAULT_TIMEOUT_MS) }),
+      { url }
+    );
     const status = Number(response.status) || 0;
     const body = String(response.body || '');
     if (status === 403 || status === 429 || /cf-chl|Just a moment\.\.\./i.test(body)) {
@@ -652,13 +665,11 @@ function createClient(options = {}) {
   }
 
   async function apiGet(url) {
-    assertNotBlocked(API_HOST);
-    let response;
-    try {
-      response = await request(url, { timeoutMs: envInt('GAMES_STEAM_TIMEOUT_MS', DEFAULT_TIMEOUT_MS) });
-    } catch (err) {
-      throw err instanceof SteamError ? err : networkError(err, url);
-    }
+    const response = await apiGate.request(
+      API_HOST,
+      () => request(url, { timeoutMs: envInt('GAMES_STEAM_TIMEOUT_MS', DEFAULT_TIMEOUT_MS) }),
+      { url }
+    );
     const status = Number(response.status) || 0;
     if (status === 401) {
       throw new SteamError(
