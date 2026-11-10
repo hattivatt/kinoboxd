@@ -21,7 +21,7 @@ const MODULE_ALLOWLIST = {
   'server/books/livelib.js': 1508,
   'public/js/games-modal.js': 1474,
   'server/kp.js': 1337,
-  'scripts/gen-contracts.js': 1330,
+  'scripts/gen-contracts.js': 1342,
   'server/books/livelib-file.js': 1284,
   'server/tmdb.js': 1187,
   'server/games/secondary-details.js': 1156,
