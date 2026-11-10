@@ -51,10 +51,7 @@ export function dayNumber(date) {
   return Number.isFinite(parsed) ? Math.floor(parsed / 86400000) : null;
 }
 
-const MONTHS_SHORT_RU = [
-  'янв.', 'февр.', 'мар.', 'апр.', 'мая', 'июн.',
-  'июл.', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.',
-];
+const MONTHS_SHORT_RU = MONTHS_SHORT_GEN;
 
 function parseDate(raw) {
   const parsed = Date.parse(raw);
