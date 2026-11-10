@@ -4,25 +4,14 @@
  * Numeric primitives of the games payload: rounding, hours conversion, median,
  * ISO timestamps, artwork URLs and the hours histogram.
  *
- * S1 «распил god-функции»: these helpers are games-specific. The shared
- * `round2`/`median` copies between books and games are deliberately **not**
- * merged here — that is U9's separate migration with its own behaviour test
- * (the brief: «НЕ выноси общее between books/games ещё»).
+ * S1 «распил god-функции»: these helpers are games-specific. The rounding
+ * family comes from `core/stats` (R15, `plain` policy); `minutesToHours` keeps
+ * its own `|| 0` guard, so an infinite minute count still becomes an infinite
+ * hour count.
  */
 
+const { round1, round2, round3 } = require('../../core/stats');
 const { HISTOGRAM_BUCKETS } = require('./constants');
-
-function round1(value) {
-  return Math.round(value * 10) / 10;
-}
-
-function round2(value) {
-  return Math.round(value * 100) / 100;
-}
-
-function round3(value) {
-  return Math.round(value * 1000) / 1000;
-}
 
 function minutesToHours(minutes) {
   return round1((Number(minutes) || 0) / 60);

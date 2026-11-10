@@ -30,10 +30,9 @@
 
 const gameCache = require('./game-cache');
 const gogCache = require('./gog-cache');
+const { round1: roundNumber } = require('../core/stats');
 
-function round1(value) {
-  return Math.round(Number(value) * 10) / 10;
-}
+const round1 = (value) => roundNumber(value, 'numeric');
 
 /** GOG snapshots of exactly one owner (never another owner's token). */
 function gogSnapshotsForOwner(ownerKey) {

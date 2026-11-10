@@ -1,5 +1,7 @@
 'use strict';
 
+const { round2 } = require('./core/stats');
+
 /*
  * Keyword-based film taxonomy.
  *
@@ -532,10 +534,6 @@ const DIRECTOR_RULES = DIRECTOR_DEFS.map((def) => ({
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
-
-function round2(value) {
-  return Math.round(value * 100) / 100;
-}
 
 function isAnimationGenre(genres) {
   const list = Array.isArray(genres) ? genres : [];

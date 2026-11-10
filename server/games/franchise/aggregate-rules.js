@@ -1,5 +1,9 @@
 'use strict';
 
+const { round1: roundNumber } = require('../../core/stats');
+
+const round1 = (value) => roundNumber(value, 'numeric');
+
 const MIN_HEURISTIC_GAMES = 2;
 const EDITION_SUFFIXES = [
   'enhanced edition',
@@ -19,10 +23,6 @@ const BLACKLIST_PAIRS = [
   ['dark souls', 'darkest dungeon'],
   ['hitman', "hitman's bodyguard"],
 ];
-
-function round1(value) {
-  return Math.round(Number(value) * 10) / 10;
-}
 
 function normalizeTitle(value) {
   return String(value == null ? '' : value)
