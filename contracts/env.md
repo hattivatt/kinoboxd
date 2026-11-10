@@ -109,8 +109,8 @@
 | `GAMES_STORE_RECHECK_DAYS` | см. файл | `server/games/enrich.js:83` | recheckEnv: 'GAMES_STORE_RECHECK_DAYS', |
 | `GAMES_STORE_TTL_MS` | ttlMs = 15552000000 ms (180 d) (`steamStore`) | `server/core/sources.js` (steamStore) | ttlEnv: 'GAMES_STORE_TTL_MS', |
 | `GB_API_KEY` | env или файл `config/gbooks-token` (значение не эхоится) | `server/config.js` (gbooks) | const GBOOKS_ENV_KEYS = ['GB_API_KEY', 'BOOKS_GOOGLE_API_KEY']; |
-| `GOG_CLIENT_ID` | см. файл | `server/games/gog.js:287` | const envId = process.env.GOG_CLIENT_ID; |
-| `GOG_CLIENT_SECRET` | см. файл | `server/games/gog.js:288` | const envSecret = process.env.GOG_CLIENT_SECRET; |
+| `GOG_CLIENT_ID` | см. файл | `server/games/sources/gog-requests.js:70` | const envId = process.env.GOG_CLIENT_ID; |
+| `GOG_CLIENT_SECRET` | см. файл | `server/games/sources/gog-requests.js:71` | const envSecret = process.env.GOG_CLIENT_SECRET; |
 | `HARDCOVER_API_TOKEN` | env или файл `config/hardcover-token` (значение не эхоится) | `server/config.js` (hardcover) | const HARDCOVER_ENV_KEYS = ['HARDCOVER_API_TOKEN', 'HARDCOVER_READ_TOKEN']; |
 | `KINOBOXD_BOOKS_PROFILE` | `''` (server/books/authors-backfill.js) | `server/books/authors-backfill.js:60` | const raw = options.profile \|\| process.env.KINOBOXD_BOOKS_PROFILE \|\| ''; |
 | `KINOBOXD_BOOKS_WIKIDATA` | `''` (server/books/authors-bridge.js) | `server/books/authors-bridge.js:47` | const raw = String(process.env.KINOBOXD_BOOKS_WIKIDATA \|\| '').trim().toLowerCase(); |
@@ -121,7 +121,7 @@
 | `KINOBOXD_EPIC_TOKENS_DIR` | см. файл | `server/games/epic-token-store.js:38` | const TOKENS_DIR = process.env.KINOBOXD_EPIC_TOKENS_DIR |
 | `KINOBOXD_GAMES_MOBY` | `''` (server/games/personnel/moby.js) | `server/games/personnel/moby.js:124` | const raw = String(process.env.KINOBOXD_GAMES_MOBY \|\| '').trim().toLowerCase(); |
 | `KINOBOXD_GAMES_WD` | `''` (server/games/personnel/wikidata.js) | `server/games/personnel/wikidata.js:97` | const raw = String(process.env.KINOBOXD_GAMES_WD \|\| '').trim().toLowerCase(); |
-| `KINOBOXD_GOG_CLIENT_FILE` | см. файл | `server/games/gog.js:99` | const CLIENT_FILE_ENV = 'KINOBOXD_GOG_CLIENT_FILE'; |
+| `KINOBOXD_GOG_CLIENT_FILE` | см. файл | `server/games/sources/gog-requests.js:31` | const CLIENT_FILE_ENV = 'KINOBOXD_GOG_CLIENT_FILE'; |
 | `KINOBOXD_LIVELIB_REIMPORT_TTL_MS` | см. файл | `server/books/import.js:44` | A cached LiveLib profile is considered current for 12 hours: repeat clicks reuse it instead of re-scraping the whole profile (LiveLib politeness). |
 | `KINOBOXD_MOBY_KEY_FILE` | см. файл | `server/games/personnel/moby.js:44` | const KEY_FILE_ENV = 'KINOBOXD_MOBY_KEY_FILE'; |
 | `KINOBOXD_PASSWORD` | см. файл | `server/auth.js:22` | typeof process.env.KINOBOXD_PASSWORD === 'string' ? process.env.KINOBOXD_PASSWORD : ''; |
