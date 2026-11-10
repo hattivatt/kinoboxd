@@ -3459,7 +3459,7 @@ describe('config-gbooks-key', () => {
   // Unit tests for the Google Books key plumbing in server/config.js.
   //
   // Each case runs in a child process against a throwaway copy of config.js so
-  // that the real repo key file (app/config/gbooks-token, gitignored) never
+  // that the real repo key file (config/gbooks-token, gitignored) never
   // participates and the environment is fully controlled. The value is never
   // asserted by echo: only the source name and presence are.
 
@@ -3554,7 +3554,7 @@ describe('config-hardcover-token', () => {
   // Unit tests for the Hardcover token plumbing in server/config.js.
   //
   // Each case runs in a child process against a throwaway copy of config.js so
-  // that the real repo token file (app/config/hardcover-token, gitignored) never
+  // that the real repo token file (config/hardcover-token, gitignored) never
   // participates and the environment is fully controlled.
 
   const { test } = require('node:test');

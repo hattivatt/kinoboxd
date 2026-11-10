@@ -11,8 +11,8 @@
  *   `$state/app/cache-games` exactly like it already does for cache/cache-book.
  *
  * The test executes the *real* `prepare_state()` shell function extracted from
- * `flake.nix` (the copy that ships in the flake build) against a fake store
- * tree, so a change in the launcher is caught here, not on the next deploy.
+ * `nix/package.nix` (the single build recipe) against a fake store tree, so a
+ * change in the launcher is caught here, not on the next deploy.
  */
 
 const test = require('node:test');
@@ -24,9 +24,9 @@ const { execFileSync } = require('node:child_process');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const FLAKE = path.join(REPO_ROOT, 'flake.nix');
-// package.nix lives next to the repo (outside app/) — absent in the nix build
-// sandbox, present in the working tree.
-const PACKAGE_NIX = path.join(REPO_ROOT, '..', 'package.nix');
+// The build recipe (prepare_state + launchers) lives in nix/package.nix; the
+// flake only injects the local source tree.
+const PACKAGE_NIX = path.join(REPO_ROOT, 'nix', 'package.nix');
 
 /** Pull `prepare_state() { … }` out of a nix file and undo the nix escaping. */
 function extractPrepareState(source) {
@@ -49,7 +49,7 @@ function fakeStore(root, hash) {
   fs.mkdirSync(path.join(store, 'public'), { recursive: true });
   fs.mkdirSync(path.join(store, 'node_modules'), { recursive: true });
   fs.writeFileSync(path.join(store, 'prepare-state.sh'), extractPrepareState(
-    fs.readFileSync(FLAKE, 'utf8')
+    fs.readFileSync(PACKAGE_NIX, 'utf8')
   ));
   return store;
 }
@@ -132,12 +132,7 @@ test('flake.nix keeps the runtime caches out of the source tree', () => {
   }
 });
 
-test('package.nix carries the same games cache export (working tree only)', (t) => {
-  if (!fs.existsSync(PACKAGE_NIX)) {
-    // The nix build sandbox only sees app/, so the deploy file is not there.
-    t.skip('package.nix is outside the repo (only present in the working tree)');
-    return;
-  }
+test('nix/package.nix carries the games cache export', () => {
   const body = extractPrepareState(fs.readFileSync(PACKAGE_NIX, 'utf8'));
   assert.match(body, /KINOBOXD_CACHE_GAMES_DIR="\$\{KINOBOXD_CACHE_GAMES_DIR:-\$app\/cache-games\}"/);
   assert.match(body, /mkdir -p .*"\$KINOBOXD_CACHE_GAMES_DIR"/);

@@ -20,7 +20,7 @@
 #
 # REQUIREMENTS
 #   - a TMDB token: `server/index.js` fails fast without one. The dev fallback
-#     `app/config/tmdb-token` is enough; the token VALUE is never read or
+#     `config/tmdb-token` is enough; the token VALUE is never read or
 #     printed here.
 #   - `curl` and `node` on PATH.
 #
@@ -140,7 +140,7 @@ if [ "$READY" -ne 1 ]; then
   log "FAIL: server did not become ready on port $PORT" >&2
   log "--- server.log ---" >&2
   sed -n '1,40p' "$TMP/server.log" >&2 || true
-  log "hint: /api/stats needs the dev TMDB token (app/config/tmdb-token or TMDB_API_TOKEN)" >&2
+  log "hint: /api/stats needs the dev TMDB token (config/tmdb-token or TMDB_API_TOKEN)" >&2
   exit 2
 fi
 

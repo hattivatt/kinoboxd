@@ -21,6 +21,12 @@ tmp/
 result
 result-*
 
+# devenv shell state (generated; devenv.lock is committed)
+.devenv/
+
+# stray pid files from ad-hoc server runs
+*.pid
+
 # book cache (cache-book/ namespace, never committed)
 cache-book/
 

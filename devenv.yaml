@@ -1,0 +1,13 @@
+# Canonical devenv 2.x setup for the KinoBoxdStat repo.
+# This file sits at the repository root (the app's npm root is the same dir).
+#
+# nixpkgs: devenv's rolling nixpkgs branch (tracks nixpkgs-unstable, compatible
+# with the installed devenv 2.4.0 on NixOS 26.11).
+# If you prefer plain upstream nixpkgs, replace the URL below with:
+#   github:NixOS/nixpkgs/nixpkgs-unstable
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling
+  # Keep the devenv library in sync with the installed CLI (devenv 2.4.0).
+  devenv:
+    url: github:cachix/devenv/v2.4.0
