@@ -10,7 +10,7 @@ const BIG_FUNCTION_LINES = 300;
 
 const MODULE_ALLOWLIST = {
   'public/js/books.js': 4294,
-  'public/js/games-view.js': 3820,
+  'public/js/games-view.js': 2017,
   'public/js/games.js': 3465,
   'public/js/widgets.js': 1971,
   'public/js/main.js': 1819,
