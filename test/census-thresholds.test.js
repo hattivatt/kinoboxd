@@ -17,7 +17,7 @@ const MODULE_ALLOWLIST = {
   'server/games/franchise.js': 1569,
   'server/books/livelib.js': 1508,
   'public/js/games-modal.js': 1474,
-  'scripts/gen-contracts.js': 1342,
+  'scripts/gen-contracts.js': 1343,
   'server/kp.js': 1337,
   'server/books/livelib-file.js': 1284,
   'server/tmdb.js': 1187,
@@ -37,7 +37,6 @@ const MODULE_ALLOWLIST = {
 };
 
 const FUNCTION_ALLOWLIST = {
-  'server/games/routes-epic.js:createRouter': 354,
   'server/core/jobs.js:createJobs': 333,
   'server/games/gog-import.js:runImport': 308,
 };

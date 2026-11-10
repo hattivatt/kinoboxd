@@ -230,6 +230,7 @@ const MOUNTED_ROUTE_FILES = [
 
 const ROUTE_BODY_DIRS = [
   { file: 'server/games/routes.js', dir: 'server/games/endpoints' },
+  { file: 'server/games/routes-epic.js', dir: 'server/games/endpoints/epic' },
 ];
 
 /**
