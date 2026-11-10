@@ -23,9 +23,20 @@
  * path (`app/cache*`) baked into the module for the whole process. That is
  * exactly the failure this helper exists to prevent.
  *
- * NOT a rewrite of the 132 existing test files: they keep their own
- * `mkdtempSync` blocks. This file is the documented entry point for new
- * tests (and for `test/golden.test.js` / `scripts/smoke.sh`).
+ * Entry point for the merged domain suites (R19): a suite calls
+ * `makeTmpCache` once at module scope, before any `server/**` require, and
+ * ends with `cleanupTmpDirs()` (plus the same call from `process.on('exit')`,
+ * because a late job write can land after the runner's hooks). The helpers a
+ * merged block uses instead of its old hand-rolled `mkdtempSync`:
+ *
+ * | Helper               | Replaces                                     |
+ * |----------------------|----------------------------------------------|
+ * | `makeTmpCache(name)` | the suite-wide run root                       |
+ * | `currentDirs()`      | a block's own five roots (i.e. the run root)   |
+ * | `tmpDir(label)`      | a `fs.mkdtempSync` for a dir passed explicitly |
+ * | `resetMutableState()`| a fresh state dir between blocks (breakers,    |
+ * |                      | job journals, stale `.lock` files)             |
+ * | `cleanupTmpDirs()`   | the per-file `rmSync` that almost never existed |
  *
  * JSDoc table — the env names that MUST point into a tmp dir per namespace
  * (source of truth: the `process.env` reads listed above):
@@ -56,7 +67,7 @@
  *
  * Tmp-dir hygiene: every root this module hands out (`makeTmpCache`,
  * `tmpDir`) is remembered, so a merged suite ends with ONE
- * `test.after(() => env.cleanupTmpDirs())` and leaves no directory behind.
+ * `cleanupTmpDirs()` call and leaves no directory behind.
  */
 
 const fs = require('node:fs');
