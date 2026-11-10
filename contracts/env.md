@@ -34,7 +34,7 @@
 | `EPIC_CLIENT_SECRET` | `process.env.GAMES_EPIC_CLIENT_SECRET` (server/games/epic.js) | `server/games/epic.js:146` | const envSecret = process.env.EPIC_CLIENT_SECRET \|\| process.env.GAMES_EPIC_CLIENT_SECRET; |
 | `GAMES_ACHIEVEMENTS_TTL_MS` | см. файл | `server/games/game-cache.js:191` | const raw = Number(process.env.GAMES_ACHIEVEMENTS_TTL_MS); |
 | `GAMES_ART_TTL_MS` | ttlMs = 15552000000 ms (180 d) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | ttlEnv: 'GAMES_ART_TTL_MS', |
-| `GAMES_BASE_DETAILS_BUDGET` | `20 (DEFAULT_BASE_DETAILS_BUDGET)` (server/games/franchise.js) | `server/games/franchise.js:1315` | return budgetLimitFromEnv('GAMES_BASE_DETAILS_BUDGET', DEFAULT_BASE_DETAILS_BUDGET); |
+| `GAMES_BASE_DETAILS_BUDGET` | `20 (DEFAULT_BASE_DETAILS_BUDGET)` (server/games/franchise.js) | `server/games/franchise.js:1280` | return budgetLimitFromEnv('GAMES_BASE_DETAILS_BUDGET', DEFAULT_BASE_DETAILS_BUDGET); |
 | `GAMES_BROWSE_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | breakerEnv: 'GAMES_BROWSE_BREAKER_MS', |
 | `GAMES_BROWSE_BUDGET` | budget = 340 (0 = off) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | budgetEnv: 'GAMES_BROWSE_BUDGET', |
 | `GAMES_BROWSE_PAUSE_MS` | pauseMs = 150 ms (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | The per-asset hash of the new-schema vertical capsule is published only by the store-frontend method `IStoreBrowseService/GetItems` (no key). One request per appid per 180-day resolve, 150 ms apart. |

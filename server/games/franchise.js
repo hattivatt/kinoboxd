@@ -482,6 +482,48 @@ function qidNumber(qid) {
   return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 }
 
+function wdRows(data) {
+  return data && data.results && Array.isArray(data.results.bindings) ? data.results.bindings : [];
+}
+
+/**
+ * Tally one P179 row into a `Map<QID, {qid, labelEn, labelRu, labelMul}>`.
+ * Some series items carry only the multilingual (`mul`) label — Q752241
+ * «Half-Life», Q7231475 «Portal». Without that fallback the franchise would
+ * exist but show a bare QID.
+ */
+function tallySeries(seriesMap, row) {
+  const franchiseQid = row.franchise ? lastSegment(row.franchise.value) : null;
+  if (!franchiseQid || !/^Q\d+$/.test(franchiseQid)) return;
+  if (!seriesMap.has(franchiseQid)) {
+    seriesMap.set(franchiseQid, {
+      qid: franchiseQid,
+      labelEn: null,
+      labelRu: null,
+      labelMul: null,
+    });
+  }
+  const franchise = seriesMap.get(franchiseQid);
+  if (row.franchiseEn && row.franchiseEn.value && !franchise.labelEn) {
+    franchise.labelEn = String(row.franchiseEn.value);
+  }
+  if (row.franchiseRu && row.franchiseRu.value && !franchise.labelRu) {
+    franchise.labelRu = String(row.franchiseRu.value);
+  }
+  if (row.franchiseMul && row.franchiseMul.value && !franchise.labelMul) {
+    franchise.labelMul = String(row.franchiseMul.value);
+  }
+}
+
+/** Tally one P577 row into the deduplicated date list of an item. */
+function tallyDate(dates, row) {
+  if (!row.date || !row.date.value) return;
+  const date = parseWbDate(row.date.value, row.precision && row.precision.value);
+  if (date && !dates.some((known) => known.iso === date.iso && known.precision === date.precision)) {
+    dates.push(date);
+  }
+}
+
 /**
  * Turn a WDQS answer into `Map<appidString, {qid, franchise, releaseYear,
  * releasePrecision, releaseDate}>`.
@@ -495,9 +537,7 @@ function qidNumber(qid) {
  *     (day > month > year > coarse), then the earliest date.
  */
 function parseFranchiseResponse(data) {
-  const rows = data && data.results && Array.isArray(data.results.bindings)
-    ? data.results.bindings
-    : [];
+  const rows = wdRows(data);
   const byAppid = new Map();
 
   for (const row of rows) {
@@ -511,32 +551,8 @@ function parseFranchiseResponse(data) {
     if (!qids.has(gameQid)) qids.set(gameQid, { qid: gameQid, franchises: new Map(), dates: [] });
     const game = qids.get(gameQid);
 
-    const franchiseQid = row.franchise ? lastSegment(row.franchise.value) : null;
-    if (franchiseQid && /^Q\d+$/.test(franchiseQid)) {
-      if (!game.franchises.has(franchiseQid)) {
-        game.franchises.set(franchiseQid, { qid: franchiseQid, labelEn: null, labelRu: null, labelMul: null });
-      }
-      const franchise = game.franchises.get(franchiseQid);
-      if (row.franchiseEn && row.franchiseEn.value && !franchise.labelEn) {
-        franchise.labelEn = String(row.franchiseEn.value);
-      }
-      if (row.franchiseRu && row.franchiseRu.value && !franchise.labelRu) {
-        franchise.labelRu = String(row.franchiseRu.value);
-      }
-      // Some series items carry only the multilingual (`mul`) label —
-      // Q752241 «Half-Life», Q7231475 «Portal». Without this fallback the
-      // franchise would exist but show a bare QID.
-      if (row.franchiseMul && row.franchiseMul.value && !franchise.labelMul) {
-        franchise.labelMul = String(row.franchiseMul.value);
-      }
-    }
-
-    if (row.date && row.date.value) {
-      const date = parseWbDate(row.date.value, row.precision && row.precision.value);
-      if (date && !game.dates.some((known) => known.iso === date.iso && known.precision === date.precision)) {
-        game.dates.push(date);
-      }
-    }
+    tallySeries(game.franchises, row);
+    tallyDate(game.dates, row);
   }
 
   const result = new Map();
@@ -606,35 +622,14 @@ function qidFranchiseQuery(qids) {
  * labelled series QID); two QIDs are never merged.
  */
 function parseFranchiseByQid(data) {
-  const rows = data && data.results && Array.isArray(data.results.bindings)
-    ? data.results.bindings
-    : [];
+  const rows = wdRows(data);
   const byQid = new Map();
   for (const row of rows) {
     const gameQid = row.game ? lastSegment(row.game.value) : null;
     if (!gameQid || !/^Q\d+$/.test(gameQid)) continue;
     if (!byQid.has(gameQid)) byQid.set(gameQid, { qid: gameQid, franchises: new Map() });
     const game = byQid.get(gameQid);
-    const franchiseQid = row.franchise ? lastSegment(row.franchise.value) : null;
-    if (!franchiseQid || !/^Q\d+$/.test(franchiseQid)) continue;
-    if (!game.franchises.has(franchiseQid)) {
-      game.franchises.set(franchiseQid, {
-        qid: franchiseQid,
-        labelEn: null,
-        labelRu: null,
-        labelMul: null,
-      });
-    }
-    const franchise = game.franchises.get(franchiseQid);
-    if (row.franchiseEn && row.franchiseEn.value && !franchise.labelEn) {
-      franchise.labelEn = String(row.franchiseEn.value);
-    }
-    if (row.franchiseRu && row.franchiseRu.value && !franchise.labelRu) {
-      franchise.labelRu = String(row.franchiseRu.value);
-    }
-    if (row.franchiseMul && row.franchiseMul.value && !franchise.labelMul) {
-      franchise.labelMul = String(row.franchiseMul.value);
-    }
+    tallySeries(game.franchises, row);
   }
   const result = new Map();
   for (const [qid, game] of byQid) {
@@ -855,8 +850,7 @@ function pickDate(dates) {
  * several items (that is what the guards in `matchBaseFor` are for).
  */
 function parseBaseLabelResponse(data) {
-  const rows =
-    data && data.results && Array.isArray(data.results.bindings) ? data.results.bindings : [];
+  const rows = wdRows(data);
   const byQid = new Map();
   for (const row of rows) {
     const itemQid = row.item ? lastSegment(row.item.value) : null;
@@ -877,37 +871,8 @@ function parseBaseLabelResponse(data) {
       row.appid && /^\d+$/.test(String(row.appid.value)) ? Number(row.appid.value) : null;
     if (appid && !item.appids.includes(appid)) item.appids.push(appid);
 
-    const franchiseQid = row.franchise ? lastSegment(row.franchise.value) : null;
-    if (franchiseQid && /^Q\d+$/.test(franchiseQid)) {
-      if (!item.franchises.has(franchiseQid)) {
-        item.franchises.set(franchiseQid, {
-          qid: franchiseQid,
-          labelEn: null,
-          labelRu: null,
-          labelMul: null,
-        });
-      }
-      const franchise = item.franchises.get(franchiseQid);
-      if (row.franchiseEn && row.franchiseEn.value && !franchise.labelEn) {
-        franchise.labelEn = String(row.franchiseEn.value);
-      }
-      if (row.franchiseRu && row.franchiseRu.value && !franchise.labelRu) {
-        franchise.labelRu = String(row.franchiseRu.value);
-      }
-      if (row.franchiseMul && row.franchiseMul.value && !franchise.labelMul) {
-        franchise.labelMul = String(row.franchiseMul.value);
-      }
-    }
-
-    if (row.date && row.date.value) {
-      const date = parseWbDate(row.date.value, row.precision && row.precision.value);
-      if (
-        date &&
-        !item.dates.some((known) => known.iso === date.iso && known.precision === date.precision)
-      ) {
-        item.dates.push(date);
-      }
-    }
+    tallySeries(item.franchises, row);
+    tallyDate(item.dates, row);
   }
 
   const result = new Map();
