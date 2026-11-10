@@ -7,6 +7,8 @@ import {
 import { renderDonut, renderTimeline, renderYearBars } from './charts.js';
 import { buildYearCalendarFilm } from './core/charts.js';
 import { numOrNull } from './core/dom.js';
+import { dateParts, fmtDayRu, fmtDayShortRu } from './core/date.js';
+import { normalizeFilmStreaks as normalizeStreaks } from './core/streaks.js';
 import { initPersons } from './persons.js';
 import {
   openFilmListModal, filmCountPhrase, EXTRA_SORT_OPTIONS, setFilmMenuContext,
@@ -100,59 +102,6 @@ function filmFromEntry(slug, entry, extra = {}) {
     lbUri: e.lbUri || null,
     kpUrl: e.kpUrl || null,
     ...extra,
-  };
-}
-
-/** Days since epoch for a `YYYY-MM-DD` string (UTC, no DST). */
-function dayIndex(date) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || ''));
-  if (!match) return null;
-  return Math.floor(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86400000);
-}
-
-/**
- * Server streaks, with a local fallback so an older cached payload that
- * already has watchDays (but not streaks) still renders the card. Same rule:
- * the current run ends at the last viewing and is independent of today.
- */
-function normalizeStreaks(raw, watchDays) {
-  const validDate = (value) => dayIndex(value) != null;
-  if (raw && typeof raw === 'object') {
-    const current = Math.max(0, toNum(raw.current));
-    const best = Math.max(0, toNum(raw.best));
-    const lastWatchDate = validDate(raw.lastWatchDate) ? String(raw.lastWatchDate).slice(0, 10) : null;
-    const bestDates = Array.isArray(raw.bestDates)
-      ? raw.bestDates.map((date) => String(date).slice(0, 10)).filter(validDate)
-      : [];
-    if (best > 0 || lastWatchDate) {
-      return { current, best, lastWatchDate, bestDates };
-    }
-  }
-  const dates = (Array.isArray(watchDays) ? watchDays : [])
-    .map((entry) => String((entry && entry.date) || '').slice(0, 10))
-    .filter(validDate)
-    .sort();
-  if (!dates.length) return { current: 0, best: 0, lastWatchDate: null, bestDates: [] };
-  let best = 1;
-  let bestFrom = dates[0];
-  let bestTo = dates[0];
-  let run = 1;
-  let runStart = dates[0];
-  for (let i = 1; i < dates.length; i++) {
-    if (dayIndex(dates[i]) - dayIndex(dates[i - 1]) === 1) run++;
-    else { run = 1; runStart = dates[i]; }
-    if (run > best) { best = run; bestFrom = runStart; bestTo = dates[i]; }
-  }
-  let current = 1;
-  for (let i = dates.length - 1; i > 0; i--) {
-    if (dayIndex(dates[i]) - dayIndex(dates[i - 1]) === 1) current++;
-    else break;
-  }
-  return {
-    current,
-    best,
-    lastWatchDate: dates[dates.length - 1],
-    bestDates: [bestFrom, bestTo],
   };
 }
 
@@ -1781,29 +1730,9 @@ const MONTHS_SHORT_GEN = [
   'янв.', 'февр.', 'мар.', 'апр.', 'мая', 'июн.',
   'июл.', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.',
 ];
-function dateParts(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
-  if (!match) return null;
-  return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
-}
-
-/** "25 октября 2026" */
-function fmtDayRu(value) {
-  const parts = dateParts(value);
-  if (!parts) return String(value || '');
-  return `${parts.day} ${MONTHS_GEN[parts.month - 1]} ${parts.year}`;
-}
-
-/** "25 окт. 2026" */
-function fmtDayShortRu(value) {
-  const parts = dateParts(value);
-  if (!parts) return String(value || '');
-  return `${parts.day} ${MONTHS_SHORT_GEN[parts.month - 1]} ${parts.year}`;
-}
-
 /** Days between today's local calendar date and a UTC `YYYY-MM-DD`. */
 function daysSince(value) {
-  const parts = dateParts(value);
+  const parts = dateParts(value, true);
   if (!parts) return null;
   const now = new Date();
   const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
@@ -1821,18 +1750,18 @@ function relativeDayLabel(value) {
 }
 
 function fmtDateRange(dates) {
-  const list = Array.isArray(dates) ? dates.filter(dateParts) : [];
+  const list = Array.isArray(dates) ? dates.filter((v) => dateParts(v, true)) : [];
   if (!list.length) return '';
-  if (list.length === 1 || list[0] === list[1]) return fmtDayRu(list[0]);
-  const a = dateParts(list[0]);
-  const b = dateParts(list[list.length - 1]);
+  if (list.length === 1 || list[0] === list[1]) return fmtDayRu(list[0], true);
+  const a = dateParts(list[0], true);
+  const b = dateParts(list[list.length - 1], true);
   if (a.year === b.year && a.month === b.month) {
     return `${a.day}–${b.day} ${MONTHS_GEN[b.month - 1]} ${b.year}`;
   }
   if (a.year === b.year) {
     return `${a.day} ${MONTHS_GEN[a.month - 1]} — ${b.day} ${MONTHS_GEN[b.month - 1]} ${b.year}`;
   }
-  return `${fmtDayRu(list[0])} — ${fmtDayRu(list[list.length - 1])}`;
+  return `${fmtDayRu(list[0], true)} — ${fmtDayRu(list[list.length - 1], true)}`;
 }
 
 function renderRecentlyWatched(stats) {
@@ -1865,7 +1794,7 @@ function renderRecentlyWatched(stats) {
       role: 'button',
       tabIndex: 0,
       'aria-label': `${title}: ссылки и действия`,
-      title: `${title}${film.year ? ` (${film.year})` : ''} · ${fmtDayRu(item.date)}`,
+      title: `${title}${film.year ? ` (${film.year})` : ''} · ${fmtDayRu(item.date, true)}`,
     });
     poster.append(posterThumb(film.posterPath, title));
 
@@ -1890,8 +1819,8 @@ function renderRecentlyWatched(stats) {
       openFilmListModal({
         kicker: 'Недавно смотрел',
         title,
-        subtitle: fmtDayRu(item.date),
-        groupLabel: fmtDayRu(item.date),
+        subtitle: fmtDayRu(item.date, true),
+        groupLabel: fmtDayRu(item.date, true),
         films: [film],
         sortScope: 'recent',
       });
@@ -1912,7 +1841,7 @@ function renderRecentlyWatched(stats) {
     card.append(el('div', {
       class: 'recent-date',
       text: relativeDayLabel(item.date),
-      title: fmtDayRu(item.date),
+      title: fmtDayRu(item.date, true),
     }));
     host.append(card);
   }
@@ -1951,13 +1880,13 @@ function openWatchDayModal(stats, day) {
   const rewatches = Math.max(0, toNum(day.rewatchCount));
   openFilmListModal({
     kicker: 'Календарь просмотров',
-    title: fmtDayRu(day.date),
+    title: fmtDayRu(day.date, true),
     subtitle: `${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])} · `
       + `${fmtInt(films.length)} ${plural(films.length, ['фильм', 'фильма', 'фильмов'])}`
       + (rewatches > 0
         ? ` · в т.ч. ${fmtInt(rewatches)} ${plural(rewatches, ['пересмотр', 'пересмотра', 'пересмотров'])}`
         : ''),
-    groupLabel: fmtDayRu(day.date),
+    groupLabel: fmtDayRu(day.date, true),
     emptyText: 'За этот день нет фильмов в выгрузке',
     films,
     sortScope: 'watchday',
@@ -1989,12 +1918,12 @@ function renderStreaks(streaks) {
   const meta = [];
   const range = fmtDateRange(streaks.bestDates);
   meta.push(`Рекорд: ${fmtInt(best)}${range ? ` (${range})` : ''}`);
-  meta.push(`Последний просмотр: ${fmtDayShortRu(streaks.lastWatchDate)}`);
+  meta.push(`Последний просмотр: ${fmtDayShortRu(streaks.lastWatchDate, true)}`);
   host.append(el('span', { class: 'streak-meta', text: meta.join(' · ') }));
 
   const daysAgo = daysSince(streaks.lastWatchDate);
   if (current > 0) {
-    host.title = `Текущая серия: ${current} ${currentWord} подряд · последний просмотр ${fmtDayRu(streaks.lastWatchDate)}`;
+    host.title = `Текущая серия: ${current} ${currentWord} подряд · последний просмотр ${fmtDayRu(streaks.lastWatchDate, true)}`;
   } else {
     host.title = daysAgo == null
       ? 'Нет данных о просмотрах'

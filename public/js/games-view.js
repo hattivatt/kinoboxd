@@ -22,6 +22,7 @@
 
 import { fmtInt, plural, toNum } from './ui.js';
 import { arr, text, numOrNull, firstString } from './core/dom.js';
+import { normalizeGameStreaks } from './core/streaks.js';
 
 export { jobProgress } from './core/progress.js';
 
@@ -1266,51 +1267,6 @@ function normalizeTimeline(raw) {
     .sort((a, b) => a.month.localeCompare(b.month));
 }
 
-function dayNumber(date) {
-  const parsed = Date.parse(`${text(date).slice(0, 10)}T00:00:00Z`);
-  return Number.isFinite(parsed) ? Math.floor(parsed / 86400000) : null;
-}
-
-/** Server streaks, with a local fallback computed from `achievementDays`. */
-function normalizeStreaks(raw, days) {
-  const valid = (value) => dayNumber(value) != null;
-  if (raw && typeof raw === 'object') {
-    const current = Math.max(0, toCount(raw.current));
-    const best = Math.max(0, toCount(raw.best));
-    const lastRaw = raw.lastUnlockDate ?? raw.last ?? raw.lastDate;
-    const lastUnlockDate = valid(lastRaw) ? text(lastRaw).slice(0, 10) : null;
-    const bestDates = arr(raw.bestDates)
-      .map((date) => text(date).slice(0, 10))
-      .filter(valid);
-    if (best > 0 || lastUnlockDate) return { current, best, lastUnlockDate, bestDates };
-  }
-  const dates = arr(days).map((day) => text(day && day.date).slice(0, 10)).filter(valid).sort();
-  if (!dates.length) return null;
-  let best = 1;
-  let bestFrom = dates[0];
-  let bestTo = dates[0];
-  let run = 1;
-  let runStart = dates[0];
-  for (let index = 1; index < dates.length; index += 1) {
-    if (dayNumber(dates[index]) - dayNumber(dates[index - 1]) === 1) run += 1;
-    else {
-      run = 1;
-      runStart = dates[index];
-    }
-    if (run > best) {
-      best = run;
-      bestFrom = runStart;
-      bestTo = dates[index];
-    }
-  }
-  let current = 1;
-  for (let index = dates.length - 1; index > 0; index -= 1) {
-    if (dayNumber(dates[index]) - dayNumber(dates[index - 1]) === 1) current += 1;
-    else break;
-  }
-  return { current, best, lastUnlockDate: dates[dates.length - 1], bestDates: [bestFrom, bestTo] };
-}
-
 function normalizeProfile(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const persona = firstString(raw.personaName, raw.persona, raw.name, raw.userKey, raw.key);
@@ -1481,7 +1437,7 @@ export function normalizeGamesPayload(raw) {
   const personnelTop = normalizePersonnelTop(source.personnelTop);
   const timeline = normalizeTimeline(source.timeline);
   const achievementDays = normalizeAchievementDays(source.achievementDays);
-  const streaks = normalizeStreaks(source.streaks, achievementDays);
+  const streaks = normalizeGameStreaks(source.streaks, achievementDays);
   const filters = normalizeFilters(source.meta && source.meta.filters)
     || normalizeFilters(summaryRaw.filters);
   // `playtimeFetchedAt` is present-but-null when a secondary library was
@@ -3194,7 +3150,7 @@ export function calendarView(achievementDays, timeline = []) {
 
 /** Achievement streak card, with a local fallback from the calendar days. */
 export function achievementStreaksView(streaks, achievementDays = []) {
-  const value = normalizeStreaks(streaks, normalizeAchievementDays(achievementDays));
+  const value = normalizeGameStreaks(streaks, normalizeAchievementDays(achievementDays));
   if (!value) return null;
   const bestRange = arr(value.bestDates)
     .map((date) => formatDateRu(date))

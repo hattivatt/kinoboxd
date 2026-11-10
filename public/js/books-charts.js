@@ -10,41 +10,14 @@ import {
   showTooltip, moveTooltip, hideTooltip,
 } from './ui.js';
 import { svgEl, niceStep } from './core/charts.js';
+import { dateParts, fmtDayRu, fmtDayShortRu } from './core/date.js';
+export { dateParts, fmtDayRu, fmtDayShortRu } from './core/date.js';
 
 export { pad2 } from './core/charts.js';
 
 /* =========================================================
    dates (shared with books.js)
    ========================================================= */
-
-const MONTHS_GEN = [
-  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
-];
-const MONTHS_SHORT_GEN = [
-  'янв.', 'февр.', 'мар.', 'апр.', 'мая', 'июн.',
-  'июл.', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.',
-];
-
-export function dateParts(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''));
-  if (!match) return null;
-  return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
-}
-
-/** "25 октября 2026" */
-export function fmtDayRu(value) {
-  const parts = dateParts(value);
-  if (!parts) return String(value || '');
-  return `${parts.day} ${MONTHS_GEN[parts.month - 1]} ${parts.year}`;
-}
-
-/** "25 окт. 2026" */
-export function fmtDayShortRu(value) {
-  const parts = dateParts(value);
-  if (!parts) return String(value || '');
-  return `${parts.day} ${MONTHS_SHORT_GEN[parts.month - 1]} ${parts.year}`;
-}
 
 /* =========================================================
    monthly timeline
