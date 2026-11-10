@@ -2,7 +2,11 @@
 
 const path = require('path');
 
+const { round1, round2: roundNumber, round4: roundNumber4 } = require('../../core/stats');
 const gameCache = require('../game-cache');
+
+const round2 = (value) => roundNumber(value, 'numeric');
+const round4 = (value) => roundNumber4(value, 'numeric');
 
 const OVERRIDES_PATH = path.join(gameCache.GAMES_CACHE_DIR, 'personnel-overrides.json');
 
@@ -92,15 +96,7 @@ function cleanName(value) {
 function minutesToHours(minutes) {
   const value = Number(minutes);
   if (!Number.isFinite(value) || value <= 0) return 0;
-  return Math.round((value / 60) * 10) / 10;
-}
-
-function round2(value) {
-  return Math.round(Number(value) * 100) / 100;
-}
-
-function round4(value) {
-  return Math.round(Number(value) * 10000) / 10000;
+  return round1(value / 60);
 }
 
 function asNameList(value) {

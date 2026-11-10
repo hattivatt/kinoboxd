@@ -4,6 +4,7 @@ const gameCache = require('../game-cache');
 const epicCache = require('../epic-cache');
 const tokenStore = require('../epic-token-store');
 const epic = require('../epic');
+const { round1 } = require('../../core/stats');
 
 /* ------------------------------------------------------------------ */
 /* Epic read model                                                     */
@@ -14,7 +15,7 @@ const CONTRACT_VERSION = 1;
 function minutesToHours(minutes) {
   const value = Number(minutes);
   if (!Number.isFinite(value)) return null;
-  return Math.round((value / 60) * 10) / 10;
+  return round1(value / 60);
 }
 
 /**

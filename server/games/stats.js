@@ -474,7 +474,7 @@ function profileSummary(profile, library) {
     libraryPartial: Boolean(library && library.partial),
     gameCount: library ? library.game_count : null,
     ownedCount: games.length,
-    totalHours: round1(minutes / 60),
+    totalHours: minutesToHours(minutes),
     playedCount: games.filter((game) => (Number(game.playtime_forever) || 0) > 0).length,
   };
 }

@@ -26,6 +26,7 @@ const { HttpError } = require('./upload');
 const { buildStats } = require('./stats');
 const { buildEphemeralJob } = require('./films/profile-cache');
 const profileRegistry = require('./core/profile');
+const { round2 } = require('./core/stats');
 
 const KP_DIR = path.join(cache.CACHE_DIR, 'kp');
 const ATTACHMENT_DIR = path.join(cache.CACHE_DIR, 'profile-lb');
@@ -66,10 +67,6 @@ function hasAttachment(userId) {
   } catch {
     return false;
   }
-}
-
-function round2(value) {
-  return Math.round(value * 100) / 100;
 }
 
 function averageRating(films) {
