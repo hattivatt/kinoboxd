@@ -10,15 +10,14 @@ const BIG_FUNCTION_LINES = 300;
 
 const MODULE_ALLOWLIST = {
   'public/js/books.js': 4294,
-  'public/js/games-view.js': 3864,
+  'public/js/games-view.js': 3820,
   'public/js/games.js': 3465,
   'server/games/secondary/index.js': 2397,
-  'public/js/widgets.js': 2042,
+  'public/js/widgets.js': 1971,
   'server/games/personnel/personnel.js': 1839,
   'public/js/main.js': 1819,
   'server/books/stats.js': 1720,
   'server/games/franchise.js': 1604,
-  'server/games/epic.js': 1542,
   'server/books/livelib.js': 1508,
   'public/js/games-modal.js': 1474,
   'server/kp.js': 1337,
@@ -26,7 +25,6 @@ const MODULE_ALLOWLIST = {
   'server/books/livelib-file.js': 1284,
   'server/tmdb.js': 1187,
   'server/games/secondary-details.js': 1156,
-  'server/books/resolve.js': 1135,
   'server/games/gog.js': 1030,
   'server/books/import.js': 1008,
   'server/games/enrich.js': 1005,
@@ -44,9 +42,7 @@ const MODULE_ALLOWLIST = {
 };
 
 const FUNCTION_ALLOWLIST = {
-  'server/games/epic.js:createClient': 726,
   'server/games/routes.js:createRouter': 601,
-  'server/books/resolve.js:resolveProfile': 585,
   'server/games/secondary/index.js:buildSecondaryUnion': 473,
   'server/games/gog.js:createClient': 446,
   'server/games/personnel/personnel.js:buildPersonnel': 366,
@@ -109,10 +105,11 @@ test(`function-size ratchet: every top-level function over ${BIG_FUNCTION_LINES}
 
 test('census function lengths calibrate on the two known giants', () => {
   const measured = new Map(
-    census.longestFunctions({ minLines: BIG_FUNCTION_LINES }).map((entry) => [functionKey(entry), entry.length]),
+    census.longestFunctions({ minLines: 1 }).map((entry) => [functionKey(entry), entry.length]),
   );
-  assert.equal(measured.get('server/games/epic.js:createClient'), 726, 'epic createClient');
+  assert.equal(measured.get('server/games/epic.js:createClient'), 38, 'epic createClient');
   assert.equal(measured.get('public/js/charts.js:renderYearBars'), 320, 'charts renderYearBars');
+  assert.equal(measured.get('server/books/resolve.js:resolveProfile'), 17, 'books resolveProfile');
 });
 
 test('helper copies do not multiply: definition counts equal the pinned baseline', () => {
