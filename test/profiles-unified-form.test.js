@@ -30,11 +30,13 @@ const path = require('node:path');
 
 // 1. Tmp caches + inert budgets BEFORE any `server/**` module is required.
 const env = require('./helpers/env');
+const { portFor } = require('./helpers/port');
+const PORT = portFor(270);
 const tmp = env.makeTmpCache('profiles-unified', { budgets: true });
 process.env.TMDB_API_TOKEN = 'fake-tmdb-token-for-tests';
 delete process.env.KINOBOXD_PASSWORD;
 delete process.env.STEAM_API_KEY;
-process.env.PORT = '7211';
+process.env.PORT = String(PORT);
 
 // 2. Only now the modules under test.
 const seed = require('./golden/seed');
@@ -43,7 +45,6 @@ const bookCache = require('../server/books/book-cache');
 const gameCache = require('../server/games/game-cache');
 const gogCache = require('../server/games/gog-cache');
 
-const PORT = 7211;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const FILMS_USER = '7654321';

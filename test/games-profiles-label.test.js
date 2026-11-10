@@ -32,7 +32,8 @@ const { createFakeClient } = require('./fixtures/games/fake-client');
 
 const LABELLED = '76561198000000001';
 const PLAIN = '76561198000000002';
-const PORT = 7066;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(190);
 
 function buildApp(client) {
   const app = express();

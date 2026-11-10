@@ -26,7 +26,8 @@ const bookCache = require('../server/books/book-cache');
 const { buildBooksStats, resolveWorkYear } = require('../server/books/stats');
 const { buildFileEvent, mergeFileIntoProfile, normalizeRecord } = require('../server/books/livelib-file');
 
-const PORT = 7025;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(90);
 
 function profile(userKey, events) {
   return {

@@ -42,7 +42,8 @@ const personnel = require('../server/games/personnel/personnel');
 const lock = require('../server/games/personnel/lock');
 const { createRouter } = require('../server/games/personnel/routes-personnel');
 
-const PORT = 7052;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(180);
 const DETAILS_DIR = path.join(CACHE_DIR, 'details');
 
 function writeDetails(appid, doc) {

@@ -29,9 +29,10 @@ const epicCache = require('../server/games/epic-cache');
 const tokenStore = require('../server/games/epic-token-store');
 const details = require('../server/games/secondary-details');
 const identity = require('../server/games/secondary-identity');
+const { portFor } = require('./helpers/port');
 
 /* ---- was games-secondary-catalog-heal.test.js ---- */
-{const PORT = 7114;
+{const PORT = portFor(240);
 const NOW = new Date().toISOString();
 
 /* ------------------------------- helpers -------------------------- */

@@ -41,7 +41,8 @@ const { createFakeClient } = require('./fixtures/games/fake-client');
 
 const ID = '76561198000000001';
 const PROFILE_KEY = `steam-${ID}`;
-const PORT = 7046;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(100);
 
 function detailDoc(appid) {
   return {
@@ -231,9 +232,9 @@ test('a partial library (no Steam key) does not kick enrich', async (t) => {
   const profile = { ...base.state.profile, steamId64: '76561198000000077', customUrl: 'keyless-player' };
   const keyless = createFakeClient({ key: '', profile });
   const storeClient = createFakeStoreClient();
-  const server = buildApp(keyless, storeClient, { autoEnrich: true }).listen(PORT + 1);
+  const server = buildApp(keyless, storeClient, { autoEnrich: true }).listen(portFor(101));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const url = `http://127.0.0.1:${PORT + 1}`;
+  const url = `http://127.0.0.1:${portFor(101)}`;
 
   const started = await post(url, '/api/games/import', { vanityOrId64: 'keyless-player', force: true });
   assert.equal(started.status, 201);
@@ -294,12 +295,12 @@ test('stats says metadata.running while the enrich job is still going', async (t
     },
   };
 
-  const server = buildApp(steamClient, gatedStore).listen(PORT + 2);
+  const server = buildApp(steamClient, gatedStore).listen(portFor(102));
   t.after(() => {
     release();
     return new Promise((resolve) => server.close(resolve));
   });
-  const url = `http://127.0.0.1:${PORT + 2}`;
+  const url = `http://127.0.0.1:${portFor(102)}`;
 
   const started = await post(url, '/api/games/import', { vanityOrId64: 'gate-player', force: true });
   assert.equal(started.status, 201);

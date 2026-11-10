@@ -350,7 +350,8 @@ function buildApp(clients) {
   return app;
 }
 
-const PORT = 7070;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(112);
 
 test('POST /enrich defaults to all phases; phases is accepted; typos are 400', async (t) => {
   const appids = appidRange(2);
@@ -358,9 +359,9 @@ test('POST /enrich defaults to all phases; phases is accepted; typos are 400', a
   const details = fakeClient('details');
   const spyClient = fakeClient('spy');
   const reviewsClient = fakeClient('reviews');
-  const server = buildApp({ storeClient: details, spyClient, reviewsClient }).listen(PORT + 2);
+  const server = buildApp({ storeClient: details, spyClient, reviewsClient }).listen(PORT);
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const base = `http://127.0.0.1:${PORT + 2}`;
+  const base = `http://127.0.0.1:${PORT}`;
 
   const response = await fetch(`${base}/api/games/enrich`, {
     method: 'POST',

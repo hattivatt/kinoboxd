@@ -21,7 +21,8 @@ const gameCache = require('../server/games/game-cache');
 const gogCache = require('../server/games/gog-cache');
 const gog = require('../server/games/gog');
 
-const PORT = 7083;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(160);
 const STEAM_ID = '76561198000000001';
 const OWNER = `steam-${STEAM_ID}`;
 const USER_KEY = '1234567890';

@@ -4,7 +4,7 @@
  * GOG client (M6a): OAuth code→token/refresh, identity, paginated
  * `getFilteredProducts`, `gameplay/.../sessions` (`time_sum` minutes).
  *
- * Everything runs against a local fake GOG server on port 7084 — no live
+ * Everything runs against a local fake GOG server on a `portFor` port — no live
  * requests, no real account. Fixtures live in `test/fixtures/games/gog/`.
  */
 
@@ -22,7 +22,8 @@ process.env.KINOBOXD_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'kinoboxd
 const gog = require('../server/games/gog');
 const gogCache = require('../server/games/gog-cache');
 
-const PORT = 6311;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(150);
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'games', 'gog');
 
 function fixture(name) {

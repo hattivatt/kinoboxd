@@ -30,7 +30,8 @@ const { createFakeEpicClient } = require('./fixtures/games/epic/fake-client');
 const ACCOUNT = 'epic-account-1';
 const STEAM_ID = '76561198000000001';
 const OWNER = `steam-${STEAM_ID}`;
-const PORT = 7084;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(130);
 
 function future(ms = 7200000) {
   return new Date(Date.now() + ms).toISOString();
@@ -232,9 +233,9 @@ test('device-code auth → status → import → exported → disconnect', async
 test('auth without an imported Steam owner is a 400', async (t) => {
   epicAuth._reset();
   const client = buildClient();
-  const server = buildApp(client).listen(PORT + 1);
+  const server = buildApp(client).listen(portFor(131));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const base = `http://127.0.0.1:${PORT + 1}/api/games/epic`;
+  const base = `http://127.0.0.1:${portFor(131)}/api/games/epic`;
   const response = await getJson(`${base}/auth`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -247,9 +248,9 @@ test('auth without an imported Steam owner is a 400', async (t) => {
 test('exported requires owner or accountId', async (t) => {
   epicAuth._reset();
   const client = buildClient();
-  const server = buildApp(client).listen(PORT + 2);
+  const server = buildApp(client).listen(portFor(132));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const base = `http://127.0.0.1:${PORT + 2}/api/games/epic`;
+  const base = `http://127.0.0.1:${portFor(132)}/api/games/epic`;
   const response = await getJson(`${base}/exported`);
   assert.equal(response.status, 400);
   assert.equal(response.body.code, 'owner_required');
@@ -273,9 +274,9 @@ test('authorization-code connect over HTTP: auth-url → connect → code requir
     fetchedAt: future(),
   });
   const client = createFakeEpicClient({ accountId: 'epic-account-2' });
-  const server = buildApp(client).listen(PORT + 5);
+  const server = buildApp(client).listen(portFor(135));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const base = `http://127.0.0.1:${PORT + 5}/api/games/epic`;
+  const base = `http://127.0.0.1:${portFor(135)}/api/games/epic`;
 
   const info = await getJson(`${base}/auth-url`);
   assert.equal(info.status, 200);

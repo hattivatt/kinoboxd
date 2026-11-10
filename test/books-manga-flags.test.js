@@ -25,7 +25,8 @@ const { mergeResults, resultToDetails } = require('../server/books/providers');
 const { buildBooksStats } = require('../server/books/stats');
 const backfill = require('../server/books/manga-backfill');
 
-const PORT = 6011;
+const { portFor } = require('./helpers/port');
+const PORT = portFor(50);
 
 async function details(workId, doc) {
   await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), {

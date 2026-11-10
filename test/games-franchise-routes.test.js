@@ -2,8 +2,8 @@
 
 /**
  * `/api/games/franchises` + `/api/games/franchise-enrich` route contract
- * (M4-B). Throwaway express app on the brief's port 7069 (fallback to an
- * ephemeral port if it is already taken by a parallel run); no live WDQS.
+ * (M4-B). Throwaway express app on the preferred `portFor` port (fallback to
+ * an ephemeral port if it is already taken by a parallel run); no live WDQS.
  */
 
 const test = require('node:test');
@@ -31,7 +31,8 @@ const { createRouter: createGamesRouter } = require('../server/games/routes');
 
 const ID = '76561198000005001';
 const PROFILE = `steam-${ID}`;
-const PREFERRED_PORT = 7069;
+const { portFor } = require('./helpers/port');
+const PREFERRED_PORT = portFor(140);
 
 async function seed() {
   const now = new Date().toISOString();
@@ -145,8 +146,8 @@ test.before(async () => {
       const candidate = app.listen(port, '127.0.0.1');
       candidate.once('listening', () => resolve(candidate));
       candidate.once('error', (err) => {
-        // A parallel run may already hold 7069; the contract does not depend
-        // on the number, only on the routes.
+        // A parallel run may already hold the preferred port; the contract does
+        // not depend on the number, only on the routes.
         if (allowFallback && err && err.code === 'EADDRINUSE') {
           tryListen(0, false);
           return;
