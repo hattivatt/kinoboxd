@@ -30,7 +30,7 @@ const MODULE_ALLOWLIST = {
   'server/wikidata.js': 918,
   'server/games/steam.js': 876,
   'server/books/routes.js': 844,
-  'server/games/editions.js': 841,
+};
 };
 
 const FUNCTION_ALLOWLIST = {};
