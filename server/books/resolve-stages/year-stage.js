@@ -1,29 +1,13 @@
 'use strict';
 
-/**
- * Year-claim stage: the pass that stops a resolved work from staying dateless.
- *
- * Why it is separate from the provider chain: the chain is ordered by *content*
- * (Hardcover names the work, Литрес/the card know the Russian edition) and it
- * stops at the first hit. That is right for title/genres/cover and wrong for
- * the first-publication year: a Google Books hit closes the work with
- * `firstPublishedYear: null`, and nobody asks again (79 such documents in the
- * live cache). Re-asking the whole chain per work would cost a Литрес book
- * budget and two requests per title for a source that measured zero coverage
- * on Russian ISBNs.
- *
- * So the year is asked once, in one batched Wikidata query for every work this
- * pass resolved *without* a claim. Nothing is written when Wikidata does not
- * know: the negative cache belongs to `years-backfill.js`, which owns the
- * «everyone was asked» verdict (a resolve pass that ran out of budget must not
- * poison a document for 30 days).
- *
- * The search title is the reader's own (`event.title`), not `details.title`:
- * a work matched by Open Library carries a transliterated name
- * («Doktor ZHivago») that no source can be asked for.
- */
-
 const wikidata = require('../providers/wikidata');
+const {
+  claimOf,
+  isPrintClaimSource,
+  PRECISION_RANK,
+  saneFirstYearClaim,
+  storedFirstClaim,
+} = require('../providers/claim');
 const { eventKeyOf } = require('./identity');
 
 function eventTitles(ctx) {
@@ -38,10 +22,13 @@ function eventTitles(ctx) {
   return titles;
 }
 
-/**
- * Works of this pass that have a details document but no first-publication
- * claim, with the spelling the reader actually saw.
- */
+function isChallengeable(details, claim) {
+  if (!claim) return true;
+  if (String((details && details.yearSource) || '') === 'manual') return false;
+  if (claim.source == null) return true;
+  return isPrintClaimSource(claim.source);
+}
+
 function yearTargets(ctx) {
   const { plan, cache } = ctx;
   const titles = eventTitles(ctx);
@@ -52,7 +39,9 @@ function yearTargets(ctx) {
     if (!workId || seen.has(workId)) continue;
     seen.add(workId);
     const details = cache.getWorkDetails(workId);
-    if (!details || details.firstPublishedYear != null) continue;
+    if (!details) continue;
+    const current = storedFirstClaim(details);
+    if (!isChallengeable(details, current)) continue;
     const fromEvent = titles.get(bookId) || null;
     const title = (fromEvent && fromEvent.title) || details.title || null;
     if (!title) continue;
@@ -65,15 +54,32 @@ function yearTargets(ctx) {
           ? fromEvent.authors
           : (details.authors || []).map((author) => (author && author.name) || author),
       details,
+      current,
     });
   }
   return targets;
 }
 
-/** Write one Wikidata claim into a details document, keeping everything else. */
+function acceptedClaim(current, result) {
+  const claim = claimOf(result);
+  if (!claim) return null;
+  const sane = saneFirstYearClaim(
+    { ...claim, source: result.source || 'wikidata' },
+    { authorBirthYear: result.authorBirthYear }
+  );
+  if (!sane) return null;
+  if (!current) return sane;
+  if (sane.year < current.year) return sane;
+  if (sane.year > current.year) return null;
+  const rankNew = PRECISION_RANK[sane.precision] || 0;
+  const rankCurrent = PRECISION_RANK[current.precision] || 0;
+  return rankNew > rankCurrent ? sane : null;
+}
+
 async function applyClaim(ctx, target, result) {
   const { cache, now } = ctx;
   const details = target.details;
+  const previous = target.current == null ? storedFirstClaim(details) : target.current;
   const next = {
     ...details,
     firstPublishedYear: result.firstPublishedYear,
@@ -83,21 +89,22 @@ async function applyClaim(ctx, target, result) {
     firstPublishedYearCheckedAt: now,
     firstPublishedYearCheckedBy: result.source,
   };
+  if (previous) {
+    next.firstPublishedYearPrevious = previous.year;
+    next.firstPublishedYearChallengedBy = previous.source || 'unknown';
+  }
   await cache.saveDetails(cache.detailsKeyForWork(target.workId), next);
   target.details = next;
   return next;
 }
 
-/**
- * Ask Wikidata for the year of every dateless work of this pass.
- * Never throws: a broken WDQS answer is a missing enrichment, not a failed
- * resolve (the archive import must not die because a reference site is down).
- */
 async function patchYearClaims(ctx) {
   const { report, budget, options } = ctx;
   const targets = yearTargets(ctx);
   report.yearCandidates = targets.length;
   report.yearClaims = 0;
+  report.yearChallenged = 0;
+  report.yearCorrected = 0;
   if (!targets.length) return report;
   const wikidataBudget = budget.wikidata || null;
   const provider =
@@ -117,12 +124,25 @@ async function patchYearClaims(ctx) {
     return report;
   }
   report.yearClaimSkipped = found.skipped || null;
+  const asked = found.asked instanceof Set ? found.asked : null;
+  report.yearChallenged = targets.filter(
+    (target) => target.current && (!asked || asked.has(String(target.workId)))
+  ).length;
   for (const target of targets) {
     const result = found.byKey.get(target.workId);
     if (!result) continue;
+    const claim = acceptedClaim(target.current, result);
+    if (!claim) continue;
     try {
-      await applyClaim(ctx, target, result);
+      await applyClaim(ctx, target, {
+        ...result,
+        source: claim.source,
+        firstPublishedYear: claim.year,
+        firstPublishedYearPrecision: claim.precision,
+        firstPublishedYearKind: claim.kind,
+      });
       report.yearClaims++;
+      if (target.current) report.yearCorrected++;
     } catch (err) {
       report.yearClaimError = (err && err.code) || 'details_write_failed';
     }
