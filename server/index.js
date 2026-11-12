@@ -17,6 +17,7 @@ const { errorMiddleware } = require('./core/errors');
 const auth = require('./auth');
 const gzip = require('./gzip');
 const booksRouter = require('./books/routes');
+const booksManualRouter = require('./books/routes-manual');
 const gamesRouter = require('./games/routes');
 const gamesGogRouter = require('./games/routes-gog');
 const gamesPersonnelRouter = require('./games/personnel/routes-personnel');
@@ -57,6 +58,7 @@ app.use('/api', auth.requireAuth);
 
 // Books (cache-book/) and games (cache-games/) come first, exactly as before.
 app.use('/api/books', booksRouter);
+app.use('/api/books', booksManualRouter);
 
 app.use('/api/games', gamesRouter);
 // GOG (M6a): /api/games/gog/* — connect, status, import, logout.

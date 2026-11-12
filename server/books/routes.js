@@ -841,3 +841,4 @@ router.get('/unmatched', (req, res, next) => {
 });
 
 module.exports = router;
+module.exports.resolveProfileTokenOrThrow = resolveProfileTokenOrThrow;

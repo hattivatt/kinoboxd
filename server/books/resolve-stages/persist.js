@@ -1,11 +1,13 @@
 'use strict';
 
+const { isManualLink } = require('../links');
+
 async function persistLinks(ctx) {
   const { plan, report, cache, force } = ctx;
   for (const [bookId, link] of plan.links) {
     const previous = cache.getLink(bookId);
+    if (isManualLink(previous) && !isManualLink(link)) continue;
     if (previous && previous.workId === link.workId && !force) {
-      // Still record the method of an already-cached link for the report.
       report.methods[link.method] = (report.methods[link.method] || 0) + 1;
       continue;
     }
