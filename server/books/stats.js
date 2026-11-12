@@ -62,6 +62,7 @@ const {
 const { resolveWorkYear, yearOverrideKeysOf } = require('./stats/years');
 const {
   dedupeSeriesSubsets,
+  seriesGroupsOf,
   propagateSeriesManga,
   applyManualMangaFlags,
 } = require('./stats/series');
@@ -115,6 +116,7 @@ function buildBooksStats(options = {}) {
     selectProfiles,
     prepareEvents,
     workMetadata,
+    dedupeWorks,
     propagateSeriesManga,
     applyManualMangaFlags,
     eventLinkKeyOf,
@@ -125,7 +127,7 @@ function buildBooksStats(options = {}) {
   const genres = buildGenres(ctx);
   const { decades, years: yearsList } = buildYearBuckets(ctx);
   const authorsList = buildAuthors(ctx);
-  const series = buildSeries(ctx, { dedupeSeriesSubsets });
+  const series = buildSeries(ctx, { dedupeSeriesSubsets, seriesGroupsOf });
   // The literal already created `seriesCount`; re-assigning keeps the key in
   // place. The final number is post-`dedupeSeriesSubsets`, as before.
   summary.seriesCount = series.length;

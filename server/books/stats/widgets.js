@@ -16,7 +16,7 @@
 const { round2, mean } = require('./numeric');
 const { PAGE_BUCKETS, ANCIENT_BEFORE_YEAR, ANCIENT_BUCKET_KEY } = require('./constants');
 
-function pushWorks(map, key, payload, work) {
+function pushWorks(map, key, payload, work, extra) {
   if (!map.has(key)) {
     map.set(key, {
       ...payload,
@@ -42,6 +42,7 @@ function pushWorks(map, key, payload, work) {
     rating: work.rating10,
     year: work.year,
     yearSource: work.yearSource || null,
+    ...(extra || {}),
   });
   return entry;
 }
@@ -200,12 +201,17 @@ function buildAuthors(ctx) {
 
 function buildSeries(ctx, deps) {
   const { works } = ctx;
-  const { dedupeSeriesSubsets } = deps;
+  const { dedupeSeriesSubsets, seriesGroupsOf } = deps;
   const seriesMap = new Map();
-  for (const work of works.values()) {
-    for (const entry of work.series) {
-      const key = String(entry.hcId || entry.name);
-      pushWorks(seriesMap, key, { seriesId: entry.hcId || null, name: entry.name }, work);
+  for (const group of seriesGroupsOf(works)) {
+    for (const item of group.works) {
+      pushWorks(
+        seriesMap,
+        group.key,
+        { seriesId: group.seriesId, name: group.name },
+        item.work,
+        { position: item.position }
+      );
     }
   }
   return dedupeSeriesSubsets(

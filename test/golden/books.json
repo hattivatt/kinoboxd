@@ -1,7 +1,7 @@
 {
   "domain": "books",
-  "bytes": 12153,
-  "sha256": "a7cac6c130d21f79816839b2428702c2699be2b1e5835dabe8b63ddaeffce54c",
+  "bytes": 12166,
+  "sha256": "484cb5e11abff7aed4c722cbaa94ac1237746b91747ac954ca87dd3025eec0ad",
   "topLevelKeys": [
     "authors",
     "booksIndex",

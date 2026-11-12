@@ -185,30 +185,154 @@ function filterDetailsSeries(details, fileSeriesNames) {
 /* ------------------------------------------------------------------ */
 
 function normalizeSeriesName(name) {
-  return String(name == null ? '' : name)
+  const text = String(name == null ? '' : name)
     .normalize('NFKC')
     .toLowerCase()
-    .replace(/ё/g, 'е')
-    // Hardcover splits one series into several ids with display suffixes:
-    // "Crossed", "Crossed (Collected Editions)", "Crossed (Single Issues)"
-    // share the same shelf. The suffix is presentation, not identity.
-    .replace(/\s*\([^()]*\)\s*$/u, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/ё/g, 'е');
+  return stripUnbalanced(stripTrailingGroups(text)).replace(/\s+/g, ' ').trim();
+}
+
+function stripTrailingGroups(text) {
+  let current = text;
+  for (;;) {
+    const next = current.replace(/\s*\([^()]*\)\s*$/u, '');
+    if (next === current) return current;
+    current = next;
+  }
+}
+
+function stripUnbalanced(text) {
+  let balance = 0;
+  let firstOpen = -1;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (char === '(') {
+      if (balance === 0) firstOpen = index;
+      balance++;
+      continue;
+    }
+    if (char !== ')') continue;
+    if (balance === 0) return text.slice(0, index);
+    balance--;
+    if (balance === 0) firstOpen = -1;
+  }
+  return balance > 0 && firstOpen > 0 ? text.slice(0, firstOpen) : text;
+}
+
+function seriesEntryKeys(entry) {
+  if (!entry) return [];
+  const keys = [];
+  if (entry.hcId != null && entry.hcId !== '') keys.push(`id:${entry.hcId}`);
+  const name = normalizeSeriesName(entry.name);
+  if (name) keys.push(`name:${name}`);
+  return keys;
 }
 
 function seriesKeysOf(work) {
   const keys = [];
   for (const entry of work.series || []) {
-    if (!entry) continue;
-    if (entry.hcId != null && entry.hcId !== '') keys.push(`id:${entry.hcId}`);
-    // Keep the name key even when an id is present: the same series arrives
-    // with different Hardcover ids ("Crossed" 4443 vs "Crossed (Collected
-    // Editions)" 14693), and an id-only join leaves those volumes behind.
-    const name = normalizeSeriesName(entry.name);
-    if (name) keys.push(`name:${name}`);
+    for (const key of seriesEntryKeys(entry)) keys.push(key);
   }
   return [...new Set(keys)];
+}
+
+function hasCyrillicTitle(work) {
+  return /[\u0400-\u04ff]/.test(String(work.titleRu || work.title || ''));
+}
+
+function displayNameOf(aliases, preferCyrillic) {
+  const entries = [...aliases.entries()].map(([name, count]) => ({ name, count }));
+  entries.sort((a, b) => {
+    const parens = (value) => (/\([^()]*\)/u.test(value.name) ? 1 : 0);
+    const script = (value) => (preferCyrillic === /[\u0400-\u04ff]/.test(value.name) ? 0 : 1);
+    if (parens(a) !== parens(b)) return parens(a) - parens(b);
+    if (script(a) !== script(b)) return script(a) - script(b);
+    if (a.count !== b.count) return b.count - a.count;
+    if (a.name.length !== b.name.length) return a.name.length - b.name.length;
+    return a.name.localeCompare(b.name, 'ru');
+  });
+  return entries.length ? entries[0].name : null;
+}
+
+function seriesIdOf(ids) {
+  const numeric = [...ids]
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id))
+    .sort((a, b) => a - b);
+  if (numeric.length) return numeric[0];
+  const text = [...ids].map(String).sort();
+  return text.length ? text[0] : null;
+}
+
+function seriesGroupsOf(works) {
+  const parent = new Map();
+  const find = (key) => {
+    let root = key;
+    while (parent.has(root) && parent.get(root) !== root) root = parent.get(root);
+    let cursor = key;
+    while (parent.has(cursor) && parent.get(cursor) !== cursor) {
+      const next = parent.get(cursor);
+      parent.set(cursor, root);
+      cursor = next;
+    }
+    return root;
+  };
+  const union = (left, right) => {
+    const a = find(left);
+    const b = find(right);
+    if (a !== b) parent.set(a, b);
+  };
+
+  const perWork = [];
+  for (const work of works.values()) {
+    const entries = (Array.isArray(work.series) ? work.series : []).filter(
+      (entry) => entry && entry.name
+    );
+    if (!entries.length) continue;
+    const keys = [];
+    for (const entry of entries) {
+      for (const key of seriesEntryKeys(entry)) if (!keys.includes(key)) keys.push(key);
+    }
+    if (!keys.length) continue;
+    for (const key of keys) if (!parent.has(key)) parent.set(key, key);
+    for (let index = 1; index < keys.length; index++) union(keys[0], keys[index]);
+    perWork.push({ work, entries, keys });
+  }
+
+  const groups = new Map();
+  for (const item of perWork) {
+    const root = find(item.keys[0]);
+    if (!groups.has(root)) {
+      groups.set(root, { key: root, ids: new Set(), aliases: new Map(), works: [], cyrillic: 0 });
+    }
+    const group = groups.get(root);
+    const positions = [];
+    for (const entry of item.entries) {
+      if (entry.hcId != null && entry.hcId !== '') group.ids.add(entry.hcId);
+      const name = String(entry.name || '').trim();
+      if (name) group.aliases.set(name, (group.aliases.get(name) || 0) + 1);
+      if (entry.position != null && Number.isFinite(Number(entry.position))) {
+        positions.push(Number(entry.position));
+      }
+    }
+    if (hasCyrillicTitle(item.work)) group.cyrillic++;
+    group.works.push({
+      work: item.work,
+      position: positions.length ? Math.min(...positions) : null,
+    });
+  }
+
+  const out = [];
+  for (const group of groups.values()) {
+    const preferCyrillic = group.cyrillic * 2 > group.works.length;
+    out.push({
+      key: group.key,
+      seriesId: seriesIdOf(group.ids),
+      name: displayNameOf(group.aliases, preferCyrillic) || group.key,
+      works: group.works,
+    });
+  }
+  return out;
 }
 
 /**
@@ -383,7 +507,9 @@ module.exports = {
   fileMetadataOf,
   filterDetailsSeries,
   normalizeSeriesName,
+  seriesEntryKeys,
   seriesKeysOf,
+  seriesGroupsOf,
   propagateSeriesManga,
   applyManualMangaFlags,
   dedupeSeriesSubsets,
