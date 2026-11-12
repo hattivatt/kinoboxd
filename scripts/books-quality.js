@@ -54,7 +54,8 @@ const {
 } = require('../server/books/stats');
 const { normalizeSeriesName } = require('../server/books/stats/series');
 const { eventLinkKeyOf } = require('../server/books/stats/events');
-const { normalizeTitle, normalizeIsbn } = require('../server/books/normalize');
+const { normalizeTitle, normalizeIsbn, strictTitleKey } = require('../server/books/normalize');
+const { safeKey } = require('../server/core/fs-store');
 
 bookCache.saveAuthorsMap = async () => bookCache.getAuthorsMap();
 
@@ -149,7 +150,7 @@ function canonicalDupMetrics(entries) {
 function sameTitleMetrics(entries) {
   const groups = new Map();
   for (const work of entries) {
-    const key = normalizeTitle(work.title || work.titleRu || '');
+    const key = strictTitleKey(work.title || work.titleRu || '');
     if (!key) continue;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(work);
@@ -192,7 +193,7 @@ function seriesMetrics(payload) {
     const titles = (entry.works || []).map((work) => String(work.title || '')).filter(Boolean);
     const seen = new Map();
     for (const title of titles) {
-      const norm = normalizeTitle(title);
+      const norm = strictTitleKey(title);
       if (norm) seen.set(norm, (seen.get(norm) || 0) + 1);
     }
     const internalDup = [...seen.values()].some((count) => count > 1);
@@ -224,10 +225,11 @@ function overMatchMetrics(meta) {
   });
   const byWork = new Map();
   for (const event of prepared.events) {
-    const title = normalizeTitle(event.title);
+    const title = strictTitleKey(event.title);
     if (!title) continue;
-    if (!byWork.has(event.workId)) byWork.set(event.workId, new Map());
-    const titles = byWork.get(event.workId);
+    const workId = event.metadataWorkId || event.workId;
+    if (!byWork.has(workId)) byWork.set(workId, new Map());
+    const titles = byWork.get(workId);
     titles.set(title, (titles.get(title) || 0) + 1);
   }
   const hits = [];
@@ -261,11 +263,18 @@ function linksMetrics(profileDocs) {
     orphansExamples: [],
   };
   const eventKeys = new Map();
+  const remember = (raw) => {
+    const key = eventLinkKeyOf(raw);
+    if (key && !eventKeys.has(safeKey(key))) eventKeys.set(safeKey(key), raw);
+  };
   for (const doc of profileDocs) {
-    for (const raw of Array.isArray(doc && doc.events) ? doc.events : []) {
-      const key = eventLinkKeyOf(raw);
-      if (key && !eventKeys.has(key)) eventKeys.set(key, raw);
-    }
+    if (!doc || !Array.isArray(doc.events)) continue;
+    const prepared = prepareEvents([doc], {
+      yearOverrides: bookCache.getYearOverrides(doc.source, doc.userKey),
+    });
+    for (const raw of prepared.events) remember(raw);
+    for (const raw of prepared.segmentEvents) remember(raw);
+    for (const raw of prepared.readingEvents) remember(raw);
   }
   let names = [];
   try {

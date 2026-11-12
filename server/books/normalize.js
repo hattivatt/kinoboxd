@@ -52,6 +52,20 @@ function normalizeTitle(title) {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+function strictTitleKey(title) {
+  return String(title == null ? '' : title)
+    .replace(/\u00a0/g, ' ')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(
+      /(?<![\p{L}])(?:vol(?:ume)?|том|книга|book|часть|кн)\s*\.?\s*(\d+)/giu,
+      ' vol $1 '
+    )
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function tokensOf(value) {
   return normalizeTitle(value).split(' ').filter(Boolean);
 }
@@ -112,6 +126,7 @@ module.exports = {
   cleanText,
   namesOf,
   normalizeTitle,
+  strictTitleKey,
   tokensOf,
   tokenJaccard,
   surnameOf,

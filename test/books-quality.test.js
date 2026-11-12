@@ -111,6 +111,17 @@ async function seedQualityFixture() {
         shelf: 'read',
         edition: { series: 'Witcher (Publication order)', year: 1993 },
       },
+      {
+        id: 'll:705',
+        sourceBookId: '705',
+        title: 'Ведьмак. Последнее желание',
+        authors: ['Andrzej Sapkowski'],
+        status: 'read',
+        finishedAt: '2024-02-03',
+        origin: 'livelib-file',
+        shelf: 'read',
+        edition: { series: 'Witcher', year: 1993 },
+      },
     ])
   );
   await bookCache.saveProfile(
@@ -158,11 +169,13 @@ test('fixture metrics report the seeded dup, split series and year sources', asy
   assert.ok(livelib.dupGroups >= 1, 'canonical dup group detected');
   assert.ok(livelib.dupExtra >= 1);
   assert.ok(livelib.sameTitleGroups >= 1);
-  assert.equal(livelib.series.splitGroups, 1);
-  assert.equal(livelib.series.splitSeries, 2);
-  assert.ok(livelib.series.defective >= 2);
+  assert.equal(livelib.series.splitGroups, 0, 'the payload already unifies «Witcher» and its suffix');
+  assert.equal(livelib.series.splitSeries, 0);
+  assert.ok(livelib.series.total >= 1);
+  assert.ok(livelib.series.defective >= 1, 'a series mixing a Russian and an English title');
+  assert.ok(livelib.series.mixedScript >= 1);
   assert.equal(livelib.yearSources.first, 1);
-  assert.equal(livelib.yearSources.edition, 2);
+  assert.equal(livelib.yearSources.edition, 3);
   assert.equal(livelib.yearSources.none, 1);
   assert.ok(livelib.claimSources.wikidata >= 1);
   assert.ok('(none)' in livelib.claimSources);
