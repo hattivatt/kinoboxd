@@ -32,6 +32,7 @@
 const authors = require('./authors');
 const wd = require('./authors-wikidata');
 const bookCache = require('./book-cache');
+const { wikidataEnabled } = require('./wikidata-flag');
 
 const COOLDOWN_MS = 30 * 60 * 1000;
 /** Upper bound of names per automatic pass (2 SPARQL name batches). */
@@ -42,11 +43,6 @@ let inFlight = null;
 /** Minimum gap between two automatic passes (a polling UI must not burst WDQS). */
 const MIN_GAP_MS = 5000;
 let lastPassStartedAt = 0;
-
-function wikidataEnabled() {
-  const raw = String(process.env.KINOBOXD_BOOKS_WIKIDATA || '').trim().toLowerCase();
-  return !['0', 'off', 'false', 'no'].includes(raw);
-}
 
 /**
  * Spellings still worth asking Wikidata about.

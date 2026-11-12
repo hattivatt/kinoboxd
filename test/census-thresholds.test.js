@@ -88,7 +88,7 @@ test('census function lengths calibrate on the two known giants', () => {
     census.longestFunctions({ minLines: 1 }).map((entry) => [functionKey(entry), entry.length]),
   );
   assert.equal(measured.get('server/games/epic.js:createClient'), 38, 'epic createClient');
-  assert.equal(measured.get('server/books/resolve.js:resolveProfile'), 17, 'books resolveProfile');
+  assert.equal(measured.get('server/books/resolve.js:resolveProfile'), 18, 'books resolveProfile');
 });
 
 test('charts renderYearBars stays within the split budget', () => {

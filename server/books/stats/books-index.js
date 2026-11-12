@@ -33,6 +33,8 @@ function buildBooksIndex(ctx) {
       yearOverride: work.yearOverride,
       firstPublishedYear: work.firstPublishedYear,
       firstPublishedYearSource: work.firstPublishedYearSource || null,
+      yearPrecision: work.firstPublishedYearPrecision || null,
+      yearKind: work.firstPublishedYearKind || null,
       editionYear: work.editionYear,
       editionYearSource: work.editionYearSource || null,
       coverUrl: work.coverUrl,

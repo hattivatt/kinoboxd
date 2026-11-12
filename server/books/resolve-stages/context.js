@@ -3,6 +3,7 @@
 const livelibCard = require('../providers/livelib-card');
 const litres = require('../providers/litres');
 const googlebooks = require('../providers/googlebooks');
+const wikidata = require('../providers/wikidata');
 const { lookupIsbns } = require('../hardcover-editions');
 const bookCache = require('../book-cache');
 
@@ -23,12 +24,15 @@ function createContext(llProfile, options = {}) {
   const cardBudget = options.cardBudget || livelibCard.budgetFromEnv();
   const litresBudget = options.litresBudget || litres.budgetFromEnv();
   const gbBudget = options.gbBudget || googlebooks.budgetFromEnv();
+  // Wikidata is asked once per pass, batched, for the works the chain closed
+  // without a first-publication claim (see `year-stage.js`).
   const negativeMemo = options.negativeMemo || {
     googlebooks: new Map(),
     openlibrary: new Map(),
     litres: new Map(),
   };
   const lookupFn = options.lookupIsbns || lookupIsbns;
+  const wikidataBudget = options.wikidataBudget || wikidata.budgetFromEnv();
   const state = createBookkeeping();
 
   options = {
@@ -50,7 +54,7 @@ function createContext(llProfile, options = {}) {
     force,
     onProgress,
     now,
-    budget: { card: cardBudget, litres: litresBudget, gb: gbBudget },
+    budget: { card: cardBudget, litres: litresBudget, gb: gbBudget, wikidata: wikidataBudget },
     negativeMemo,
     lookupFn,
     state,

@@ -15,7 +15,7 @@ const { CYRILLIC_TITLE, eventKeyOf, isbnOfEvent } = require('./identity');
  * instead of failing the import job.
  */
 function createReport(ctx) {
-  const { card, litres, gb } = ctx.budget;
+  const { card, litres, gb, wikidata } = ctx.budget;
   return {
     total: ctx.plan.events.length,
     skippedPlanShelf: ctx.plan.skippedPlanShelf,
@@ -40,6 +40,18 @@ function createReport(ctx) {
     cardBudget: { limit: card.limit, used: 0, remaining: card.limit },
     litresBudget: { limit: litres.limit, used: 0, remaining: litres.limit },
     gbBudget: { limit: gb.limit, used: 0, remaining: gb.limit },
+    wikidataBudget: {
+      limit: wikidata ? wikidata.limit : 0,
+      used: 0,
+      remaining: wikidata ? wikidata.limit : 0,
+    },
+    // Year-claim stage (`year-stage.js`): how many resolved works had no
+    // first-publication year, how many Wikidata could date, and whether the
+    // question was refused (`budget`/`breaker`) instead of answered.
+    yearCandidates: 0,
+    yearClaims: 0,
+    yearClaimSkipped: null,
+    yearClaimError: null,
   };
 }
 
@@ -77,6 +89,7 @@ function finalizeReport(ctx) {
   report.cardBudget = budgetSnapshot(ctx.budget.card);
   report.litresBudget = budgetSnapshot(ctx.budget.litres);
   report.gbBudget = budgetSnapshot(ctx.budget.gb);
+  if (ctx.budget.wikidata) report.wikidataBudget = budgetSnapshot(ctx.budget.wikidata);
 
   report.resolvedWorkIds = new Set(
     [...plan.links.values()].filter((link) => link.workId).map((link) => link.workId)
@@ -140,7 +153,11 @@ function logReport(ctx) {
       `${report.lookupErrors.length ? `, isbn-lookup-errors=${report.lookupErrors.join('|')}` : ''}) ` +
       `[${providerSummary}] card-budget=${budget.card.used}/${budget.card.limit} ` +
       `litres-budget=${budget.litres.used}/${budget.litres.limit} ` +
-      `gb-budget=${budget.gb.used}/${budget.gb.limit}`
+      `gb-budget=${budget.gb.used}/${budget.gb.limit}` +
+      (report.yearCandidates
+        ? ` year-claims=${report.yearClaims}/${report.yearCandidates}` +
+          (report.yearClaimSkipped ? `(skipped:${report.yearClaimSkipped})` : '')
+        : '')
   );
 }
 

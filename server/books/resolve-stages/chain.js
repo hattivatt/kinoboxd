@@ -141,12 +141,42 @@ function countResolution(report, result) {
   else if (result.source === 'litres') report.resolvedLitres++;
 }
 
+/** Fields of a first-publication claim; they survive a re-resolve. */
+const YEAR_CLAIM_FIELDS = [
+  'firstPublishedYear',
+  'firstPublishedYearSource',
+  'firstPublishedYearPrecision',
+  'firstPublishedYearKind',
+  'firstPublishedYearCheckedAt',
+  'firstPublishedYearCheckedBy',
+];
+
+/**
+ * Keep a year backfilled earlier when a fresh resolve knows nothing about it.
+ *
+ * `saveDetails` is a blind overwrite, and the chain rebuilds a document from
+ * the provider answer alone: a Google Books hit that knows only the print year
+ * would silently delete the first-publication claim `years-backfill` had just
+ * written (and with it the 30-day marker). Content fields still follow the
+ * fresh answer — only an *absent* claim is inherited.
+ */
+function keepYearClaim(previous, next) {
+  if (!next || next.firstPublishedYear != null || !previous) return next;
+  const merged = { ...next };
+  for (const field of YEAR_CLAIM_FIELDS) {
+    if (previous[field] != null) merged[field] = previous[field];
+  }
+  return merged;
+}
+
 async function saveProviderWork(ctx, merged) {
   const details = providers.resultToDetails(merged, { now: ctx.now });
   if (!details) return null;
   const workId = merged.workId || `${merged.source}:${merged.sourceId}`;
-  await ctx.cache.saveDetails(bookCache.detailsKeyForWork(workId), details);
-  return { workId, details };
+  const key = bookCache.detailsKeyForWork(workId);
+  const kept = keepYearClaim(ctx.cache.getWorkDetails(workId), details);
+  await ctx.cache.saveDetails(key, kept);
+  return { workId, details: kept };
 }
 
 function makeLink(bookId, merged, now) {
@@ -189,8 +219,9 @@ async function saveCardMetadata(ctx, event, card) {
     },
     { now: ctx.now }
   );
-  await ctx.cache.saveDetails(bookCache.detailsKeyForWork(`ll:${bookId}`), doc);
-  return doc;
+  const kept = keepYearClaim(ctx.cache.getWorkDetails(`ll:${bookId}`), doc);
+  await ctx.cache.saveDetails(bookCache.detailsKeyForWork(`ll:${bookId}`), kept);
+  return kept;
 }
 
 module.exports = {
@@ -203,4 +234,5 @@ module.exports = {
   saveProviderWork,
   makeLink,
   saveCardMetadata,
+  keepYearClaim,
 };

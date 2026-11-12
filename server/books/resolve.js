@@ -86,6 +86,7 @@ const { matchCorpus } = require('./resolve-stages/title-stage');
 const { prepareChain } = require('./resolve-stages/chain');
 const { runLitres } = require('./resolve-stages/litres-stage');
 const { runCard } = require('./resolve-stages/card-stage');
+const { patchYearClaims } = require('./resolve-stages/year-stage');
 const { persistLinks } = require('./resolve-stages/persist');
 
 /**
@@ -108,6 +109,7 @@ async function resolveProfile(llProfile, options = {}) {
   prepareChain(ctx);
   await runLitres(ctx);
   await runCard(ctx);
+  await patchYearClaims(ctx);
   await persistLinks(ctx);
 
   finalizeReport(ctx);

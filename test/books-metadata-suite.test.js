@@ -484,6 +484,22 @@ describe('books-first-year', () => {
     };
   }
 
+  /**
+   * A silent Wikidata: the backfill asks it in one batched pass for the whole
+   * slice, and a test that does not inject it would talk to the real WDQS.
+   */
+  function silentWikidata() {
+    const calls = [];
+    return {
+      NAME: 'wikidata',
+      calls,
+      async lookupTitles(entries) {
+        calls.push(entries);
+        return { byKey: new Map(), asked: new Set(), skipped: null, queries: 0 };
+      },
+    };
+  }
+
   test('the backfill asks Hardcover only for a work-level first-publication claim', async () => {
     // Legacy schema-1 document: only an edition year. The loose normaliser used by
     // the resolve pass bridges it for display; the backfill must not.
@@ -517,6 +533,7 @@ describe('books-first-year', () => {
     });
     const fakeHc = fakeProvider('hardcover', null);
     await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:9600'],
       hardcoverProvider: fakeHc,
       litresProvider: fakeProvider('litres', null),
@@ -538,6 +555,7 @@ describe('books-first-year', () => {
     });
     const strictHc = fakeProvider('hardcover', null);
     await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:9700'],
       hardcoverProvider: strictHc,
       litresProvider: fakeProvider('litres', null),
@@ -574,6 +592,7 @@ describe('books-first-year', () => {
       firstPublishedYear: null,
     });
     const report = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:9100'],
       litresProvider: fakeLitres,
       openlibraryProvider: fakeOl,
@@ -607,6 +626,7 @@ describe('books-first-year', () => {
       firstPublishedYear: 1608,
     });
     const skipped = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       openlibraryProvider: fakeOl,
       hardcoverProvider: fakeProvider('hardcover', null),
       litresProvider: fakeProvider('litres', null),
@@ -628,6 +648,7 @@ describe('books-first-year', () => {
       publicationYear: 2014,
     });
     const dry = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:9300'],
       dryRun: true,
       openlibraryProvider: fakeProvider('openlibrary', {
@@ -668,6 +689,7 @@ describe('books-first-year', () => {
     const firstLitres = silent();
     const firstHc = silent();
     const firstRun = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:9400'],
       openlibraryProvider: firstOl,
       litresProvider: firstLitres,
@@ -683,7 +705,9 @@ describe('books-first-year', () => {
     const marked = bookCache.getWorkDetails('lr:9400');
     assert.equal(marked.firstPublishedYear, undefined);
     assert.equal(marked.firstPublishedYearCheckedAt, '2026-10-28T00:00:00.000Z');
-    assert.equal(marked.firstPublishedYearCheckedBy, 'none');
+    // The marker names every provider that was asked, so a provider added
+    // later can re-open the verdict (Wikidata did exactly that).
+    assert.equal(marked.firstPublishedYearCheckedBy, 'hardcover,litres,openlibrary,wikidata');
 
     // Re-run a day later: the document is inside the recheck window, so not a
     // single provider is called and the report says so.
@@ -691,6 +715,7 @@ describe('books-first-year', () => {
     const secondLitres = silent();
     const secondHc = silent();
     const secondRun = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       openlibraryProvider: secondOl,
       litresProvider: secondLitres,
       hardcoverProvider: secondHc,
@@ -706,6 +731,7 @@ describe('books-first-year', () => {
 
     // `--force` (and an explicit `--ids`) is the operator's override.
     await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:9400'],
       openlibraryProvider: silent(),
       litresProvider: silent(),
@@ -718,6 +744,7 @@ describe('books-first-year', () => {
 
     // After the window expires the document becomes a candidate again.
     await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       openlibraryProvider: silent(),
       litresProvider: silent(),
       hardcoverProvider: silent(),
@@ -739,6 +766,7 @@ describe('books-first-year', () => {
       publicationYear: 2010,
     });
     const dry = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:9500'],
       dryRun: true,
       openlibraryProvider: fakeProvider('openlibrary', null),
@@ -808,6 +836,22 @@ describe('books-years-convergence', () => {
     };
   }
 
+  /**
+   * A silent Wikidata: the backfill asks it in one batched pass for the whole
+   * slice, and a test that does not inject it would talk to the real WDQS.
+   */
+  function silentWikidata() {
+    const calls = [];
+    return {
+      NAME: 'wikidata',
+      calls,
+      async lookupTitles(entries) {
+        calls.push(entries);
+        return { byKey: new Map(), asked: new Set(), skipped: null, queries: 0 };
+      },
+    };
+  }
+
   async function seed(workId, doc) {
     await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), {
       schemaVersion: 2,
@@ -846,6 +890,7 @@ describe('books-years-convergence', () => {
     litres.isBreakerOpen = () => false;
 
     const report = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:7001'],
       budget,
       litresProvider: litres,
@@ -878,6 +923,7 @@ describe('books-years-convergence', () => {
     });
     secondLitres.isBreakerOpen = () => false;
     const second = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:7001'],
       budget: freshBudget,
       litresProvider: secondLitres,
@@ -906,6 +952,7 @@ describe('books-years-convergence', () => {
     });
     litres.isBreakerOpen = () => false;
     const report = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:7002'],
       budget: { used: 0, remaining: 200, take() { return true; } },
       litresProvider: litres,
@@ -929,6 +976,7 @@ describe('books-years-convergence', () => {
     const litres = fakeProvider('litres', { source: 'litres', firstPublishedYear: 1866 });
     litres.isBreakerOpen = () => true;
     const report = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:7003'],
       budget: { used: 0, remaining: 200, take() { return true; } },
       litresProvider: litres,
@@ -955,6 +1003,7 @@ describe('books-years-convergence', () => {
       throw err;
     };
     const report = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:7005'],
       lookupIsbns,
       budget: { used: 0, remaining: 200, take() { return true; } },
@@ -978,6 +1027,7 @@ describe('books-years-convergence', () => {
     const litres = fakeProvider('litres', null);
     litres.isBreakerOpen = () => false;
     const report = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:7004'],
       budget: { used: 0, remaining: 200, take() { return true; } },
       litresProvider: litres,
@@ -988,11 +1038,11 @@ describe('books-years-convergence', () => {
       pause: 0,
     });
     assert.equal(report.unknown.length, 1);
-    assert.equal(report.unknown[0].asked, 'hardcover,litres,openlibrary');
+    assert.equal(report.unknown[0].asked, 'litres,openlibrary,wikidata');
     assert.equal(report.deferred.length, 0);
     const saved = bookCache.getWorkDetails('lr:7004');
     assert.ok(saved.firstPublishedYearCheckedAt);
-    assert.equal(saved.firstPublishedYearCheckedBy, 'none');
+    assert.equal(saved.firstPublishedYearCheckedBy, 'litres,openlibrary,wikidata');
   });
 
   test('the whole slice shares one batched Hardcover ISBN lookup', async () => {
@@ -1023,6 +1073,7 @@ describe('books-years-convergence', () => {
       return { byIsbn, works: new Map(), requests: 1, queries: [] };
     };
     const report = await yearsBackfill.backfill({
+      wikidataProvider: silentWikidata(),
       ids: ['lr:7010', 'lr:7011'],
       lookupIsbns,
       budget: { used: 0, remaining: 200, take() { return true; } },

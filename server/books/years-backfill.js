@@ -61,6 +61,7 @@ const { defaultSleep } = require('../core/http');
 const { usedOf, budgetRefused } = require('../core/budget');
 const fsStore = require('../core/fs-store');
 const sources = require('../core/sources');
+const wikidata = require('./providers/wikidata');
 
 const DEFAULT_LIMIT = 20;
 const DEFAULT_PAUSE_MS = sources.pauseMs('litres'); // Литрес politeness (AGENTS.md)
@@ -85,6 +86,101 @@ function recentlyChecked(doc, now, recheckDays) {
   const days = Number(recheckDays);
   const window = Number.isFinite(days) && days >= 0 ? days : DEFAULT_RECHECK_DAYS;
   return now - ts < window * 24 * 60 * 60 * 1000;
+}
+
+/**
+ * Providers that can answer for this document.
+ *
+ * The negative-cache marker is only a verdict for the providers that were
+ * actually asked. A document whose marker predates Wikidata must not stay
+ * hidden for the rest of the recheck window: a Russian reprint (no Hardcover
+ * ISBN match, no Open Library edition) is exactly the document a new provider
+ * can still date.
+ */
+function applicableProviders(doc) {
+  const out = [];
+  if (isbnOfDoc(doc)) out.push('hardcover');
+  if (CYRILLIC_TITLE.test(String((doc && doc.title) || ''))) out.push('litres');
+  out.push('openlibrary');
+  if (doc && doc.title) out.push('wikidata');
+  return out;
+}
+
+/**
+ * Does the stored marker name every applicable provider?
+ *
+ * `none` (the old shape for «nobody answered») and an empty marker never
+ * cover: they say nothing about the provider that was added later.
+ */
+function markerCovers(doc) {
+  const asked = String((doc && doc.firstPublishedYearCheckedBy) || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!asked.length || (asked.length === 1 && asked[0] === 'none')) return false;
+  const set = new Set(asked);
+  return applicableProviders(doc).every((name) => set.has(name));
+}
+
+/**
+ * The providers a run will really ask: `applicableProviders`, minus Wikidata
+ * when the phase is off for this caller.
+ *
+ * The negative marker must name only what was actually asked. Writing
+ * «wikidata» for a run that had the phase disabled would hide the document for
+ * the whole recheck window after the phase is turned back on.
+ */
+function askedProviders(doc, options = {}) {
+  const list = applicableProviders(doc);
+  const provider =
+    options.wikidataProvider === undefined ? wikidata : options.wikidataProvider;
+  if (!provider || typeof provider.lookupTitles !== 'function' || wikidata.isDisabled()) {
+    return list.filter((name) => name !== 'wikidata');
+  }
+  return list;
+}
+
+/**
+ * The reader's own spelling of each work: `workId -> {title, authors}`.
+ *
+ * A work matched by Open Library keeps the provider's transliterated title
+ * («Malenʹkie zhenshchiny zamuzhem»), and asking that spelling anywhere is a
+ * wasted request. The profile event carries the title the user saw; the
+ * resolve link names the work it belongs to.
+ */
+function profileTitles() {
+  const out = new Map();
+  let profiles = [];
+  try {
+    profiles = bookCache.listProfiles();
+  } catch (err) {
+    return out;
+  }
+  for (const summary of profiles) {
+    let profile;
+    try {
+      profile = bookCache.getProfile(summary.source, summary.userKey);
+    } catch (err) {
+      continue;
+    }
+    const events = profile && Array.isArray(profile.events) ? profile.events : [];
+    for (const event of events) {
+      if (!event || !event.title) continue;
+      const key = event.sourceBookId
+        ? String(event.sourceBookId)
+        : event.fileKey
+          ? `file:${String(event.fileKey)}`
+          : null;
+      if (!key) continue;
+      const link = bookCache.getLink(key);
+      if (!link || !link.workId || out.has(link.workId)) continue;
+      const authors = Array.isArray(event.authors)
+        ? event.authors.map((name) => (name && name.name ? name.name : name)).filter(Boolean)
+        : [];
+      out.set(link.workId, { title: event.title, authors });
+    }
+  }
+  return out;
 }
 
 /** Details documents on disk (`cache-book/details/*.json`). */
@@ -133,14 +229,23 @@ async function firstYearForDoc(doc, options = {}) {
   const hardcoverProvider = options.hardcoverProvider || hardcover;
   const litresProvider = options.litresProvider || litres;
   const openlibraryProvider = options.openlibraryProvider || openlibrary;
+  const editionYear = doc.publicationYear == null ? null : Number(doc.publicationYear);
 
   const candidates = [];
   const incomplete = [];
+  // Every claim passes the plausibility gate before it can enter the race: an
+  // edition year dressed as a first publication is a rejected claim, not an
+  // answer, and a claim older than the author cannot be true.
   const push = (result, label) => {
     if (!result) return;
-    const year = providers.firstYearOf(result.firstPublishedYear);
-    if (year == null) return;
-    candidates.push({ year, source: label || result.source, workId: result.workId || null });
+    const claim = providers.claimOf({ ...result, source: label || result.source });
+    if (!claim) return;
+    const sane = providers.saneFirstYearClaim(claim, {
+      editionYear,
+      authorBirthYear: result.authorBirthYear,
+    });
+    if (!sane) return;
+    candidates.push({ ...sane, source: label || result.source, workId: result.workId || null });
   };
 
   const input = { isbn13, isbn10, title, authors };
@@ -209,12 +314,85 @@ async function firstYearForDoc(doc, options = {}) {
     incomplete.push('openlibrary-error');
   }
 
-  const year = candidates.reduce(
-    (best, entry) => (best == null || entry.year < best ? entry.year : best),
-    null
-  );
-  const winner = year == null ? null : candidates.find((entry) => entry.year === year);
-  return { year, source: winner ? winner.source : null, candidates, incomplete };
+  // 4. Wikidata: the work-level claim no print source can give.
+  //
+  // It is asked by the caller, batched (one query per ~12 documents), because
+  // WDQS does not reward a request per book. An absent prefetch entry is «not
+  // asked» (budget/breaker/no title), never «nobody knows».
+  const workId = options.workId || null;
+  const asked = options.yearClaimsAsked instanceof Set ? options.yearClaimsAsked : null;
+  const prefetched = options.yearClaims instanceof Map && workId ? options.yearClaims.get(workId) : null;
+  if (prefetched) push(prefetched, 'wikidata');
+  else if (asked && workId && !asked.has(workId)) {
+    if (options.yearClaimsSkipped === 'breaker') incomplete.push('wikidata-breaker');
+    else if (options.yearClaimsSkipped === 'budget') incomplete.push('wikidata-budget');
+    else if (options.yearClaimsError) incomplete.push('wikidata-error');
+  }
+
+  const rank = providers.PRECISION_RANK;
+  let winner = null;
+  for (const entry of candidates) {
+    if (!winner) {
+      winner = entry;
+      continue;
+    }
+    if (entry.year !== winner.year) {
+      if (entry.year < winner.year) winner = entry;
+      continue;
+    }
+    if ((rank[entry.precision] || 0) > (rank[winner.precision] || 0)) winner = entry;
+  }
+  return {
+    year: winner ? winner.year : null,
+    source: winner ? winner.source : null,
+    precision: winner ? winner.precision : null,
+    kind: winner ? winner.kind : null,
+    candidates,
+    incomplete,
+  };
+}
+
+/**
+ * Ask Wikidata for the whole slice in one batched pass.
+ *
+ * Returns `{byWork, asked, skipped, budget, requests}`; `byWork` only holds the
+ * documents that got a claim, `asked` the ones the provider really saw. The
+ * caller distinguishes «asked, no claim» from «never asked» with those two.
+ */
+async function prefetchWikidata(docs, options = {}) {
+  // Injectable like every other provider: a test that does not want WDQS to be
+  // asked, and a caller that wants the whole phase off, pass their own object
+  // (or `null`).
+  const provider = options.wikidataProvider === undefined ? wikidata : options.wikidataProvider;
+  if (!provider || typeof provider.lookupTitles !== "function") {
+    return { byWork: new Map(), asked: new Set(), skipped: null, requests: 0 };
+  }
+  const titles = options.profileTitles instanceof Map ? options.profileTitles : profileTitles();
+  const entries = [];
+  for (const entry of docs) {
+    const workId = workIdOf(entry.doc);
+    if (!workId) continue;
+    const fromProfile = titles.get(workId) || null;
+    const title = (fromProfile && fromProfile.title) || entry.doc.title || null;
+    if (!title) continue;
+    const authors =
+      fromProfile && fromProfile.authors.length ? fromProfile.authors : authorsOf(entry.doc);
+    entries.push({ key: workId, title, authors });
+  }
+  if (!entries.length) return { byWork: new Map(), asked: new Set(), skipped: null, requests: 0 };
+  const budget =
+    options.wikidataBudget === undefined ? wikidata.budgetFromEnv() : options.wikidataBudget;
+  const found = await provider.lookupTitles(entries, {
+    budget,
+    sleep: options.sleep,
+    fetchImpl: options.fetchImpl,
+    pauseMs: options.wikidataPauseMs,
+    batchSize: options.wikidataBatchSize,
+    onProgress: options.onProgress,
+  });
+  const byWork = new Map();
+  for (const [workId, result] of found.byKey) if (result) byWork.set(workId, result);
+  return { byWork, asked: found.asked, skipped: found.skipped, budget, requests: found.queries || 0 };
 }
 
 /** Normalised ISBN of a details document, or null. */
@@ -301,7 +479,9 @@ async function backfill(options = {}) {
     // A hopeless document is left alone for `recheckDays`: re-asking three
     // providers for a year nobody has is exactly the load AGENTS.md budgets
     // against. An explicit `--ids` still wins — the user asked for that one.
-    if (!ids && !force && recentlyChecked(doc, nowMs, recheckDays)) {
+    // The marker only counts when it names every provider that applies today:
+    // a verdict written before Wikidata joined the chain is not a verdict.
+    if (!ids && !force && recentlyChecked(doc, nowMs, recheckDays) && markerCovers(doc)) {
       skippedChecked++;
       continue;
     }
@@ -324,6 +504,11 @@ async function backfill(options = {}) {
     errors: [],
     byProvider: {},
     hardcoverRequests: 0,
+    wikidataRequests: 0,
+    wikidataSkipped: null,
+    wikidataError: null,
+    wikidataClaimed: 0,
+    wikidataBudget: null,
     litresBudgetUsed: 0,
     litresBudgetLimit: budget && Number.isFinite(Number(budget.limit)) ? Number(budget.limit) : null,
     litresBudgetRemaining: budget && Number.isFinite(Number(budget.remaining))
@@ -350,14 +535,43 @@ async function backfill(options = {}) {
     : options.lookupIsbns;
   const hardcoverUnavailable = Boolean(hardcoverLookup && hardcoverLookup.error);
 
+  // One batched Wikidata pass for the whole slice. It runs even when Hardcover
+  // answered, because the earliest claim wins and Wikidata is the only source
+  // that knows the work behind a Russian reprint (see AGENTS.md §5.2).
+  // The pass is read-only, so `--dry-run` runs it too: the report must show
+  // what a real run would resolve, not a subset that ignores Wikidata.
+  const yearClaims = { byWork: new Map(), asked: new Set(), skipped: null };
+  let yearClaimsError = null;
+  {
+    try {
+      const lookup = await prefetchWikidata(selected, options);
+      yearClaims.byWork = lookup.byWork;
+      yearClaims.asked = lookup.asked;
+      yearClaims.skipped = lookup.skipped;
+      report.wikidataRequests = lookup.requests;
+      report.wikidataSkipped = lookup.skipped;
+      report.wikidataBudget = lookup.budget
+        ? { limit: lookup.budget.limit, used: lookup.budget.used, remaining: lookup.budget.remaining }
+        : null;
+    } catch (err) {
+      yearClaimsError = (err && err.code) || 'wikidata-error';
+      report.wikidataError = yearClaimsError;
+    }
+  }
+
   for (const { key, doc, workId } of selected) {
     report.checked++;
     try {
       const found = await firstYearForDoc(doc, {
         ...options,
+        workId,
         lookupIsbns,
         hardcoverUnavailable,
         budget,
+        yearClaims: yearClaims.byWork,
+        yearClaimsAsked: yearClaims.asked,
+        yearClaimsSkipped: yearClaims.skipped,
+        yearClaimsError,
       });
       if (found.year == null) {
         // Only an answer from every applicable provider is a verdict. A
@@ -374,9 +588,9 @@ async function backfill(options = {}) {
           );
           continue;
         }
-        const asked = found.candidates.length
-          ? [...new Set(found.candidates.map((entry) => entry.source))].join(',')
-          : 'hardcover,litres,openlibrary';
+        // Name every applicable provider, not only the one that answered: the
+        // next provider added to the chain must be able to re-open this verdict.
+        const asked = askedProviders(doc, options).join(',');
         report.unknown.push({ workId, title: doc.title || null, asked });
         log(`— ${workId} ${doc.title || ''} :: no first-publication claim (${asked})`);
         // Negative cache: the next run must not repeat these requests. This is
@@ -385,14 +599,13 @@ async function backfill(options = {}) {
           await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), {
             ...doc,
             firstPublishedYearCheckedAt: checkedAt,
-            firstPublishedYearCheckedBy: found.candidates.length
-              ? [...new Set(found.candidates.map((entry) => entry.source))].join(',')
-              : 'none',
+            firstPublishedYearCheckedBy: asked,
           });
         }
         continue;
       }
       report.byProvider[found.source] = (report.byProvider[found.source] || 0) + 1;
+      if (found.source === 'wikidata') report.wikidataClaimed++;
       report.resolved.push({
         workId,
         title: doc.title || null,
@@ -409,6 +622,10 @@ async function backfill(options = {}) {
           ...doc,
           firstPublishedYear: found.year,
           firstPublishedYearSource: found.source,
+          // Precision and kind travel with the claim: «VIII в. до н.э.» is not
+          // a print year, and the payload must be able to say so.
+          firstPublishedYearPrecision: found.precision || null,
+          firstPublishedYearKind: found.kind || null,
           firstPublishedYearCheckedAt: checkedAt,
           firstPublishedYearCheckedBy: found.source,
         });
@@ -434,7 +651,7 @@ async function backfill(options = {}) {
     if (!workId) continue;
     if (ids && ![...ids].some((id) => id === workId || id === key)) continue;
     if (!force && providers.firstYearOf(doc.firstPublishedYear) != null) continue;
-    if (!force && recentlyChecked(doc, nowMs, recheckDays)) continue;
+    if (!force && recentlyChecked(doc, nowMs, recheckDays) && markerCovers(doc)) continue;
     pending++;
   }
   report.pending = pending;
@@ -463,7 +680,11 @@ async function backfill(options = {}) {
       `errors=${report.errors.length} ` +
       `litres=${report.litresBudgetUsed}/${report.litresBudgetLimit == null ? '?' : report.litresBudgetLimit}` +
       `${report.litresBudgetExhausted ? ' (exhausted)' : ''} ` +
-      `hardcoverRequests=${report.hardcoverRequests} pending=${report.pending} runsLeft=${report.runsLeft}`
+      `hardcoverRequests=${report.hardcoverRequests} ` +
+      `wikidata=${report.wikidataClaimed} claims/${report.wikidataRequests} queries` +
+      `${report.wikidataSkipped ? ` (${report.wikidataSkipped})` : ''}` +
+      `${report.wikidataError ? ` (error ${report.wikidataError})` : ''} ` +
+      `pending=${report.pending} runsLeft=${report.runsLeft}`
   );
   log(
     `[years-backfill] итог: год получили ${report.resolved.length}` +
@@ -511,6 +732,10 @@ if (require.main === module) {
         errors: report.errors.length,
         byProvider: report.byProvider,
         hardcoverRequests: report.hardcoverRequests,
+        wikidataRequests: report.wikidataRequests,
+        wikidataClaimed: report.wikidataClaimed,
+        wikidataSkipped: report.wikidataSkipped,
+        wikidataError: report.wikidataError,
         litresBudgetUsed: report.litresBudgetUsed,
         litresBudgetLimit: report.litresBudgetLimit,
         litresBudgetRemaining: report.litresBudgetRemaining,
@@ -534,7 +759,12 @@ module.exports = {
   detailDocs,
   workIdOf,
   recentlyChecked,
+  applicableProviders,
+  askedProviders,
+  markerCovers,
+  profileTitles,
   firstYearForDoc,
+  prefetchWikidata,
   prefetchHardcover,
   backfill,
   parseArgs,

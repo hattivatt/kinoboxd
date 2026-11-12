@@ -3,7 +3,7 @@
 
 Все имена переменных окружения, которые читает сервер (P9, план §3.5). Источник — `process.env.*`, поля `*Env` таблицы `server/core/sources.js` и алиасы `server/config.js`.
 
-Имён: **119**. Конвенция таблицы источников: `0` = «выключено», пустое/незаданное значение = значение по умолчанию (`server/core/sources.js`). Секреты не эхоятся: в отчётах только имя и источник.
+Имён: **120**. Конвенция таблицы источников: `0` = «выключено», пустое/незаданное значение = значение по умолчанию (`server/core/sources.js`). Секреты не эхоятся: в отчётах только имя и источник.
 
 ## Секреты и алиасы (`server/config.js`)
 
@@ -27,6 +27,7 @@
 | `BOOKS_LITRES_BUDGET` | budget = 200 (0 = off) (`litres`) | `server/core/sources.js` (litres) | const litresBudget = resolve.createLitresBudget(process.env.BOOKS_LITRES_BUDGET); |
 | `BOOKS_LIVELIB_CARD_BUDGET` | budget = 300 (0 = off) (`livelib`) | `server/core/sources.js` (livelib) | const cardBudget = resolve.createCardBudget(process.env.BOOKS_LIVELIB_CARD_BUDGET); |
 | `BOOKS_RESOLVE_LOCK_WAIT_MS` | см. файл | `server/books/import.js:160` | One resolve pass at a time across processes: the scheduled `kinoboxd-resolve-books` oneshot takes the same `cache-book/resolve.lock`. Both spend the Литрес budget and write links/details, so running them in parallel wou… |
+| `BOOKS_WIKIDATA_BUDGET` | budget = 300 (0 = off) (`wikidataBooks`) | `server/core/sources.js` (wikidataBooks) | budgetEnv: 'BOOKS_WIKIDATA_BUDGET', |
 | `DEBUG_BROAD` | см. файл | `server/tmdb.js:626` | if (process.env.DEBUG_BROAD) { |
 | `DEBUG_REMATCH` | см. файл | `server/rematch.js:240` | The new id is still valid; a later enrich/backfill can fetch details. |
 | `DEBUG_RETRY` | см. файл | `server/tmdb.js:129` | if (process.env.DEBUG_RETRY) { |
@@ -113,7 +114,7 @@
 | `GOG_CLIENT_SECRET` | см. файл | `server/games/sources/gog-requests.js:71` | const envSecret = process.env.GOG_CLIENT_SECRET; |
 | `HARDCOVER_API_TOKEN` | env или файл `config/hardcover-token` (значение не эхоится) | `server/config.js` (hardcover) | const HARDCOVER_ENV_KEYS = ['HARDCOVER_API_TOKEN', 'HARDCOVER_READ_TOKEN']; |
 | `KINOBOXD_BOOKS_PROFILE` | `''` (server/books/authors-backfill.js) | `server/books/authors-backfill.js:60` | const raw = options.profile \|\| process.env.KINOBOXD_BOOKS_PROFILE \|\| ''; |
-| `KINOBOXD_BOOKS_WIKIDATA` | `''` (server/books/authors-bridge.js) | `server/books/authors-bridge.js:47` | const raw = String(process.env.KINOBOXD_BOOKS_WIKIDATA \|\| '').trim().toLowerCase(); |
+| `KINOBOXD_BOOKS_WIKIDATA` | `''` (server/books/wikidata-flag.js) | `server/books/wikidata-flag.js:18` | const raw = String(process.env.KINOBOXD_BOOKS_WIKIDATA \|\| '') |
 | `KINOBOXD_CACHE_BOOK_DIR` | см. файл | `server/books/book-cache.js:36` | const BOOK_CACHE_DIR = process.env.KINOBOXD_CACHE_BOOK_DIR |
 | `KINOBOXD_CACHE_DIR` | см. файл | `server/cache.js:10` | KINOBOXD_CACHE_DIR lets tests / alternative deployments point the whole TMDB + KinoPoisk cache tree somewhere else. Defaults to app/cache so the normal launcher (and the Nix wrapper, which copies server/ next to cache/)… |
 | `KINOBOXD_CACHE_GAMES_DIR` | см. файл | `server/games/game-cache.js:50` | const GAMES_CACHE_DIR = process.env.KINOBOXD_CACHE_GAMES_DIR |

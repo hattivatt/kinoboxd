@@ -214,6 +214,25 @@ const SOURCES = Object.freeze({
     userAgent: null,
     note: 'Public read-only API; 250 ms pause.',
   },
+  wikidataBooks: {
+    id: 'wikidataBooks',
+    host: 'query.wikidata.org',
+    pauseMs: 1200,
+    // WDQS answers 504 after ~60 s on a query it cannot plan; a 30 s client
+    // deadline plus 3 attempts bounds one bad batch to ~1.5 min, after which
+    // the breaker stops the rest of the pass.
+    timeoutMs: 30000,
+    batchSize: 12,
+    maxAttempts: 3,
+    baseBackoffMs: 4000,
+    maxBackoffMs: 30000,
+    budgetEnv: 'BOOKS_WIKIDATA_BUDGET',
+    budgetDefault: 300,
+    breakerMs: BREAKER_30M,
+    ttlMs: null,
+    userAgent: 'kinoboxd/1.0 (books first-publication year; https://github.com/hattivatt/kinoboxd)',
+    note: 'WDQS label batch: one query covers up to `batchSize` titles, budget counts books, 429/504 -> 30 min breaker.',
+  },
 
   /* ---------------------------- games ---------------------------- */
   steam: {

@@ -27,6 +27,7 @@
 const {
   HttpTransportError,
   DEFAULT_TIMEOUT_MS,
+  fetchOnce,
   fetchJson,
   parseRetryAfter,
   defaultSleep,
@@ -70,6 +71,7 @@ function createSourceClient(options = {}) {
 module.exports = {
   ProviderHttpError: HttpTransportError,
   DEFAULT_TIMEOUT_MS,
+  fetchOnce,
   fetchJson,
   parseRetryAfter,
   defaultSleep,

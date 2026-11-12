@@ -33,6 +33,7 @@
 | `steamStore` | `store.steampowered.com` | 1700 ms | 20000 ms (20 s) | `GAMES_STORE_BUDGET` = 340 | 1800000 ms (30 min) | 15552000000 ms (180 d) | pause: `GAMES_STORE_PAUSE_MS`<br>timeout: `GAMES_STEAM_TIMEOUT_MS`<br>breaker: `GAMES_STORE_BREAKER_MS`<br>ttl: `GAMES_STORE_TTL_MS` |
 | `tmdb` | `api.themoviedb.org` | 0 | 20000 ms (20 s) | — | — | — | — |
 | `wdqs` | `query.wikidata.org` | 1200 ms | 120000 ms (2 min) | — | — | — | — |
+| `wikidataBooks` | `query.wikidata.org` | 1200 ms | 30000 ms (30 s) | `BOOKS_WIKIDATA_BUDGET` = 300 | 1800000 ms (30 min) | — | — |
 | `wikidataFranchise` | `query.wikidata.org` | 1100 ms | 60000 ms (1 min) | `GAMES_FRANCHISE_BUDGET` = 450 | 1800000 ms (30 min) | 7776000000 ms (90 d) | ttl: `GAMES_FRANCHISE_TTL_DAYS` |
 | `wikidataLabels` | `www.wikidata.org` | 0 | 120000 ms (2 min) | — | — | — | — |
 | `wikidataPersonnel` | `query.wikidata.org` | 1100 ms | 60000 ms (1 min) | — | 1800000 ms (30 min) | — | — |
@@ -59,6 +60,10 @@
 | `wdqs` | `maxAttempts` | 8 |
 | `wdqs` | `maxBackoffMs` | 60000 |
 | `wdqs` | `outageGapMs` | 60000 |
+| `wikidataBooks` | `baseBackoffMs` | 4000 |
+| `wikidataBooks` | `batchSize` | 12 |
+| `wikidataBooks` | `maxAttempts` | 3 |
+| `wikidataBooks` | `maxBackoffMs` | 30000 |
 | `wikidataFranchise` | `batchSize` | 450 |
 | `wikidataLabels` | `batchSize` | 50 |
 | `wikidataLabels` | `maxAttempts` | 3 |

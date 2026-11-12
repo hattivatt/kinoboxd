@@ -161,6 +161,8 @@ function workMetadata(workId, events, options = {}) {
   const editionYearSource = yearInfo.editionYearSource;
   const firstPublishedYear = yearInfo.firstPublishedYear;
   const firstPublishedYearSource = yearInfo.firstPublishedYearSource;
+  const firstPublishedYearPrecision = yearInfo.firstPublishedYearPrecision;
+  const firstPublishedYearKind = yearInfo.firstPublishedYearKind;
   const pages =
     details && details.pages != null && Number.isFinite(Number(details.pages)) && Number(details.pages) > 0
       ? Number(details.pages)
@@ -242,6 +244,8 @@ function workMetadata(workId, events, options = {}) {
     yearOverride: yearInfo.yearOverride,
     firstPublishedYear,
     firstPublishedYearSource,
+    firstPublishedYearPrecision,
+    firstPublishedYearKind,
     editionYear,
     editionYearSource,
     pages,
@@ -376,6 +380,8 @@ function mergeWorkGroup(list) {
     yearOverride: yearWork ? yearWork.yearOverride : null,
     firstPublishedYear: yearWork ? yearWork.firstPublishedYear : null,
     firstPublishedYearSource: yearWork ? yearWork.firstPublishedYearSource : null,
+    firstPublishedYearPrecision: yearWork ? yearWork.firstPublishedYearPrecision || null : null,
+    firstPublishedYearKind: yearWork ? yearWork.firstPublishedYearKind || null : null,
     editionYear: pick('editionYear'),
     editionYearSource: yearWork ? yearWork.editionYearSource || null : null,
     pages: pick('pages'),

@@ -21,17 +21,40 @@ const litres = require('./litres');
 const googlebooks = require('./googlebooks');
 const openlibrary = require('./openlibrary');
 const livelibCard = require('./livelib-card');
+const wikidata = require('./wikidata');
 const { detectManga } = require('./manga');
+const {
+  firstYearOf,
+  earliestFirstYear,
+  earliestFirstClaim,
+  claimOf,
+  saneFirstYearClaim,
+  mergedFirstClaim,
+  precisionOf,
+  kindOf,
+  PRECISIONS,
+  PRECISION_RANK,
+  KINDS,
+} = require('./claim');
 
 const REGISTRY = {
   hardcover,
   litres,
   googlebooks,
   openlibrary,
+  wikidata,
   'livelib-card': livelibCard,
 };
 
-const PRIORITY = ['hardcover', 'litres', 'googlebooks', 'openlibrary', 'livelib-card'];
+/**
+ * Provider order for *content* (title, authors, genres, cover).
+ *
+ * `wikidata` is last on purpose: it is a year-only source (no ISBN, no pages,
+ * no genres), so it must never become the primary result of a resolve. The
+ * resolve chain never calls it either — `resolve-stages/year-stage.js` and
+ * `years-backfill.js` ask it separately, batched, for the year claim only.
+ */
+const PRIORITY = ['hardcover', 'litres', 'googlebooks', 'openlibrary', 'wikidata', 'livelib-card'];
 
 function listProviders() {
   return PRIORITY.map((name) => REGISTRY[name]);
@@ -70,41 +93,7 @@ function firstValue(primary, extras, field) {
   return null;
 }
 
-/**
- * A work's first-publication year, as one provider claims it.
- *
- * The bounds mirror `stats.saneFirstYear`: a work may be ancient («Искусство
- * войны», V century BC), so negative and sub-1000 years are valid here, while a
- * zero/garbage value is not.
- */
-function firstYearOf(value) {
-  if (value == null || value === '') return null;
-  const year = Number(value);
-  if (!Number.isFinite(year)) return null;
-  const truncated = Math.trunc(year);
-  return truncated >= -3000 && truncated <= 2100 ? truncated : null;
-}
-
-/**
- * Earliest *claimed first publication* across the merged providers.
- *
- * Provider priority is right for content fields (Hardcover names the work), but
- * not for this one: the failure mode that matters is an edition year dressed as
- * a first-publication year (Литрес `publication_date` 2026, an OL work record
- * built from one 2013 translation). Such a claim is always *later* than the
- * truth, so the earliest sane claim wins and a modern mistake can never
- * outvote an older honest year.
- */
-function earliestFirstYear(entries) {
-  let best = null;
-  for (const entry of entries) {
-    const year = firstYearOf(entry && entry.firstPublishedYear);
-    if (year == null) continue;
-    if (best == null || year < best) best = year;
-  }
-  return best;
-}
-
+/** First-publication claim rules live in their own module (see `claim.js`). */
 function firstList(primary, extras, field) {
   if (primary && Array.isArray(primary[field]) && primary[field].length) return [...primary[field]];
   for (const extra of extras) {
@@ -155,16 +144,22 @@ function mergeResults(primary, extras = []) {
   // A clean primary plus a comics signal in an extra's subject list must not
   // stay `false`: re-run the detector over the merged corpus.
   const detectedManga = detectManga({ genres, texts: mangaTexts });
+  const year = firstValue(primary, others, 'year');
+  // Work-level first publication, not the edition in hand (see
+  // `earliestFirstClaim`): the year chart uses this and nothing else. The
+  // claim travels with its precision and kind so an ancient work can be
+  // rendered as a century instead of a fake exact year.
+  const firstClaim = mergedFirstClaim([primary, ...others], year);
   return {
     source: primary.source,
     sourceId: primary.sourceId == null ? null : String(primary.sourceId),
     workId: primary.workId || `${primary.source}:${primary.sourceId}`,
     title: firstValue(primary, others, 'title'),
     authors: firstList(primary, others, 'authors'),
-    year: firstValue(primary, others, 'year'),
-    // Work-level first publication, not the edition in hand (see
-    // `earliestFirstYear`): the year chart uses this and nothing else.
-    firstPublishedYear: earliestFirstYear([primary, ...others]),
+    year,
+    firstPublishedYear: firstClaim ? firstClaim.year : null,
+    firstPublishedYearPrecision: firstClaim ? firstClaim.precision : null,
+    firstPublishedYearKind: firstClaim ? firstClaim.kind : null,
     publisher: firstValue(primary, others, 'publisher'),
     series: firstValue(primary, others, 'series'),
     genres,
@@ -235,13 +230,19 @@ function resultToDetails(result, options = {}) {
         : null,
     // Work-level first publication (year chart), distinct from the edition
     // year above. Providers fill it when they know it (Hardcover work release,
-    // Open Library first_publish_year, Литрес date_written_at).
+    // Open Library first_publish_year, Литрес date_written_at, Wikidata P577/P571)
+    // together with the precision of that claim and the statement it comes
+    // from; an absent precision means an exact print year.
     firstPublishedYear:
       result.firstPublishedYear == null || result.firstPublishedYear === ''
         ? null
         : Number.isFinite(Number(result.firstPublishedYear))
         ? Number(result.firstPublishedYear)
         : null,
+    firstPublishedYearPrecision:
+      result.firstPublishedYear == null ? null : precisionOf(result.firstPublishedYearPrecision),
+    firstPublishedYearKind:
+      result.firstPublishedYear == null ? null : kindOf(result.firstPublishedYearKind),
     isbn13: result.isbn13 || null,
     isbn10: result.isbn10 || null,
     publisher: result.publisher || null,
@@ -292,4 +293,13 @@ module.exports = {
   resultToDetails,
   firstYearOf,
   earliestFirstYear,
+  earliestFirstClaim,
+  claimOf,
+  saneFirstYearClaim,
+  mergedFirstClaim,
+  precisionOf,
+  kindOf,
+  PRECISIONS,
+  KINDS,
+  PRECISION_RANK,
 };

@@ -41,6 +41,26 @@ function firstPublishedYearOf(details) {
   return saneFirstYear(details && details.firstPublishedYear);
 }
 
+// How exact a first-publication claim is (`century` for ancient reprints) and
+// whether it names the work's publication or its composition. Absent = the
+// plain defaults; anything outside the vocabulary is garbage, not a claim.
+const YEAR_PRECISIONS = new Set(['year', 'decade', 'century', 'millennium']);
+const YEAR_KINDS = new Set(['publication', 'composition']);
+
+function firstPublishedYearPrecisionOf(details) {
+  const value = details && details.firstPublishedYearPrecision;
+  if (value == null) return 'year';
+  const normalized = String(value).trim().toLowerCase();
+  return YEAR_PRECISIONS.has(normalized) ? normalized : null;
+}
+
+function firstPublishedYearKindOf(details) {
+  const value = details && details.firstPublishedYearKind;
+  if (value == null) return 'publication';
+  const normalized = String(value).trim().toLowerCase();
+  return YEAR_KINDS.has(normalized) ? normalized : null;
+}
+
 /**
  * The print run in hand — the «год издания» of the copy the reader actually
  * holds, i.e. the legacy year channel of the pre-ef593a8 chart.
@@ -100,6 +120,10 @@ function resolveWorkYear(details, displayEvent, fileMeta, override) {
   const manualYear = override ? saneManualYear(override.year) : null;
   const firstPublishedYearSource =
     details && details.firstPublishedYearSource ? String(details.firstPublishedYearSource) : null;
+  // The precision/kind describe the first-publication *claim*, so they travel
+  // only with a claim: `null` when the payload has no firstPublishedYear.
+  const firstPublishedYearPrecision = firstPublishedYear != null ? firstPublishedYearPrecisionOf(details) : null;
+  const firstPublishedYearKind = firstPublishedYear != null ? firstPublishedYearKindOf(details) : null;
   if (manualYear != null) {
     return {
       year: manualYear,
@@ -107,6 +131,8 @@ function resolveWorkYear(details, displayEvent, fileMeta, override) {
       yearOverride: manualYear,
       firstPublishedYear,
       firstPublishedYearSource,
+      firstPublishedYearPrecision,
+      firstPublishedYearKind,
       editionYear,
       editionYearSource,
     };
@@ -118,6 +144,8 @@ function resolveWorkYear(details, displayEvent, fileMeta, override) {
       yearOverride: null,
       firstPublishedYear,
       firstPublishedYearSource,
+      firstPublishedYearPrecision,
+      firstPublishedYearKind,
       editionYear,
       editionYearSource,
     };
@@ -129,6 +157,8 @@ function resolveWorkYear(details, displayEvent, fileMeta, override) {
       yearOverride: null,
       firstPublishedYear: null,
       firstPublishedYearSource,
+      firstPublishedYearPrecision: null,
+      firstPublishedYearKind: null,
       editionYear,
       editionYearSource,
     };
@@ -139,6 +169,8 @@ function resolveWorkYear(details, displayEvent, fileMeta, override) {
     yearOverride: null,
     firstPublishedYear: null,
     firstPublishedYearSource,
+    firstPublishedYearPrecision: null,
+    firstPublishedYearKind: null,
     editionYear: null,
     editionYearSource: null,
   };
@@ -184,6 +216,8 @@ function findYearOverride(overrides, keys) {
 module.exports = {
   saneFirstYear,
   firstPublishedYearOf,
+  firstPublishedYearPrecisionOf,
+  firstPublishedYearKindOf,
   editionYearOf,
   resolveWorkYear,
   yearOverrideKeysOf,
