@@ -10,6 +10,7 @@
 | Файл | Префикс (app.use) |
 | --- | --- |
 | `server/auth.js` | `/api/auth` |
+| `server/books/routes-manual.js` | `/api/books` |
 | `server/books/routes.js` | `/api/books` |
 | `server/films/routes.js` | `/api` |
 | `server/games/personnel/routes-personnel.js` | `/api/games` |
@@ -24,7 +25,7 @@
 
 | Method | Path | Строгий query (assertOnlyParams) | Ошибки (status:code) | Источник |
 | --- | --- | --- | --- | --- |
-| GET | `*` | — | — | `server/index.js:93` |
+| GET | `*` | — | — | `server/index.js:95` |
 | POST | `/api/attach/lbzip` | — | 400:file_required, 400:not_kinopoisk_import, 400:upload_id_required, 404:unknown_profile, 404:unknown_upload | `server/films/routes.js:209` |
 | POST | `/api/auth/login` | — | 401:wrong_password | `server/auth.js:130` |
 | POST | `/api/auth/logout` | — | — | `server/auth.js:149` |
@@ -83,7 +84,7 @@
 | GET | `/api/games/secondary-details/status` | `profile` | — | `server/games/endpoints/stats.js:25` |
 | GET | `/api/games/stats` | `includeDlc`, `includeFree`, `minHours`, `profile` | 400:profile_not_imported | `server/games/endpoints/stats.js:39` |
 | GET | `/api/games/steam-art/:type/:appid` | `h` | — | `server/games/endpoints/game.js:23` |
-| GET | `/api/health` | — | — | `server/index.js:74` |
+| GET | `/api/health` | — | — | `server/index.js:76` |
 | POST | `/api/import/kinopoisk` | — | 400:url_required | `server/films/routes.js:145` |
 | GET | `/api/import/kinopoisk/status` | — | 400:upload_id_required, 404:unknown_kinopoisk_import, 404:unknown_upload | `server/films/routes.js:162` |
 | POST | `/api/match` | — | 400:enrichment_not_finished, 400:invalid_kind, 400:invalid_tmdb_id, 400:slug_required, 400:upload_id_required, 404:not_unmatched, 404:unknown_film, 404:unknown_upload, 409:already_matched | `server/films/routes.js:413` |
@@ -96,7 +97,7 @@
 
 ### `GET *`
 
-- файл: `server/index.js:93`
+- файл: `server/index.js:95`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
@@ -517,7 +518,7 @@
 
 ### `GET /api/health`
 
-- файл: `server/index.js:74`
+- файл: `server/index.js:76`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 

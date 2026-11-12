@@ -131,7 +131,7 @@
 | `KINOBOXD_STEAM_KEY_FILE` | см. файл | `server/config.js:41` | Tests point this at a non-existent file so the local dev fallback (`config/steam-token`, present in the main tree) cannot change their result. |
 | `KINOBOXD_WDQS_ENDPOINT` | `https://query.wikidata.org/sparql (WDQS)` (server/books/authors-wikidata.js) | `server/books/authors-wikidata.js:36` | POST, not GET: a batch of 450 labels does not fit an URL (WDQS answers `414 URI Too Long` around ~8 KB). The endpoint accepts a form-encoded `query=` body for exactly this case. |
 | `MOBYGAMES_API_KEY` | env или файл `app/config/moby-token` (значение не эхоится) | `server/config.js` (`server/games/personnel/moby.js` (key_ENV_KEYS)) | const KEY_ENV_KEYS = ['MOBYGAMES_API_KEY', 'MOBY_API_KEY']; |
-| `PORT` | `3000` (server/index.js) | `server/index.js:42` | const PORT = Number(process.env.PORT) \|\| 3000; |
+| `PORT` | `3000` (server/index.js) | `server/index.js:43` | const PORT = Number(process.env.PORT) \|\| 3000; |
 | `REMATCH_CONCURRENCY` | `8` (server/rematch.js) | `server/rematch.js:38` | Math.min(16, Number(process.env.REMATCH_CONCURRENCY) \|\| 8) |
 | `REMATCH_DRY_RUN` | см. файл | `server/rematch.js:40` | const DRY_RUN = process.env.REMATCH_DRY_RUN === '1'; |
 | `SMOKE_TMP` | см. файл | `scripts/smoke-preload.js:21` | const outDir = process.env.SMOKE_TMP; |

@@ -9,6 +9,7 @@
  */
 
 const bookCache = require('../book-cache');
+const { getSeriesOverrides, findSeriesOverride } = require('../series-overrides');
 const { filterBlacklistedSeries } = require('../series-blacklist');
 const { surnameOf, strictTitleKey } = require('../normalize');
 const { detectManga } = require('../providers/manga');
@@ -180,7 +181,14 @@ function workMetadata(workId, events, options = {}) {
   // say, so a tag that the user's own export carries is still dropped — and it
   // runs before counting/manga detection, so neither sees the tag.
   const seriesFilter = filterBlacklistedSeries(mergedSeries);
-  const series = seriesFilter.list;
+  const seriesOverride = findSeriesOverride(getSeriesOverrides(), overrideKeys);
+  const series = seriesOverride
+    ? seriesOverride.series.map((entry) => ({
+        hcId: null,
+        name: entry.name,
+        position: entry.position == null ? null : entry.position,
+      }))
+    : seriesFilter.list;
   const coverUrl =
     (details && details.coverUrl) ||
     (displayEvent && displayEvent.coverUrl) ||
