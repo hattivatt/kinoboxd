@@ -32,7 +32,7 @@
 | `DEBUG_RETRY` | см. файл | `server/tmdb.js:129` | if (process.env.DEBUG_RETRY) { |
 | `EPIC_CLIENT_ID` | `process.env.GAMES_EPIC_CLIENT_ID` (server/games/epic.js) | `server/games/epic.js:145` | const envId = process.env.EPIC_CLIENT_ID \|\| process.env.GAMES_EPIC_CLIENT_ID; |
 | `EPIC_CLIENT_SECRET` | `process.env.GAMES_EPIC_CLIENT_SECRET` (server/games/epic.js) | `server/games/epic.js:146` | const envSecret = process.env.EPIC_CLIENT_SECRET \|\| process.env.GAMES_EPIC_CLIENT_SECRET; |
-| `GAMES_ACHIEVEMENTS_TTL_MS` | см. файл | `server/games/game-cache.js:191` | const raw = Number(process.env.GAMES_ACHIEVEMENTS_TTL_MS); |
+| `GAMES_ACHIEVEMENTS_TTL_MS` | см. файл | `server/games/game-cache.js:192` | const raw = Number(process.env.GAMES_ACHIEVEMENTS_TTL_MS); |
 | `GAMES_ART_TTL_MS` | ttlMs = 15552000000 ms (180 d) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | ttlEnv: 'GAMES_ART_TTL_MS', |
 | `GAMES_BASE_DETAILS_BUDGET` | `20 (DEFAULT_BASE_DETAILS_BUDGET)` (server/games/franchise.js) | `server/games/franchise.js:1280` | return budgetLimitFromEnv('GAMES_BASE_DETAILS_BUDGET', DEFAULT_BASE_DETAILS_BUDGET); |
 | `GAMES_BROWSE_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | breakerEnv: 'GAMES_BROWSE_BREAKER_MS', |
@@ -42,32 +42,32 @@
 | `GAMES_EPIC_ACCOUNT_HOST` | `account-public-service-prod03.ol.epicgames.com (ACCOUNT_HOST)` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:85` | const accountHost = options.accountHost \|\| process.env.GAMES_EPIC_ACCOUNT_HOST \|\| ACCOUNT_HOST; |
 | `GAMES_EPIC_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`epic`) | `server/core/sources.js` (epic) | breakerEnv: 'GAMES_EPIC_BREAKER_MS', |
 | `GAMES_EPIC_CATALOG_HOST` | `catalog-public-service-prod06.ol.epicgames.com (CATALOG_HOST)` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:100` | catalogHost: options.catalogHost \|\| process.env.GAMES_EPIC_CATALOG_HOST \|\| CATALOG_HOST, |
-| `GAMES_EPIC_CATALOG_TTL_MS` | `15552000000 ms (180 d) (CATALOG_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:521` | return envTtl('GAMES_EPIC_CATALOG_TTL_MS', CATALOG_TTL_MS); |
+| `GAMES_EPIC_CATALOG_TTL_MS` | `15552000000 ms (180 d) (CATALOG_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:522` | return envTtl('GAMES_EPIC_CATALOG_TTL_MS', CATALOG_TTL_MS); |
 | `GAMES_EPIC_CLIENT_ID` | см. файл | `server/games/epic.js:145` | const envId = process.env.EPIC_CLIENT_ID \|\| process.env.GAMES_EPIC_CLIENT_ID; |
 | `GAMES_EPIC_CLIENT_SECRET` | см. файл | `server/games/epic.js:146` | const envSecret = process.env.EPIC_CLIENT_SECRET \|\| process.env.GAMES_EPIC_CLIENT_SECRET; |
 | `GAMES_EPIC_COUNTRY` | `'US'` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:105` | country: options.country \|\| process.env.GAMES_EPIC_COUNTRY \|\| 'US', |
 | `GAMES_EPIC_ENTITLEMENT_HOST` | `entitlement-public-service-prod08.ol.epicgames.com (ENTITLEMENT_HOST)` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:102` | options.entitlementHost \|\| process.env.GAMES_EPIC_ENTITLEMENT_HOST \|\| ENTITLEMENT_HOST, |
 | `GAMES_EPIC_LIBRARY_HOST` | `library-service.live.use1a.on.epicgames.com (LIBRARY_HOST)` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:99` | libraryHost: options.libraryHost \|\| process.env.GAMES_EPIC_LIBRARY_HOST \|\| LIBRARY_HOST, |
-| `GAMES_EPIC_LIBRARY_TTL_MS` | `86400000 ms (1 d) (LIBRARY_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:513` | return envTtl('GAMES_EPIC_LIBRARY_TTL_MS', LIBRARY_TTL_MS); |
+| `GAMES_EPIC_LIBRARY_TTL_MS` | `86400000 ms (1 d) (LIBRARY_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:514` | return envTtl('GAMES_EPIC_LIBRARY_TTL_MS', LIBRARY_TTL_MS); |
 | `GAMES_EPIC_LOCALE` | `'en-US'` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:106` | locale: options.locale \|\| process.env.GAMES_EPIC_LOCALE \|\| 'en-US', |
 | `GAMES_EPIC_PAUSE_MS` | pauseMs = 300 ms (`epic`) | `server/core/sources.js` (epic) | pauseEnv: 'GAMES_EPIC_PAUSE_MS', |
-| `GAMES_EPIC_PLAYTIME_TTL_MS` | `86400000 ms (1 d) (PLAYTIME_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:517` | return envTtl('GAMES_EPIC_PLAYTIME_TTL_MS', PLAYTIME_TTL_MS); |
-| `GAMES_EPIC_PRODUCTMAPPING_TTL_MS` | `604800000 ms (7 d) (PRODUCT_MAPPING_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:525` | return envTtl('GAMES_EPIC_PRODUCTMAPPING_TTL_MS', PRODUCT_MAPPING_TTL_MS); |
+| `GAMES_EPIC_PLAYTIME_TTL_MS` | `86400000 ms (1 d) (PLAYTIME_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:518` | return envTtl('GAMES_EPIC_PLAYTIME_TTL_MS', PLAYTIME_TTL_MS); |
+| `GAMES_EPIC_PRODUCTMAPPING_TTL_MS` | `604800000 ms (7 d) (PRODUCT_MAPPING_TTL_MS)` (server/games/epic-cache.js) | `server/games/epic-cache.js:526` | return envTtl('GAMES_EPIC_PRODUCTMAPPING_TTL_MS', PRODUCT_MAPPING_TTL_MS); |
 | `GAMES_EPIC_STORE_CONTENT_HOST` | `store-content.ak.epicgames.com (STORE_CONTENT_HOST)` (server/games/sources/epic-requests.js) | `server/games/sources/epic-requests.js:104` | options.storeContentHost \|\| process.env.GAMES_EPIC_STORE_CONTENT_HOST \|\| STORE_CONTENT_HOST, |
 | `GAMES_EPIC_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`epic`) | `server/core/sources.js` (epic) | timeoutEnv: 'GAMES_EPIC_TIMEOUT_MS', |
 | `GAMES_FRANCHISE_BUDGET` | budget = 450 (0 = off) (`wikidataFranchise`) | `server/core/sources.js` (wikidataFranchise) | budgetEnv: 'GAMES_FRANCHISE_BUDGET', |
 | `GAMES_FRANCHISE_TTL_DAYS` | ttlMs = 7776000000 ms (90 d) (env in days) (`wikidataFranchise`) | `server/core/sources.js` (wikidataFranchise) | ttlEnv: 'GAMES_FRANCHISE_TTL_DAYS', |
-| `GAMES_GLOBAL_TTL_MS` | см. файл | `server/games/game-cache.js:196` | const raw = Number(process.env.GAMES_GLOBAL_TTL_MS); |
+| `GAMES_GLOBAL_TTL_MS` | см. файл | `server/games/game-cache.js:197` | const raw = Number(process.env.GAMES_GLOBAL_TTL_MS); |
 | `GAMES_GOG_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`gog`) | `server/core/sources.js` (gog) | breakerEnv: 'GAMES_GOG_BREAKER_MS', |
 | `GAMES_GOG_BUDGET` | budget = 200 (0 = off) (`gog`) | `server/core/sources.js` (gog) | budgetEnv: 'GAMES_GOG_BUDGET', |
 | `GAMES_GOG_LIBRARY_PAUSE_MS` | pauseMs = 400 ms (`gog`) | `server/core/sources.js` (gog) | pauseEnv: 'GAMES_GOG_LIBRARY_PAUSE_MS', |
 | `GAMES_GOG_LIBRARY_TTL_MS` | `86400000 ms (1 d) (LIBRARY_TTL_MS)` (server/games/gog-cache.js) | `server/games/gog-cache.js:125` | return envMs('GAMES_GOG_LIBRARY_TTL_MS', LIBRARY_TTL_MS); |
 | `GAMES_GOG_PLAYTIME_PAUSE_MS` | playtimePauseMs = 500 ms (`gog`) | `server/core/sources.js` (gog) | playtimePauseEnv: 'GAMES_GOG_PLAYTIME_PAUSE_MS', |
 | `GAMES_GOG_PLAYTIME_TTL_MS` | `86400000 ms (1 d) (PLAYTIME_TTL_MS)` (server/games/gog-cache.js) | `server/games/gog-cache.js:129` | return envMs('GAMES_GOG_PLAYTIME_TTL_MS', PLAYTIME_TTL_MS); |
-| `GAMES_GOG_RECHECK_ZERO_MS` | см. файл | `server/games/gog-import-stages/playtime-stage.js:16` | const raw = Number(process.env.GAMES_GOG_RECHECK_ZERO_MS); |
+| `GAMES_GOG_RECHECK_ZERO_MS` | см. файл | `server/games/gog-import-stages/playtime-stage.js:17` | const raw = Number(process.env.GAMES_GOG_RECHECK_ZERO_MS); |
 | `GAMES_GOG_REFRESH_MARGIN_MS` | `300000 ms (5 min) (DEFAULT_REFRESH_MARGIN_MS)` (server/games/gog-cache.js) | `server/games/gog-cache.js:141` | return envMs('GAMES_GOG_REFRESH_MARGIN_MS', DEFAULT_REFRESH_MARGIN_MS); |
 | `GAMES_GOG_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`gog`) | `server/core/sources.js` (gog) | timeoutEnv: 'GAMES_GOG_TIMEOUT_MS', |
-| `GAMES_LIBRARY_TTL_MS` | см. файл | `server/games/game-cache.js:186` | const raw = Number(process.env.GAMES_LIBRARY_TTL_MS); |
+| `GAMES_LIBRARY_TTL_MS` | см. файл | `server/games/game-cache.js:187` | const raw = Number(process.env.GAMES_LIBRARY_TTL_MS); |
 | `GAMES_MOBY_BUDGET` | budget = 100 (0 = off) (`moby`) | `server/core/sources.js` (moby) | budgetEnv: 'GAMES_MOBY_BUDGET', |
 | `GAMES_MOBY_PAUSE_MS` | pauseMs = 1100 ms (`moby`) | `server/core/sources.js` (moby) | pauseEnv: 'GAMES_MOBY_PAUSE_MS', |
 | `GAMES_PERSONNEL_LOCK_WAIT_MS` | см. файл | `server/games/personnel/backfill.js:82` | const raw = Number(process.env.GAMES_PERSONNEL_LOCK_WAIT_MS); |

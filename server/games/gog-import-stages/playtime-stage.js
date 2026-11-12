@@ -2,6 +2,7 @@
 
 const gogCache = require('../gog-cache');
 const gog = require('../gog');
+const { round1 } = require('../../core/stats');
 
 /** How many raw `sessions` answers one run keeps in `cache-games/debug/gog/`. */
 const DEBUG_DUMP_LIMIT = 3;
@@ -160,7 +161,7 @@ async function runPlaytimeStage(job, { tokenApi, tokenDoc, userKey, library, pro
         sample.push({
           name: product.title || null,
           gogGameId: String(product.gogGameId),
-          hours: session.minutes == null ? null : Math.round((session.minutes / 60) * 10) / 10,
+          hours: session.minutes == null ? null : round1(session.minutes / 60),
           status: session.status,
         });
       }

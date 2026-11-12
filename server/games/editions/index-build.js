@@ -18,6 +18,7 @@ const {
   primaryOf,
   componentKey,
 } = require('./match');
+const { round1 } = require('../../core/stats');
 
 const ALGORITHM_VERSION = 2;
 
@@ -179,7 +180,7 @@ function buildEditionIndex(input = {}) {
       return {
         appid,
         name: node.name || null,
-        hours: Math.round(((Number(game.playtime_forever) || 0) / 60) * 10) / 10,
+        hours: round1((Number(game.playtime_forever) || 0) / 60),
         isPrimary: appid === primaryAppid,
       };
     });

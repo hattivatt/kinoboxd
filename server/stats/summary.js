@@ -10,6 +10,7 @@
  */
 
 const { round2 } = require('./numeric');
+const { round1 } = require('../core/stats');
 
 function buildAuteurIndex(persons, matchedFilmCount) {
   // Auteur index: unique credited directors among the matched films. The
@@ -28,7 +29,7 @@ function buildAuteurIndex(persons, matchedFilmCount) {
     films: matchedFilmCount,
     ratio: filmsPerDirector != null ? round2(filmsPerDirector) : null,
     avgFilmsPerDirector: filmsPerDirector != null
-      ? Math.round(filmsPerDirector * 10) / 10
+      ? round1(filmsPerDirector)
       : null,
     topAuteur: topDirector ? { name: topDirector.name, count: topDirector.counted } : null,
   };

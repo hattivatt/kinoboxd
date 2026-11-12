@@ -13,6 +13,7 @@
 const { URL } = require('url');
 
 const sources = require('../../core/sources');
+const { round1 } = require('../../core/stats');
 
 const VERIFY_URI = 'https://www.epicgames.com/id/activate';
 
@@ -337,7 +338,7 @@ function secondsToMinutes(seconds) {
 }
 
 function secondsToHours(seconds) {
-  return Math.round(((Number(seconds) || 0) / 3600) * 10) / 10;
+  return round1((Number(seconds) || 0) / 3600);
 }
 
 function normalizePlaytimeItem(raw) {

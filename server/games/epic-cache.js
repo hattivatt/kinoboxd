@@ -29,6 +29,7 @@ const path = require('path');
 
 const gameCache = require('./game-cache');
 const { envTtl } = require('../core/env');
+const { round1 } = require('../core/stats');
 
 const CACHE_DIR = gameCache.GAMES_CACHE_DIR;
 const PROFILES_DIR = path.join(CACHE_DIR, 'profiles');
@@ -140,7 +141,7 @@ function listEpicProfiles() {
       gameCount: library ? library.gameCount : null,
       totalHours:
         library && Number.isFinite(Number(library.totalMinutes))
-          ? Math.round((Number(library.totalMinutes) / 60) * 10) / 10
+          ? round1(Number(library.totalMinutes) / 60)
           : null,
       libraryFetchedAt: library ? library.fetchedAt || null : null,
       fingerprint: hit.fingerprint,

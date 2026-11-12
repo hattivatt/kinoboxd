@@ -105,6 +105,7 @@ for (const dir of [
 // One implementation for every domain: `server/core/fs-store.js`. The local
 // names stay because the rest of this module (and its tests) calls them.
 const fsStore = require('../core/fs-store');
+const { round1 } = require('../core/stats');
 
 const fingerprintOf = fsStore.fingerprintOf;
 const safeKey = fsStore.safeKey;
@@ -280,7 +281,7 @@ function listProfiles() {
       gameCount: library ? library.game_count : null,
       totalHours:
         library && Number.isFinite(Number(library.totalMinutes))
-          ? Math.round((Number(library.totalMinutes) / 60) * 10) / 10
+          ? round1(Number(library.totalMinutes) / 60)
           : null,
       fingerprint: hit.fingerprint,
     });
