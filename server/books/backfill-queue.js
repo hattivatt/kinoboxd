@@ -37,7 +37,8 @@ function matchesId(ids, entry) {
 
 function selectCandidates(docs, options = {}) {
   const { ids, force, needsYear, needsSeries, checked, covers } = options;
-  const candidates = [];
+  const yearFirst = [];
+  const seriesOnly = [];
   let skippedChecked = 0;
   for (const { key, doc } of docs) {
     const workId = workIdOf(doc);
@@ -49,9 +50,10 @@ function selectCandidates(docs, options = {}) {
       skippedChecked++;
       continue;
     }
-    candidates.push(entry);
+    if (needsYear(doc)) yearFirst.push(entry);
+    else seriesOnly.push(entry);
   }
-  return { candidates, skippedChecked };
+  return { candidates: yearFirst.concat(seriesOnly), skippedChecked };
 }
 
 function countPending(docs, options = {}) {
