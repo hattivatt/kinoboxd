@@ -18,6 +18,7 @@
     "backfill:authors": "node server/books/authors-backfill.js",
     "gen:contracts": "node scripts/gen-contracts.js",
     "census": "node scripts/census.js",
+    "quality:books": "node scripts/books-quality.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {
