@@ -234,6 +234,15 @@ Letterboxd — не отдельный профиль: он обогащает �
 
 Полный список имён и алиасов — `contracts/env.md` (генерируется из `process.env`-обращений, таблицы `sources.js` и массивов алиасов).
 
+**Хост `thevalley` (текущая dev-машина).** Источник истины здесь — `gopass` (`~/.password-store`, gpg): API-ключи лежат в `apikeys/`, имя описывает токен: `apikeys/<service>-api-key`. Фактически в store сейчас: `apikeys/hardcover-api-key`, `apikeys/steam-api-key`; Google Books исторически в `apitokens/gbooks-api-key`, а TMDB — легаси-запись `Services/tmdb`. Новых путей не выдумывать: посмотреть `gopass ls --flat` и брать по имени. Значение попадает только в env, не в argv и не в файл (dev-файл `config/*-token` остаётся лишь фоллбеком):
+
+```sh
+TMDB_API_TOKEN="$(gopass show -o Services/tmdb)" npm start
+GB_API_KEY="$(gopass show -o apitokens/gbooks-api-key)" npm start
+```
+
+При смене хоста правило то же, но путь спрашивать у владельца: имя store'а не считается известным по умолчанию.
+
 ---
 
 ## 9. Фронтенд
@@ -401,6 +410,7 @@ merge → npm test → nix flake check → smoke → nix-build → chore(release
 - **Никогда** не эхоить значение токена в отчёт, лог, коммит, скриншот или фикстуру: только маска (`hc_pat_***`, `eyJ***`, `AIzaSy***`, `***`) и источник (`env`/`file`).
 - Токен не должен попадать в argv, `.drv`, `result`, `ps`.
 - Тесты не мутируют боевые `cache*` и state: копия в `/tmp/opencode/...` через `KINOBOXD_CACHE_*` + `KINOBOXD_STATE_DIR`. Перед прогоном `echo $KINOBOXD_CACHE_DIR` должен указывать в `/tmp`.
+- На `thevalley` секреты берутся из `gopass` (`apikeys/<service>-api-key`, легаси-записи в `apitokens/` и `Services/`) и только в env (`TMDB_API_TOKEN="$(gopass show -o …)"`). `gopass` — единственное исключение из «ничего вне sandbox»: читать значение можно, но оно не должно попасть ни в вывод, ни в файл, ни в коммит; в отчёте — только имя записи и маска.
 - `cache/`, `result`, `result-*`, token-файлы **никогда** не коммитятся.
 
 ### 13.5. Git-гигиена
