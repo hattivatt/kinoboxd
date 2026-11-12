@@ -31,8 +31,8 @@
   source ? fetchFromGitHub {
     owner = "hattivatt";
     repo = "kinoboxd";
-    rev = "2416813408ff9e25df829cb8a2765849fa29dd99";
-    hash = "sha256-UWtj0qTf3AcJKNzMck6R1WwTxvBtS9Tntw0L7MWqLJI=";
+    rev = "7b5597d4b547b971bd767d692e50792d5d738d00";
+    hash = "sha256-IxYV5Bfv8YxtnIHf2FJkLMYfaadpUIYEDZtBCiT9vcE=";
   },
 }:
 
