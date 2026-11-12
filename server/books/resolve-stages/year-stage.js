@@ -63,6 +63,7 @@ function yearTargets(ctx) {
 function acceptedClaim(current, result) {
   const claim = claimOf(result);
   if (!claim) return null;
+  if (current && !(result.match && result.match.authorHit === true)) return null;
   const sane = saneFirstYearClaim(
     { ...claim, source: result.source || 'wikidata' },
     { authorBirthYear: result.authorBirthYear }

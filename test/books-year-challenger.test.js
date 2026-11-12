@@ -86,6 +86,7 @@ function yearProvider(claims) {
           firstPublishedYearPrecision: claim.precision || 'year',
           firstPublishedYearKind: claim.kind || 'publication',
           authorBirthYear: claim.authorBirthYear == null ? null : claim.authorBirthYear,
+          match: claim.match || { method: 'title', exact: true, authorHit: true },
         });
       }
       return { byKey, asked, skipped: null, queries: 1 };
@@ -286,6 +287,53 @@ describe('books-year-challenger', () => {
       assert.equal(ctx.report.yearChallenged, 1);
       assert.equal(ctx.report.yearCorrected, 0);
       assert.equal(ctx.report.yearClaims, 0);
+    });
+
+    test('a challenge without author confirmation is rejected', async () => {
+      await seed('hc:9906', {
+        title: 'Цыганка',
+        authors: [{ name: 'Агата Кристи' }],
+        publicationYear: 2022,
+        firstPublishedYear: 2022,
+        firstPublishedYearSource: 'hardcover',
+        firstPublishedYearPrecision: 'year',
+      });
+      const provider = yearProvider({
+        'hc:9906': { year: 1850, match: { method: 'title', exact: true, authorHit: false } },
+      });
+      const ctx = ctxFor(
+        planOf('hc:9906', { sourceBookId: '906', title: 'Цыганка', authors: ['Агата Кристи'] }),
+        provider
+      );
+
+      await patchYearClaims(ctx);
+
+      const saved = bookCache.getWorkDetails('hc:9906');
+      assert.equal(saved.firstPublishedYear, 2022);
+      assert.equal(saved.firstPublishedYearSource, 'hardcover');
+      assert.equal(saved.firstPublishedYearChallengedBy, undefined);
+      assert.equal(ctx.report.yearCorrected, 0);
+    });
+
+    test('an unconfirmed claim may still fill an empty year', async () => {
+      await seed('hc:9907', {
+        title: 'Цыганка',
+        authors: [{ name: 'Агата Кристи' }],
+        publicationYear: 2022,
+      });
+      const provider = yearProvider({
+        'hc:9907': { year: 1850, match: { method: 'title', exact: true, authorHit: false } },
+      });
+      const ctx = ctxFor(
+        planOf('hc:9907', { sourceBookId: '907', title: 'Цыганка', authors: ['Агата Кристи'] }),
+        provider
+      );
+
+      await patchYearClaims(ctx);
+
+      const saved = bookCache.getWorkDetails('hc:9907');
+      assert.equal(saved.firstPublishedYear, 1850);
+      assert.equal(saved.firstPublishedYearSource, 'wikidata');
     });
 
     test('a wikidata claim is never re-asked', async () => {

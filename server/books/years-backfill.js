@@ -277,8 +277,11 @@ async function firstYearForDoc(doc, options = {}) {
   const workId = options.workId || null;
   const asked = options.yearClaimsAsked instanceof Set ? options.yearClaimsAsked : null;
   const prefetched = options.yearClaims instanceof Map && workId ? options.yearClaims.get(workId) : null;
-  if (prefetched) push(prefetched, 'wikidata');
-  else if (asked && workId && !asked.has(workId)) {
+  if (prefetched) {
+    const confirmed =
+      !stored || (prefetched.match && prefetched.match.authorHit === true);
+    if (confirmed) push(prefetched, 'wikidata');
+  } else if (asked && workId && !asked.has(workId)) {
     if (options.yearClaimsSkipped === 'breaker') incomplete.push('wikidata-breaker');
     else if (options.yearClaimsSkipped === 'budget') incomplete.push('wikidata-budget');
     else if (options.yearClaimsError) incomplete.push('wikidata-error');
