@@ -22,7 +22,7 @@
  */
 
 const { getJob } = require('./enrich');
-const { buildTaxonomy } = require('./taxonomy');
+const { buildTaxonomy, readBlacklist } = require('./taxonomy');
 const { buildContext } = require('./stats/context');
 const { buildSummary } = require('./stats/summary');
 const {
@@ -66,7 +66,9 @@ function buildStats(upload, jobOverride = null) {
 
   // Keyword taxonomy over matched films. Categories include only non-empty
   // buckets; origins are mutually exclusive and always sum to taxEntries.
-  const taxonomy = buildTaxonomy(ctx.taxEntries);
+  // The per-film blacklist (cache/flags/taxonomy-blacklist.json) is read once
+  // per build and only removes a category/period from the listed slug.
+  const taxonomy = buildTaxonomy(ctx.taxEntries, { blacklist: readBlacklist() });
 
   // One flat list for the dashboard: TMDB genres (hidden ones filtered out,
   // Music already adjusted for the "musical" keyword) plus keyword-derived

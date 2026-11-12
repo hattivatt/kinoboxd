@@ -32,7 +32,6 @@ const MODULE_ALLOWLIST = {
   'server/games/steam.js': 876,
   'server/books/routes.js': 844,
   'server/games/editions.js': 841,
-  'server/taxonomy.js': 827,
 };
 
 const FUNCTION_ALLOWLIST = {};
