@@ -31,7 +31,6 @@ const MODULE_ALLOWLIST = {
   'server/games/steam.js': 876,
   'server/books/routes.js': 844,
 };
-};
 
 const FUNCTION_ALLOWLIST = {};
 
