@@ -10,8 +10,6 @@ const { jobs, lastKick } = require('./details-state');
 const { budgetDefault, pauseMsFor } = require('./details-config');
 const { runPhase, titleCandidatesFor } = require('./details-run');
 
-let jobSeq = 0;
-
 function emptyPhase() {
   return {
     total: 0,
@@ -51,12 +49,17 @@ function publicJob(job) {
 
 /** Running job for an owner (for `meta.secondaryDetails.running`). */
 function runningFor(ownerKey) {
-  const job = jobs.get(String(ownerKey == null ? '' : ownerKey));
-  return Boolean(job && job.status === 'running');
+  return jobs.isRunning(String(ownerKey == null ? '' : ownerKey));
 }
 
+/** Latest remembered job of an owner (running, finished or failed). */
 function jobFor(ownerKey) {
-  return publicJob(jobs.get(String(ownerKey == null ? '' : ownerKey)));
+  const key = String(ownerKey == null ? '' : ownerKey);
+  let latest = null;
+  for (const job of jobs.list()) {
+    if (job.ownerKey === key) latest = job;
+  }
+  return publicJob(latest);
 }
 
 /**
@@ -70,8 +73,8 @@ function startSecondaryDetails(options = {}) {
   if (!ownerKey) {
     throw new SecondaryDetailsError('Нужен ownerKey.', 'secondary_details_no_owner');
   }
-  const existing = jobs.get(ownerKey);
-  if (existing && existing.status === 'running' && !options.force) {
+  const existing = jobs.findRunning(ownerKey);
+  if (existing && !options.force) {
     return { ...publicJob(existing), reused: true };
   }
   const budget =
@@ -82,8 +85,8 @@ function startSecondaryDetails(options = {}) {
   // reused across catalog refetches instead of fetched per product.
   const epicClient =
     options.epicClient || options.catalogClient || (epic.length ? createCatalogClient(options) : null);
-  const job = {
-    id: `secondary-details-${++jobSeq}`,
+  const job = jobs.createJob({
+    seed: ownerKey,
     ownerKey,
     status: 'running',
     stage: gog.length ? 'gog' : 'epic',
@@ -104,12 +107,12 @@ function startSecondaryDetails(options = {}) {
     epic: emptyPhase(),
     warnings: [],
     cancelled: false,
-  };
+  });
   // Counters are visible in the immediate response, before the first await.
   job.gog.total = gog.filter((entry) => entry && entry.id).length;
   job.epic.total = epic.filter((entry) => entry && (entry.slug || entry.title)).length;
   job.epic.missingSlug = epic.filter((entry) => entry && !entry.slug).length;
-  jobs.set(ownerKey, job);
+  jobs.remember(job);
   lastKick.set(ownerKey, nowMs());
 
   const run = async () => {
@@ -181,7 +184,7 @@ function startSecondaryDetails(options = {}) {
       recordRunFinished(job);
     }
   };
-  Promise.resolve().then(run);
+  jobs.run(job, run, { chainKey: ownerKey });
   return publicJob(job);
 }
 

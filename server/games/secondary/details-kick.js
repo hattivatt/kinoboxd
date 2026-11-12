@@ -13,8 +13,8 @@ const { targetsForOwner } = require('./details-targets');
 function kickGate(ownerKey, options = {}) {
   const key = String(ownerKey == null ? '' : ownerKey);
   if (!key) return 'no_owner';
-  const job = jobs.get(key);
-  if (job && job.status === 'running') return 'running';
+  const job = jobs.isRunning(key);
+  if (job) return 'running';
   if (options.forceKick) return null;
   const last = lastKickAtFor(key);
   const cooldown =

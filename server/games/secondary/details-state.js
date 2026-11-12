@@ -2,9 +2,21 @@
 
 const fs = require('fs');
 
+const { createJobs } = require('../../core/jobs');
 const { STATUS_PATH, readStatusState } = require('./store');
 
-const jobs = new Map();
+// One registry for the secondary-details job (core/jobs): single-flight per
+// owner, 50-job ring. The ring is not the per-owner map this module used to
+// keep — `jobFor()` reads the latest remembered job for an owner, so the public
+// shape is unchanged, while the job lifecycle (status, single-flight, finalize)
+// lives in core/jobs like every other long-running process of the service.
+const jobs = createJobs({
+  name: 'games-secondary-details',
+  idPrefix: 'secondary-details',
+  maxJobs: 50,
+  keyOf: (job) => job.ownerKey,
+});
+
 const lastKick = new Map();
 // `ownerKey → {at, pending}` — a *negative* coverage verdict, memoized because
 // `/stats` is polled (see `kickFromStats`).
@@ -30,6 +42,7 @@ function lastKickAtFor(ownerKey) {
 /** Test helper: forget job/cooldown state between cases. */
 function resetJobs() {
   jobs.clear();
+  jobs.resetCooldown();
   lastKick.clear();
   coverageMemo.clear();
   try {

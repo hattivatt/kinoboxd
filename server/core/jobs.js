@@ -21,6 +21,7 @@
  *   jobs.remember(job)             -> ring retention (oldest evicted)
  *   jobs.get(id)                   -> job | undefined
  *   jobs.list() / jobs.values()    -> jobs in insertion order
+ *   jobs.clear()                   -> forget every remembered job
  *   jobs.findRunning(key, pred?)   -> live job for `key` | null
  *   jobs.isRunning(key, pred?)     -> boolean
  *   jobs.start(key, task, opts)    -> single-flight create + remember + run
@@ -107,6 +108,7 @@ function createJobs(options = {}) {
     get: ctx.get,
     list: ctx.list,
     values: ctx.list,
+    clear: ctx.clear,
     findRunning: ctx.findRunning,
     isRunning: ctx.isRunning,
     start: ctx.start,

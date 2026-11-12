@@ -39,7 +39,13 @@ function createRegistry(ctx) {
     return [...byId.values()];
   }
 
-  return { newId, remember, get, list };
+  /** Forget every remembered job (test isolation; process state only). */
+  function clear() {
+    byId.clear();
+    order.length = 0;
+  }
+
+  return { newId, remember, get, list, clear };
 }
 
 module.exports = { createRegistry };
