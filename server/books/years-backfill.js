@@ -1,53 +1,5 @@
 'use strict';
 
-/**
- * First-publication-year backfill for existing details documents.
- *
- * Why this exists: the year chart reads `details.firstPublishedYear` and
- * nothing else (stats.js `firstPublishedYearOf`). A cache built before that
- * field existed — or before a provider was asked — has `publicationYear` (the
- * print run in hand) but no first-publication claim, so every classic falls
- * into «год неизвестен». `resolveProfile` cannot fix that on its own: it skips
- * a LiveLib book that already has a cached link, so the document is never
- * re-fetched.
- *
- * This job re-asks only for the missing year:
- *   - candidates: details docs with no `firstPublishedYear` (or `--force`);
- *   - providers: Hardcover (ISBN only, book-level `release_year`) →
- *     Литрес (Cyrillic titles, «дата написания») → Open Library (ISBN edition
- *     → work `first_publish_year`, then title search);
- *   - the earliest claim wins (`providers.earliestFirstYear`) — the same rule
- *     the import merge uses, so a later print run can never outvote an older
- *     honest year;
- *   - only `firstPublishedYear` + `firstPublishedYearSource` are written; the
- *     rest of the document (genres, series, cover, links) is untouched;
- *   - the LiveLib card never enters this path: no scraping, no cookies.
- *
- * Budgets (AGENTS.md): Литрес ≤ `BOOKS_LITRES_BUDGET` books/run (default 200,
- * 2 requests and a 2 s pause per book), Hardcover ≤ 55 req/min via the shared
- * gate, Open Library with the provider's 250 ms delay. Run it in slices:
- *
- *   BOOKS_LITRES_BUDGET=40 node server/books/years-backfill.js --limit 20 --dry-run
- *   BOOKS_LITRES_BUDGET=40 node server/books/years-backfill.js --limit 20
- *   node server/books/years-backfill.js --ids lr:73939817,ol:OL37431263W
- *
- * Negative cache: a document nobody could answer for is marked with
- * `firstPublishedYearCheckedAt` (+ `firstPublishedYearCheckedBy`), and the next
- * run inside `DEFAULT_RECHECK_DAYS` skips it without a single request. Without
- * that marker a re-run would re-ask Hardcover/Литрес/OL for every hopeless book
- * forever — the same "repeat the run" idempotency the film backfills have.
- * `--force` (or `--ids`, an explicit request) bypasses the marker.
- *
- * The marker means «every provider was asked and answered nothing», never
- * «this run ran out of budget». An exhausted Литрес budget (`BOOKS_LITRES_BUDGET`
- * is per-run) or a provider network error leaves the document *unchecked*, so
- * the next scheduled run asks it again. The first version of this job did not
- * distinguish the two: with `BOOKS_LITRES_BUDGET=40` and `--limit 200`, one run
- * poisoned the remaining ~160 Cyrillic documents for 30 days and the queue
- * could never converge (user report, 29.10.2026). `report.deferred` lists those
- * documents and why they were left alone.
- */
-
 const path = require('path');
 
 const bookCache = require('./book-cache');
@@ -62,6 +14,7 @@ const { usedOf, budgetRefused } = require('../core/budget');
 const fsStore = require('../core/fs-store');
 const sources = require('../core/sources');
 const wikidata = require('./providers/wikidata');
+const { storedFirstClaim, isPrintClaimSource } = require('./providers/claim');
 
 const DEFAULT_LIMIT = 20;
 const DEFAULT_PAUSE_MS = sources.pauseMs('litres'); // Литрес politeness (AGENTS.md)
@@ -86,6 +39,28 @@ function recentlyChecked(doc, now, recheckDays) {
   const days = Number(recheckDays);
   const window = Number.isFinite(days) && days >= 0 ? days : DEFAULT_RECHECK_DAYS;
   return now - ts < window * 24 * 60 * 60 * 1000;
+}
+
+/** The stored claim of a document when it is a print-run year worth challenging. */
+function storedPrintClaim(doc) {
+  const claim = storedFirstClaim(doc);
+  if (!claim || !isPrintClaimSource(claim.source)) return null;
+  if (String((doc && doc.yearSource) || '') === 'manual') return null;
+  return claim;
+}
+
+function needsYearQuestion(doc) {
+  return storedFirstClaim(doc) == null || storedPrintClaim(doc) != null;
+}
+
+function earlierClaim(stored, found) {
+  if (!stored) return Boolean(found);
+  if (!found) return false;
+  if (found.year < stored.year) return true;
+  if (found.year > stored.year) return false;
+  const rankNew = providers.PRECISION_RANK[found.precision] || 0;
+  const rankStored = providers.PRECISION_RANK[stored.precision] || 0;
+  return rankNew > rankStored;
 }
 
 /**
@@ -207,22 +182,15 @@ function workIdOf(doc) {
   return doc.workId || (doc.hcWorkId != null ? `hc:${doc.hcWorkId}` : null);
 }
 
-/**
- * Ask the chain for one work's first publication.
- *
- * Returns `{year, source, candidates, incomplete}`:
- *   - `year` is null when no provider returned a claim;
- *   - `incomplete` lists the reasons the answer cannot be treated as final
- *     (`litres-budget`, `litres-breaker`, `litres-error`, `hardcover-error`,
- *     `openlibrary-error`). A null year with a non-empty `incomplete` is «not
- *     answered yet», so the caller must not write the negative cache.
- */
 async function firstYearForDoc(doc, options = {}) {
   const sleep = options.sleep || defaultSleep;
   const pause = options.pause == null ? DEFAULT_PAUSE_MS : Number(options.pause);
   const lookupIsbns = options.lookupIsbns;
   const budget = options.budget || null;
-  const authors = authorsOf(doc);
+  const hinted = Array.isArray(options.authors)
+    ? options.authors.filter((name) => name && String(name).trim())
+    : [];
+  const authors = hinted.length ? hinted : authorsOf(doc);
   const isbn13 = doc.isbn13 || null;
   const isbn10 = doc.isbn10 || null;
   const title = doc.title || null;
@@ -233,9 +201,6 @@ async function firstYearForDoc(doc, options = {}) {
 
   const candidates = [];
   const incomplete = [];
-  // Every claim passes the plausibility gate before it can enter the race: an
-  // edition year dressed as a first publication is a rejected claim, not an
-  // answer, and a claim older than the author cannot be true.
   const push = (result, label) => {
     if (!result) return;
     const claim = providers.claimOf({ ...result, source: label || result.source });
@@ -248,16 +213,22 @@ async function firstYearForDoc(doc, options = {}) {
     candidates.push({ ...sane, source: label || result.source, workId: result.workId || null });
   };
 
+  const stored = storedFirstClaim(doc);
+  if (stored && isPrintClaimSource(stored.source)) {
+    push(
+      {
+        firstPublishedYear: stored.year,
+        firstPublishedYearPrecision: stored.precision,
+        firstPublishedYearKind: stored.kind,
+      },
+      stored.source
+    );
+  }
+
   const input = { isbn13, isbn10, title, authors };
 
-  // 1. Hardcover knows the work by ISBN (`book.release_year`).
-  // `requireWorkClaim` keeps the product rule strict: an edition year is not a
-  // first-publication claim, so a legacy document that only has one contributes
-  // nothing here (the other providers still get their turn).
   if (isbn13 || isbn10) {
     if (options.hardcoverUnavailable === true) {
-      // The slice's batched lookup failed before any book was asked: every
-      // ISBN document is «not answered», never «nobody knows».
       incomplete.push('hardcover-error');
     } else {
       try {
@@ -271,20 +242,15 @@ async function firstYearForDoc(doc, options = {}) {
           'hardcover'
         );
       } catch (err) {
-        // ISBN lookups degrade quietly: the other providers still run, but a
-        // failed request is not an answer, so the night's verdict is not final.
         incomplete.push('hardcover-error');
       }
     }
   }
 
-  // 2. Литрес is the RU metadata source («дата написания»).
   if (title && CYRILLIC_TITLE.test(title)) {
     const breakerOpen =
       typeof litresProvider.isBreakerOpen === 'function' && litresProvider.isBreakerOpen();
     if (breakerOpen) {
-      // Asking again would be a wasted request (the breaker is a 30 min global
-      // stop); the document stays pending for the next run.
       incomplete.push('litres-breaker');
     } else {
       const usedBefore = usedOf(budget);
@@ -294,31 +260,20 @@ async function firstYearForDoc(doc, options = {}) {
           sleep,
           litresPauseMs: pause,
         });
-        // `getWork` returns null both for "no match" and for "budget is gone".
-        // Only the second one is an incomplete answer: the book was never
-        // asked (`core/budget` owns the counter-mutation test).
         if (budgetRefused(budget, usedBefore)) incomplete.push('litres-budget');
         else push(result, 'litres');
       } catch (err) {
-        // Breaker/429 → the other providers still run; retry on the next run.
         incomplete.push('litres-error');
       }
     }
   }
 
-  // 3. Open Library: ISBN edition → work `first_publish_year`, then title search.
   try {
     push(await openlibraryProvider.getWork(input, { sleep, requestDelayMs: 250 }), 'openlibrary');
   } catch (err) {
-    // Offline/5xx is not fatal for a backfill, but it is not an answer either.
     incomplete.push('openlibrary-error');
   }
 
-  // 4. Wikidata: the work-level claim no print source can give.
-  //
-  // It is asked by the caller, batched (one query per ~12 documents), because
-  // WDQS does not reward a request per book. An absent prefetch entry is «not
-  // asked» (budget/breaker/no title), never «nobody knows».
   const workId = options.workId || null;
   const asked = options.yearClaimsAsked instanceof Set ? options.yearClaimsAsked : null;
   const prefetched = options.yearClaims instanceof Map && workId ? options.yearClaims.get(workId) : null;
@@ -475,7 +430,7 @@ async function backfill(options = {}) {
         (id) => id === workId || id === key || id === doc.workId || id === String(doc.hcWorkId)
       );
     if (ids && !matchesId) continue;
-    if (!ids && !force && providers.firstYearOf(doc.firstPublishedYear) != null) continue;
+    if (!ids && !force && !needsYearQuestion(doc)) continue;
     // A hopeless document is left alone for `recheckDays`: re-asking three
     // providers for a year nobody has is exactly the load AGENTS.md budgets
     // against. An explicit `--ids` still wins — the user asked for that one.
@@ -497,6 +452,8 @@ async function backfill(options = {}) {
     checked: 0,
     resolved: [],
     unknown: [],
+    yearChallenged: 0,
+    yearCorrected: 0,
     // Budget/breaker/network stopped the question before a provider could
     // answer. These documents stay unchecked (no negative cache): the next
     // run asks again instead of losing them for `DEFAULT_RECHECK_DAYS`.
@@ -541,10 +498,15 @@ async function backfill(options = {}) {
   // The pass is read-only, so `--dry-run` runs it too: the report must show
   // what a real run would resolve, not a subset that ignores Wikidata.
   const yearClaims = { byWork: new Map(), asked: new Set(), skipped: null };
+  const profileTitleIndex =
+    options.profileTitles instanceof Map ? options.profileTitles : profileTitles();
   let yearClaimsError = null;
   {
     try {
-      const lookup = await prefetchWikidata(selected, options);
+      const lookup = await prefetchWikidata(selected, {
+        ...options,
+        profileTitles: profileTitleIndex,
+      });
       yearClaims.byWork = lookup.byWork;
       yearClaims.asked = lookup.asked;
       yearClaims.skipped = lookup.skipped;
@@ -561,9 +523,14 @@ async function backfill(options = {}) {
 
   for (const { key, doc, workId } of selected) {
     report.checked++;
+    const stored = storedPrintClaim(doc);
+    if (stored) report.yearChallenged++;
+    const fromProfile = profileTitleIndex.get(workId) || null;
     try {
       const found = await firstYearForDoc(doc, {
         ...options,
+        authors:
+          fromProfile && fromProfile.authors.length ? fromProfile.authors : undefined,
         workId,
         lookupIsbns,
         hardcoverUnavailable,
@@ -604,6 +571,22 @@ async function backfill(options = {}) {
         }
         continue;
       }
+      if (!earlierClaim(stored, found)) {
+        const asked = askedProviders(doc, options).join(',');
+        log(
+          `= ${workId} ${doc.title || ''} :: kept ${stored.year} (${stored.source || 'unknown'})` +
+            `, nothing earlier (${asked})`
+        );
+        if (!dryRun) {
+          await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), {
+            ...doc,
+            firstPublishedYearCheckedAt: checkedAt,
+            firstPublishedYearCheckedBy: asked,
+          });
+        }
+        continue;
+      }
+      if (stored) report.yearCorrected++;
       report.byProvider[found.source] = (report.byProvider[found.source] || 0) + 1;
       if (found.source === 'wikidata') report.wikidataClaimed++;
       report.resolved.push({
@@ -618,17 +601,20 @@ async function backfill(options = {}) {
           ` (${found.source}; edition ${doc.publicationYear == null ? '?' : doc.publicationYear})`
       );
       if (!dryRun) {
-        await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), {
+        const next = {
           ...doc,
           firstPublishedYear: found.year,
           firstPublishedYearSource: found.source,
-          // Precision and kind travel with the claim: «VIII в. до н.э.» is not
-          // a print year, and the payload must be able to say so.
           firstPublishedYearPrecision: found.precision || null,
           firstPublishedYearKind: found.kind || null,
           firstPublishedYearCheckedAt: checkedAt,
           firstPublishedYearCheckedBy: found.source,
-        });
+        };
+        if (stored) {
+          next.firstPublishedYearPrevious = stored.year;
+          next.firstPublishedYearChallengedBy = stored.source || 'unknown';
+        }
+        await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), next);
       }
     } catch (err) {
       report.errors.push({ workId, error: err && err.message ? err.message : String(err) });
@@ -650,7 +636,7 @@ async function backfill(options = {}) {
     const workId = workIdOf(doc);
     if (!workId) continue;
     if (ids && ![...ids].some((id) => id === workId || id === key)) continue;
-    if (!force && providers.firstYearOf(doc.firstPublishedYear) != null) continue;
+    if (!force && !needsYearQuestion(doc)) continue;
     if (!force && recentlyChecked(doc, nowMs, recheckDays) && markerCovers(doc)) continue;
     pending++;
   }
@@ -675,6 +661,7 @@ async function backfill(options = {}) {
     `[years-backfill] scanned=${report.scanned} candidates=${report.candidates} ` +
       `selected=${report.selected} checked=${report.checked} ` +
       `resolved=${report.resolved.length}${sourceCounts ? ` (${sourceCounts})` : ''} ` +
+      `challenged=${report.yearCorrected}/${report.yearChallenged} ` +
       `unknown=${report.unknown.length}${unknownCounts ? ` [${unknownCounts}]` : ''} ` +
       `deferred=${report.deferred.length} ` +
       `errors=${report.errors.length} ` +
@@ -726,6 +713,8 @@ if (require.main === module) {
         skippedChecked: report.skippedChecked,
         checked: report.checked,
         resolved: report.resolved.length,
+        yearChallenged: report.yearChallenged,
+        yearCorrected: report.yearCorrected,
         unknown: report.unknown.length,
         unknownByAsked: report.unknownByAsked,
         deferred: report.deferred.length,

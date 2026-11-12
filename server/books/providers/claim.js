@@ -85,6 +85,25 @@ function claimOf(entry) {
   };
 }
 
+const PRINT_CLAIM_SOURCES = ['hardcover', 'litres', 'openlibrary', 'googlebooks'];
+
+/** Is the source one that reports an edition/print year for the work? */
+function isPrintClaimSource(value) {
+  return PRINT_CLAIM_SOURCES.includes(String(value == null ? '' : value));
+}
+
+/** The first-publication claim a details document already carries. */
+function storedFirstClaim(doc) {
+  const year = firstYearOf(doc && doc.firstPublishedYear);
+  if (year == null) return null;
+  return {
+    year,
+    source: doc.firstPublishedYearSource ? String(doc.firstPublishedYearSource) : null,
+    precision: precisionOf(doc.firstPublishedYearPrecision) || 'year',
+    kind: kindOf(doc.firstPublishedYearKind) || 'publication',
+  };
+}
+
 /** Is claim `a` a better first-publication claim than `b`? */
 function claimWins(a, b) {
   if (!b) return true;
@@ -179,6 +198,8 @@ module.exports = {
   mergedFirstClaim,
   precisionOf,
   kindOf,
+  storedFirstClaim,
+  isPrintClaimSource,
   PRECISIONS,
   PRECISION_RANK,
   KINDS,

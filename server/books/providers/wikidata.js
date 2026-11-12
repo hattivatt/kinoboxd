@@ -49,6 +49,7 @@
 const { fetchOnce, defaultSleep, createSourceClient } = require('./http');
 const sources = require('../../core/sources');
 const { normalizeAuthorName, namesLookAlike } = require('../authors');
+const { surnameSimilarity, FUZZY_SURNAME_SIM, FUZZY_SURNAME_MIN_LEN } = require('./match');
 const { wikidataEnabled } = require('../wikidata-flag');
 const { firstYearOf, saneFirstYearClaim } = require('./claim');
 
@@ -324,11 +325,14 @@ function authorHit(candidateAuthor, authors) {
     const b = normalizeAuthorName(candidateAuthor);
     if (!a || !b) return false;
     if (a === b) return true;
-    const la = a.split(' ').filter(Boolean);
-    const lb = b.split(' ').filter(Boolean);
-    const surnameA = la[la.length - 1];
-    const surnameB = lb[lb.length - 1];
-    return Boolean(surnameA && surnameA === surnameB && surnameA.length >= 3);
+    const surnameA = a.split(' ').filter(Boolean).pop();
+    const surnameB = b.split(' ').filter(Boolean).pop();
+    if (!surnameA || !surnameB) return false;
+    if (surnameA === surnameB && surnameA.length >= 3) return true;
+    if (surnameA.length < FUZZY_SURNAME_MIN_LEN || surnameB.length < FUZZY_SURNAME_MIN_LEN) {
+      return false;
+    }
+    return surnameSimilarity(surnameA, surnameB) >= FUZZY_SURNAME_SIM;
   });
 }
 

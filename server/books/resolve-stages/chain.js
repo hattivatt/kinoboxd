@@ -149,6 +149,8 @@ const YEAR_CLAIM_FIELDS = [
   'firstPublishedYearKind',
   'firstPublishedYearCheckedAt',
   'firstPublishedYearCheckedBy',
+  'firstPublishedYearChallengedBy',
+  'firstPublishedYearPrevious',
 ];
 
 /**

@@ -160,6 +160,7 @@ function scoreCandidate(query, candidate, options = {}) {
 module.exports = {
   STRICT_SIM,
   FUZZY_SURNAME_SIM,
+  FUZZY_SURNAME_MIN_LEN,
   authorsOverlap,
   authorsFuzzyOverlap,
   surnameSimilarity,
