@@ -314,7 +314,7 @@ GB_API_KEY="$(gopass show -o apitokens/gbooks-api-key)" npm start
 
 ## 12. Деплой
 
-- `nix/package.nix` — пин `fetchFromGitHub` (`rev`, `hash`) + `buildNpmPackage` (`npmDeps.hash`). Пин обновляется **только здесь**.
+- `nix/package.nix` — пин `fetchFromGitHub` (`rev`, `hash`) + `buildNpmPackage` (`npmDeps.hash`). Пин обновляется **только здесь**. Файл намеренно без комментариев: он же — копия в `~/.nixos/packages/kinoboxd/package.nix`, и его копируют целиком, а не патчат по месту. Симптом «`variable $src or $srcs should point to the source` в `<pname>-<version>-npm-deps`» значит, что в деривации потерян `src` (или `npmDeps`), — сверять весь файл, а не лишние атрибуты.
 - `nix/module.nix` — NixOS-модуль `services.kinoboxd`: только Nix-код, комментариев в файле нет (вся операционная семантика — здесь). Сервер `kinoboxd` плюс 11 oneshot-юнитов, все взаимоисключающие через общий `Conflicts=`, все идемпотентные:
   - `kinoboxd-backfill` — агрегат фильмов (`allTargets`: `imdb`, `keywords`, `wikidata`, `rematch`, `collections`, `mcu`); по-таргетные `kinoboxd-backfill-<target>`; таймер `backfillTimer` выкл по умолчанию;
   - `kinoboxd-backfill-books` — первый год публикации (`--limit`/`--pause`, Литрес-бюджет); таймер `booksBackfillTimer` вкл., еженедельно;
@@ -352,16 +352,27 @@ GB_API_KEY="$(gopass show -o apitokens/gbooks-api-key)" npm start
 
 - **Deploy-файлы:** какие из `nix/package.nix` / `nix/module.nix` изменены.
   - Изменился `nix/module.nix` (или пакет целиком, не только пин) → готовые `install -Dm644`-команды для `~/.nixos`: модуль → `modules/services/kinoboxd/kinoboxd-module.nix`, пакет → `packages/kinoboxd/package.nix`. «Пин обновлён» без команд — не отчёт.
-  - Изменился **только пин** (`version`/`rev`/`hash`/`npmDeps.hash`) → никаких `install`: в отчёте pin-блок, который копируется в site-конфиг как есть. Блок печатается целиком, строками ровно в том виде, в каком они стоят в рецепте; не изменившаяся с прошлого отчёта строка помечается `# без изменений`, чтобы блок вставлялся целиком, а не досочинялся по памяти:
+  - Изменился **только пин** → никаких `install`, но и **никаких «голых» `rev`/`hash`-строк**: пин печатается с якорями, двумя блоками в том виде, в каком они стоят в рецепте, и вставляется в `nix/package.nix` только по месту. Голый `hash = …;` в теле деривации синтаксически валиден (`buildNpmPackage` — это attrset) и молча заменяет `src`/`npmDeps` на дефолты nixpkgs — такой файл падает с `variable $src or $srcs should point to the source`:
 
 ```nix
 version = "1.4.2";
-rev = "<sha коммита v1.4.2>"; # допустимо и "v1.4.2"
-hash = "sha256-…"; # fetchFromGitHub
-npmDepsHash = "sha256-…"; # fetchNpmDeps.hash; меняется только с package-lock.json
+
+source ? fetchFromGitHub {
+  owner = "hattivatt";
+  repo = "kinoboxd";
+  rev = "<sha коммита v1.4.2>"; # допустимо и "v1.4.2"
+  hash = "sha256-…";
+};
 ```
 
-  Если в конфиге поле называется иначе (`npmDeps.hash`), строка печатается с этим именем.
+```nix
+npmDeps = fetchNpmDeps {
+  inherit (finalAttrs) src;
+  hash = "sha256-…"; # fetchNpmDeps.hash; меняется только вместе с package-lock.json
+};
+```
+
+  Строка, не изменившаяся с прошлого отчёта, входит в свой блок с пометкой `# без изменений`. Если в site-конфиге форма другая — сначала сверить его с `nix/package.nix`, а не латать по месту. Признак «`src` не доехал» в логах: drv `npm-deps` назван `<pname>-<version>-npm-deps` (nixpkgs-дефолт) вместо `npm-deps` (наш `fetchNpmDeps`).
 - **Тест-числа:** сколько тестов, что проверено, реальные цифры (payload ±байты, счётчики, тайминги), а не «стало быстрее».
 - **Git:** commit SHA(ы), файлы, ветка; `pin` (rev в `nix/package.nix`) и store-путь.
 - **Риски:** что не проверено, где данные могли устареть, какие допущения приняты.
