@@ -55,7 +55,7 @@ test('the committed contracts are up to date with the code', () => {
 
 test('api.md lists the real route table (method + path + source)', () => {
   const { routes } = gen.collectRoutes();
-  assert.equal(routes.length, 67, 'expected 67 entry points (12 films inline era is over)');
+  assert.equal(routes.length, 72, 'expected 72 entry points (12 films inline era is over)');
 
   const api = gen.generate(['api'])[0].content;
   const paths = new Set(routes.map((route) => route.path));

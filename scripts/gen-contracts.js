@@ -226,7 +226,7 @@ const MOUNTED_ROUTE_FILES = [
   'server/games/routes-epic.js',
   'server/games/routes-franchise.js',
   'server/games/personnel/routes-personnel.js',
-];
+].concat(['server/books/routes-manual.js']);
 
 const ROUTE_BODY_DIRS = [
   { file: 'server/games/routes.js', dir: 'server/games/endpoints' },

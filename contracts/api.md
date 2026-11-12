@@ -3,7 +3,7 @@
 
 Сгенерировано из объявлений роутов в `server/` (P9, план §3.5). Источник истины — сами роутеры: если таблица расходится с кодом, перегенерируй (`node scripts/gen-contracts.js`), а не правь файл.
 
-Роутов: **67**. Тело ошибки всегда `{ error, code }` (`server/core/errors.js`); неизвестный query-параметр — 400 `unexpected_parameter` (`server/core/params.js`).
+Роутов: **72**. Тело ошибки всегда `{ error, code }` (`server/core/errors.js`); неизвестный query-параметр — 400 `unexpected_parameter` (`server/core/params.js`).
 
 ## Точки монтирования
 
@@ -30,12 +30,17 @@
 | POST | `/api/auth/login` | — | 401:wrong_password | `server/auth.js:130` |
 | POST | `/api/auth/logout` | — | — | `server/auth.js:149` |
 | GET | `/api/auth/session` | — | — | `server/auth.js:155` |
+| GET | `/api/books/audit` | `profile` | — | `server/books/routes-manual.js:193` |
 | POST | `/api/books/import/hardcover` | — | — | `server/books/routes.js:230` |
 | POST | `/api/books/import/livelib` | — | 400:username_required | `server/books/routes.js:205` |
 | POST | `/api/books/import/livelib-file` | — | 400:upload_failed, 413:file_too_large | `server/books/routes.js:353` |
 | DELETE | `/api/books/import/livelib/cookies` | — | 400:invalid_user_key, 400:user_key_required, 404:cookies_not_found, 409:livelib_import_running | `server/books/routes.js:538` |
 | GET | `/api/books/import/status` | — | 400:job_id_required, 404:unknown_job | `server/books/routes.js:583` |
+| DELETE | `/api/books/link` | — | 400:book_id_required, 400:invalid_book_id, 400:profile_required | `server/books/routes-manual.js:167` |
+| POST | `/api/books/link` | — | 400:book_id_required, 400:invalid_book_id, 400:invalid_work_id, 400:profile_required, 400:work_id_required, 404:unknown_book | `server/books/routes-manual.js:121` |
 | GET | `/api/books/profiles` | — | — | `server/books/routes.js:132` |
+| DELETE | `/api/books/series-override` | — | 400:invalid_work_id, 400:profile_required, 400:work_id_required | `server/books/routes-manual.js:95` |
+| POST | `/api/books/series-override` | — | 400:invalid_series, 400:invalid_work_id, 400:profile_required, 400:work_id_required | `server/books/routes-manual.js:20` |
 | GET | `/api/books/stats` | `includeMangaComics`, `profile` | 400:invalid_include_manga | `server/books/routes.js:668` |
 | GET | `/api/books/unmatched` | `profile` | — | `server/books/routes.js:833` |
 | DELETE | `/api/books/work/flag` | — | 400:work_id_required | `server/books/routes.js:730` |
@@ -131,6 +136,12 @@
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
+### `GET /api/books/audit`
+
+- файл: `server/books/routes-manual.js:193`
+- query (строгий список): `profile`
+- ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
+
 ### `POST /api/books/import/hardcover`
 
 - файл: `server/books/routes.js:230`
@@ -175,12 +186,48 @@
 - ошибка `404` `unknown_job`: 'Unknown import job id.'
 - описание: GET /api/books/import/status?id=...
 
+### `DELETE /api/books/link`
+
+- файл: `server/books/routes-manual.js:167`
+- query: — (строгого `assertOnlyParams` нет)
+- ошибка `400` `book_id_required`: 'Body must contain "bookId".'
+- ошибка `400` `invalid_book_id`: `Body field "bookId" must be at most ${MAX_BOOK_ID} characters.`
+- ошибка `400` `profile_required`: 'Body must contain "profile".'
+
+### `POST /api/books/link`
+
+- файл: `server/books/routes-manual.js:121`
+- query: — (строгого `assertOnlyParams` нет)
+- ошибка `400` `book_id_required`: 'Body must contain "bookId".'
+- ошибка `400` `invalid_book_id`: `Body field "bookId" must be at most ${MAX_BOOK_ID} characters.`
+- ошибка `400` `invalid_work_id`: 'Body field "workId" must look like "hc:<id>", "lr:<id>", "gb:<id>" or "ol:<id>".'
+- ошибка `400` `profile_required`: 'Body must contain "profile".'
+- ошибка `400` `work_id_required`: 'Body must contain "workId".'
+- ошибка `404` `unknown_book`: `Book "${bookId}" is not part of profile ${profile.source}-${profile.userKey}.`
+
 ### `GET /api/books/profiles`
 
 - файл: `server/books/routes.js:132`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 - описание: GET /api/books/profiles — cached source profiles for the switcher/badges. Each entry carries: - `key` — the exact `?profile=` token (`livelib-Margaret`), - `sourceKey` — the minimal provider-qualified key for docs (`liv…
+
+### `DELETE /api/books/series-override`
+
+- файл: `server/books/routes-manual.js:95`
+- query: — (строгого `assertOnlyParams` нет)
+- ошибка `400` `invalid_work_id`: `Body field "workId" must be at most ${MAX_WORK_ID} characters.`
+- ошибка `400` `profile_required`: 'Body must contain "profile".'
+- ошибка `400` `work_id_required`: 'Body must contain "workId".'
+
+### `POST /api/books/series-override`
+
+- файл: `server/books/routes-manual.js:20`
+- query: — (строгого `assertOnlyParams` нет)
+- ошибка `400` `invalid_series`: 'Body field "series" must be an array of { name, position } objects ([] clears the series list).'
+- ошибка `400` `invalid_work_id`: `Body field "workId" must be at most ${MAX_WORK_ID} characters.`
+- ошибка `400` `profile_required`: 'Body must contain "profile".'
+- ошибка `400` `work_id_required`: 'Body must contain "workId".'
 
 ### `GET /api/books/stats`
 
