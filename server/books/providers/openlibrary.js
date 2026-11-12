@@ -14,6 +14,7 @@
 const { fetchJson, defaultSleep } = require('./http');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
+const { seriesEntryOf } = require('./series-name');
 const { normalizeIsbn, isbn10Of, normalizeTitle, surnameOf, namesOf } = require('../normalize');
 const sources = require('../../core/sources');
 
@@ -33,6 +34,16 @@ function subjectsOf(list, limit = 25) {
     if (out.length >= limit) break;
   }
   return out;
+}
+
+function seriesOf(raw) {
+  const values = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+  const entries = [];
+  for (const value of values) {
+    const entry = seriesEntryOf(value, { source: NAME });
+    if (entry) entries.push(entry);
+  }
+  return entries;
 }
 
 function yearOf(value) {
@@ -79,6 +90,7 @@ function normalizeEdition(record, input) {
   const publisher = namesOf(record.publishers)[0] || null;
   const authors = namesOf(record.authors);
   const mangaTexts = collectMangaTexts({ subjects: allSubjects, publisher });
+  const seriesAll = seriesOf(record.series);
   return {
     source: NAME,
     sourceId: sourceIdOf(key),
@@ -87,7 +99,8 @@ function normalizeEdition(record, input) {
     authors,
     year: yearOf(record.publish_date),
     publisher,
-    series: null,
+    series: seriesAll.length ? { name: seriesAll[0].name, position: seriesAll[0].position } : null,
+    seriesAll,
     genres,
     pages: Number.isFinite(Number(record.number_of_pages)) ? Number(record.number_of_pages) : null,
     isbn13: ids.isbn13 || normalizeIsbn(input && input.isbn13) || normalizeIsbn(input && input.isbn10),
@@ -121,6 +134,7 @@ function normalizeSearchDoc(doc, query) {
   // must not enter the year chart as if it did.
   const editionCount = Number.isFinite(Number(doc.edition_count)) ? Number(doc.edition_count) : null;
   const firstPublishedYear = editionCount != null && editionCount < 2 ? null : firstYear;
+  const seriesAll = seriesOf(doc.series);
   return {
     source: NAME,
     sourceId: sourceIdOf(key),
@@ -130,7 +144,8 @@ function normalizeSearchDoc(doc, query) {
     year: firstYear,
     firstPublishedYear,
     publisher,
-    series: null,
+    series: seriesAll.length ? { name: seriesAll[0].name, position: seriesAll[0].position } : null,
+    seriesAll,
     genres,
     pages: Number.isFinite(Number(doc.number_of_pages_median))
       ? Number(doc.number_of_pages_median)
@@ -204,7 +219,7 @@ async function byTitle(input, options) {
   params.set('limit', '5');
   params.set(
     'fields',
-    'key,title,author_name,publisher,first_publish_year,cover_i,subject,isbn,number_of_pages_median,edition_count'
+    'key,title,author_name,publisher,first_publish_year,cover_i,subject,isbn,number_of_pages_median,edition_count,series'
   );
   const data = await fetchJson(`${SEARCH_URL}?${params.toString()}`, {
     fetchImpl: options.fetchImpl,

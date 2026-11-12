@@ -10,6 +10,7 @@
 const hardcover = require('../hardcover');
 const editions = require('../hardcover-editions');
 const { detectManga, collectMangaTexts } = require('./manga');
+const { seriesEntriesOf } = require('./series-name');
 const { normalizeIsbn } = require('../normalize');
 
 const NAME = 'hardcover';
@@ -17,8 +18,9 @@ const NAME = 'hardcover';
 /** Normalise a details document (journal/cache schema 1 or 2) to a provider result. */
 function normalizeDetails(details, editionId, options = {}) {
   if (!details) return null;
-  const series = Array.isArray(details.series) && details.series.length
-    ? { name: details.series[0].name || null, position: details.series[0].position ?? null }
+  const seriesAll = seriesEntriesOf(details.series);
+  const series = seriesAll.length
+    ? { name: seriesAll[0].name, position: seriesAll[0].position }
     : null;
   const genres = Array.isArray(details.genres) ? details.genres.filter(Boolean) : [];
   const tags = Array.isArray(details.tags) ? details.tags.filter(Boolean) : [];
@@ -60,6 +62,7 @@ function normalizeDetails(details, editionId, options = {}) {
         : Number(details.publicationYear),
     publisher: details.publisher || null,
     series,
+    seriesAll,
     genres,
     pages: Number.isFinite(Number(details.pages)) ? Number(details.pages) : null,
     isbn13: normalizeIsbn(details.isbn13),

@@ -23,6 +23,7 @@ const openlibrary = require('./openlibrary');
 const livelibCard = require('./livelib-card');
 const wikidata = require('./wikidata');
 const { detectManga } = require('./manga');
+const { seriesEntryOf, seriesEntriesOf, seriesKeyOf } = require('./series-name');
 const {
   firstYearOf,
   earliestFirstYear,
@@ -102,6 +103,47 @@ function firstList(primary, extras, field) {
   return [];
 }
 
+function seriesListOf(entry) {
+  if (!entry) return [];
+  const all = seriesEntriesOf(entry.seriesAll);
+  if (entry.series) {
+    const single = seriesEntryOf(entry.series);
+    if (single) all.push(single);
+  }
+  return all;
+}
+
+function mergeSeriesEntries(entries) {
+  const out = [];
+  const index = new Map();
+  for (const entry of entries) {
+    const key = seriesKeyOf(entry.name);
+    if (!key) continue;
+    if (!index.has(key)) {
+      index.set(key, out.length);
+      out.push(entry);
+      continue;
+    }
+    const current = out[index.get(key)];
+    if (current.position == null && entry.position != null) current.position = entry.position;
+    if (current.hcId == null && entry.hcId != null) current.hcId = entry.hcId;
+  }
+  return out;
+}
+
+function mergedSeries(entries) {
+  return mergeSeriesEntries(entries.flatMap(seriesListOf));
+}
+
+function detailSeriesOf(result) {
+  return mergeSeriesEntries(seriesListOf(result)).map((entry) => ({
+    hcId: entry.hcId == null ? null : entry.hcId,
+    name: entry.name || null,
+    position: entry.position == null ? null : Number(entry.position),
+    ...(entry.source ? { source: String(entry.source) } : {}),
+  }));
+}
+
 function mergedManga(entries) {
   if (entries.some((entry) => entry && entry.mangaComics === true)) return true;
   if (entries.some((entry) => entry && entry.mangaComics === false)) return false;
@@ -162,6 +204,7 @@ function mergeResults(primary, extras = []) {
     firstPublishedYearKind: firstClaim ? firstClaim.kind : null,
     publisher: firstValue(primary, others, 'publisher'),
     series: firstValue(primary, others, 'series'),
+    seriesAll: mergedSeries([primary, ...others]),
     genres,
     pages: firstValue(primary, others, 'pages'),
     isbn13: firstValue(primary, others, 'isbn13'),
@@ -199,16 +242,7 @@ function resultToDetails(result, options = {}) {
       return { name: String(name) };
     })
     .filter((author) => author.name);
-  const series = result.series
-    ? [
-        {
-          hcId: (result.series && result.series.hcId) || null,
-          name: result.series.name || null,
-          position: result.series.position == null ? null : Number(result.series.position),
-          ...(result.series.source ? { source: String(result.series.source) } : {}),
-        },
-      ]
-    : [];
+  const series = detailSeriesOf(result);
   const doc = {
     schemaVersion: 2,
     workId,

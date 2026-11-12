@@ -18,6 +18,7 @@ const { fetchJson, defaultSleep, createSourceClient } = require('./http');
 const sources = require('../../core/sources');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
+const { seriesEntryOf } = require('./series-name');
 const { normalizeIsbn, isbn10Of, namesOf } = require('../normalize');
 
 const NAME = 'litres';
@@ -129,20 +130,21 @@ function pagesOf(detail) {
   return null;
 }
 
-function seriesOf(item, detail) {
+function seriesListOf(item, detail) {
   const list =
     (detail && Array.isArray(detail.series) && detail.series.length ? detail.series : null) ||
     (item && Array.isArray(item.series) ? item.series : []);
-  const first = list.find((entry) => entry && entry.name);
-  if (!first) return null;
-  const position = Number(first.art_order);
-  return {
-    name: String(first.name),
-    position: Number.isFinite(position) && position > 0 ? position : null,
-    // A positionless Литрес "series" is usually a catalogue tag («Книга на все
-    // времена»). Stats keeps it only when the user's export names it too.
-    source: NAME,
-  };
+  const entries = [];
+  for (const entry of list) {
+    if (!entry || !entry.name) continue;
+    const order = Number(entry.art_order);
+    const normalized = seriesEntryOf(
+      { name: entry.name, position: Number.isFinite(order) && order > 0 ? order : null },
+      { source: NAME }
+    );
+    if (normalized) entries.push(normalized);
+  }
+  return entries;
 }
 
 function extractInstances(data) {
@@ -169,7 +171,8 @@ function normalizeLitres(item, detail, input, scored) {
     (detail && typeof detail.publisher === 'string' && detail.publisher) ||
     (typeof item.publisher === 'string' && item.publisher) ||
     null;
-  const series = seriesOf(item, detail);
+  const seriesAll = seriesListOf(item, detail);
+  const series = seriesAll[0] || null;
   const isbn13 = normalizeLitresIsbn(
     (detail && detail.isbn) ||
       item.isbn ||
@@ -207,6 +210,7 @@ function normalizeLitres(item, detail, input, scored) {
     firstPublishedYear,
     publisher,
     series,
+    seriesAll,
     genres,
     pages: pagesOf(detail),
     isbn13,
@@ -225,12 +229,12 @@ function normalizeLitres(item, detail, input, scored) {
     },
     mangaComics: detectManga({
       genres: genres.concat(tags),
-      series: series ? [series] : [],
+      series: seriesAll,
       publisher,
     }),
     mangaTexts: collectMangaTexts({
       genres: genres.concat(tags),
-      series: series ? [series] : [],
+      series: seriesAll,
       publisher,
     }),
     litres: {
