@@ -9,6 +9,7 @@
  * R12 «god module» split: moved out of `books/stats.js` unchanged.
  */
 
+const { normalizeSeriesName } = require('../series-identity');
 const { saneYear } = require('./numeric');
 const { FILE_METADATA_SOURCE } = require('./constants');
 
@@ -183,41 +184,6 @@ function filterDetailsSeries(details, fileSeriesNames) {
 /* ------------------------------------------------------------------ */
 /* Series-level aggregation and dedupe                                 */
 /* ------------------------------------------------------------------ */
-
-function normalizeSeriesName(name) {
-  const text = String(name == null ? '' : name)
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/ё/g, 'е');
-  return stripUnbalanced(stripTrailingGroups(text)).replace(/\s+/g, ' ').trim();
-}
-
-function stripTrailingGroups(text) {
-  let current = text;
-  for (;;) {
-    const next = current.replace(/\s*\([^()]*\)\s*$/u, '');
-    if (next === current) return current;
-    current = next;
-  }
-}
-
-function stripUnbalanced(text) {
-  let balance = 0;
-  let firstOpen = -1;
-  for (let index = 0; index < text.length; index++) {
-    const char = text[index];
-    if (char === '(') {
-      if (balance === 0) firstOpen = index;
-      balance++;
-      continue;
-    }
-    if (char !== ')') continue;
-    if (balance === 0) return text.slice(0, index);
-    balance--;
-    if (balance === 0) firstOpen = -1;
-  }
-  return balance > 0 && firstOpen > 0 ? text.slice(0, firstOpen) : text;
-}
 
 function seriesEntryKeys(entry) {
   if (!entry) return [];
