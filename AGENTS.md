@@ -315,9 +315,15 @@ GB_API_KEY="$(gopass show -o apitokens/gbooks-api-key)" npm start
 ## 12. Деплой
 
 - `nix/package.nix` — пин `fetchFromGitHub` (`rev`, `hash`) + `buildNpmPackage` (`npmDeps.hash`). Пин обновляется **только здесь**.
-- `nix/module.nix` — systemd: сервер, бэкфилл фильмов (`allTargets`: `imdb`, `keywords`, `wikidata`, `rematch`, `collections`, `mcu`), бэкфилл книг (годы, resolve, `manga`, `authors`), юниты игр; `EnvironmentFile`, state-раскладка. Все books-миграции теперь юниты; таймер `manga` вкл., `authors` — опционален.
+- `nix/module.nix` — NixOS-модуль `services.kinoboxd`: только Nix-код, комментариев в файле нет (вся операционная семантика — здесь). Сервер `kinoboxd` плюс 11 oneshot-юнитов, все взаимоисключающие через общий `Conflicts=`, все идемпотентные:
+  - `kinoboxd-backfill` — агрегат фильмов (`allTargets`: `imdb`, `keywords`, `wikidata`, `rematch`, `collections`, `mcu`); по-таргетные `kinoboxd-backfill-<target>`; таймер `backfillTimer` выкл по умолчанию;
+  - `kinoboxd-backfill-books` — первый год публикации (`--limit`/`--pause`, Литрес-бюджет); таймер `booksBackfillTimer` вкл., еженедельно;
+  - `kinoboxd-resolve-books` — resolve хвоста LiveLib (`--limit`/`--pause`/`--recheck-days`); таймер `booksResolveTimer` вкл., еженедельно;
+  - `kinoboxd-backfill-manga` — `kinoboxd-books-migrate manga --limit 20 --pause 600` (`booksMangaBackfillLimit`/`booksMangaBackfillPauseMs`); таймер `booksMangaBackfillTimer` вкл., еженедельно;
+  - `kinoboxd-backfill-authors` — `kinoboxd-books-migrate authors --wikidata`; таймер `booksAuthorsBackfillTimer` выкл (мост авторов и так default-on в stats).
+  Все таймеры — `Persistent = true` (+ `RandomizedDelaySec = "5m"` у книжных), ручной запуск: `sudo systemctl start kinoboxd-backfill-manga`, хвост — `journalctl -u kinoboxd-backfill-manga -f`.
 - Лаунчеры `nix/package.nix`: `kinoboxd`, `kinoboxd-backfill`, `kinoboxd-books-backfill`, `kinoboxd-books-resolve`, `kinoboxd-books-migrate` (диспетчер `manga|authors`).
-- Личный site-конфиг (`services.kinoboxd`: sops-секреты, порт, state, таймеры) живёт вне репозитория — в `~/.nixos`; в repo его нет.
+- Личный site-конфиг (`services.kinoboxd`: sops-секреты, порт, state, таймеры) живёт вне репозитория: `~/.nixos/modules/services/kinoboxd/kinoboxd-module.nix` + `~/.nixos/packages/kinoboxd/package.nix`; в repo их нет.
 - Переменные: `KINOBOXD_CACHE_DIR`, `KINOBOXD_CACHE_BOOK_DIR`, `KINOBOXD_CACHE_GAMES_DIR`, `KINOBOXD_STATE_DIR`, `KINOBOXD_PASSWORD`, `PORT` (боевой `3000`; в тестах не использовать).
 - Текущий пин (`v1.1.0`): `rev = 7b5597d4b547b971bd767d692e50792d5d738d00` (коммит тэга), `hash = sha256-IxYV5Bfv8YxtnIHf2FJkLMYfaadpUIYEDZtBCiT9vcE=`, `npmDeps.hash = sha256-X6rMqzNU1oXT0h1oc7Ak3dxP6Yb90frXXbiIra52Qag=` (не менялся: `package-lock.json` не двигался с `v1.0.0`), store `/nix/store/k2gzh95g3nrczz70lsx4avq2mrb7xmi2-kinoboxd-1.1.0`. Предыдущий пин — `v1.0.0`: rev `2416813…`, store `/nix/store/6cjby7wpcf4gawir94ypi29cvgpp1cbg-kinoboxd-1.0.0`.
 - `flake.nix` больше **не дублирует** рецепт: он делает `pkgs.callPackage ./nix/package.nix { source = <local tree>; }`, поэтому лаунчеры, `prepare_state` и `meta` живут в одном файле. Пин `rev` указывает на коммит последнего релизного тэга, поэтому он всегда отстаёт от HEAD (архив собственного коммита запинить нельзя). `nix build .#` пин не использует.
@@ -345,7 +351,7 @@ GB_API_KEY="$(gopass show -o apitokens/gbooks-api-key)" npm start
 **Обязательный шот-лист отчёта:**
 
 - **Deploy-файлы:** какие из `nix/package.nix` / `nix/module.nix` изменены.
-  - Изменился `nix/module.nix` (или пакет целиком, не только пин) → готовые `install -Dm644`-команды для `~/.nixos` (модуль → `modules/services/kinoboxd/module.nix`, пакет → `packages/kinoboxd/package.nix`). «Пин обновлён» без команд — не отчёт.
+  - Изменился `nix/module.nix` (или пакет целиком, не только пин) → готовые `install -Dm644`-команды для `~/.nixos`: модуль → `modules/services/kinoboxd/kinoboxd-module.nix`, пакет → `packages/kinoboxd/package.nix`. «Пин обновлён» без команд — не отчёт.
   - Изменился **только пин** (`version`/`rev`/`hash`/`npmDeps.hash`) → никаких `install`: в отчёте pin-блок, который копируется в site-конфиг как есть. Блок печатается целиком, строками ровно в том виде, в каком они стоят в рецепте; не изменившаяся с прошлого отчёта строка помечается `# без изменений`, чтобы блок вставлялся целиком, а не досочинялся по памяти:
 
 ```nix
