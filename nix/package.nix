@@ -11,12 +11,14 @@
 # This is the only build recipe: the repo flake (./flake.nix) imports it with
 # `source` set to the local tree, so launchers and meta are not duplicated.
 #
-# `rev` necessarily lags one commit: a commit cannot pin its own archive, so
-# the pin points at the last pushed revision. Bump it after every push that
-# changes server/, public/ or package-lock.json, then re-iterate `hash` +
-# `npmDeps.hash` (set both to lib.fakeHash and read the expected value from the
-# build error).  The `source` argument stays overridable so a local tree can be
-# packaged without touching the pin:
+# `rev` points at the last release tag's commit, never at HEAD: a commit
+# cannot pin its own archive. Release flow (AGENTS.md §12.1, §13.3): bump
+# `version` to the new `vX.Y.Z` (`chore(release): X.Y.Z`), tag that commit,
+# push it, then move `rev` here (`chore(nix): pin vX.Y.Z`) and re-iterate
+# `hash` + `npmDeps.hash` if the tree or package-lock.json changed (set them
+# to lib.fakeHash and read the expected value from the build error).
+# The `source` argument stays overridable so a local tree can be packaged
+# without touching the pin:
 #
 #   pkgs.callPackage ./nix/package.nix { source = ./.; }
 {
