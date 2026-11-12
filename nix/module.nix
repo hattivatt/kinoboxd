@@ -114,15 +114,27 @@
       # (all of them spend the Литрес budget and write the same cache files).
       booksResolveUnit = "kinoboxd-resolve-books";
 
-      # Author-bridge and manga detectors are one-off migrations
-      # (`npm run backfill:authors`, `npm run backfill:manga`), not units:
-      # they rewrite cache-book once after a schema decision and are not
-      # idempotent enough to run on a timer. Run them by hand in the app tree.
+      # One-off book migrations (server/books/manga-backfill.js and
+      # server/books/authors-backfill.js) reached through the
+      # `kinoboxd-books-migrate` dispatcher: its first argument selects the
+      # script, the unit name only mirrors the subcommand. They rewrite
+      # cache-book once after a schema decision, so both timers default off
+      # (or weekly for manga, which walks a small slice per tick); both spend
+      # the Google Books budget and write the same cache files, hence the
+      # mutual exclusion below.
+      booksMangaUnit = "kinoboxd-backfill-manga";
+      booksAuthorsUnit = "kinoboxd-backfill-authors";
 
       # All backfill units (aggregate + one per target + the books ones). Used
       # to build the mutual-exclusion `Conflicts=` lists.
       allBackfillUnits =
-        [ aggregateBackfillUnit booksBackfillUnit booksResolveUnit ] ++ map backfillUnit allTargets;
+        [
+          aggregateBackfillUnit
+          booksBackfillUnit
+          booksResolveUnit
+          booksMangaUnit
+          booksAuthorsUnit
+        ] ++ map backfillUnit allTargets;
 
       # Every backfill unit conflicts with all the other backfill units, so
       # starting one stops a parallel one instead of letting two scans race on
@@ -442,6 +454,78 @@
           };
         };
 
+        booksMangaBackfillLimit = lib.mkOption {
+          type = lib.types.ints.unsigned;
+          default = 20;
+          example = 50;
+          description = ''
+            How many weak-detail works one
+            {command}`kinoboxd-backfill-manga` run may walk (`0` = no cap).
+            The default matches the script's own default: one run makes one
+            title lookup per provider (Open Library, then Google Books) per
+            candidate, so a small weekly slice is enough to drain the tail of
+            Hardcover-only works. Already settled works are skipped, so an
+            exhausted run is a cheap cache scan.
+          '';
+        };
+
+        booksMangaBackfillPauseMs = lib.mkOption {
+          type = lib.types.ints.positive;
+          default = 600;
+          description = ''
+            Pause in milliseconds between provider lookups of the manga
+            backfill. The script's own politeness default; it never touches
+            livelib.ru, only Open Library and Google Books.
+          '';
+        };
+
+        booksMangaBackfillTimer = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = ''
+              Run {command}`kinoboxd-backfill-manga.service` on a schedule.
+              On by default: the manga flag is persisted per work, so a run
+              over a drained pool exits in seconds with zero requests.
+              `--recheck` (manual runs) is what re-asks settled works.
+            '';
+          };
+
+          interval = lib.mkOption {
+            type = lib.types.str;
+            default = "weekly";
+            example = "*-*-01 04:00:00";
+            description = ''
+              `OnCalendar=` expression for
+              {option}`services.kinoboxd.booksMangaBackfillTimer`.
+            '';
+          };
+        };
+
+        booksAuthorsBackfillTimer = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = ''
+              Run {command}`kinoboxd-backfill-authors.service` on a schedule.
+              Off by default: the author-alias migration is diagnostic — the
+              WDQS bridge is default-on inside {command}`kinoboxd.service`'s
+              stats pass, so a scheduled `--wikidata` run would only duplicate
+              it. Turn on only to replay the bridge after a schema change.
+            '';
+          };
+
+          interval = lib.mkOption {
+            type = lib.types.str;
+            default = "weekly";
+            example = "*-*-01 05:00:00";
+            description = ''
+              `OnCalendar=` expression for
+              {option}`services.kinoboxd.booksAuthorsBackfillTimer`.
+            '';
+          };
+        };
+
         user = lib.mkOption {
           type = lib.types.str;
           default = "kinoboxd";
@@ -660,6 +744,80 @@
                 ];
               };
           };
+
+          # One-off manga/comics signal migration
+          # (server/books/manga-backfill.js via the `kinoboxd-books-migrate`
+          # dispatcher): targeted Open Library / Google Books lookups for
+          # volume-like works whose cached details are weak (Hardcover-only
+          # works with empty genres). It never touches livelib.ru and never
+          # rewrites links/metadataSources; the result is the local manga
+          # flag under cache-book.
+          #
+          #   sudo systemctl start kinoboxd-backfill-manga
+          #   journalctl -u kinoboxd-backfill-manga -f
+          #
+          # Idempotent: works whose effective manga flag is already settled
+          # are skipped, so a repeated start is a cache scan; `--recheck` (a
+          # manual run) is what re-asks settled works.
+          kinoboxd-backfill-manga = {
+            description = "kinoboxd — book manga/comics signal migration (oneshot)";
+            documentation = [ "https://github.com/hattivatt/kinoboxd" ];
+            after = [ "network-online.target" ];
+            wants = [ "network-online.target" ];
+            wantedBy = [ ];
+            conflicts = conflictsFor booksMangaUnit;
+
+            environment = serviceEnv;
+
+            path = [ cfg.package ];
+
+            serviceConfig =
+              hardening
+              // serviceCommon
+              // {
+                Type = "oneshot";
+
+                ExecStart = lib.concatStringsSep " " [
+                  "${cfg.package}/bin/kinoboxd-books-migrate"
+                  "manga"
+                  "--limit"
+                  (toString cfg.booksMangaBackfillLimit)
+                  "--pause"
+                  (toString cfg.booksMangaBackfillPauseMs)
+                ];
+              };
+          };
+
+          # One-off author-alias migration (server/books/authors-backfill.js
+          # via the same dispatcher). Without `--wikidata` the script only
+          # reports; the unit passes `--wikidata`, which replays the same
+          # bridge the server runs default-on in its stats pass and persists
+          # into cache-book/authors.json. Diagnostic, so no timer by default;
+          # manual runs can narrow it with --profile=<key>.
+          #
+          #   sudo systemctl start kinoboxd-backfill-authors
+          #   journalctl -u kinoboxd-backfill-authors -f
+          kinoboxd-backfill-authors = {
+            description = "kinoboxd — book author-alias bridge migration (oneshot)";
+            documentation = [ "https://github.com/hattivatt/kinoboxd" ];
+            after = [ "network-online.target" ];
+            wants = [ "network-online.target" ];
+            wantedBy = [ ];
+            conflicts = conflictsFor booksAuthorsUnit;
+
+            environment = serviceEnv;
+
+            path = [ cfg.package ];
+
+            serviceConfig =
+              hardening
+              // serviceCommon
+              // {
+                Type = "oneshot";
+
+                ExecStart = "${cfg.package}/bin/kinoboxd-books-migrate authors --wikidata";
+              };
+          };
         };
 
         # Optional schedule for the aggregate unit. Off by default; enabling it
@@ -700,6 +858,34 @@
           timerConfig = {
             Unit = "${booksResolveUnit}.service";
             OnCalendar = cfg.booksResolveTimer.interval;
+            Persistent = true;
+            RandomizedDelaySec = "5m";
+          };
+        };
+
+        # Manga migration schedule. A drained pool exits in seconds with zero
+        # requests (the manga flag is persisted per work), so a weekly tick
+        # keeps the Hardcover-only tail covered without visible load.
+        systemd.timers.kinoboxd-backfill-manga = lib.mkIf cfg.booksMangaBackfillTimer.enable {
+          description = "kinoboxd — scheduled manga/comics signal migration";
+          wantedBy = [ "timers.target" ];
+          timerConfig = {
+            Unit = "${booksMangaUnit}.service";
+            OnCalendar = cfg.booksMangaBackfillTimer.interval;
+            Persistent = true;
+            RandomizedDelaySec = "5m";
+          };
+        };
+
+        # Author migration schedule. Off by default: the WDQS bridge is
+        # default-on in the server's stats pass, so a scheduled run would only
+        # duplicate it; enable to replay the bridge after a schema change.
+        systemd.timers.kinoboxd-backfill-authors = lib.mkIf cfg.booksAuthorsBackfillTimer.enable {
+          description = "kinoboxd — scheduled author-alias bridge migration";
+          wantedBy = [ "timers.target" ];
+          timerConfig = {
+            Unit = "${booksAuthorsUnit}.service";
+            OnCalendar = cfg.booksAuthorsBackfillTimer.interval;
             Persistent = true;
             RandomizedDelaySec = "5m";
           };

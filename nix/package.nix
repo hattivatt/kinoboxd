@@ -276,7 +276,63 @@ buildNpmPackage (finalAttrs: {
     exec '@node@' server/books/scheduled-resolve.js "$@"
     WRAPPER
 
-        chmod +x $out/bin/kinoboxd $out/bin/kinoboxd-backfill $out/bin/kinoboxd-books-backfill $out/bin/kinoboxd-books-resolve
+        # Fifth launcher: a dispatcher for the two one-off book migrations
+        # (server/books/manga-backfill.js and server/books/authors-backfill.js)
+        # that the NixOS module runs as `kinoboxd-backfill-manga` /
+        # `kinoboxd-backfill-authors`. The first argument selects the
+        # migration, every further argument is forwarded verbatim.
+        #
+        #   kinoboxd-books-migrate manga [args…]     → manga-backfill.js
+        #     --limit N    works per run (default 20, 0 = no cap)
+        #     --pause N    ms between provider lookups (default 600)
+        #     --ids a,b    only these works (hc:…, lr:…, ol:…)
+        #     --dry-run    report the detections without writing
+        #     --recheck    re-ask works that are already settled
+        #   kinoboxd-books-migrate authors [args…]   → authors-backfill.js
+        #     --profile=<key>  one profile (default: every LiveLib profile)
+        #     --wikidata       run the WDQS bridge (default: offline report)
+        #     --recheck        forget the "already asked" set and re-ask
+        #     --limit=N        cap one pass
+        #     --dry-run        report the groups without writing
+        #
+        #   KINOBOXD_STATE_DIR       writable runtime dir (default: $XDG_STATE_HOME/kinoboxd)
+        #   KINOBOXD_CACHE_BOOK_DIR  override the book cache (default: $state/app/cache-book)
+        #
+        # Ad-hoc:  sudo KINOBOXD_STATE_DIR=/var/lib/kinoboxd \
+        #            kinoboxd-books-migrate manga --dry-run --limit 10
+        #          sudo KINOBOXD_STATE_DIR=/var/lib/kinoboxd \
+        #            kinoboxd-books-migrate authors --wikidata
+        cat > $out/bin/kinoboxd-books-migrate <<'WRAPPER'
+    #!/bin/sh
+    # kinoboxd-books-migrate — dispatcher for the manga and author migrations.
+    set -eu
+
+    store='@store@'
+    . "$store/prepare-state.sh"
+    prepare_state
+
+    if [ $# -lt 1 ]; then
+      echo "usage: kinoboxd-books-migrate {manga|authors} [args…]" >&2
+      exit 2
+    fi
+
+    case "$1" in
+      manga)
+        shift
+        exec '@node@' server/books/manga-backfill.js "$@"
+        ;;
+      authors)
+        shift
+        exec '@node@' server/books/authors-backfill.js "$@"
+        ;;
+      *)
+        echo "usage: kinoboxd-books-migrate {manga|authors} [args…]" >&2
+        exit 2
+        ;;
+    esac
+    WRAPPER
+
+        chmod +x $out/bin/kinoboxd $out/bin/kinoboxd-backfill $out/bin/kinoboxd-books-backfill $out/bin/kinoboxd-books-resolve $out/bin/kinoboxd-books-migrate
 
         substituteInPlace $out/bin/kinoboxd \
           --replace-fail '@store@' "$out/share/kinoboxd" \
@@ -291,6 +347,10 @@ buildNpmPackage (finalAttrs: {
           --replace-fail '@node@' "${nodejs_24}/bin/node"
 
         substituteInPlace $out/bin/kinoboxd-books-resolve \
+          --replace-fail '@store@' "$out/share/kinoboxd" \
+          --replace-fail '@node@' "${nodejs_24}/bin/node"
+
+        substituteInPlace $out/bin/kinoboxd-books-migrate \
           --replace-fail '@store@' "$out/share/kinoboxd" \
           --replace-fail '@node@' "${nodejs_24}/bin/node"
   '';
