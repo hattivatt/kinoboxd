@@ -4,7 +4,7 @@
 
 **Раскладка.** Git-репозиторий — корень проекта. В нём лежит всё, что нужно для разработки и деплоя: `server/`, `public/`, `test/`, `scripts/`, `contracts/`, `spec/`, `nix/` (сборка и NixOS-модуль), `devenv.*` (dev-shell), `flake.nix`. Вне git остаётся только то, что генерируется или является личным: `node_modules/`, `cache*/`, `config/*-token`, `.devenv/`, `result`, `state/`, а также личный site-конфиг `kinoboxd.nix` (в `~/.nixos`). Имя `AGENTS.md` выбрано как конвенция, которую автоматически читают agent-тулзы.
 
-**Статус:** v3.3, 12.11.2026, `main` @ `db5404a`. v3.3: закрыт backlog §11 (все job-«running» в `core/jobs`, округления через `core/stats`, per-film blacklist таксономии, books-миграции юнитами, три распила модулей). v3.2: релизы на тэгах `vX.Y.Z` и semver, pin-блок в отчёте (§12.1, §13.1, §13.3). v3.1: dev/deploy-файлы внутри репозитория. Заменяет `АРХИТЕКТУРА.md`, `ПЛАНЫ.md` и `РЕФАКТОРИНГ-ПЛАН.md` (их содержимое сведено сюда, сами файлы удалены; история — в git).
+**Статус:** v3.3, 12.11.2026, `main` @ `7b5597d` (тэг `v1.1.0`). v3.3: закрыт backlog §11 (все job-«running» в `core/jobs`, округления через `core/stats`, per-film blacklist таксономии, books-миграции юнитами, три распила модулей). v3.2: релизы на тэгах `vX.Y.Z` и semver, pin-блок в отчёте (§12.1, §13.1, §13.3). v3.1: dev/deploy-файлы внутри репозитория. Заменяет `АРХИТЕКТУРА.md`, `ПЛАНЫ.md` и `РЕФАКТОРИНГ-ПЛАН.md` (их содержимое сведено сюда, сами файлы удалены; история — в git).
 
 ---
 
@@ -310,7 +310,7 @@ Letterboxd — не отдельный профиль: он обогащает �
 - Лаунчеры `nix/package.nix`: `kinoboxd`, `kinoboxd-backfill`, `kinoboxd-books-backfill`, `kinoboxd-books-resolve`, `kinoboxd-books-migrate` (диспетчер `manga|authors`).
 - Личный site-конфиг (`services.kinoboxd`: sops-секреты, порт, state, таймеры) живёт вне репозитория — в `~/.nixos`; в repo его нет.
 - Переменные: `KINOBOXD_CACHE_DIR`, `KINOBOXD_CACHE_BOOK_DIR`, `KINOBOXD_CACHE_GAMES_DIR`, `KINOBOXD_STATE_DIR`, `KINOBOXD_PASSWORD`, `PORT` (боевой `3000`; в тестах не использовать).
-- Текущий пин: `rev = 2416813408ff9e25df829cb8a2765849fa29dd99`, `hash = sha256-UWtj0qTf3AcJKNzMck6R1WwTxvBtS9Tntw0L7MWqLJI=`, `npmDeps.hash = sha256-X6rMqzNU1oXT0h1oc7Ak3dxP6Yb90frXXbiIra52Qag=`, store `/nix/store/6cjby7wpcf4gawir94ypi29cvgpp1cbg-kinoboxd-1.0.0` (пин последнего релиза; см. §12.1).
+- Текущий пин: `rev = 2416813408ff9e25df829cb8a2765849fa29dd99`, `hash = sha256-UWtj0qTf3AcJKNzMck6R1WwTxvBtS9Tntw0L7MWqLJI=`, `npmDeps.hash = sha256-X6rMqzNU1oXT0h1oc7Ak3dxP6Yb90frXXbiIra52Qag=`, store `/nix/store/6cjby7wpcf4gawir94ypi29cvgpp1cbg-kinoboxd-1.0.0`. Это пин `v1.0.0`: тэг `v1.1.0` (`7b5597d`) нарезан локально, а `fetchFromGitHub` пин на коммит, которого нет в remote, не соберётся, поэтому пин догоняет отдельным коммитом после push (см. §13.3).
 - `flake.nix` больше **не дублирует** рецепт: он делает `pkgs.callPackage ./nix/package.nix { source = <local tree>; }`, поэтому лаунчеры, `prepare_state` и `meta` живут в одном файле. Пин `rev` указывает на коммит последнего релизного тэга, поэтому он всегда отстаёт от HEAD (архив собственного коммита запинить нельзя). `nix build .#` пин не использует.
 
 ### 12.1. Релизы и тэги
