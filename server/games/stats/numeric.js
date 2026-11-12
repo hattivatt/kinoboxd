@@ -73,7 +73,7 @@ const STEAM_ART_PATH = '/api/games/steam-art';
 
 /**
  * Proxy URL of a resolved vertical capsule. The resolve document
- * (`cache-games/art/resolved/<appid>.json`, `server/games/steam-art.js`) says
+ * (`cache-games/art/resolved/<appid>.json`, `server/games/art/resolve.js`) says
  * which schema answered:
  *
  *   library-hashed  -> `/api/games/steam-art/<library|library_capsule>/<appid>?h=<hash>`

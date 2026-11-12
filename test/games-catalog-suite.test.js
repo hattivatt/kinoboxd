@@ -476,7 +476,7 @@ describe('games-art-enrich', () => {
 
   const gameCache = require('../server/games/game-cache');
   const enrich = require('../server/games/enrich');
-  const art = require('../server/games/steam-art');
+  const art = require('../server/games/art');
 
   const APPID = 3669870;
   const HEADER_HASH = '1e0c76e4253d347bb1304c3f213570251d924edf';
@@ -701,7 +701,7 @@ describe('games-art-enrich', () => {
 
 describe('games-art-resolve', () => {
   /**
-   * Server-side vertical-art resolve (`server/games/steam-art.js`).
+   * Server-side vertical-art resolve (`server/games/art/resolve.js`).
    *
    * Live evidence (03.11.2026, from the deploy host, public file CDN + store
    * frontend API):
@@ -736,7 +736,7 @@ describe('games-art-resolve', () => {
   process.env.KINOBOXD_CACHE_GAMES_DIR = run.cacheGamesDir;
   process.env.KINOBOXD_STATE_DIR = run.stateDir;
 
-  const art = require('../server/games/steam-art');
+  const art = require('../server/games/art');
 
   const APPID = 3669870;
   const HEADER_HASH = '1e0c76e4253d347bb1304c3f213570251d924edf';
@@ -1089,7 +1089,7 @@ describe('games-art-stats', () => {
   process.env.KINOBOXD_STATE_DIR = run.stateDir;
 
   const gameCache = require('../server/games/game-cache');
-  const art = require('../server/games/steam-art');
+  const art = require('../server/games/art');
   const { buildGamesStatsFromCache } = require('../server/games/stats');
 
   const ID = '76561198000000888';

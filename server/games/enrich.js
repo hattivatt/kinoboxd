@@ -55,7 +55,7 @@ const { createJobs } = require('../core/jobs');
 const steam = require('./steam');
 const store = require('./store');
 const spy = require('./spy');
-const steamArt = require('./steam-art');
+const steamArt = require('./art');
 const { createBudget: createBudgetImpl, budgetLimitFromEnv: budgetLimitFromEnvImpl } = require('../core/budget');
 const sources = require('../core/sources');
 
