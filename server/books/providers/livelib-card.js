@@ -19,6 +19,7 @@ const livelib = require('../livelib');
 const { createSourceClient, defaultSleep } = require('./http');
 const sources = require('../../core/sources');
 const { detectManga, collectMangaTexts } = require('./manga');
+const { seriesEntryOf } = require('./series-name');
 const { cleanText, normalizeIsbn, isbn10Of } = require('../normalize');
 
 const NAME = 'livelib-card';
@@ -109,7 +110,8 @@ function parseCardHtml(html, input = {}) {
     .get()
     .filter(Boolean);
   const genres = [...new Set(genreValues)];
-  const seriesName = rows['Серия'] || null;
+  const rawSeriesName = rows['Серия'] || null;
+  const series = seriesEntryOf(rawSeriesName);
   const publisher = rows['Издательство'] || null;
   const isbnRaw = rows.ISBN || (book && book.isbn) || null;
   const isbn13 = normalizeIsbn(isbnRaw);
@@ -135,7 +137,8 @@ function parseCardHtml(html, input = {}) {
     authors: authors.length ? authors : (input.authors || []).filter(Boolean),
     year,
     publisher,
-    series: seriesName ? { name: seriesName, position: null } : null,
+    series: series ? { name: series.name, position: series.position } : null,
+    seriesAll: series ? [series] : [],
     genres,
     pages,
     isbn13,
@@ -147,8 +150,8 @@ function parseCardHtml(html, input = {}) {
     language: rows['Язык'] || (book && book.inLanguage) || null,
     confidence: 1,
     match: { method: 'card', titleSim: 1, exact: true, authorHit: true },
-    mangaComics: detectManga({ genres, series: seriesName ? [seriesName] : [], publisher }),
-    mangaTexts: collectMangaTexts({ genres, series: seriesName ? [seriesName] : [], publisher }),
+    mangaComics: detectManga({ genres, series: rawSeriesName ? [rawSeriesName] : [], publisher }),
+    mangaTexts: collectMangaTexts({ genres, series: rawSeriesName ? [rawSeriesName] : [], publisher }),
   };
 }
 
