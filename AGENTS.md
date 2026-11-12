@@ -4,7 +4,7 @@
 
 **Раскладка.** Git-репозиторий — корень проекта. В нём лежит всё, что нужно для разработки и деплоя: `server/`, `public/`, `test/`, `scripts/`, `contracts/`, `spec/`, `nix/` (сборка и NixOS-модуль), `devenv.*` (dev-shell), `flake.nix`. Вне git остаётся только то, что генерируется или является личным: `node_modules/`, `cache*/`, `config/*-token`, `.devenv/`, `result`, `state/`, а также личный site-конфиг `kinoboxd.nix` (в `~/.nixos`). Имя `AGENTS.md` выбрано как конвенция, которую автоматически читают agent-тулзы.
 
-**Статус:** v3.3, 12.11.2026, `main` @ `e2b1907` (тэг `v1.1.0` @ `7b5597d`, пин на него). v3.3: закрыт backlog §11 (все job-«running» в `core/jobs`, округления через `core/stats`, per-film blacklist таксономии, books-миграции юнитами, три распила модулей). v3.2: релизы на тэгах `vX.Y.Z` и semver, pin-блок в отчёте (§12.1, §13.1, §13.3). v3.1: dev/deploy-файлы внутри репозитория. Заменяет `АРХИТЕКТУРА.md`, `ПЛАНЫ.md` и `РЕФАКТОРИНГ-ПЛАН.md` (их содержимое сведено сюда, сами файлы удалены; история — в git).
+**Статус:** v3.4, 12.11.2026, `main` @ `38d6ef6` (тэг `v1.2.0`, пин на него). v3.4: год первого издания — Wikidata-канал (провайдер, батчевый проход в resolve и бэкфилле), точность/вид заявки в payload, проверка правдоподобия, негативный маркер по набору провайдеров (§5.2, §10). v3.3: закрыт backlog §11 (все job-«running» в `core/jobs`, округления через `core/stats`, per-film blacklist таксономии, books-миграции юнитами, три распила модулей). v3.2: релизы на тэгах `vX.Y.Z` и semver, pin-блок в отчёте (§12.1, §13.1, §13.3). v3.1: dev/deploy-файлы внутри репозитория. Заменяет `АРХИТЕКТУРА.md`, `ПЛАНЫ.md` и `РЕФАКТОРИНГ-ПЛАН.md` (их содержимое сведено сюда, сами файлы удалены; история — в git).
 
 ---
 
@@ -37,7 +37,8 @@
     taxonomy-blacklist.js per-film снятие категорий из `cache/flags/`
     enrich.js  backfill.js  rematch.js  compare.js  attachment.js  mcu.js
     books/                routes, book-cache, import, resolve + resolve-stages/,
-                          providers/ (hardcover, litres, googlebooks, openlibrary, livelib-card),
+                          providers/ (hardcover, litres, googlebooks, openlibrary, wikidata, livelib-card)
+                          + claim.js (правила заявки на год) + ../wikidata-flag.js (kill switch),
                           stats.js + stats/{,}, years/authors/manga backfills, scheduled-resolve
     games/                routes* + endpoints/{,epic/}, import, enrich, secondary/ (identity, cache,
                           bridge, title-genres, union, epic, enrich, details-*), sources/{gog,epic,*},
@@ -156,16 +157,19 @@ Letterboxd — не отдельный профиль: он обогащает �
 | Google Books | метадата по ISBN/названию | free-tier с ключом `GB_API_KEY` |
 | OpenLibrary | метадата, `first_publish_year` | публичный API |
 | LiveLib-card | метадата карточки | публичная страница |
-| Wikidata | P577 (первая публикация), авторы | WDQS |
+| Wikidata | год первого издания работы: `P577`/`P571` + точность, обход `P629` | WDQS, батч по названиям |
 
 - Импорт-файл: multipart, полка (read/wish), идемпотентность по ключу строки, манга-фильтр. Прогресс и результат — resolve-job.
 - Hardcover: инкрементальный журнал; пустой дельта-импорт не запускает resolve.
-- Resolve-цепочка (`books/resolve.js` + `resolve-stages/`): ISBN → название+автор → провайдеры по приоритету (Hardcover, Литрес, Google Books, OpenLibrary, LiveLib-card) → `details/{hcWorkId}.json` + `links.json`.
+- Resolve-цепочка (`books/resolve.js` + `resolve-stages/`): ISBN → название+автор → провайдеры по приоритету (Hardcover, Литрес, Google Books, OpenLibrary, LiveLib-card) → год (Wikidata, батчем) → `details/{hcWorkId}.json` + `links.json`.
 - Происхождение метадаты видно в `metadataSources`; `links/{livelibBookId}.json` хранит метод и score матча.
 - Серии/сборники: эвристика в `segments.js`; ручные флаги манги — `flags/book-flags.json`; блэклист тэг-серий — `series-blacklist.js`.
 - Миграции `authors` и `manga` теперь штатные юниты: `kinoboxd-backfill-manga` (очередь, таймер вкл., `booksMangaBackfillLimit`/`PauseMs`) и `kinoboxd-backfill-authors` (диагностика, таймер выкл., `--wikidata`; мост авторов и так default-on в `/api/books/stats`). Оба зовут один диспетчер-лаунчер `kinoboxd-books-migrate {manga|authors}`.
-- Год работы: `manual > first > edition > unknown`; `manual` — в `year-overrides/`, `edition` — честный фоллбек с `yearSource: 'edition'`. Промах «никто не знает» кэшируется на 30 д.
-- Payload (`GET /api/books/stats?profile=…`): `works`/`booksIndex`, `series`, `authors`, `decades`, `years`, `sources`, `coverage`, `timeline`, `summary`, `meta`. Собирается в `server/books/stats/`; `stats.js` — оркестратор. Блока `publishers` в payload **нет** (виджет удалён 04.11.2026, мёртвый серверный блок убран 10.11.2026).
+- Resolve **не** закрывает год вместе с карточкой: после провайдеров идёт один батчевый проход `resolve-stages/year-stage.js` по работам, у которых есть details и нет заявки на первое издание. Он спрашивает только Wikidata (2 запроса WDQS на ~12 названий) и пишет `firstPublishedYear` + `Precision` + `Kind`; пустой ответ ничего не пишет — негативный кэш принадлежит бэкфиллу.
+- Заявка на год = год + точность (`year|decade|century|millennium`) + вид (`publication|composition`): у древних текстов дата часто известна веком и называется «дата создания» (`P571`), а не публикации. Ранняя заявка выигрывает; при равном годе — более точная.
+- Год работы: `manual > first > edition > unknown`; `manual` — в `year-overrides/`, `edition` — честный фоллбек с `yearSource: 'edition'`. Нижняя граница печатного года — 1000: заявка печатного источника с годом 3 (Hardcover так хранит мангу) — артефакт, а не первое издание; она отбрасывается, а не попадает в «до 1000 г.». Промах «никто не знает» кэшируется на 30 д, но маркер перечисляет **всех** спрошенных провайдеров — провайдер, добавленный позже, переоткрывает вердикт (Wikidata переоткрыла 201 документ с маркером `none`).
+- Повторный resolve не стирает дозаполненный год: `resolve-stages/chain.js` переносит поля заявки из прежнего документа, если новый ответ её не знает.
+- Payload (`GET /api/books/stats?profile=…`): `works`/`booksIndex`, `series`, `authors`, `decades`, `years`, `sources`, `coverage`, `timeline`, `summary`, `meta`; у работы есть `year`, `yearSource`, `yearPrecision`, `yearKind`. Собирается в `server/books/stats/`; `stats.js` — оркестратор. Блока `publishers` в payload **нет** (виджет удалён 04.11.2026, мёртвый серверный блок убран 10.11.2026).
 
 ### 5.3. Игры
 
@@ -211,7 +215,7 @@ Letterboxd — не отдельный профиль: он обогащает �
 
 **Задания.** Каждый длительный процесс (импорт фильмов/книг/игр, обогащение, кредиты, франшизы, GOG/Epic, secondary-details) — реестр на `core/jobs.js` с `start*`/`getStatus`: id, стадии, прогресс, cooldown, single-flight. Клиент опрашивает статус, вкладку можно свернуть. Доменный фасад сохраняет прежние поля ответа байт-в-байт. Job-«running» вне `core/jobs` больше нет: `meta.secondaryDetails.running` читается из реестра (`isRunning(ownerKey)`).
 
-**Вежливость.** Пауза перед запросом, бюджет на прогон, breaker на 403/429, TTL кэша, `Retry-After` при 429, сеть/5xx — deferred. **Нормативные числа — `contracts/limits.md`**; объявлять источник = править `server/core/sources.js` и перегенерировать контракт, а не документ.
+**Вежливость.** Пауза перед запросом, бюджет на прогон, breaker на 403/429, TTL кэша, `Retry-After` при 429, сеть/5xx — deferred. Книжный WDQS (`wikidataBooks`) — 1.2 s пауза, 2 запроса на батч из 12 названий, 3 попытки с backoff, 429/502/503/504 → breaker 30 мин, бюджет `BOOKS_WIKIDATA_BUDGET` (300 книг/прогон); kill switch `KINOBOXD_BOOKS_WIKIDATA=0|off` глушит и мост авторов, и год. **Нормативные числа — `contracts/limits.md`**; объявлять источник = править `server/core/sources.js` и перегенерировать контракт, а не документ.
 
 **Локи.** Межпроцессные проходы (resolve книг, кредиты игр, бэкфиллы) защищены общим файловым lock; при занятом локе импорт ждёт `*_LOCK_WAIT_MS`, таймер выходит 0. Юниты бэкфилла конфликтуют друг с другом (`Conflicts=`), сервер продолжает работать.
 
@@ -260,7 +264,7 @@ GB_API_KEY="$(gopass show -o apitokens/gbooks-api-key)" npm start
 
 ## 10. Тесты, контракты, лимиты
 
-**Тесты.** `npm test` = `node --test test/*.test.js`: **62 файла** (13 доменных сьютов + 49 одиночных), **1 380** тестов (1 369 pass, 11 skip), 0 fail, ~20 s.
+**Тесты.** `npm test` = `node --test test/*.test.js`: **66 файлов** (13 доменных сьютов + 53 одиночных), **1 455** тестов (1 444 pass, 11 skip), 0 fail, ~25 s.
 
 - `test/helpers/port.js` — `portFor(slot)`; база из `KINOBOXD_TEST_PORT_BASE` (по умолчанию 6000). Диапазон **9900–10999 не использовать**: там WHATWG-«bad ports» (10080 и др.), `fetch` их отвергает. Две полные сюиты можно гонять параллельно разными базами — это единственный способ не получить ложный `EADDRINUSE`.
 - `test/helpers/env.js` — `makeTmpCache`, `tmpDir`, `resetMutableState`, `cleanupTmpDirs`. Модуль кэша читает свой корень **один раз при загрузке**, поэтому env выставляется до первого `require('../server/...')`.
@@ -281,6 +285,8 @@ GB_API_KEY="$(gopass show -o apitokens/gbooks-api-key)" npm start
 - Steam — `STEAM_API_KEY` **обязателен** для библиотеки (`GetOwnedGames` без ключа → 401); профиль/достижения/global%/размер библиотеки собираются без ключа. **Все формы `/games` → `302 /login/` даже для публичных профилей** (login-gate, не приватность; проверено 12 запросами/8 формами, cookie-jar и браузерные заголовки не помогают) — на эту форму запросы не тратить. Отзывы: старый `appreviews` мёртв, актуальный — `IUserReviewsService/GetAppReviews`. DNS: локальный резолвер может отдавать TLS-мёртвые edge-IP (лечится резолвером/DoH, **IP не хардкодить**).
 - GOG/Epic secondary-метадата — GOG v2 недокументирован (используется веб-магазином), публичный; `globalReleaseDate` приоритетнее `gogReleaseDate`; Epic CMS — только `productHome`, `addon`/`offer` пропускать.
 - WDQS — батчи по 450, уважать `429`/`Retry-After`, при outage не чаще 1 запроса/мин.
+- **Год первого издания (эмпирика, 12.11.2026).** У русских переизданий печатных источников нет: OpenLibrary не имеет ни одной записи по 9 проверенным RU-ISBN (0/9), Wikidata по RU-ISBN (`P212`) — 0/4, Литрес `date_written_at` у «Искусства войны» `null`. Google Books отдаёт только год тиража. Работает один канал — Wikidata по **русскому названию** + автор: 43 из 97 недатированных названий боевого кэша (44%) на точном совпадении метки, на полном прогоне — 69 из 201 (34%), 33 запроса. Три обязательных правила матчинга: тип-фильтр `?item wdt:P31 ?type . ?type wdt:P279* wd:Q7725634` (цепочка `wdt:P31/wdt:P279*` даёт 504 за 60 s), обход `P629` (иначе дата перевода «Одиссеи» 1997 выдаётся за год работы) и отказ при чужом авторе (иначе «Бретёр» Ю. Яковлевой становится повестью Тургенева 1847). Запрос с `P629`-UNION внутри поиска по метке тоже уходит в 504 — канон спрашивается отдельным `VALUES`-запросом (~0.5 s).
+- **Древние тексты.** Год «первого издания» для них часто не существует: Wikidata даёт «Илиаду» 800 г. до н.э. с точностью «век», «Эпос о Гильгамеше» −2100, «Панчатантру» −299, «Ригведу» −1499, «Слово о полку Игореве» 1185 (только `P571`, точность «век»); а у «Одиссеи», «Махабхараты», «Рамаяны», «Дао дэ цзина», «Библии» и «Торы» даты нет вообще. Поэтому в схеме есть точность и вид заявки, а не только число.
 - **GOG-паузы — полные `sleep` между запросами, а не «минимальный интервал» общего гейта.** Переводить их на `createSourceGate` нельзя: источник молча ускорится, а `limits.md` этого не покажет.
 
 **Epic: авторизация и отказы.** Работает только `grant_type=authorization_code`: `GET /api/games/epic/auth-url` → пользователь логинится на epicgames.com → копирует `code` со страницы `/id/api/redirect` → `POST /api/games/epic/connect { code, owner }` → импорт стартует сам. `code` принимается и как голая строка, и как вся ссылка. Обмен — `POST /account/api/oauth/token` с `Authorization: basic <base64(client_id:client_secret)>` **в заголовке** (не в query/body), `Content-Type: application/x-www-form-urlencoded`, `grant_type=authorization_code&code=…&token_type=eg1`; refresh — тот же эндпоинт с `grant_type=refresh_token`. Device-code flow оставлен в коде, но публичным лаунчер-клиентам Epic отвечает `400 unsupported_grant_type` (1016) — это отказ в возможности, а не ошибка запроса. Модель: один владелец — один Epic-аккаунт (`owner_mismatch` при попытке второго), `lastPlayed` не существует и не выдумывается, при истёкшем токене снимок остаётся с `status: 'auth_expired'` + `fetchedAt`, а не нулями.
@@ -291,7 +297,9 @@ GB_API_KEY="$(gopass show -o apitokens/gbooks-api-key)" npm start
 
 ## 11. Открытые остатки и известные компромиссы
 
-**Остатки (12.11.2026).** Закрыто в этом раунде: `meta.secondaryDetails.running` переехал в `core/jobs` (§7), инлайн-копии округления заменены на `core/stats` (0 выражений `Math.round(x * 10**n) / 10**n` в `server/`), books-миграции `authors`/`manga` стали юнитами (§12), FP таксономии снимаются per-film blacklist'ом (§5.1), распилены `taxonomy.js`, `games/steam-art.js`, `games/editions.js` (24 → 21 модуль > 800 строк).
+**Остатки (12.11.2026, после раунда «год первого издания»).** Закрыто в этом раунде: Wikidata-канал года работы — провайдер `books/providers/wikidata.js`, батчевый проход в resolve (`resolve-stages/year-stage.js`) и в бэкфилле, точность/вид заявки (`firstPublishedYearPrecision`/`Kind`) в payload (`yearPrecision`/`yearKind`), проверка правдоподобия заявки, повторный resolve больше не стирает дозаполненный год, негативный маркер перечисляет спрошенных провайдеров и потому переоткрывается при добавлении нового.
+
+Ранее в этом же файле: `meta.secondaryDetails.running` переехал в `core/jobs` (§7), инлайн-копии округления заменены на `core/stats` (0 выражений `Math.round(x * 10**n) / 10**n` в `server/`), books-миграции `authors`/`manga` стали юнитами (§12), FP таксономии снимаются per-film blacklist'ом (§5.1), распилены `taxonomy.js`, `games/steam-art.js`, `games/editions.js` (24 → 21 модуль > 800 строк).
 
 1. 21 модуль > 800 строк остался осознанно — в основном доменные фасады и контроллеры: `public/js/books.js` 4 294, `public/js/games.js` 3 465, `public/js/games-view.js` 2 017, `public/js/widgets.js` 1 971, `public/js/main.js` 1 819, `server/games/franchise.js` 1 569, `server/books/livelib.js` 1 508; дальнейшее дробление — продуктовый раунд, ратчет в `test/census-thresholds.test.js` только сокращается.
 2. В сьютах порядок блоков нагрузочный (шапка каждого сьюта объясняет почему): новый тест с агрегатом по всему кэшу идёт до seeding-блока или остаётся одиночным.
@@ -325,7 +333,8 @@ GB_API_KEY="$(gopass show -o apitokens/gbooks-api-key)" npm start
 - Лаунчеры `nix/package.nix`: `kinoboxd`, `kinoboxd-backfill`, `kinoboxd-books-backfill`, `kinoboxd-books-resolve`, `kinoboxd-books-migrate` (диспетчер `manga|authors`).
 - Личный site-конфиг (`services.kinoboxd`: sops-секреты, порт, state, таймеры) живёт вне репозитория: `~/.nixos/modules/services/kinoboxd/kinoboxd-module.nix` + `~/.nixos/packages/kinoboxd/package.nix`; в repo их нет.
 - Переменные: `KINOBOXD_CACHE_DIR`, `KINOBOXD_CACHE_BOOK_DIR`, `KINOBOXD_CACHE_GAMES_DIR`, `KINOBOXD_STATE_DIR`, `KINOBOXD_PASSWORD`, `PORT` (боевой `3000`; в тестах не использовать).
-- Текущий пин (`v1.1.0`): `rev = 7b5597d4b547b971bd767d692e50792d5d738d00` (коммит тэга), `hash = sha256-IxYV5Bfv8YxtnIHf2FJkLMYfaadpUIYEDZtBCiT9vcE=`, `npmDeps.hash = sha256-X6rMqzNU1oXT0h1oc7Ak3dxP6Yb90frXXbiIra52Qag=` (не менялся: `package-lock.json` не двигался с `v1.0.0`), store `/nix/store/k2gzh95g3nrczz70lsx4avq2mrb7xmi2-kinoboxd-1.1.0`. Предыдущий пин — `v1.0.0`: rev `2416813…`, store `/nix/store/6cjby7wpcf4gawir94ypi29cvgpp1cbg-kinoboxd-1.0.0`.
+- Текущий пин (`v1.2.0`): `rev = "v1.2.0"` (тэг; коммит тэга `38d6ef6`), `hash = sha256-YbTdFwIe6BQ0o31wwFKAo+1sXVRQ0HuwSRPvdrY+d4w=`, `npmDeps.hash = sha256-X6rMqzNU1oXT0h1oc7Ak3dxP6Yb90frXXbiIra52Qag=` (не менялся: `package-lock.json` не двигался с `v1.0.0`), store `/nix/store/gkjpa4gbg7p1bfqxc4qzmlc4iv42j3rj-kinoboxd-1.2.0`.
+- Предыдущий пин — `v1.1.0`: rev `7b5597d…`, store `/nix/store/k2gzh95g3nrczz70lsx4avq2mrb7xmi2-kinoboxd-1.1.0`. До него `v1.0.0`: rev `2416813…`, store `/nix/store/6cjby7wpcf4gawir94ypi29cvgpp1cbg-kinoboxd-1.0.0`.
 - `flake.nix` больше **не дублирует** рецепт: он делает `pkgs.callPackage ./nix/package.nix { source = <local tree>; }`, поэтому лаунчеры, `prepare_state` и `meta` живут в одном файле. Пин `rev` указывает на коммит последнего релизного тэга, поэтому он всегда отстаёт от HEAD (архив собственного коммита запинить нельзя). `nix build .#` пин не использует.
 
 ### 12.1. Релизы и тэги
