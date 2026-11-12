@@ -35,6 +35,17 @@ function needsSeriesQuestion(doc, nowMs, recheckDays) {
   return nowMs - ts >= window * 24 * 60 * 60 * 1000;
 }
 
+function wikidataIdentityOf(result) {
+  const patch = {};
+  if (result && result.wikidataWorkId) patch.wikidataWorkId = String(result.wikidataWorkId);
+  if (result && Array.isArray(result.wikidataAuthorIds) && result.wikidataAuthorIds.length) {
+    patch.wikidataAuthorIds = result.wikidataAuthorIds
+      .filter((entry) => entry && entry.qid)
+      .map((entry) => ({ name: entry.name ? String(entry.name) : null, qid: String(entry.qid) }));
+  }
+  return patch;
+}
+
 function seriesPatch(doc, result, options = {}) {
   if (hasSeries(doc)) return null;
   const found = seriesOfResult(result);
@@ -51,6 +62,7 @@ function seriesPatch(doc, result, options = {}) {
 
 module.exports = {
   SERIES_SOURCE: SOURCE,
+  wikidataIdentityOf,
   hasSeries,
   seriesOfResult,
   seriesCheckedAt,

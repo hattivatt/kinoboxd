@@ -27,6 +27,7 @@ const {
   hasSeries,
   needsSeriesQuestion,
   seriesPatch,
+  wikidataIdentityOf,
 } = require('./series-stage');
 
 const DEFAULT_LIMIT = 20;
@@ -510,7 +511,9 @@ async function backfill(options = {}) {
       asked: seriesAsked,
       now: checkedAt,
     });
-    const withSeries = (next) => (patch ? { ...next, ...patch } : next);
+    const identity = wikidataIdentityOf(yearClaims.byWork.get(workId));
+    const withSeries = (next) =>
+      ({ ...next, ...identity, ...(patch ? patch : {}) });
     try {
       if (!yearNeeded) {
         if (patch && patch.series) report.seriesFilled++;
@@ -603,6 +606,7 @@ async function backfill(options = {}) {
           ` (${found.source}; edition ${doc.publicationYear == null ? '?' : doc.publicationYear})`
       );
       if (!dryRun) {
+        if (patch && patch.series) report.seriesFilled++;
         const next = {
           ...doc,
           firstPublishedYear: found.year,
