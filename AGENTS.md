@@ -4,7 +4,7 @@
 
 **Раскладка.** Git-репозиторий — корень проекта. В нём лежит всё, что нужно для разработки и деплоя: `server/`, `public/`, `test/`, `scripts/`, `contracts/`, `spec/`, `nix/` (сборка и NixOS-модуль), `devenv.*` (dev-shell), `flake.nix`. Вне git остаётся только то, что генерируется или является личным: `node_modules/`, `cache*/`, `config/*-token`, `.devenv/`, `result`, `state/`, а также личный site-конфиг `kinoboxd.nix` (в `~/.nixos`). Имя `AGENTS.md` выбрано как конвенция, которую автоматически читают agent-тулзы.
 
-**Статус:** v3.2, 11.11.2026, `main` @ `45a40b0`. v3.2: релизный процесс закреплён тэгами `vX.Y.Z` и semver (§12.1), отчёт о пине отдаётся готовым к копипасте pin-блоком (§13.1), пин ставится на тэг, а не на произвольный HEAD (§13.3). v3.1: dev- и deploy-файлы перенесены внутрь репозитория, `flake.nix` вызывает `nix/package.nix` вместо дублирования рецепта. Заменяет `АРХИТЕКТУРА.md`, `ПЛАНЫ.md` и `РЕФАКТОРИНГ-ПЛАН.md` (их содержимое сведено сюда, сами файлы удалены; история — в git).
+**Статус:** v3.3, 12.11.2026, `main` @ `db5404a`. v3.3: закрыт backlog §11 (все job-«running» в `core/jobs`, округления через `core/stats`, per-film blacklist таксономии, books-миграции юнитами, три распила модулей). v3.2: релизы на тэгах `vX.Y.Z` и semver, pin-блок в отчёте (§12.1, §13.1, §13.3). v3.1: dev/deploy-файлы внутри репозитория. Заменяет `АРХИТЕКТУРА.md`, `ПЛАНЫ.md` и `РЕФАКТОРИНГ-ПЛАН.md` (их содержимое сведено сюда, сами файлы удалены; история — в git).
 
 ---
 
@@ -31,7 +31,10 @@
       fs-store.js  lock.js  env.js  params.js  errors.js  secrets.js  profile.js  stats.js
     films/routes.js       API фильмов
     stats.js  stats/      оркестратор payload'а фильмов + 9 секций
-    cache.js  kp.js  tmdb.js  wikidata.js  taxonomy.js  upload.js
+    cache.js  kp.js  tmdb.js  wikidata.js  upload.js
+    taxonomy.js           движок правил (классификация, бакеты, агрегация)
+    taxonomy-defs.js      данные правил: keywords, origins, periods, directors, Q-ids
+    taxonomy-blacklist.js per-film снятие категорий из `cache/flags/`
     enrich.js  backfill.js  rematch.js  compare.js  attachment.js  mcu.js
     books/                routes, book-cache, import, resolve + resolve-stages/,
                           providers/ (hardcover, litres, googlebooks, openlibrary, livelib-card),
@@ -39,7 +42,9 @@
     games/                routes* + endpoints/{,epic/}, import, enrich, secondary/ (identity, cache,
                           bridge, title-genres, union, epic, enrich, details-*), sources/{gog,epic,*},
                           personnel/ (identity, group, build, enrich, jobs, wikidata, moby),
-                          franchise/ + franchise.js, stats/ (18 секций), gog-import-stages/, art, reviews
+                          franchise/ + franchise.js, stats/ (18 секций), gog-import-stages/,
+                          art/ (store, browse, resolve, proxy), editions/ (normalize, match,
+                          index-build, store), reviews
     gzip.js  auth.js  config.js
   public/
     index.html            одна оболочка + три панели вкладок
@@ -50,9 +55,9 @@
     js/                   main, widgets, books*, games*, films: доменные контроллеры и виджеты
   contracts/              api.md env.md limits.md cache.md — генерируются, руками не правятся
   scripts/                gen-contracts.js, census.js, smoke{,-seed,-preload}.sh
-  test/                   61 файл: 13 доменных сьютов + 48 одиночных, helpers/, golden/
+  test/                   62 файла: 13 доменных сьютов + 49 одиночных, helpers/, golden/
   nix/
-    package.nix           единственный рецепт сборки (пин + лаунчеры + prepare_state)
+    package.nix           единственный рецепт сборки (пин + 5 лаунчеров + prepare_state)
     module.nix            NixOS-модуль services.kinoboxd
   flake.nix               обёртка: callPackage nix/package.nix + devShell + checks
   devenv.nix  devenv.lock dev-shell (node 24, git, jq, curl, rg, nixfmt)
@@ -77,7 +82,7 @@
 | `budget.js` | счётчик бюджета прогона: `take()` = «не спросили», а не «не нашли» |
 | `breaker.js` | breaker на источник: memory (книги) и persisted (игры) |
 | `sources.js` | декларативная таблица источников: пауза, timeout, бюджет, breaker, TTL, env-ручки |
-| `jobs.js` + `jobs/` | реестр заданий: id, стадии, прогресс, cooldown, single-flight, `status()` |
+| `jobs.js` + `jobs/` | реестр заданий: id, стадии, прогресс, cooldown, single-flight, `status()`, `clear()` |
 | `stats.js` | числовая математика: `round(value, digits, mode)` (`plain`/`finite`/`numeric`), `mean`, `dayNumber`, `computeStreaks` |
 | `errors.js` | `HttpError`, `fromStatus`, `mapDomainError(err, profile)`, `respondError`, `errorMiddleware`; тело `{ error, code }` |
 | `params.js` | строгий разбор query: `assertOnlyParams`, `parseBool/Int/Enum/MinHours/Force` |
@@ -137,6 +142,7 @@ Letterboxd — не отдельный профиль: он обогащает �
 - Матчинг: ключ `название|год` в `index.json`, значение — `tmdbId` или `{id, kind}` (`kind` различает фильм и сериал).
 - Несматченное — в `unmatched` и `summary.unmatchedCount`; enrich пропускает уже собранные карточки.
 - Payload (`GET /api/stats`): `summary`, `filmsIndex`, `genres`, `decades`, `years`, `countries`, `persons`, `franchises`, `collections`, `watchDays`/`calendar`, `timeline`, `runtimeHistogram`, `decadeRatings`, `rewatches`, `recentlyWatched`, `ratings`, `unmatched`, `streaks`, `meta`. Собирается в `server/stats/` (9 секций), `server/stats.js` — оркестратор.
+- Таксономия: правила — данные + движок (`taxonomy-defs.js` / `taxonomy.js`), публичный API один модуль `server/taxonomy.js`. FP снимается персонально: `cache/flags/taxonomy-blacklist.json` (`{"version":1,"films":{"<slug>":["zombie"]}}`) убирает категорию/период только у этого slug, глобальное правило не трогается; неизвестный ключ попадает в `ignored`, битый файл и отсутствие файла значит «ничего не исключено» (`server/taxonomy-blacklist.js`).
 
 ### 5.2. Книги
 
@@ -157,6 +163,7 @@ Letterboxd — не отдельный профиль: он обогащает �
 - Resolve-цепочка (`books/resolve.js` + `resolve-stages/`): ISBN → название+автор → провайдеры по приоритету (Hardcover, Литрес, Google Books, OpenLibrary, LiveLib-card) → `details/{hcWorkId}.json` + `links.json`.
 - Происхождение метадаты видно в `metadataSources`; `links/{livelibBookId}.json` хранит метод и score матча.
 - Серии/сборники: эвристика в `segments.js`; ручные флаги манги — `flags/book-flags.json`; блэклист тэг-серий — `series-blacklist.js`.
+- Миграции `authors` и `manga` теперь штатные юниты: `kinoboxd-backfill-manga` (очередь, таймер вкл., `booksMangaBackfillLimit`/`PauseMs`) и `kinoboxd-backfill-authors` (диагностика, таймер выкл., `--wikidata`; мост авторов и так default-on в `/api/books/stats`). Оба зовут один диспетчер-лаунчер `kinoboxd-books-migrate {manga|authors}`.
 - Год работы: `manual > first > edition > unknown`; `manual` — в `year-overrides/`, `edition` — честный фоллбек с `yearSource: 'edition'`. Промах «никто не знает» кэшируется на 30 д.
 - Payload (`GET /api/books/stats?profile=…`): `works`/`booksIndex`, `series`, `authors`, `decades`, `years`, `sources`, `coverage`, `timeline`, `summary`, `meta`. Собирается в `server/books/stats/`; `stats.js` — оркестратор. Блока `publishers` в payload **нет** (виджет удалён 04.11.2026, мёртвый серверный блок убран 10.11.2026).
 
@@ -202,7 +209,7 @@ Letterboxd — не отдельный профиль: он обогащает �
 
 ## 7. Задания и вежливость
 
-**Задания.** Каждый длительный процесс (импорт фильмов/книг/игр, обогащение, кредиты, франшизы, GOG/Epic) — реестр на `core/jobs.js` с `start*`/`getStatus`: id, стадии, прогресс, cooldown, single-flight. Клиент опрашивает статус, вкладку можно свернуть. Доменный фасад сохраняет прежние поля ответа байт-в-байт. Единственный остаток вне `core/jobs` — `meta.secondaryDetails.running` (`secondary-details.js` → `secondary/details-state.js`).
+**Задания.** Каждый длительный процесс (импорт фильмов/книг/игр, обогащение, кредиты, франшизы, GOG/Epic, secondary-details) — реестр на `core/jobs.js` с `start*`/`getStatus`: id, стадии, прогресс, cooldown, single-flight. Клиент опрашивает статус, вкладку можно свернуть. Доменный фасад сохраняет прежние поля ответа байт-в-байт. Job-«running» вне `core/jobs` больше нет: `meta.secondaryDetails.running` читается из реестра (`isRunning(ownerKey)`).
 
 **Вежливость.** Пауза перед запросом, бюджет на прогон, breaker на 403/429, TTL кэша, `Retry-After` при 429, сеть/5xx — deferred. **Нормативные числа — `contracts/limits.md`**; объявлять источник = править `server/core/sources.js` и перегенерировать контракт, а не документ.
 
@@ -244,7 +251,7 @@ Letterboxd — не отдельный профиль: он обогащает �
 
 ## 10. Тесты, контракты, лимиты
 
-**Тесты.** `npm test` = `node --test test/*.test.js`: **61 файл** (13 доменных сьютов + 48 одиночных), **1 372** теста (1 361 pass, 11 skip), 0 fail, ~20 s.
+**Тесты.** `npm test` = `node --test test/*.test.js`: **62 файла** (13 доменных сьютов + 49 одиночных), **1 380** тестов (1 369 pass, 11 skip), 0 fail, ~20 s.
 
 - `test/helpers/port.js` — `portFor(slot)`; база из `KINOBOXD_TEST_PORT_BASE` (по умолчанию 6000). Диапазон **9900–10999 не использовать**: там WHATWG-«bad ports» (10080 и др.), `fetch` их отвергает. Две полные сюиты можно гонять параллельно разными базами — это единственный способ не получить ложный `EADDRINUSE`.
 - `test/helpers/env.js` — `makeTmpCache`, `tmpDir`, `resetMutableState`, `cleanupTmpDirs`. Модуль кэша читает свой корень **один раз при загрузке**, поэтому env выставляется до первого `require('../server/...')`.
@@ -275,24 +282,19 @@ Letterboxd — не отдельный профиль: он обогащает �
 
 ## 11. Открытые остатки и известные компромиссы
 
-**Остатки после рефакторинга v2 (10.11.2026):**
+**Остатки (12.11.2026).** Закрыто в этом раунде: `meta.secondaryDetails.running` переехал в `core/jobs` (§7), инлайн-копии округления заменены на `core/stats` (0 выражений `Math.round(x * 10**n) / 10**n` в `server/`), books-миграции `authors`/`manga` стали юнитами (§12), FP таксономии снимаются per-film blacklist'ом (§5.1), распилены `taxonomy.js`, `games/steam-art.js`, `games/editions.js` (24 → 21 модуль > 800 строк).
 
-1. `meta.secondaryDetails.running` — единственный job-«running» вне `core/jobs` (перенос — микрораунд).
-2. `dedup`-выражения округления внутри крупных формул (`games/import.js`, `secondary/*`, `sources/gog-core.js`, `stats/summary.js`) — не обёртки, а инлайн-выражения; кандидат на аккуратный проход.
-3. 24 модуля > 800 строк остались осознанно (в основном доменные фасады и контроллеры: `books.js` 4 294, `games.js` 3 465, `widgets.js` 1 971, `books/stats.js` — нет, он 305); дальнейшее дробление — продуктовый рефакторинг.
-4. В сьютах порядок блоков нагрузочный (шапка каждого сьюта объясняет почему): новый тест с агрегатом по всему кэшу идёт до seeding-блока или остаётся одиночным.
-5. `config/{gbooks,steam,hardcover}-token` — dev-фоллбеки; в проде только sops.
-6. Books-каталог `cache-book/` на dev-машине пуст: боевые данные живут по `KINOBOXD_CACHE_BOOK_DIR` деплой-конфига.
+1. 21 модуль > 800 строк остался осознанно — в основном доменные фасады и контроллеры: `public/js/books.js` 4 294, `public/js/games.js` 3 465, `public/js/games-view.js` 2 017, `public/js/widgets.js` 1 971, `public/js/main.js` 1 819, `server/games/franchise.js` 1 569, `server/books/livelib.js` 1 508; дальнейшее дробление — продуктовый раунд, ратчет в `test/census-thresholds.test.js` только сокращается.
+2. В сьютах порядок блоков нагрузочный (шапка каждого сьюта объясняет почему): новый тест с агрегатом по всему кэшу идёт до seeding-блока или остаётся одиночным.
+3. `config/{gbooks,steam,hardcover}-token` — dev-фоллбеки; в проде только sops.
+4. Books-каталог `cache-book/` на dev-машине пуст: боевые данные живут по `KINOBOXD_CACHE_BOOK_DIR` деплой-конфига.
 
-**Таксономия и FP (не «чинить» без решения пользователя):**
+**Таксономия и FP:**
 
-- **Dogme 95** — исключён: закрытый манифест (~35 сертифицированных фильмов), в коллекции таких нет, эвристика по фон Триеру даёт ложный «Догвилль».
-- **Steampunk** — 32 попадания, много «эстетических» FP; research-only, реализовывать только с ручной проверкой примеров.
 - **Found footage** — отдельной категорией не является; `mockumentary` включает алиасы `faux documentary`/`pseudo documentary`.
-- **Zombie/Kaiju/Mockumentary** — единичные FP оставлены и задокументированы (правило — exact-keyword + Wikidata, без per-film blacklist); механизма blacklist нет.
+- **Zombie/Kaiju/Mockumentary** — единичные FP снимаются per-film blacklist'ом (см. ниже), глобальное правило остаётся exact-keyword + Wikidata.
 - **Gothic horror / cyberpunk** — `biopunk` и `gothic` намеренно не алиасы: расширили бы бакет вдвое.
 - **Marvel** — TMDB хранит не одной коллекцией, а десятком под-франшиз, поэтому виджет показывает их раздельно.
-- **Heist** — доковые числа «14/28/31» не воспроизводятся (substring даёт 21 + 10 bank robbery): перед реализацией политику подсчёта фиксировать в раунде.
 
 **Игры (ограничения данных, а не баги):**
 
@@ -304,7 +306,8 @@ Letterboxd — не отдельный профиль: он обогащает �
 ## 12. Деплой
 
 - `nix/package.nix` — пин `fetchFromGitHub` (`rev`, `hash`) + `buildNpmPackage` (`npmDeps.hash`). Пин обновляется **только здесь**.
-- `nix/module.nix` — systemd: сервер, бэкфилл фильмов (`allTargets`: `imdb`, `keywords`, `wikidata`, `rematch`, `collections`, `mcu`), бэкфилл книг, resolve-таймер, юниты игр; `EnvironmentFile`, state-раскладка. `authors`/`manga` — ручные миграции, юнитов нет.
+- `nix/module.nix` — systemd: сервер, бэкфилл фильмов (`allTargets`: `imdb`, `keywords`, `wikidata`, `rematch`, `collections`, `mcu`), бэкфилл книг (годы, resolve, `manga`, `authors`), юниты игр; `EnvironmentFile`, state-раскладка. Все books-миграции теперь юниты; таймер `manga` вкл., `authors` — опционален.
+- Лаунчеры `nix/package.nix`: `kinoboxd`, `kinoboxd-backfill`, `kinoboxd-books-backfill`, `kinoboxd-books-resolve`, `kinoboxd-books-migrate` (диспетчер `manga|authors`).
 - Личный site-конфиг (`services.kinoboxd`: sops-секреты, порт, state, таймеры) живёт вне репозитория — в `~/.nixos`; в repo его нет.
 - Переменные: `KINOBOXD_CACHE_DIR`, `KINOBOXD_CACHE_BOOK_DIR`, `KINOBOXD_CACHE_GAMES_DIR`, `KINOBOXD_STATE_DIR`, `KINOBOXD_PASSWORD`, `PORT` (боевой `3000`; в тестах не использовать).
 - Текущий пин: `rev = 2416813408ff9e25df829cb8a2765849fa29dd99`, `hash = sha256-UWtj0qTf3AcJKNzMck6R1WwTxvBtS9Tntw0L7MWqLJI=`, `npmDeps.hash = sha256-X6rMqzNU1oXT0h1oc7Ak3dxP6Yb90frXXbiIra52Qag=`, store `/nix/store/6cjby7wpcf4gawir94ypi29cvgpp1cbg-kinoboxd-1.0.0` (пин последнего релиза; см. §12.1).
