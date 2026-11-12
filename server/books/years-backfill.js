@@ -15,6 +15,19 @@ const fsStore = require('../core/fs-store');
 const sources = require('../core/sources');
 const wikidata = require('./providers/wikidata');
 const { storedFirstClaim, isPrintClaimSource } = require('./providers/claim');
+const {
+  workIdOf,
+  storedPrintClaim,
+  needsYearQuestion,
+  recentlyChecked,
+  selectCandidates,
+  countPending,
+} = require('./backfill-queue');
+const {
+  hasSeries,
+  needsSeriesQuestion,
+  seriesPatch,
+} = require('./series-stage');
 
 const DEFAULT_LIMIT = 20;
 const DEFAULT_PAUSE_MS = sources.pauseMs('litres'); // Литрес politeness (AGENTS.md)
@@ -22,36 +35,6 @@ const DEFAULT_PAUSE_MS = sources.pauseMs('litres'); // Литрес politeness (
 const DEFAULT_RECHECK_DAYS = 30;
 
 const CYRILLIC_TITLE = /[а-яё]/i;
-
-/** Timestamp of the last hopeless check of a document, or null. */
-function checkedAtOf(doc) {
-  const ts = Date.parse(String((doc && doc.firstPublishedYearCheckedAt) || ''));
-  return Number.isFinite(ts) ? ts : null;
-}
-
-/**
- * Has this document been checked for a first-publication year recently enough
- * that asking the providers again would be pure politeness debt?
- */
-function recentlyChecked(doc, now, recheckDays) {
-  const ts = checkedAtOf(doc);
-  if (ts == null) return false;
-  const days = Number(recheckDays);
-  const window = Number.isFinite(days) && days >= 0 ? days : DEFAULT_RECHECK_DAYS;
-  return now - ts < window * 24 * 60 * 60 * 1000;
-}
-
-/** The stored claim of a document when it is a print-run year worth challenging. */
-function storedPrintClaim(doc) {
-  const claim = storedFirstClaim(doc);
-  if (!claim || !isPrintClaimSource(claim.source)) return null;
-  if (String((doc && doc.yearSource) || '') === 'manual') return null;
-  return claim;
-}
-
-function needsYearQuestion(doc) {
-  return storedFirstClaim(doc) == null || storedPrintClaim(doc) != null;
-}
 
 function earlierClaim(stored, found) {
   if (!stored) return Boolean(found);
@@ -175,11 +158,6 @@ function authorsOf(doc) {
   return (Array.isArray(doc && doc.authors) ? doc.authors : [])
     .map((entry) => (entry && typeof entry === 'object' ? entry.name : entry))
     .filter(Boolean);
-}
-
-function workIdOf(doc) {
-  if (!doc) return null;
-  return doc.workId || (doc.hcWorkId != null ? `hc:${doc.hcWorkId}` : null);
 }
 
 async function firstYearForDoc(doc, options = {}) {
@@ -408,6 +386,30 @@ function prefetchedLookup(index) {
  * `budget`, `sleep`, `now` (ISO string), `recheckDays`, provider overrides,
  * `log`.
  */
+async function askWikidata(selected, options, deps = {}) {
+  const report = deps.report || {};
+  const yearClaims = { byWork: new Map(), asked: new Set(), skipped: null };
+  let yearClaimsError = null;
+  try {
+    const lookup = await prefetchWikidata(selected, {
+      ...options,
+      profileTitles: deps.profileTitleIndex,
+    });
+    yearClaims.byWork = lookup.byWork;
+    yearClaims.asked = lookup.asked;
+    yearClaims.skipped = lookup.skipped;
+    report.wikidataRequests = lookup.requests;
+    report.wikidataSkipped = lookup.skipped;
+    report.wikidataBudget = lookup.budget
+      ? { limit: lookup.budget.limit, used: lookup.budget.used, remaining: lookup.budget.remaining }
+      : null;
+  } catch (err) {
+    yearClaimsError = (err && err.code) || 'wikidata-error';
+    report.wikidataError = yearClaimsError;
+  }
+  return { yearClaims, yearClaimsError };
+}
+
 async function backfill(options = {}) {
   const dryRun = options.dryRun === true;
   const limit = options.limit == null ? DEFAULT_LIMIT : Number(options.limit);
@@ -422,29 +424,15 @@ async function backfill(options = {}) {
     options.recheckDays == null ? DEFAULT_RECHECK_DAYS : Number(options.recheckDays);
 
   const docs = detailDocs();
-  const candidates = [];
-  let skippedChecked = 0;
-  for (const { key, doc } of docs) {
-    const workId = workIdOf(doc);
-    if (!workId) continue;
-    const matchesId =
-      ids &&
-      [...ids].some(
-        (id) => id === workId || id === key || id === doc.workId || id === String(doc.hcWorkId)
-      );
-    if (ids && !matchesId) continue;
-    if (!ids && !force && !needsYearQuestion(doc)) continue;
-    // A hopeless document is left alone for `recheckDays`: re-asking three
-    // providers for a year nobody has is exactly the load AGENTS.md budgets
-    // against. An explicit `--ids` still wins — the user asked for that one.
-    // The marker only counts when it names every provider that applies today:
-    // a verdict written before Wikidata joined the chain is not a verdict.
-    if (!ids && !force && recentlyChecked(doc, nowMs, recheckDays) && markerCovers(doc)) {
-      skippedChecked++;
-      continue;
-    }
-    candidates.push({ key, doc, workId });
-  }
+  const queueOptions = {
+    ids,
+    force,
+    needsYear: needsYearQuestion,
+    needsSeries: (doc) => needsSeriesQuestion(doc, nowMs, recheckDays),
+    checked: (doc) => recentlyChecked(doc, nowMs, recheckDays),
+    covers: markerCovers,
+  };
+  const { candidates, skippedChecked } = selectCandidates(docs, queueOptions);
 
   const selected = limit > 0 ? candidates.slice(0, limit) : candidates;
   const report = {
@@ -457,6 +445,8 @@ async function backfill(options = {}) {
     unknown: [],
     yearChallenged: 0,
     yearCorrected: 0,
+    seriesFilled: 0,
+    seriesMissed: 0,
     // Budget/breaker/network stopped the question before a provider could
     // answer. These documents stay unchecked (no negative cache): the next
     // run asks again instead of losing them for `DEFAULT_RECHECK_DAYS`.
@@ -500,36 +490,39 @@ async function backfill(options = {}) {
   // that knows the work behind a Russian reprint (see AGENTS.md §5.2).
   // The pass is read-only, so `--dry-run` runs it too: the report must show
   // what a real run would resolve, not a subset that ignores Wikidata.
-  const yearClaims = { byWork: new Map(), asked: new Set(), skipped: null };
   const profileTitleIndex =
     options.profileTitles instanceof Map ? options.profileTitles : profileTitles();
-  let yearClaimsError = null;
-  {
-    try {
-      const lookup = await prefetchWikidata(selected, {
-        ...options,
-        profileTitles: profileTitleIndex,
-      });
-      yearClaims.byWork = lookup.byWork;
-      yearClaims.asked = lookup.asked;
-      yearClaims.skipped = lookup.skipped;
-      report.wikidataRequests = lookup.requests;
-      report.wikidataSkipped = lookup.skipped;
-      report.wikidataBudget = lookup.budget
-        ? { limit: lookup.budget.limit, used: lookup.budget.used, remaining: lookup.budget.remaining }
-        : null;
-    } catch (err) {
-      yearClaimsError = (err && err.code) || 'wikidata-error';
-      report.wikidataError = yearClaimsError;
-    }
-  }
+  const { yearClaims, yearClaimsError } = await askWikidata(selected, options, {
+    profileTitleIndex,
+    report,
+  });
 
   for (const { key, doc, workId } of selected) {
     report.checked++;
     const stored = storedPrintClaim(doc);
     if (stored) report.yearChallenged++;
     const fromProfile = profileTitleIndex.get(workId) || null;
+    const yearNeeded = Boolean(ids) || force === true || needsYearQuestion(doc);
+    const seriesAsked = Boolean(
+      workId && yearClaims.asked instanceof Set && yearClaims.asked.has(workId)
+    );
+    const patch = seriesPatch(doc, yearClaims.byWork.get(workId), {
+      asked: seriesAsked,
+      now: checkedAt,
+    });
+    const withSeries = (next) => (patch ? { ...next, ...patch } : next);
     try {
+      if (!yearNeeded) {
+        if (patch && patch.series) report.seriesFilled++;
+        else if (patch) report.seriesMissed++;
+        log(
+          `○ ${workId} ${doc.title || ''} :: series ${patch && patch.series ? patch.series[0].name : '(none)'}`
+        );
+        if (!dryRun && patch) {
+          await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), withSeries(doc));
+        }
+        continue;
+      }
       const found = await firstYearForDoc(doc, {
         ...options,
         authors:
@@ -566,11 +559,14 @@ async function backfill(options = {}) {
         // Negative cache: the next run must not repeat these requests. This is
         // only reached when every applicable provider really answered.
         if (!dryRun) {
-          await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), {
-            ...doc,
-            firstPublishedYearCheckedAt: checkedAt,
-            firstPublishedYearCheckedBy: asked,
-          });
+          await bookCache.saveDetails(
+            bookCache.detailsKeyForWork(workId),
+            withSeries({
+              ...doc,
+              firstPublishedYearCheckedAt: checkedAt,
+              firstPublishedYearCheckedBy: asked,
+            })
+          );
         }
         continue;
       }
@@ -581,11 +577,14 @@ async function backfill(options = {}) {
             `, nothing earlier (${asked})`
         );
         if (!dryRun) {
-          await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), {
-            ...doc,
-            firstPublishedYearCheckedAt: checkedAt,
-            firstPublishedYearCheckedBy: asked,
-          });
+          await bookCache.saveDetails(
+            bookCache.detailsKeyForWork(workId),
+            withSeries({
+              ...doc,
+              firstPublishedYearCheckedAt: checkedAt,
+              firstPublishedYearCheckedBy: asked,
+            })
+          );
         }
         continue;
       }
@@ -617,7 +616,7 @@ async function backfill(options = {}) {
           next.firstPublishedYearPrevious = stored.year;
           next.firstPublishedYearChallengedBy = stored.source || 'unknown';
         }
-        await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), next);
+        await bookCache.saveDetails(bookCache.detailsKeyForWork(workId), withSeries(next));
       }
     } catch (err) {
       report.errors.push({ workId, error: err && err.message ? err.message : String(err) });
@@ -634,15 +633,7 @@ async function backfill(options = {}) {
   // Pending queue after the run: a fresh scan, so newly written years and the
   // freshly written negative cache are both taken into account. This is the
   // number the journal and the UI promise: «осталось ~K прогонов».
-  let pending = 0;
-  for (const { key, doc } of detailDocs()) {
-    const workId = workIdOf(doc);
-    if (!workId) continue;
-    if (ids && ![...ids].some((id) => id === workId || id === key)) continue;
-    if (!force && !needsYearQuestion(doc)) continue;
-    if (!force && recentlyChecked(doc, nowMs, recheckDays) && markerCovers(doc)) continue;
-    pending++;
-  }
+  const pending = countPending(detailDocs(), queueOptions);
   report.pending = pending;
   const perRun = limit > 0 ? limit : Math.max(pending, 1);
   report.runsLeft = pending > 0 ? Math.ceil(pending / perRun) : 0;
@@ -718,6 +709,8 @@ if (require.main === module) {
         resolved: report.resolved.length,
         yearChallenged: report.yearChallenged,
         yearCorrected: report.yearCorrected,
+        seriesFilled: report.seriesFilled,
+        seriesMissed: report.seriesMissed,
         unknown: report.unknown.length,
         unknownByAsked: report.unknownByAsked,
         deferred: report.deferred.length,
@@ -755,6 +748,8 @@ module.exports = {
   askedProviders,
   markerCovers,
   profileTitles,
+  hasSeries,
+  needsSeriesQuestion,
   firstYearForDoc,
   prefetchWikidata,
   prefetchHardcover,

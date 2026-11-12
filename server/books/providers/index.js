@@ -303,6 +303,12 @@ function resultToDetails(result, options = {}) {
     partial: false,
     fetchedAt: options.now || new Date().toISOString(),
   };
+  if (result.wikidataWorkId) doc.wikidataWorkId = String(result.wikidataWorkId);
+  if (Array.isArray(result.wikidataAuthorIds) && result.wikidataAuthorIds.length) {
+    doc.wikidataAuthorIds = result.wikidataAuthorIds
+      .filter((entry) => entry && entry.qid)
+      .map((entry) => ({ name: entry.name ? String(entry.name) : null, qid: String(entry.qid) }));
+  }
   if (result.hardcover && result.hardcover.hcWorkId) {
     doc.hcWorkId = Number(result.hardcover.hcWorkId);
     doc.hcEditionId = result.hardcover.hcEditionId == null ? null : Number(result.hardcover.hcEditionId);

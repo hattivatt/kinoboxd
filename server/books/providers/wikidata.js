@@ -122,13 +122,16 @@ function precisionLabelOf(value) {
  * 504 after 60 s (measured).
  */
 const SEARCH_QUERY = `
-SELECT ?label ?item ?itemLabel ?authorLabel ?sitelinks
-       ?p577 ?p577Prec ?p571 ?p571Prec
+SELECT ?label ?item ?itemLabel ?author ?authorLabel ?sitelinks
+       ?p577 ?p577Prec ?p571 ?p571Prec ?seriesLabel ?ordinal
 WHERE {
   VALUES ?label { __LABELS__ }
   { ?item rdfs:label ?label } UNION { ?item skos:altLabel ?label }
   ?item wdt:P31 ?type . ?type wdt:P279* ${LITERARY_WORK} .
-  OPTIONAL { ?item wdt:P50 ?author }
+  OPTIONAL {
+    ?item wdt:P50 ?author .
+    OPTIONAL { ?author wdt:P569 ?authorBirth }
+  }
   OPTIONAL {
     ?item p:P577 ?st577 . ?st577 psv:P577 ?v577 .
     ?v577 wikibase:timeValue ?p577 ; wikibase:timePrecision ?p577Prec .
@@ -137,10 +140,14 @@ WHERE {
     ?item p:P571 ?st571 . ?st571 psv:P571 ?v571 .
     ?v571 wikibase:timeValue ?p571 ; wikibase:timePrecision ?p571Prec .
   }
+  OPTIONAL {
+    ?item wdt:P179 ?series .
+    OPTIONAL { ?item p:P179 ?st179 . ?st179 pq:P1545 ?ordinal }
+  }
   OPTIONAL { ?item wikibase:sitelinks ?sitelinks }
   SERVICE wikibase:label { bd:serviceParam wikibase:language "ru,en". }
 }
-LIMIT 600`;
+LIMIT 900`;
 
 /**
  * Query 2: are the matched items editions of another work, and when was that
@@ -150,6 +157,7 @@ LIMIT 600`;
 const CANONICAL_QUERY = `
 SELECT ?item ?canonical ?canonicalLabel
        ?canonicalP577 ?canonicalP577Prec ?canonicalP571 ?canonicalP571Prec
+       ?canonicalSeriesLabel ?canonicalOrdinal
 WHERE {
   VALUES ?item { __ITEMS__ }
   ?item wdt:P629 ?canonical .
@@ -161,9 +169,13 @@ WHERE {
     ?canonical p:P571 ?cst571 . ?cst571 psv:P571 ?cv571 .
     ?cv571 wikibase:timeValue ?canonicalP571 ; wikibase:timePrecision ?canonicalP571Prec .
   }
+  OPTIONAL {
+    ?canonical wdt:P179 ?canonicalSeries .
+    OPTIONAL { ?canonical p:P179 ?cst179 . ?cst179 pq:P1545 ?canonicalOrdinal }
+  }
   SERVICE wikibase:label { bd:serviceParam wikibase:language "ru,en". }
 }
-LIMIT 600`;
+LIMIT 900`;
 
 function escapeLabel(value) {
   return String(value == null ? '' : value).replace(/["\\]/g, '');
@@ -201,6 +213,14 @@ function titleVariants(title) {
   return [...out].filter((value) => value.length >= 2 && value.length <= 160);
 }
 
+function seriesClaim(name, ordinal) {
+  const text = String(name == null ? '' : name).trim();
+  if (!text) return null;
+  const raw = String(ordinal == null ? '' : ordinal).trim().replace(',', '.');
+  const position = raw && Number.isFinite(Number(raw)) ? Number(raw) : null;
+  return { name: text, position: position != null && position > 0 ? position : null };
+}
+
 function timeClaim(value, precisionValue) {
   const year = firstYearOf(coreTimeToYear(value));
   if (year == null) return null;
@@ -233,6 +253,9 @@ function parseResponse(payload) {
       canonicalLabel: value('canonicalLabel'),
       canonicalPublication: timeClaim(value('canonicalP577'), value('canonicalP577Prec')),
       canonicalInception: timeClaim(value('canonicalP571'), value('canonicalP571Prec')),
+      series: seriesClaim(value('seriesLabel'), value('ordinal')),
+      canonicalSeries: seriesClaim(value('canonicalSeriesLabel'), value('canonicalOrdinal')),
+      author: qidOf(value('author')),
     };
   });
 }
@@ -367,10 +390,13 @@ function candidatesFor(rows, canonicalRows, entry) {
       sitelinks: 0,
       publication: null,
       inception: null,
+      series: null,
+      authorIds: new Map(),
     };
     if (row.authorLabel) {
       existing.hasAuthor = true;
       if (!existing.authors.includes(row.authorLabel)) existing.authors.push(row.authorLabel);
+      if (row.author) existing.authorIds.set(row.authorLabel, row.author);
     }
     if (existing.authorBirthYear == null && row.authorBirthYear != null) {
       existing.authorBirthYear = row.authorBirthYear;
@@ -378,6 +404,8 @@ function candidatesFor(rows, canonicalRows, entry) {
     existing.sitelinks = Math.max(existing.sitelinks, row.sitelinks || 0);
     if (!existing.publication && publication) existing.publication = publication;
     if (!existing.inception && inception) existing.inception = inception;
+    const series = (edition && edition.canonicalSeries) || row.series;
+    if (!existing.series && series) existing.series = series;
     byWork.set(workId, existing);
   }
   const target = normalizeTitleKey(entry.title);
@@ -437,7 +465,14 @@ function toResult(candidate, entry) {
     firstPublishedYearPrecision: claim.precision,
     firstPublishedYearKind: claim.kind,
     publisher: null,
-    series: null,
+    series: candidate.series
+      ? { name: candidate.series.name, position: candidate.series.position, source: NAME }
+      : null,
+    seriesAll: candidate.series
+      ? [{ name: candidate.series.name, position: candidate.series.position, source: NAME }]
+      : [],
+    wikidataWorkId: candidate.workId,
+    wikidataAuthorIds: [...candidate.authorIds.entries()].map(([name, qid]) => ({ name, qid })),
     genres: [],
     pages: null,
     isbn13: null,

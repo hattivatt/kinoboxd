@@ -8,6 +8,7 @@ const {
   saneFirstYearClaim,
   storedFirstClaim,
 } = require('../providers/claim');
+const { hasSeries, seriesOfResult } = require('../series-stage');
 const { eventKeyOf } = require('./identity');
 
 function eventTitles(ctx) {
@@ -77,22 +78,49 @@ function acceptedClaim(current, result) {
   return rankNew > rankCurrent ? sane : null;
 }
 
-async function applyClaim(ctx, target, result) {
+function wikidataIdentityOf(result) {
+  const patch = {};
+  if (result.wikidataWorkId) patch.wikidataWorkId = String(result.wikidataWorkId);
+  if (Array.isArray(result.wikidataAuthorIds) && result.wikidataAuthorIds.length) {
+    patch.wikidataAuthorIds = result.wikidataAuthorIds
+      .filter((entry) => entry && entry.qid)
+      .map((entry) => ({ name: entry.name ? String(entry.name) : null, qid: String(entry.qid) }));
+  }
+  return patch;
+}
+
+function claimFromResult(result) {
+  if (!result || result.firstPublishedYear == null) return null;
+  return {
+    year: Number(result.firstPublishedYear),
+    source: result.source || null,
+    precision: result.firstPublishedYearPrecision || null,
+    kind: result.firstPublishedYearKind || null,
+  };
+}
+
+async function applyClaim(ctx, target, result, claim, series) {
+  const effective = claim === undefined ? claimFromResult(result) : claim;
   const { cache, now } = ctx;
   const details = target.details;
   const previous = target.current == null ? storedFirstClaim(details) : target.current;
-  const next = {
-    ...details,
-    firstPublishedYear: result.firstPublishedYear,
-    firstPublishedYearSource: result.source,
-    firstPublishedYearPrecision: result.firstPublishedYearPrecision || null,
-    firstPublishedYearKind: result.firstPublishedYearKind || null,
-    firstPublishedYearCheckedAt: now,
-    firstPublishedYearCheckedBy: result.source,
-  };
-  if (previous) {
-    next.firstPublishedYearPrevious = previous.year;
-    next.firstPublishedYearChallengedBy = previous.source || 'unknown';
+  const next = { ...details, ...wikidataIdentityOf(result) };
+  if (effective) {
+    next.firstPublishedYear = effective.year;
+    next.firstPublishedYearSource = effective.source;
+    next.firstPublishedYearPrecision = effective.precision || null;
+    next.firstPublishedYearKind = effective.kind || null;
+    next.firstPublishedYearCheckedAt = now;
+    next.firstPublishedYearCheckedBy = effective.source;
+    if (previous) {
+      next.firstPublishedYearPrevious = previous.year;
+      next.firstPublishedYearChallengedBy = previous.source || 'unknown';
+    }
+  }
+  if (series && !hasSeries(details)) {
+    next.series = [{ ...series }];
+    next.seriesCheckedAt = now;
+    next.seriesCheckedBy = 'wikidata';
   }
   await cache.saveDetails(cache.detailsKeyForWork(target.workId), next);
   target.details = next;
@@ -129,21 +157,20 @@ async function patchYearClaims(ctx) {
   report.yearChallenged = targets.filter(
     (target) => target.current && (!asked || asked.has(String(target.workId)))
   ).length;
+  report.seriesFilled = 0;
   for (const target of targets) {
     const result = found.byKey.get(target.workId);
     if (!result) continue;
     const claim = acceptedClaim(target.current, result);
-    if (!claim) continue;
+    const series = hasSeries(target.details) ? null : seriesOfResult(result);
+    if (!claim && !series) continue;
     try {
-      await applyClaim(ctx, target, {
-        ...result,
-        source: claim.source,
-        firstPublishedYear: claim.year,
-        firstPublishedYearPrecision: claim.precision,
-        firstPublishedYearKind: claim.kind,
-      });
-      report.yearClaims++;
-      if (target.current) report.yearCorrected++;
+      await applyClaim(ctx, target, result, claim, series);
+      if (claim) {
+        report.yearClaims++;
+        if (target.current) report.yearCorrected++;
+      }
+      if (series) report.seriesFilled++;
     } catch (err) {
       report.yearClaimError = (err && err.code) || 'details_write_failed';
     }
