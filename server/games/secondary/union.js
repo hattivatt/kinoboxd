@@ -1,6 +1,7 @@
 'use strict';
 
 const editions = require('../editions');
+const { round1 } = require('../../core/stats');
 const { yearOfDate } = require('./normalize');
 const { normalizeTitle, normalizeSlug, slugsOfLink } = require('./identity');
 
@@ -512,8 +513,8 @@ function deriveUnionHours(worksList) {
     entry.secondaryMinutes = secondary;
     // Display total: the owner's hours for the work across the stores he owns.
     entry.displayMinutes = steam + secondary;
-    entry.hours = Math.round((entry.displayMinutes / 60) * 10) / 10;
-    entry.secondaryHours = Math.round((secondary / 60) * 10) / 10;
+    entry.hours = round1(entry.displayMinutes / 60);
+    entry.secondaryHours = round1(secondary / 60);
     // Unknown ≠ zero: the store never answered for this work.
     entry.hoursUnknown = Boolean(
       (entry.sources.includes('gog') && entry.hoursBySource.gog == null) ||
@@ -640,10 +641,10 @@ function buildSecondaryUnion({
       steamWorks: steamWorks.length,
       gogProducts: gog.gogProducts,
       gogMinutes: gog.gogMinutes,
-      gogHours: Math.round((gog.gogMinutes / 60) * 10) / 10,
+      gogHours: round1(gog.gogMinutes / 60),
       epicGames: epicSide.epicOwned,
       epicMinutes: epicSide.epicMinutes,
-      epicHours: Math.round((epicSide.epicMinutes / 60) * 10) / 10,
+      epicHours: round1(epicSide.epicMinutes / 60),
       // Union over canonical works: Steam works + works that exist only
       // outside Steam (a GOG/Epic game merged into a Steam work adds no row).
       worksTotal: worksList.length,

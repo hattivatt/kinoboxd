@@ -1,5 +1,7 @@
 'use strict';
 
+const { round1 } = require('../../core/stats');
+
 /* ------------------------------------------------------------------ */
 /* titles, slugs, edition markers                                      */
 /* ------------------------------------------------------------------ */
@@ -246,7 +248,7 @@ function buildGogUnion({ products, minutes, works, links } = {}) {
     summary: {
       gogProducts: gogProducts.length,
       gogMinutes,
-      gogHours: Math.round((gogMinutes / 60) * 10) / 10,
+      gogHours: round1(gogMinutes / 60),
       steamWorks: steamWorks.length,
       worksTotal: worksList.length,
       matchedWorks: matchedWorkKeys.size,

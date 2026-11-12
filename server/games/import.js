@@ -30,6 +30,7 @@
 
 const config = require('../config');
 const { createJobs } = require('../core/jobs');
+const { round1 } = require('../core/stats');
 const steam = require('./steam');
 const gameCache = require('./game-cache');
 const enrichJobs = require('./enrich');
@@ -447,7 +448,7 @@ async function runImport(job, target, client, options) {
     job.gameCount = null;
     job.ownedCount = library.games.length;
     job.totalMinutes = library.totalMinutes;
-    job.totalHours = Math.round((library.totalMinutes / 60) * 10) / 10;
+    job.totalHours = round1(library.totalMinutes / 60);
     job.playedCount = library.games.filter((game) => game.playtime_forever > 0).length;
     job.backlogCount = library.games.filter((game) => game.playtime_forever === 0).length;
     job.percent = 100;
@@ -549,7 +550,7 @@ async function runImport(job, target, client, options) {
   job.gameCount = owned.gameCount;
   job.ownedCount = owned.games.length;
   job.totalMinutes = mergedTotalMinutes;
-  job.totalHours = Math.round((mergedTotalMinutes / 60) * 10) / 10;
+  job.totalHours = round1(mergedTotalMinutes / 60);
   job.playedCount = owned.games.filter((game) => game.playtime_forever > 0).length;
   job.backlogCount = owned.games.filter((game) => game.playtime_forever === 0).length;
   job.percent = 100;
@@ -620,7 +621,7 @@ function startImport(rawTarget, options = {}) {
         ownedCount: Array.isArray(library.games) ? library.games.length : 0,
         totalMinutes: library.totalMinutes,
         totalHours: Number.isFinite(Number(library.totalMinutes))
-          ? Math.round((Number(library.totalMinutes) / 60) * 10) / 10
+          ? round1(Number(library.totalMinutes) / 60)
           : null,
         playedCount: (library.games || []).filter((game) => game.playtime_forever > 0).length,
         backlogCount: (library.games || []).filter((game) => game.playtime_forever === 0).length,

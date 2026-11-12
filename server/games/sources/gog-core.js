@@ -14,6 +14,7 @@
 const { URL } = require('url');
 
 const gogCache = require('../gog-cache');
+const { round2 } = require('../../core/stats');
 const sources = require('../../core/sources');
 
 const AUTH_HOST = 'auth.gog.com';
@@ -299,7 +300,7 @@ function minutesOfSessionsPayload(json) {
     if (json[field] == null) continue;
     const value = Number(json[field]);
     if (Number.isFinite(value) && value >= 0) {
-      return { minutes: Math.round(value * 100) / 100, field };
+      return { minutes: round2(value), field };
     }
   }
   const sessions = Array.isArray(json.sessions) ? json.sessions : null;
@@ -323,7 +324,7 @@ function minutesOfSessionsPayload(json) {
       }
     }
     if (counted) {
-      return { minutes: Math.round(sum * 100) / 100, field: 'sessions[]', sessions: counted };
+      return { minutes: round2(sum), field: 'sessions[]', sessions: counted };
     }
     // An empty session list is a real zero: the game was never launched.
     return { minutes: 0, field: 'sessions[]', sessions: 0 };
