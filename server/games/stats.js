@@ -119,7 +119,7 @@ const { buildFeatures } = require('./stats/features');
 const { buildTop } = require('./stats/top');
 const { buildGamesIndex } = require('./stats/games-index');
 const { buildTimeline, calendarFromAchievements } = require('./stats/timeline');
-const steamArt = require('./steam-art');
+const steamArt = require('./art');
 
 /**
  * Build the payload. Pure: the caller supplies the library snapshot, the

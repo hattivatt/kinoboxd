@@ -37,7 +37,7 @@ process.env.KINOBOXD_STEAM_KEY_FILE = path.join(
   'no-steam-token'
 );
 
-const art = require('../server/games/steam-art');
+const art = require('../server/games/art');
 const { createRouter } = require('../server/games/routes');
 
 const { portFor } = require('./helpers/port');

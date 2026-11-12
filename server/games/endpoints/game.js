@@ -5,7 +5,7 @@ const { assertOnlyParams } = require('../../core/params');
 const franchise = require('../franchise');
 const gameCache = require('../game-cache');
 const { personnelForGame } = require('../personnel/personnel');
-const steamArt = require('../steam-art');
+const steamArt = require('../art');
 const { genreNamesOf, categoryNamesOf, minutesToHours } = require('../stats');
 
 function register(router, ctx) {
