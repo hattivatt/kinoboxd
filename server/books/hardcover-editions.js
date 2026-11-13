@@ -13,6 +13,7 @@ query IsbnBatch($isbns: [String!]!) {
     limit: 500
   ) {
     id
+    title
     book_id
     isbn_13
     isbn_10
@@ -72,7 +73,11 @@ async function lookupIsbns(isbns, options = {}) {
       }
       for (const key of keys) {
         if (batch.includes(key)) {
-          byIsbn.set(key, { details, editionId: edition.id ? Number(edition.id) : null });
+          byIsbn.set(key, {
+            details,
+            editionId: edition.id ? Number(edition.id) : null,
+            editionTitle: edition.title ? String(edition.title) : null,
+          });
         }
       }
     }

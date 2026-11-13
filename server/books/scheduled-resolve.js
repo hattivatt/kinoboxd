@@ -4,6 +4,7 @@ const path = require('path');
 
 const bookCache = require('./book-cache');
 const { liveLibMetadata } = require('./year-only');
+const { staleLinkKeys } = require('./resolve-stages/link-health');
 const resolve = require('./resolve');
 const segments = require('./segments');
 const litres = require('./providers/litres');
@@ -111,20 +112,22 @@ function expandedProfileEvents(profile) {
 function candidatePool(profile, options = {}) {
   const allowedWorkIds = options.allowedWorkIds || null;
   const expanded = expandedProfileEvents(profile);
+  const stale = staleLinkKeys(expanded, bookCache);
   const pool = [];
   for (const event of expanded) {
     if (!event || PLAN_SHELVES.has(event.shelf)) continue;
     const key = eventKeyOf(event);
     if (!key) continue;
-    if (!isUnlinked(event)) continue;
-    if (allowedWorkIds) {
+    const relink = stale.has(key);
+    if (!isUnlinked(event) && !relink) continue;
+    if (allowedWorkIds && !relink) {
       const workId = `ll:${key}`;
       const hostVisible = Boolean(
         event.collectionParentKey && allowedWorkIds.has(`ll:${event.collectionParentKey}`)
       );
       if (!allowedWorkIds.has(workId) && !hostVisible) continue;
     }
-    pool.push({ event, key });
+    pool.push({ event, key, relink });
   }
   return pool;
 }
@@ -259,6 +262,7 @@ async function resolveOneProfile(profile, options = {}) {
   };
   const pass = await resolve.resolveProfile(filtered, {
     force,
+    staleKeys: selected.filter((entry) => entry.relink).map((entry) => entry.key),
     allowLivelibCard: false,
     fetchImpl: options.fetchImpl,
     sleep: options.sleep,

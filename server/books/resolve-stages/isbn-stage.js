@@ -1,6 +1,7 @@
 'use strict';
 
 const { isbnOfEvent, eventKeyOf } = require('./identity');
+const { hardcoverEntryConflict } = require('./matching');
 
 function createLookup(ctx) {
   const codes = ctx.lookupErrors;
@@ -44,6 +45,7 @@ async function applyIsbnLinks(ctx) {
   ctx.isbnToBookIds = isbnToBookIds;
   if (isbnToBookIds.size === 0) return;
 
+  const titles = new Map(plan.pending.map((event) => [eventKeyOf(event), event.title]));
   const lookup = await ctx.lookup([...isbnToBookIds.keys()]);
   report.requests += lookup.requests;
   for (const [isbn, entry] of lookup.byIsbn) {
@@ -51,13 +53,17 @@ async function applyIsbnLinks(ctx) {
     plan.works.set(String(entry.details.hcWorkId), entry.details);
     for (const bookId of isbnToBookIds.get(isbn) || []) {
       if (plan.links.has(bookId)) continue;
+      if (hardcoverEntryConflict(titles.get(bookId), entry)) {
+        report.rejectedIsbn = (report.rejectedIsbn || 0) + 1;
+        continue;
+      }
       const link = {
         schemaVersion: 1,
         livelibBookId: bookId,
         workId,
         method: 'isbn',
         score: 1,
-        evidence: { isbn },
+        evidence: { isbn, editionTitle: entry.editionTitle || null },
         resolvedAt: now,
       };
       plan.links.set(bookId, link);

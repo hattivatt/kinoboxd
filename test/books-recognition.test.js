@@ -18,6 +18,10 @@ const unlinkedYears = require('../server/books/unlinked-years');
 const { isUnlinked } = require('../server/books/scheduled-resolve');
 const { titleVariants, partVariants } = require('../server/books/providers/title-variants');
 const { canOverrideClaim } = require('../server/books/providers/claim');
+const { volumeNumberOf } = require('../server/books/normalize');
+const { scoreCandidate } = require('../server/books/providers/match');
+const { hardcoverEntryConflict, guardReject } = require('../server/books/resolve-stages/matching');
+const { staleLinkKeys } = require('../server/books/resolve-stages/link-health');
 const wikidata = require('../server/books/providers/wikidata');
 const openlibrary = require('../server/books/providers/openlibrary');
 const { isChallengeableClaim, storedFirstClaim } = require('../server/books/providers/claim');
@@ -369,6 +373,118 @@ describe('books-recognition', () => {
     test('the year-only document is not a challengeable claim in the main queue', () => {
       const keys = yearsBackfill.detailDocs().map((entry) => entry.doc.workId);
       assert.ok(!keys.includes('ll:7001'));
+    });
+  });
+
+  describe('volume gate', () => {
+    test('one volume reader for Russian and English markers', () => {
+      assert.equal(volumeNumberOf('Eyeshield 21, Vol. 10'), 10);
+      assert.equal(volumeNumberOf('Атака на титанов. Том 6'), 6);
+      assert.equal(volumeNumberOf('Сёгун. В 3 книгах. Книга 2'), 2);
+      assert.equal(volumeNumberOf('Hell\'s Paradise: Jigokuraku. Volume 4'), 4);
+      assert.equal(volumeNumberOf('The Book Thief'), null);
+      assert.equal(volumeNumberOf('1984'), null);
+    });
+
+    test('a title search never pairs different volumes', () => {
+      const query = { title: 'Атака на титанов. Том 6', authors: ['Хадзимэ Исаяма'] };
+      assert.equal(scoreCandidate(query, { title: 'Атака на титанов. Книга 1', authors: ['Хадзимэ Исаяма'] }), null);
+      assert.ok(scoreCandidate(query, { title: 'Атака на титанов. Книга 6', authors: ['Хадзимэ Исаяма'] }));
+      assert.equal(
+        guardReject({ title: 'Eyeshield 21, Vol. 10' }, { title: 'Eyeshield 21, Vol. 1: The Boy With the Golden Legs' }),
+        'series-position'
+      );
+    });
+
+    const eyeshield = {
+      details: { hcWorkId: 7137, title: 'Eyeshield 21, Vol. 1: The Boy With the Golden Legs', series: [{ name: 'Eyeshield 21', position: 1 }] },
+      editionTitle: 'Eyeshield 21, Volume 10',
+    };
+    const chocolate = {
+      details: { hcWorkId: 964993, title: 'The Chocolate Box', series: [] },
+      editionTitle: 'Дама под вуалью',
+    };
+
+    test('a Hardcover edition hung on another volume is refused', () => {
+      assert.equal(hardcoverEntryConflict('Eyeshield 21, Vol. 10', eyeshield), 'volume');
+      assert.equal(hardcoverEntryConflict(null, eyeshield), 'volume');
+      assert.equal(
+        hardcoverEntryConflict('Eyeshield 21, Vol. 1', { ...eyeshield, editionTitle: 'Eyeshield 21, Volume 1' }),
+        null
+      );
+    });
+
+    test('a derived ISBN must name the same book', () => {
+      assert.equal(hardcoverEntryConflict('Тайна смерти итальянского графа', chocolate, { derived: true }), 'edition-title');
+      assert.equal(hardcoverEntryConflict('Дама под вуалью', chocolate, { derived: true }), null);
+      assert.equal(hardcoverEntryConflict('Тайна смерти итальянского графа', chocolate), null);
+    });
+
+    function cacheOf(links, works) {
+      return {
+        getLink: (key) => links[key] || null,
+        getWorkDetails: (workId) => works[workId] || null,
+      };
+    }
+
+    test('stored links to another volume or a shared collection ISBN are re-resolved', () => {
+      const events = [
+        { sourceBookId: '1', title: 'Eyeshield 21, Vol. 10', edition: { isbn13: '9781421506395' } },
+        { sourceBookId: '2', title: 'Eyeshield 21, Vol. 1', edition: { isbn13: '9781591167525' } },
+        { fileKey: 'tk:a', title: 'Двойной грех' },
+        { fileKey: 'tk:b', title: 'Осиное гнездо' },
+        { sourceBookId: '3', title: 'Сёгун. Книга 2', edition: {} },
+        { sourceBookId: '4', title: 'Атака на титанов. Том 6' },
+      ];
+      const links = {
+        1: { workId: 'hc:7137', method: 'isbn', evidence: { isbn: '9781421506395' } },
+        2: { workId: 'hc:7137', method: 'isbn', evidence: { isbn: '9781591167525' } },
+        'file:tk:a': { workId: 'hc:964993', method: 'isbn', evidence: { isbn: '9785699278060' } },
+        'file:tk:b': { workId: 'hc:964993', method: 'isbn', evidence: { isbn: '9785699278060' } },
+        3: { workId: 'hc:1', method: 'manual' },
+        4: { workId: 'lr:1', method: 'litres-title' },
+      };
+      const works = {
+        'hc:7137': eyeshield.details,
+        'hc:964993': chocolate.details,
+        'hc:1': { title: 'Shōgun', series: [{ position: 1 }] },
+        'lr:1': { title: 'Атака на титанов. Книга 1' },
+      };
+      const stale = staleLinkKeys(events, cacheOf(links, works));
+      assert.deepEqual([...stale].sort(), ['1', '4', 'file:tk:a', 'file:tk:b']);
+    });
+  });
+
+  describe('stale link lifecycle', () => {
+    const { persistLinks } = require('../server/books/resolve-stages/persist');
+    const { tryProvider } = require('../server/books/resolve-stages/chain');
+
+    test('a stale link without a replacement is dropped, a replaced one is rewritten', async () => {
+      await bookCache.saveLink('8801', { schemaVersion: 2, livelibBookId: '8801', workId: 'lr:1', method: 'litres-title', score: 0.95 });
+      await bookCache.saveLink('8802', { schemaVersion: 2, livelibBookId: '8802', workId: 'hc:7137', method: 'isbn', score: 1 });
+      const replacement = { schemaVersion: 2, livelibBookId: '8802', workId: 'gb:X', method: 'googlebooks-isbn', score: 0.9 };
+      const ctx = {
+        plan: { links: new Map([['8802', replacement]]), stale: new Set(['8801', '8802']) },
+        report: { methods: {} },
+        cache: bookCache,
+        force: false,
+      };
+      await persistLinks(ctx);
+      assert.equal(bookCache.getLink('8801'), null);
+      assert.equal(bookCache.getLink('8802').workId, 'gb:X');
+      assert.equal(ctx.report.dropped, 1);
+    });
+
+    test('a provider answer for another volume counts as a miss', async () => {
+      const provider = { NAME: 'litres', getWork: async () => ({ source: 'litres', title: 'Атака на титанов. Книга 1' }) };
+      const ctx = {
+        chain: { report: { litres: { calls: 0, hits: 0, skipped: 0, methods: {} } } },
+        budget: {},
+        options: {},
+      };
+      assert.equal(await tryProvider(provider, { title: 'Атака на титанов. Том 6' }, ctx), null);
+      const same = await tryProvider(provider, { title: 'Атака на титанов. Книга 1' }, ctx);
+      assert.equal(same.title, 'Атака на титанов. Книга 1');
     });
   });
 });

@@ -5,6 +5,8 @@ const providers = require('../providers');
 const hardcoverProvider = require('../providers/hardcover');
 const { usedOf, budgetRefused } = require('../../core/budget');
 const { createChainReport, eventKeyOf } = require('./identity');
+const { volumeNumberOf } = require('../normalize');
+const { volumesConflict } = require('./matching');
 
 function providerBudgetFor(budget, provider) {
   if (provider.NAME === 'litres') return budget.litres;
@@ -46,7 +48,11 @@ async function tryProvider(provider, input, ctx) {
   const usedBefore = usedOf(budget);
   stat.calls++;
   try {
-    const result = await provider.getWork(input, providerOptionsFor(ctx, provider));
+    const found = await provider.getWork(input, providerOptionsFor(ctx, provider));
+    const result =
+      found && volumesConflict(volumeNumberOf(input && input.title), volumeNumberOf(found.title))
+        ? null
+        : found;
     const budgetBlocked = budgetRefused(budget, usedBefore);
     if (keyString && budgetBlocked) {
       options.budgetBlockedKeys && options.budgetBlockedKeys.add(keyString);

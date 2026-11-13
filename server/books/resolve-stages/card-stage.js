@@ -7,6 +7,7 @@ const { tryProvider, saveProviderWork, makeLink, countResolution, saveCardMetada
 const { lookupHardcoverByIsbn } = require('./isbn-stage');
 const { unresolvedEvents } = require('./plan');
 const { liveLibMetadata } = require('../year-only');
+const { hardcoverEntryConflict } = require('./matching');
 
 function splitByIsbn(events) {
   const withIsbn = [];
@@ -40,10 +41,15 @@ async function lookupCardIsbns(ctx, cardByBook) {
   return lookupHardcoverByIsbn(ctx, cardIsbns);
 }
 
-async function closeCardIsbn(ctx, bookId, card, hardcoverByIsbn) {
+async function closeCardIsbn(ctx, event, card, hardcoverByIsbn) {
+  const bookId = eventKeyOf(event);
   const isbn = card ? normalizeIsbn(card.isbn13) || normalizeIsbn(card.isbn10) : null;
   if (!isbn || !hardcoverByIsbn.has(isbn)) return false;
   const entry = hardcoverByIsbn.get(isbn);
+  if (hardcoverEntryConflict(event.title, entry)) {
+    ctx.report.rejectedIsbn = (ctx.report.rejectedIsbn || 0) + 1;
+    return false;
+  }
   const hcResult = ctx.chain.hardcover.normalizeDetails(entry.details, entry.editionId);
   if (!hcResult) return false;
   const merged = providers.mergeResults(hcResult, card ? [card] : []);
@@ -57,7 +63,7 @@ async function closeCardIsbn(ctx, bookId, card, hardcoverByIsbn) {
 async function applyCard(ctx, event, card, isbnInput) {
   const { plan, report, chain, cache, now } = ctx;
   const bookId = eventKeyOf(event);
-  if (await closeCardIsbn(ctx, bookId, card, isbnInput.hardcoverByIsbn)) return;
+  if (await closeCardIsbn(ctx, event, card, isbnInput.hardcoverByIsbn)) return;
 
   let result = null;
   if (isbnInput.isbn) {

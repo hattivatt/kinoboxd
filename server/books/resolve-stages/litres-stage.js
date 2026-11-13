@@ -2,10 +2,11 @@
 
 const providers = require('../providers');
 const { normalizeIsbn, isbn10Of } = require('../normalize');
-const { CYRILLIC_TITLE, eventKeyOf, chainInput } = require('./identity');
+const { CYRILLIC_TITLE, eventKeyOf, chainInput, isbnOfEvent } = require('./identity');
 const { tryProvider, saveProviderWork, makeLink } = require('./chain');
 const { lookupHardcoverByIsbn } = require('./isbn-stage');
 const { unresolvedEvents } = require('./plan');
+const { hardcoverEntryConflict } = require('./matching');
 
 async function runLitres(ctx) {
   const { plan, report, chain, now } = ctx;
@@ -33,8 +34,13 @@ async function runLitres(ctx) {
     if (!litresResult) continue;
     const isbn = normalizeIsbn(litresResult.isbn13) || normalizeIsbn(litresResult.isbn10);
 
-    if (isbn && hardcoverByLitresIsbn.has(isbn)) {
-      const entry = hardcoverByLitresIsbn.get(isbn);
+    const hcEntry = isbn ? hardcoverByLitresIsbn.get(isbn) : null;
+    const hcConflict = hcEntry
+      ? hardcoverEntryConflict(event.title, hcEntry, { derived: isbnOfEvent(event) !== isbn })
+      : null;
+    if (hcConflict) report.rejectedIsbn = (report.rejectedIsbn || 0) + 1;
+    if (hcEntry && !hcConflict) {
+      const entry = hcEntry;
       const hcResult = chain.hardcover.normalizeDetails(entry.details, entry.editionId);
       if (hcResult) {
         const merged = providers.mergeResults(hcResult, [litresResult]);

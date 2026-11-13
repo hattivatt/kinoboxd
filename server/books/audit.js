@@ -4,21 +4,9 @@ const path = require('path');
 const fsStore = require('../core/fs-store');
 const bookCache = require('./book-cache');
 const { eventLinkKeyOf } = require('./stats/events');
-const { normalizeIsbn } = require('./normalize');
+const { normalizeIsbn, volumeNumberOf } = require('./normalize');
 
 const MAX_ITEMS = 200;
-
-function volumeNumberOf(title) {
-  if (!title) return null;
-  const text = String(title)
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/ё/g, 'е');
-  for (const match of text.matchAll(/(?<![\p{L}])(?:том|книга|часть|vol(?:ume)?|book)\s*\.?\s*(\d+)/giu)) {
-    return Number(match[1]);
-  }
-  return null;
-}
 
 function isbnOfValue(value) {
   if (value == null || value === '') return null;

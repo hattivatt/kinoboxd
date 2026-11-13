@@ -1,6 +1,6 @@
 'use strict';
 
-const { isManualLink } = require('../links');
+const { isManualLink, deleteLink } = require('../links');
 
 async function persistLinks(ctx) {
   const { plan, report, cache, force } = ctx;
@@ -25,6 +25,12 @@ async function persistLinks(ctx) {
     }
     cache.setWorkLink(link.workId, { livelib: [bookId] });
     report.methods[link.method] = (report.methods[link.method] || 0) + 1;
+  }
+  for (const bookId of plan.stale || []) {
+    if (plan.links.has(bookId)) continue;
+    deleteLink(bookId);
+    cache.setIndexValue(`ll:${bookId}`, false);
+    report.dropped = (report.dropped || 0) + 1;
   }
   cache.flushIndex();
   cache.flushLinks();

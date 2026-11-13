@@ -103,8 +103,18 @@ function normalizeIsbn(value) {
   return null;
 }
 
+const VOLUME_MARKER = /(?<![\p{L}])(?:том|книга|книги|часть|кн\.|vol(?:ume)?|book|#)\s*\.?\s*(\d{1,4})(?!\d)/iu;
+
+function volumeNumberOf(title) {
+  if (!title) return null;
+  const text = String(title).normalize('NFKC').toLowerCase().replace(/ё/g, 'е');
+  const match = VOLUME_MARKER.exec(text);
+  return match ? Number(match[1]) : null;
+}
+
 module.exports = {
   cleanText,
+  volumeNumberOf,
   namesOf,
   normalizeTitle,
   strictTitleKey,

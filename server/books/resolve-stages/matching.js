@@ -5,6 +5,7 @@ const {
   normalizeTitle,
   tokenJaccard,
   surnameOf,
+  volumeNumberOf,
 } = require('../normalize');
 
 const FUZZY_ACCEPT = 0.9;
@@ -47,11 +48,34 @@ function authorsOverlap(llAuthors, hcAuthors) {
 
 const COLLECTION_MARKERS = /сборник|антолог|избранн|полное собрание|собрание сочинений/i;
 const ADAPTATION_MARKERS = /иллюстрированн|подарочн|адаптац|краткое содержание|пересказ|сокращ/i;
-const POSITION_MARKERS = /(?<![\p{L}])(?:том|часть|книга|кн\.)\s*(\d+)/iu;
+const positionOf = volumeNumberOf;
 
-function positionOf(title) {
-  const match = String(title || '').match(POSITION_MARKERS);
-  return match ? Number(match[1]) : null;
+function workVolumeOf(work) {
+  const fromTitle = volumeNumberOf(work && work.title);
+  if (fromTitle != null) return fromTitle;
+  const series = Array.isArray(work && work.series) ? work.series : [];
+  const entry = series.find((item) => item && item.position != null);
+  const position = entry ? Number(entry.position) : null;
+  return Number.isFinite(position) ? position : null;
+}
+
+function volumesConflict(left, right) {
+  return left != null && right != null && Number(left) !== Number(right);
+}
+
+function hardcoverEntryConflict(eventTitle, entry, options = {}) {
+  if (!entry || !entry.details) return null;
+  const editionTitle = entry.editionTitle ? String(entry.editionTitle) : null;
+  const eventVolume = volumeNumberOf(eventTitle);
+  const editionVolume = volumeNumberOf(editionTitle);
+  const ownVolume = eventVolume != null ? eventVolume : editionVolume;
+  if (volumesConflict(ownVolume, workVolumeOf(entry.details))) return 'volume';
+  if (options.derived && editionTitle && eventTitle) {
+    const sameScript = /[а-яё]/i.test(editionTitle) === /[а-яё]/i.test(String(eventTitle));
+    const exact = normalizeTitle(editionTitle) === normalizeTitle(eventTitle);
+    if (sameScript && !exact && tokenJaccard(editionTitle, eventTitle) < 0.5) return 'edition-title';
+  }
+  return null;
 }
 
 function guardReject(llEvent, candidate) {
@@ -63,12 +87,7 @@ function guardReject(llEvent, candidate) {
   if (ADAPTATION_MARKERS.test(llTitle) && !ADAPTATION_MARKERS.test(hcTitle)) {
     return 'adaptation-marker';
   }
-  const llPosition = positionOf(llTitle);
-  const hcPosition =
-    Array.isArray(candidate.series) && candidate.series.length
-      ? candidate.series.find((entry) => entry && entry.position != null)?.position
-      : null;
-  if (llPosition != null && hcPosition != null && Number(llPosition) !== Number(hcPosition)) {
+  if (volumesConflict(positionOf(llTitle), workVolumeOf(candidate))) {
     return 'series-position';
   }
   return null;
@@ -146,6 +165,9 @@ module.exports = {
   authorKeySet,
   authorsOverlap,
   positionOf,
+  workVolumeOf,
+  volumesConflict,
+  hardcoverEntryConflict,
   guardReject,
   yearDelta,
   scoreCandidate,

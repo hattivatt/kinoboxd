@@ -1,6 +1,6 @@
 'use strict';
 
-const { normalizeTitle, tokenJaccard, surnameOf } = require('../normalize');
+const { normalizeTitle, tokenJaccard, surnameOf, volumeNumberOf } = require('../normalize');
 
 const STRICT_SIM = 0.6;
 const FUZZY_SURNAME_SIM = 0.6;
@@ -93,6 +93,9 @@ function scoreCandidate(query, candidate, options = {}) {
   const queryTitle = query && query.title ? String(query.title) : '';
   const candidateTitle = candidate && candidate.title ? String(candidate.title) : '';
   if (!queryTitle || !candidateTitle) return null;
+  const queryVolume = volumeNumberOf(queryTitle);
+  const candidateVolume = volumeNumberOf(candidateTitle);
+  if (queryVolume != null && candidateVolume != null && queryVolume !== candidateVolume) return null;
 
   const titleSim = tokenJaccard(queryTitle, candidateTitle);
   const exact =
