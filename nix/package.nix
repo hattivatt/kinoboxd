@@ -21,7 +21,7 @@ buildNpmPackage (finalAttrs: {
 
   npmDeps = fetchNpmDeps {
     inherit (finalAttrs) src;
-    hash = "sha256-X6rMqzNU1oXT0h1oc7Ak3dxP6Yb90frXXbiIra52Qag=";
+    hash = "sha256-3WDQGA32z5UIh/9aJaPMXpKR54bfxyppeE4lITJh5PI=";
   };
 
   nodejs = nodejs_24;

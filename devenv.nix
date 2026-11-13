@@ -30,7 +30,7 @@
     echo "  kb-check       node --check для всех .js в server/"
     echo "  kb-contracts   перегенерировать contracts/*.md из кода"
     echo "  kb-census      размеры модулей/функций, дубли хелперов, мёртвый код"
-    echo "  kb-smoke       HTTP-прогон трёх payload'ов (нужен TMDB-токен)"
+    echo "  kb-smoke       HTTP-прогон трёх payload'ов (golden-фикстуры, без токенов)"
     echo "  kb-cache-wipe  очистить TMDB-кэш cache/ (с подтверждением)"
     echo ""
     echo "  TMDB-токен НЕ хранится в devenv-файлах: положи его в"

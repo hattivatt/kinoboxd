@@ -19,10 +19,8 @@
 #      that file exists, and kills the server / removes the tmp tree.
 #
 # REQUIREMENTS
-#   - a TMDB token: `server/index.js` fails fast without one. The dev fallback
-#     `config/tmdb-token` is enough; the token VALUE is never read or
-#     printed here.
-#   - `curl` and `node` on PATH.
+#   - `curl` and `node` on PATH. No TMDB token is needed: the payloads come
+#     from the golden fixtures.
 #
 # ENV
 #   SMOKE_PORT=54xx        force the port (still must be free)
@@ -33,7 +31,7 @@
 # EXIT
 #   0 — every GET answered 200 and every size stayed inside the baseline;
 #   1 — a non-200, a missing payload, or a size outside ±5%;
-#   2 — setup failure (no token, server did not start).
+#   2 — setup failure (the server did not start).
 #
 # Auth is DISABLED for the run (`KINOBOXD_PASSWORD=` is forced empty) so the
 # script does not need to log in; it never reads the real password.
@@ -140,7 +138,6 @@ if [ "$READY" -ne 1 ]; then
   log "FAIL: server did not become ready on port $PORT" >&2
   log "--- server.log ---" >&2
   sed -n '1,40p' "$TMP/server.log" >&2 || true
-  log "hint: /api/stats needs the dev TMDB token (config/tmdb-token or TMDB_API_TOKEN)" >&2
   exit 2
 fi
 
