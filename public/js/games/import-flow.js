@@ -1,16 +1,5 @@
-/* Import flow wording and readers shared by the games tab widgets.
- *
- * Split out of `games-view.js`; only the definition moved — the error table,
- * the stage labels and the tolerant job-id reader are byte-identical.
- */
-
 import { arr, firstString, numOrNull, text } from '../core/dom.js';
 
-/**
- * Accepts «76561198038369983», a `profiles/<id64>` URL, `id/<vanity>`, a bare
- * vanity or the full steamcommunity URL. Returns exactly one of
- * `steamid64` / `vanityUrl`, or `{ error }` with a human sentence.
- */
 export function accountFromInput(value) {
   const raw = text(value);
   if (!raw) {
@@ -33,10 +22,6 @@ export function accountFromInput(value) {
   return { error: 'Это не похоже ни на steamid64 (17 цифр), ни на имя профиля (латиница, цифры, «_» и «-»).' };
 }
 
-/**
- * Import error → honest Russian text with the next step. Codes come from the
- * contract (§5.4); anything unknown keeps the server sentence.
- */
 const IMPORT_ERRORS = {
   profile_private: {
     title: 'Профиль Steam закрыт',
@@ -139,7 +124,6 @@ const STAGE_LABEL = {
   failed: 'Ошибка',
 };
 
-/** Human stage sentence for the import progress card. */
 export function jobStageText(status) {
   if (!status || typeof status !== 'object') return 'Готовим импорт…';
   const message = text(status.message || status.detail);
@@ -148,13 +132,6 @@ export function jobStageText(status) {
   return STAGE_LABEL[stage] || 'Импортируем библиотеку…';
 }
 
-/**
- * Tolerant job id reader: `{ id }`, `{ jobId }` or `{ job: { id } }`.
- *
- * A bare `job: "games-import"` is the job TYPE in the contract (§5.4), not an
- * id — treating it as an id would poll `/status?id=games-import` forever.
- * When the server returns no id, the caller polls by `profile` instead.
- */
 export function gamesJobId(response) {
   if (!response || typeof response !== 'object') return '';
   const nested = response.job && typeof response.job === 'object' ? response.job : null;
@@ -166,7 +143,6 @@ export function gamesJobId(response) {
   );
 }
 
-/** `GET /api/games/profiles` → `[{ key, userKey, personaName, label, gameCount, importedAt }]`. */
 export function normalizeProfilesList(raw) {
   const list = Array.isArray(raw) ? raw : arr(raw && (raw.profiles || raw.items));
   const out = [];

@@ -1,10 +1,3 @@
-/* Book-specific charts: the monthly reading timeline.
- *
- * The charts primitives are reused as-is from charts.js; only the pieces whose
- * wording is domain-specific (просмотры → книги, пересмотры → перечитывания,
- * plus the per-source split) live here. No dependencies.
- */
-
 import { fmtInt, fmtPercent } from './ui.js';
 import { renderTimeline } from './charts/timeline.js';
 
@@ -36,15 +29,6 @@ const BOOK_TIMELINE = {
   },
 };
 
-/**
- * Monthly bar chart of finished books. The geometry is shared with
- * charts.js#renderTimeline; only the wording and the per-source tooltip split
- * are book-specific.
- *
- * @param {HTMLElement} host
- * @param {Array<{month:string,finished:number,reRead?:number,livelib?:number,hardcover?:number}>} timeline
- * @param {{onMonthClick?: (month:string)=>void}} [opts]
- */
 export function renderBooksTimeline(host, timeline, { onMonthClick } = {}) {
   renderTimeline(host, timeline, { ...BOOK_TIMELINE, onMonthClick });
 }

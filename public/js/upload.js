@@ -1,9 +1,3 @@
-/* Upload screen: the single «Профиль Кинопоиска» panel, optional
-   «Прикрепить Letterboxd-архив» action and inline errors.
-
-   Letterboxd is not a source anymore: its ZIP is attached to an already
-   imported KinoPoisk profile (topbar button or the secondary action here). */
-
 import { $, clear } from './ui.js';
 
 const KP_URL_RE = /kinopoisk\.ru\/user\/(\d+)/i;
@@ -111,7 +105,6 @@ export function setHasSession(hasSession) {
   if (r.back) r.back.hidden = !hasSession;
 }
 
-/** The secondary attach action only works once an active KP upload exists. */
 export function setAttachAvailable(available) {
   const r = refs();
   if (r.attach) {

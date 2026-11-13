@@ -16,7 +16,6 @@ export function normalizeHistogram(raw) {
     .filter((item) => item && item.count > 0);
 }
 
-/** Weighted buckets (genres, tags): `{ name, count, hours, share, weight }`. */
 export function normalizeWeightItems(raw) {
   return arr(raw)
     .map((item) => {
@@ -38,7 +37,6 @@ export function normalizeWeightItems(raw) {
     .filter(Boolean);
 }
 
-/** `decades[]`: `{ decade: 2010 }` or the explicit «год неизвестен» bucket. */
 export function normalizeDecades(raw) {
   return arr(raw)
     .map((item) => {
@@ -76,7 +74,6 @@ export function normalizeYears(raw) {
     .filter(Boolean);
 }
 
-/** The «год неизвестен» bucket of `years[]`, summed; null when absent. */
 export function normalizeUnknownYear(raw) {
   const unknown = arr(raw).filter((item) => item && typeof item === 'object' && item.unknown);
   if (!unknown.length) return null;
@@ -88,7 +85,6 @@ export function normalizeUnknownYear(raw) {
   };
 }
 
-/** `scores[]` → `[{ bucket, count, hours }]`, duplicate buckets summed. */
 export function normalizeScores(raw) {
   const merged = new Map();
   for (const item of arr(raw)) {
@@ -106,7 +102,6 @@ export function normalizeScores(raw) {
   return [...merged.values()].sort((a, b) => b.bucket - a.bucket);
 }
 
-/** `franchises[]` from the dedicated endpoint (array or `{ franchises: [] }`). */
 export function normalizeFranchises(raw) {
   const list = Array.isArray(raw)
     ? raw
@@ -120,8 +115,6 @@ export function normalizeFranchises(raw) {
         .map((value) => numOrNull(value))
         .filter((value) => value != null);
       const workKeys = arr(item.workKeys).map((value) => text(value)).filter(Boolean);
-      // `yearsSpread` is `{min, max, span}` from `/api/games/franchises`
-      // (M4-B) and a plain number in older payloads/tests — accept both.
       const spreadRaw = item.yearsSpread ?? item.years;
       const yearsSpread = spreadRaw && typeof spreadRaw === 'object'
         ? numOrNull(spreadRaw.span)

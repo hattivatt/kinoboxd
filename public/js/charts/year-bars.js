@@ -1,5 +1,3 @@
-/* Full-width bar chart of watched films by their release year. */
-
 import {
   clear, el, fmtInt, fmtPercent, plural, showTooltip, moveTooltip, hideTooltip,
 } from '../ui.js';
@@ -7,7 +5,6 @@ import { svgEl, niceStep } from '../core/charts.js';
 import { drawValueGrid, drawXLabels } from './axis.js';
 import { collectYearBuckets, fillYearRange } from './year-data.js';
 
-/** Width of the separate ancient slot and the gap before the year axis. */
 const ANCIENT_SLOT_W = 54;
 const ANCIENT_SLOT_GAP = 14;
 const FILM_FORMS = ['фильм', 'фильма', 'фильмов'];
@@ -21,8 +18,6 @@ function yearBarsLayout(host, data, counts, ancient) {
   const width = Math.ceil(Math.max(baseWidth, data.length * minStep + 56 + slotW + slotGap));
   const height = 288;
   const pad = { left: 38, right: 12, top: 14, bottom: 34 };
-  // The year axis starts after the ancient slot; the slot itself is not a
-  // year column, so gaps/scale/step count only real years.
   const axisLeft = pad.left + slotW + slotGap;
   const plotW = width - axisLeft - pad.right;
   const plotH = height - pad.top - pad.bottom;
@@ -57,8 +52,6 @@ function drawYearBar(svg, item, index, layout, barLabels) {
   bar.style.animationDelay = `${Math.min(index * 4, 260)}ms`;
   svg.append(bar);
 
-  // Optional count above the column. Skipped when the bars get narrower
-  // than ~16px: 26+ years on a phone would turn the labels into noise.
   if (barLabels && item.count > 0 && layout.stepX >= 16) {
     const label = svgEl('text', {
       x: x + layout.barW / 2,
@@ -110,8 +103,6 @@ function yearTooltip(item, config) {
   ];
 }
 
-// The ancient slot: a tinted background + a dashed separator say «this is
-// not a year on the axis, it is everything before it».
 function drawAncientSlot(svg, layout) {
   svg.append(svgEl('rect', {
     x: layout.pad.left - 2,
@@ -128,7 +119,6 @@ function drawAncientSlot(svg, layout) {
 }
 
 function drawAncientLabels(svg, ancient, layout) {
-  // Two-line label: the slot is narrow on purpose, it is not a year tick.
   const lines = ancient.beforeYear ? ['до', `${ancient.beforeYear} г.`] : [ancient.label];
   lines.forEach((line, index) => {
     const text = svgEl('text', {
@@ -142,7 +132,6 @@ function drawAncientLabels(svg, ancient, layout) {
   });
 }
 
-// The ancient bucket: its own slot, its own label, its own click target.
 function drawAncientBucket(svg, ancient, layout, config) {
   const forms = config.unitForms || FILM_FORMS;
   const ancientBarW = Math.min(28, layout.slotW * 0.62);
@@ -187,7 +176,6 @@ function drawAncientBucket(svg, ancient, layout, config) {
   drawAncientLabels(svg, ancient, layout);
 }
 
-// x labels: evenly spaced years, always keeping the first and the last
 function pickYearLabels(layout, count) {
   const maxLabels = Math.max(2, Math.floor(layout.plotW / 64));
   const rawStep = Math.ceil(count / maxLabels);
@@ -217,31 +205,6 @@ function pickYearLabels(layout, count) {
   return drawn.map((label) => ({ cx: label.cx, text: String(label.year) }));
 }
 
-/**
- * Full-width bar chart of watched films by their release year.
- * Every year between the first and the last gets a column, so gaps are
- * drawn as zero-height bars and the x axis stays linear. Same visual
- * language as the monthly timeline; widgets.js re-renders on resize.
- *
- * A payload may also carry one non-year bucket (`ancient: true`, «до 1000 г.»).
- * It is painted in its own slot to the left of the year axis, behind a
- * separator, and shares the y scale only — never the x axis: one book written
- * in 300 AD must not stretch the axis back to year 300. Clicking the slot
- * calls `onAncientClick(bucket)` (the same list as the decade bucket).
- *
- * @param {HTMLElement} host
- * @param {Array<{year?:number,count:number,ancient?:boolean,beforeYear?:number,label?:string}>} years
- * @param {object} [opts]
- * @param {(year:number)=>void} [opts.onYearClick]
- * @param {(bucket:object)=>void} [opts.onAncientClick]
- * @param {string[]|null} [opts.unitForms] plural forms of the unit ("книга"/"фильм");
- *        when set the tooltip names it, otherwise the film wording stays compact
- * @param {string} [opts.shareLabel] suffix of the percentage line ("всех фильмов")
- * @param {string} [opts.emptyText] empty-state message
- * @param {string} [opts.ariaLabel] accessible chart description
- * @param {boolean} [opts.barLabels] print the count above every column
- * @param {(year:number,item:object)=>string} [opts.yearNote] extra tooltip note
- */
 export function renderYearBars(host, years, {
   onYearClick,
   onAncientClick,
@@ -250,9 +213,6 @@ export function renderYearBars(host, years, {
   emptyText = 'Нет данных по годам выпуска',
   ariaLabel = '',
   yearNote = null,
-  // Print the count above every column. Off by default: films/books stay
-  // compact, the games year chart asks for it explicitly so «34 игры» is
-  // readable without hovering.
   barLabels = false,
 } = {}) {
   const { counts, ancient } = collectYearBuckets(years);

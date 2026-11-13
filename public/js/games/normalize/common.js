@@ -13,11 +13,6 @@ export function boolOrNull(value) {
   return null;
 }
 
-/**
- * Hours, always signed with «ч»: `hoursText(1054.4)` → «1 054,4 ч».
- * `decimals: 0` is used for the big total («5 863 ч»), one decimal for a game
- * row and for the median. Steam reports minutes; the caller converts once.
- */
 export function hoursText(value, decimals = 1) {
   const n = numOrNull(value);
   if (n == null) return '—';
@@ -35,7 +30,6 @@ export function normalizeGenres(raw) {
     .filter(Boolean);
 }
 
-/** Minutes in the Web API, hours in the payload — both spellings accepted. */
 export function normalizeHours(item) {
   const direct = numOrNull(item && (item.hours ?? item.playtimeHours ?? item.hoursTotal));
   if (direct != null) return direct;
@@ -50,12 +44,6 @@ export function normalizeHours2w(item) {
   return minutes != null ? minutes / 60 : null;
 }
 
-/**
- * Tag list on a `gamesIndex` entry (and on a game card). SteamSpy tags arrive
- * as an array of names, an array of `{name, weight}` or a `{ tag: weight }`
- * map depending on the cache generation; all three are accepted and reduced to
- * plain names, because the drilldown only needs «does this game have the tag».
- */
 export function normalizeTagsList(raw) {
   if (Array.isArray(raw)) {
     return raw
@@ -68,12 +56,6 @@ export function normalizeTagsList(raw) {
   return [];
 }
 
-/**
- * Steam community review score (M4). It is NOT a personal rating: Steam does
- * not have those, and the UI must say so wherever the number appears. The
- * canonical scale is 1–9 with an English description (`review_score_desc`);
- * `bucket` in `scores[]` may carry either the number or the description.
- */
 export const STEAM_REVIEW_SCALE = [
   { score: 1, desc: 'Overwhelmingly Negative', label: 'Крайне отрицательные', color: '#a33a4a' },
   { score: 2, desc: 'Very Negative', label: 'Очень отрицательные', color: '#b44a3a' },
@@ -94,7 +76,6 @@ for (const entry of STEAM_REVIEW_SCALE) {
   }
 }
 
-/** `1`, `"7"`, `"Very Positive"`, `"very_positive"` → a 1–9 score or null. */
 export function resolveReviewBucket(value) {
   if (value == null || value === '') return null;
   if (typeof value === 'number' || /^\d+$/.test(text(value))) {
@@ -109,7 +90,6 @@ export function reviewScaleEntry(score) {
   return REVIEW_BY_SCORE.get(Number(score)) || null;
 }
 
-/** Franchise reference: `"The Witcher"` or `{ key, label, appids }`. */
 export function normalizeFranchiseRef(raw) {
   if (raw == null) return null;
   if (typeof raw === 'string') {
@@ -123,9 +103,6 @@ export function normalizeFranchiseRef(raw) {
     key: text(raw.key) || label,
     label,
     appids: arr(raw.appids).map((value) => numOrNull(value)).filter((value) => value != null),
-    // M6 follow-up: identity of secondary-only members (`gog:<id>` /
-    // `epic:<id>`). A franchise can therefore contain Steam rows *and* store
-    // exclusives; `appids` alone would silently drop the latter.
     workKeys: arr(raw.workKeys).map((value) => text(value)).filter(Boolean),
   };
 }

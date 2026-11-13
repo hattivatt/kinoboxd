@@ -1,5 +1,3 @@
-/* "Не распознано" tile modal: list of unmatched films + manual TMDB search. */
-
 import {
   el, clear, fmtInt, plural, icon, toNum, emptyState,
 } from './ui.js';
@@ -17,12 +15,6 @@ function kindLabel(kind) {
   return KIND_LABEL[kind] || 'фильм';
 }
 
-/**
- * @param {object} opts
- * @param {Array<{slug:string,title:string,year:number}>} opts.items
- * @param {string|null} opts.uploadId
- * @param {() => (void|Promise<void>)} [opts.onMatched] called after a successful POST /api/match
- */
 export function openUnmatchedModal({ items = [], uploadId = null, onMatched = null } = {}) {
   let films = (Array.isArray(items) ? items : []).filter((item) => item && item.slug);
   let query = '';
@@ -149,9 +141,6 @@ export function openUnmatchedModal({ items = [], uploadId = null, onMatched = nu
     });
     button.addEventListener('click', () => openSearch(film));
 
-    // Source-page links (Letterboxd short URI / KinoPoisk title page) stay
-    // available even before a manual TMDB match; unmatched rows have no
-    // "Исправить матч" item — the button below is their matching flow.
     const actions = el('div', { class: 'unmatched-actions' });
     const menu = renderFilmMenu(film, { allowRematch: false });
     if (menu) actions.append(menu);
@@ -180,7 +169,6 @@ export function openUnmatchedModal({ items = [], uploadId = null, onMatched = nu
             const task = onMatched(result);
             if (task && typeof task.catch === 'function') task.catch(() => {});
           } catch {
-            /* dashboard refresh is best-effort */
           }
         }
       },

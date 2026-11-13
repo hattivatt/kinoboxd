@@ -1,5 +1,3 @@
-/* Monthly bar chart, one implementation for every dashboard tab. */
-
 import {
   clear, el, fmtInt, monthName, monthShort, plural, toNum, showTooltip, moveTooltip, hideTooltip,
 } from '../ui.js';
@@ -55,28 +53,6 @@ function pickMonthLabels(data) {
   return labels;
 }
 
-/**
- * Full-width monthly bar chart. Renders a fixed-size SVG inside a scroll wrapper;
- * widgets.js re-renders it on container resize.
- *
- * Films pass nothing beyond `onMonthClick`; the books dashboard overrides the
- * wording (`valueKey`, plural forms, `ariaPrefix`, `emptyText`) and how the
- * tooltip's second line is built (`secondary(item, total)`), so both tabs share
- * this geometry without sharing their domain vocabulary.
- *
- * @param {HTMLElement} host
- * @param {Array<{month:string}>} timeline
- * @param {object} [opts]
- * @param {(month:string)=>void} [opts.onMonthClick]
- * @param {string} [opts.emptyText]
- * @param {string} [opts.ariaPrefix]
- * @param {string} [opts.valueKey] per-month count drawn as the bar height
- * @param {string} [opts.rewatchKey] optional «в т.ч.» counter of that month
- * @param {string[]} [opts.valueForms] plural forms of the unit
- * @param {string[]} [opts.rewatchForms] plural forms of the rewatch unit
- * @param {string[]} [opts.numericKeys] fields coerced to a non-negative number
- * @param {(item:object,total:number)=>string} [opts.secondary] tooltip second line
- */
 export function renderTimeline(host, timeline, { onMonthClick, ...options } = {}) {
   const config = { ...FILM_TIMELINE, ...options };
   const data = normalizeTimeline(timeline, config.numericKeys);

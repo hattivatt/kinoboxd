@@ -1,7 +1,3 @@
-/* Topbar profile switcher: current local profile, saved profiles list,
- * relative "updated" timestamps and per-row delete.
- */
-
 import { $, icon, plural } from './ui.js';
 import { renderProfileBar } from './core/shell.js';
 

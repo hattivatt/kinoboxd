@@ -1,28 +1,8 @@
-/* Games: achievement calendar heatmap + streak card (DOM only).
- *
- * The books tab has the same picture (`books-charts.js`), but the wording is
- * different in a way that matters: a book day is «прочитано», an achievement
- * day is «разблокировано», and the games calendar must never look like
- * «время в игре». Keeping a separate module (instead of a `labels` option in
- * books-charts) leaves the books widget untouched and makes the games wording
- * explicit here.
- *
- * The CSS classes are shared (`cal-*`, `streak-*`): same heatmap, same cells,
- * same hover behaviour — one visual language across tabs.
- */
-
 import { el, clear, plural, toNum, fmtInt } from './ui.js';
 import { buildYearCalendarGame } from './core/charts.js';
 
 const DAY_FORMS = ['день', 'дня', 'дней'];
 
-/**
- * Multi-year achievement heatmap (one row per year, empty years included).
- *
- * @param {HTMLElement} host
- * @param {Array<{date:string,count:number,appids:number[]}>} days
- * @param {{onDayClick?: (day:object)=>void, nameOf?: (appid:number)=>string}} [opts]
- */
 export function renderAchievementCalendar(host, days, { onDayClick, nameOf } = {}) {
   if (!host) return;
   clear(host);
@@ -43,10 +23,6 @@ export function renderAchievementCalendar(host, days, { onDayClick, nameOf } = {
   }
 }
 
-/**
- * Streak card: «Серия: 3 дня · Рекорд: 9 · Последняя разблокировка: 4 окт. 2026».
- * Hidden when there is no streak data at all.
- */
 export function renderAchievementStreaks(host, streaks) {
   if (!host) return;
   clear(host);

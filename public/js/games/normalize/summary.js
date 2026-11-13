@@ -32,12 +32,6 @@ export function normalizeAchievements(raw) {
   };
 }
 
-/**
- * Steam categories → the six mode counters the dashboard prints. The backend
- * (appdetails → `categories[]`) folds them; the spellings below cover the doc
- * (`onlinePvp`) and the obvious snake/kebab variants so a contract drift does
- * not hide the widget.
- */
 export const MODE_DEFS = [
   { key: 'single', label: 'одиночная', title: 'Категория Steam Single-player' },
   { key: 'multi', label: 'мультиплеер', title: 'Категория Steam Multi-player' },
@@ -85,7 +79,6 @@ export function normalizeModes(raw) {
   return any ? out : null;
 }
 
-/** `earlyAccess` / `freeToPlay`: `{ count, hours, share }`, share derived if absent. */
 export function normalizeAccessBlock(raw, summary) {
   if (!raw || typeof raw !== 'object') return null;
   const count = numOrNull(raw.count);
@@ -100,7 +93,6 @@ export function normalizeAccessBlock(raw, summary) {
   };
 }
 
-/** `summary.metadata`: honest enrichment coverage, never a fake 100%. */
 export function normalizeMetadata(raw, summary) {
   if (!raw || typeof raw !== 'object') return null;
   const games = numOrNull(summary && (summary.gameCount || summary.ownedCount));
@@ -129,7 +121,6 @@ export function normalizeMetadata(raw, summary) {
   };
 }
 
-/** `meta.excluded`: why records were dropped (DLC, other type, unknown type). */
 export function normalizeExcluded(raw) {
   if (!raw || typeof raw !== 'object') return null;
   return {
@@ -140,10 +131,6 @@ export function normalizeExcluded(raw) {
   };
 }
 
-/**
- * `meta.filters` (§5.4): what was REQUESTED vs what the server could APPLY.
- * The UI must show the difference — a silent filter is a lie.
- */
 function normalizeFilterBlock(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const requested = boolOrNull(raw.requested);
@@ -152,11 +139,6 @@ function normalizeFilterBlock(raw) {
   return { requested, applied, reason: text(raw.reason) };
 }
 
-/**
- * `meta.filters.minHours` (M5-B) is numeric, so it gets its own block:
- * `requested` is the integer the server understood (-1 all / 0 played only /
- * N hours), `excluded` counts the canonical works the filter dropped.
- */
 function normalizeMinHoursFilter(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const requested = numOrNull(raw.requested);
@@ -179,7 +161,6 @@ export function normalizeFilters(raw) {
   return out.includeFree || out.includeDlc || out.minHours ? out : null;
 }
 
-/** `summary.reviewScore` → `{ avg, median }` (null when the block is absent). */
 export function normalizeReviewScoreBlock(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const avg = numOrNull(raw.avg ?? raw.mean ?? raw.average);
@@ -188,7 +169,6 @@ export function normalizeReviewScoreBlock(raw) {
   return { avg, median };
 }
 
-/** `summary.dlc` → `{ gamesWithDlc, avgCount, max: [{ name, dlcCount, appid }] }`. */
 export function normalizeDlcSummary(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const gamesWithDlc = numOrNull(raw.gamesWithDlc ?? raw.games ?? raw.count);

@@ -1,21 +1,3 @@
-/* Games modals: game card, game lists and the person card (films parity).
- *
- * The films tab opens `openFilmListModal` / the person modal from
- * `modal.js`; games need the same shape but different data (Steam appids,
- * hours, completion, studios instead of TMDB people). This module owns that
- * layer so `games.js` keeps only the dashboard rendering:
- *
- *   - `openGameCardModal`  → `GET /api/games/game/:appid` (details,
- *     achievements, credits, store links) — the only extra request, lazy;
- *   - `openGameListModal`  → a client-side list from `gamesIndex` (year,
- *     decade, genre, mode, hours bucket, backlog, unmatched, …);
- *   - `openPersonModal`    → one person/studio with their games, batch 60.
- *
- * Sorting is persisted per scope in localStorage, exactly like
- * `kinoboxd.modalSort.<scope>` for films, but with games keys
- * (hours / completion / year / name).
- */
-
 import {
   el, clear, fmtInt, plural, icon, emptyState, errorBox, toast, shortErrorMessage,
   showTooltip, moveTooltip, hideTooltip,
@@ -37,13 +19,9 @@ const SORT_VALUES = new Set(GAME_SORT_OPTIONS.map((option) => option.key));
 const context = {
   profile: '',
   gamesIndex: {},
-  // Full secondary entries (poster, store links, per-source hours) from the
-  // `/stats` payload. A drilldown row only has the light `gamesIndex` copy;
-  // the union card is painted from this list when the `workKey` matches.
   secondaryWorks: [],
 };
 
-/** Called by games.js on every dashboard render (one owner, one index). */
 export function configureGamesModals({
   profile = '',
   gamesIndex = null,
@@ -54,12 +32,10 @@ export function configureGamesModals({
   context.secondaryWorks = Array.isArray(secondaryWorks) ? secondaryWorks.filter(Boolean) : [];
 }
 
-/** A secondary-only row: no Steam appid, its own work key. */
 function isSecondaryRow(row) {
   return Boolean(row && (row.secondaryOnly === true || row.appid == null));
 }
 
-/** The full `secondaryWorks[]` entry behind a drilldown row, when present. */
 function secondaryWorkFor(row) {
   if (!row) return null;
   const key = row.workKey || row.canonicalWorkKey;
@@ -74,7 +50,6 @@ function secondaryWorkFor(row) {
   return context.secondaryWorks.find((work) => work && String(work.name || '') === name) || null;
 }
 
-/** Open the card for one list row: Steam card vs client-side union card. */
 function openGameRow(row) {
   if (!row) return null;
   if (isSecondaryRow(row)) {
@@ -82,10 +57,6 @@ function openGameRow(row) {
   }
   return openGameCardModal(row.appid);
 }
-
-/* =========================================================
-   sort persistence
-   ========================================================= */
 
 export function getGameSort(scope, { fallback = 'hours' } = {}) {
   let value = '';
@@ -102,7 +73,6 @@ export function setGameSort(scope, value) {
   try {
     window.localStorage.setItem(`${SORT_STORAGE_PREFIX}${scope || 'games'}`, value);
   } catch {
-    /* private mode — the dialog still sorts for this session */
   }
 }
 
@@ -130,10 +100,6 @@ function createGameSortSelect({ scope, onChange, fallback = 'hours' } = {}) {
   return { node: wrap, value: select.value, select };
 }
 
-/* =========================================================
-   icons / fallbacks
-   ========================================================= */
-
 function initialOf(name) {
   const chars = Array.from(String(name || '').trim());
   return chars.length ? chars[0].toUpperCase() : '?';
@@ -153,15 +119,11 @@ function fallbackStyle(name) {
   };
 }
 
-/** Steam capsule icon (46/88 px) with a deterministic initials fallback. */
 export function gameIconEl(game, { className = 'game-icon' } = {}) {
   const name = game && game.name ? game.name : '';
   const urls = [];
   const primary = gameArtUrl(game && game.iconUrl);
   if (primary) urls.push(primary);
-  // The 32×32 community icon is missing (404) for some post-2024 SKUs even
-  // when `img_icon_url` is present (live 03.11.2026: 3669870). The resolved
-  // small capsule is the next real Steam artwork before the initials.
   const fallback = gameArtUrl(providedIconFallback(game));
   if (fallback && !urls.includes(fallback)) urls.push(fallback);
   if (!urls.length) {
@@ -216,16 +178,6 @@ function artHash(value) {
   return /^[A-Za-z0-9]{1,64}$/.test(hash) ? hash : '';
 }
 
-/**
- * Same-origin URL for one Steam CDN asset. The owner's ISP blocks the CDN
- * hosts in Vietnam, so the browser must load artwork through the server
- * (`GET /api/games/steam-art/<type>/<appid>`); the route assembles the
- * upstream URL itself from the allowlist.
- *
- * The third argument is the asset hash, either bare (`'abc'`, icon) or as
- * `{ h: 'abc' }` — the same shape as the `?h=` query parameter. An unknown
- * hash shape is dropped rather than smuggled into the URL.
- */
 export function steamArtProxyUrl(type, appid, hashOrOptions) {
   const id = positiveId(appid);
   if (!id || !type) return '';
@@ -236,17 +188,12 @@ export function steamArtProxyUrl(type, appid, hashOrOptions) {
   return `${STEAM_ART_PATH}/${type}/${id}${suffix}`;
 }
 
-/** A server-built proxy path is already same-origin; anything else goes through the usual mapping. */
 function gameArtUrl(value) {
   const url = value == null ? '' : String(value).trim();
   if (/^\/api\/games\/steam-art\//.test(url)) return url;
   return steamArtOrOriginal(url);
 }
 
-/**
- * The `gamesIndex` row of this game's canonical work. Two editions of one work
- * paint the same cover, so `primaryAppid` wins over the row's own appid.
- */
 function indexEntryFor(game) {
   const appid = positiveId(game && (game.primaryAppid ?? game.appid));
   if (appid == null) return null;
@@ -254,19 +201,6 @@ function indexEntryFor(game) {
   return index[appid] || index[String(appid)] || null;
 }
 
-/**
- * The per-asset hash of the post-2024 Steam store schema, taken from
- * `appdetails.header_image` / `capsule_image`:
- *
- *   https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/
- *     <appid>/<asset-hash>/header.jpg                       → `<asset-hash>`
- *
- * Every asset of one SKU (header, capsule, `library_600x900.jpg`) lives under
- * the same hash, so the real vertical capsule becomes requestable through the
- * proxy (`?h=<hash>`) instead of guessing the legacy path. Legacy
- * `/steam/apps/<appid>/header.jpg` URLs carry no per-asset hash and return
- * `null`: the caller then keeps the hash-less (legacy-first) chain.
- */
 export function steamAssetHashFromImageUrl(value) {
   const url = httpUrl(value);
   if (!url) return null;
@@ -285,17 +219,6 @@ export function steamAssetHashFromImageUrl(value) {
   return artHash(parts[4]) || null;
 }
 
-/**
- * Rewrite a Steam CDN URL to the local proxy URL. Returns `''` for anything
- * that is not Steam art (GOG/Epic posters, screenshots with an unsupported
- * filename, relative URLs) — callers keep those untouched.
- *
- * Recognised shapes:
- *   `<cdn>/steam/apps/<appid>/<file>` — legacy header/capsule/library paths;
- *   `<cdn>/store_item_assets/steam/apps/<appid>/<asset-hash>/<file>` — the
- *     post-2024 schema stored in `appdetails.header_image`;
- *   `media.steampowered.com/steamcommunity/public/images/apps/<appid>/<hash>.jpg`.
- */
 export function proxySteamArtUrl(value) {
   const url = httpUrl(value);
   if (!url) return '';
@@ -335,7 +258,6 @@ export function proxySteamArtUrl(value) {
   return '';
 }
 
-/** Steam art goes through the proxy; every other URL stays as it was. */
 function steamArtOrOriginal(value) {
   return proxySteamArtUrl(value) || httpUrl(value);
 }
@@ -345,31 +267,16 @@ function pushUrl(urls, value) {
   if (url && !urls.includes(url)) urls.push(url);
 }
 
-/** Same dedupe for an already-built URL (the proxy path is not absolute). */
 function pushUnique(urls, url) {
   if (url && !urls.includes(url)) urls.push(url);
 }
 
-/**
- * The real store header (`appdetails.header_image`), saved per appid by the
- * server. This is the honest fix for new SKUs: Valve puts their assets under
- * `store_item_assets/steam/apps/<appid>/<asset-hash>/…`, so the legacy
- * `<cdn>/steam/apps/<appid>/header.jpg` path 404s and the hash cannot be
- * guessed. The canonical `primaryAppid` row wins (two editions → one cover);
- * the payload's own `headerImage` is the second source for older payloads.
- */
 function providedHeaderImage(game) {
   const entry = indexEntryFor(game);
   return httpUrl(entry && entry.headerImage)
     || httpUrl(game && (game.headerImage || (game.details && game.details.headerImage)));
 }
 
-/**
- * Vertical capsule resolved by the server (`cache-games/art/resolved/`). The
- * payload row wins; `gamesIndex` (same canonical appid) fills it for rows that
- * only carry the header. A relative `/api/games/steam-art/...` path is the
- * normal case; SteamGridDB rows are absolute https URLs.
- */
 function providedVerticalCapsule(game) {
   const own = gameArtUrl(game && game.verticalCapsule);
   if (own) return own;
@@ -377,11 +284,6 @@ function providedVerticalCapsule(game) {
   return gameArtUrl(entry && entry.verticalCapsule);
 }
 
-/**
- * `true` — a vertical capsule exists; `false` — the resolver asked Steam and
- * there is none (do not retry the library chain); `null`/`undefined` — not
- * resolved yet (legacy payload, keep the old chain).
- */
 function verticalCapsuleKnownOf(game) {
   const own = game && game.verticalCapsuleKnown;
   if (own === true || own === false) return own;
@@ -390,7 +292,6 @@ function verticalCapsuleKnownOf(game) {
   return value === true || value === false ? value : null;
 }
 
-/** Small-capsule proxy URL used when the 32×32 community icon is absent/404. */
 function providedIconFallback(game) {
   const own = game && game.iconFallbackUrl;
   if (own && /^\/api\/games\/steam-art\//.test(String(own).trim())) return String(own).trim();
@@ -409,26 +310,6 @@ function providedScreenshot(game) {
   return httpUrl(game && (game.screenshot || (game.details && game.details.screenshot)));
 }
 
-/**
- * Landscape cover URLs for one game, best first. No network probe happens
- * here: the browser walks the chain through `error` listeners in
- * `gameCoverEl`.
- *
- *   `appdetails.header_image` — the real store artwork (any asset schema);
- *   `appdetails.capsule_image` — the small store capsule, same schema;
- *   header.jpg (460×215)     — legacy CDN path of the SKU, real artwork;
- *   capsule_231x87.jpg       — older capsule, same CDN;
- *   the 32×32 community icon — last Steam-side step;
- *   initials                 — client-side fallback (no request at all).
- *
- * The canonical `primaryAppid` wins over the edition's own appid so two
- * editions of one work paint the same cover. `library_hero.jpg` is *not* in
- * the chain: it is missing for a lot of regional/older SKUs, and a 404 there
- * would burn a request on every card.
- *
- * The games tab paints vertical posters (see `gameVerticalCoverUrls`); this
- * landscape chain is kept for callers that still want the store header.
- */
 export function gameCoverUrls(game) {
   const appid = positiveId(game && (game.primaryAppid ?? game.appid));
   const urls = [];
@@ -442,51 +323,11 @@ export function gameCoverUrls(game) {
   return urls;
 }
 
-/**
- * Vertical poster URLs for one game, best first — the shape books/films use
- * in their shelves. Live CDN audit (40 random appids of the 340-game
- * library, 01.11.2026): `library_600x900.jpg` is present for 33/40 SKUs;
- * the 7 misses are old/regional/package appids. For 6 of those 7 the
- * landscape `header.jpg` still exists, so it is the first fallback and CSS
- * centre-crops it into the 2:3 frame (`object-fit: cover`).
- *
- * The real vertical capsule is always asked first — also for the post-2024
- * `store_item_assets` schema, where every asset of one SKU lives under the
- * per-asset hash of `appdetails.header_image` (02.11.2026: CONTROL Resonant
- * 3669870 painted a landscape header because the hash was only used for the
- * header, never for `library_600x900.jpg`). If the hashed capsule is absent
- * the proxy falls through to the legacy hash-less path and the next URL in
- * this chain, so the extra step costs a request only when it fails.
- *
- *   library_600x900.jpg (600×900, 2:3) — the official vertical capsule, in
- *                               the header's own asset schema (`?h=<hash>`)
- *                               when `header_image` carries one;
- *   library_600x900.jpg       — legacy hash-less path (old SKUs);
- *   `appdetails.header_image` — the real store header; for the new schema it
- *                               is proxied with its own hash (`?h=`), whose
- *                               server-side fallback already covers the
- *                               legacy `header.jpg`;
- *   header.jpg (460×215)      — legacy landscape header, cropped vertically;
- *   `appdetails.capsule_image`        — small store capsule, same schema;
- *   `appdetails.screenshots[0]`       — last real artwork before the icon;
- *   capsule_231x87.jpg                — older capsule, same CDN;
- *   the 32×32 community icon          — last Steam-side step;
- *   initials                          — client-side fallback (no request).
- *
- * `library_600x900_2x.jpg` is deliberately absent: the audit showed its
- * availability is *identical* to the 1x file (40/40 parity), so it can never
- * rescue a missing 1x, while it is ~4× heavier. The 600×900 file is already
- * ~6× the rendered 96 px width — plenty even on HiDPI.
- */
 export function gameVerticalCoverUrls(game) {
   const appid = positiveId(game && (game.primaryAppid ?? game.appid));
   const urls = [];
   const header = providedHeaderImage(game);
   const storeHash = steamAssetHashFromImageUrl(header);
-  // Server-resolved vertical capsule (one probe per appid on the enrich pass).
-  // When present it replaces the guessed library chain; when the resolver says
-  // `known: false` (Steam published no vertical art for this SKU) the library
-  // paths are not tried at all — every one of them would 404 on each render.
   const vertical = providedVerticalCapsule(game);
   const known = verticalCapsuleKnownOf(game);
   if (vertical) {
@@ -500,15 +341,11 @@ export function gameVerticalCoverUrls(game) {
   pushUrl(urls, providedCapsuleImage(game));
   pushUrl(urls, providedScreenshot(game));
   if (appid) urls.push(steamArtProxyUrl('capsule', appid));
-  // M6c: a cross-store row may bring its own poster (GOG/Epic art is not on
-  // the Steam CDN). Steam rows keep the Steam chain first; the provided URL is
-  // the only art when there is no appid at all.
   pushUrl(urls, game && (game.verticalCoverUrl || game.coverUrl));
   pushUrl(urls, game && game.iconUrl);
   return urls;
 }
 
-/** Shared <img> that walks a URL chain and ends in the initials block. */
 function coverChainEl(game, urls, className) {
   const name = game && game.name ? game.name : '';
   const fallback = () => el('div', {
@@ -538,20 +375,10 @@ function coverChainEl(game, urls, className) {
   return img;
 }
 
-/**
- * Wide cover with the landscape chain. Kept for parity, but the games tab
- * uses `gameCoverVerticalEl` everywhere it paints artwork.
- */
 export function gameCoverEl(game, { className = 'game-cover' } = {}) {
   return coverChainEl(game, gameCoverUrls(game), className);
 }
 
-/**
- * Vertical poster (96×144 strip art, 88×132 card head) with the fallback
- * chain. Returns an <img> that swaps its own `src` down the chain, or the
- * initials block when every URL failed / none exists. Small 34×34 rows keep
- * `gameIconEl`: a 32×32 icon is the right size there, not a cropped poster.
- */
 export function gameCoverVerticalEl(game, { className = 'game-cover-vertical' } = {}) {
   return coverChainEl(game, gameVerticalCoverUrls(game), className);
 }
@@ -565,15 +392,10 @@ function firstGameIconUrl(person) {
   return '';
 }
 
-/** Person/studio avatar: the first game's Steam icon, else initials. */
 export function personAvatarEl(person, { className = 'avatar' } = {}) {
   const name = person && person.name ? person.name : '';
   return gameIconEl({ name, iconUrl: firstGameIconUrl(person) }, { className });
 }
-
-/* =========================================================
-   game row (shared by every list modal)
-   ========================================================= */
 
 function gameRowSubtitle(game) {
   const parts = [];
@@ -587,8 +409,6 @@ function gameRowSubtitle(game) {
 
 function gameRow(game, { onOpen = null } = {}) {
   const secondary = isSecondaryRow(game);
-  // The union card view gives an honest per-source hours line: a GOG+Epic
-  // work never prints one combined number.
   const union = secondary ? secondaryWorkCardView(game) : null;
   const label = game.name || (secondary ? 'работа вне Steam' : `appid ${game.appid}`);
   const row = el('div', {
@@ -651,26 +471,8 @@ function gameRow(game, { onOpen = null } = {}) {
   return row;
 }
 
-/* =========================================================
-   game list modal
-   ========================================================= */
-
 let seq = 0;
 
-/**
- * @param {object} opts
- * @param {string} opts.title
- * @param {string} [opts.kicker]
- * @param {string} [opts.subtitle]
- * @param {string} [opts.hint]
- * @param {string} [opts.groupLabel]
- * @param {string} [opts.emptyText]
- * @param {Array<object>} opts.games  normalised gamesIndex rows
- * @param {string} [opts.sortScope]  localStorage scope
- * @param {string} [opts.defaultSort]
- * @param {number} [opts.batch]
- * @param {(game:object)=>void} [opts.onOpen]
- */
 export function openGameListModal({
   title = 'Игры',
   kicker = '',
@@ -754,11 +556,6 @@ export function openGameListModal({
   return openModal({ head, body, labelledBy: titleId, className: 'modal-films' });
 }
 
-/**
- * Franchise modal: the games of one franchise (IGDB/Wikidata link or the
- * name heuristic), ordered by release year. Reuses the game-list modal so the
- * sorting control and the card drilldown stay identical to every other list.
- */
 export function openFranchiseModal({ franchise = null, games = [], hoursSum = null } = {}) {
   const label = (franchise && (franchise.label || franchise.name || franchise.key)) || 'Франшиза';
   const list = Array.isArray(games) ? games.filter(Boolean) : [];
@@ -776,21 +573,10 @@ export function openFranchiseModal({ franchise = null, games = [], hoursSum = nu
   });
 }
 
-/* =========================================================
-   person modal
-   ========================================================= */
-
-/**
- * One person/studio from `/api/games/personnel` with their games.
- * The server caps games per person at 50 (`limit`), so when `count > games`
- * the modal says so honestly instead of pretending the list is complete.
- */
 export function openPersonModal({ person, role = 'developer', weight = 'hours', coverage = null } = {}) {
   if (!person) return null;
   seq += 1;
   const titleId = `game-person-title-${seq}`;
-  // `developer` is the split key; `studio` is the old mixed one. Both are
-  // companies, so both get the studio logo and the studio summary wording.
   const isStudio = role === 'studio' || role === 'developer';
   const games = personGames(person, context.gamesIndex);
   const count = Math.max(Number(person.count) || 0, games.length);
@@ -882,10 +668,6 @@ export function openPersonModal({ person, role = 'developer', weight = 'hours', 
 
   return openModal({ head, body, labelledBy: titleId });
 }
-
-/* =========================================================
-   game card modal
-   ========================================================= */
 
 function linkMenu(game) {
   const links = [
@@ -1002,13 +784,6 @@ function detailRow(label, value) {
   return row;
 }
 
-/**
- * Append a detail row only when it has a value. A browser's `Node.append(null)`
- * stringifies `null` into a text node — that is where the «nullnull» garbage
- * in the card's DLC / release-date block came from (two empty rows appended
- * back to back). `el()` guards its own children, a direct `grid.append()` does
- * not, so the guard lives here.
- */
 function appendDetailRow(grid, label, value) {
   if (value == null || value === '') return;
   const row = detailRow(label, value);
@@ -1128,8 +903,6 @@ function fillGameCard({ head, copy, body, game }) {
   clear(copy);
   clear(body);
   head.insertBefore(gameCoverVerticalEl(game, { className: 'modal-game-cover' }), copy);
-  // M6c: the card may be opened for a work owned in several stores. The role
-  // line names every store; the hours below stay Steam-only (the journal).
   const extraStores = (Array.isArray(game.sources) ? game.sources : [])
     .filter((source) => source && source !== 'steam')
     .map((source) => (source === 'gog' ? 'GOG' : source === 'epic' ? 'Epic' : source));
@@ -1146,9 +919,6 @@ function fillGameCard({ head, copy, body, game }) {
   if (game.completion != null) subParts.push(`completion ${percentText(game.completion, 0)}`);
   copy.append(el('div', { class: 'modal-sub', text: subParts.join(' · ') }));
 
-  // M4 card strip: top-3 SteamSpy tags, then the community review badge.
-  // The badge is explicitly labelled as Steam community data, not a personal
-  // rating — Steam has no personal scores.
   if (game.tags && game.tags.length) {
     const strip = el('div', { class: 'game-tags-strip', 'aria-label': 'Теги SteamSpy' });
     for (const tag of game.tags.slice(0, 3)) {
@@ -1271,11 +1041,6 @@ function fillGameCard({ head, copy, body, game }) {
   }
 }
 
-/**
- * Lazy game card. Opens immediately with a loading state, then fills from
- * `GET /api/games/game/:appid`. A failure is shown inside the modal with a
- * retry button instead of a toast that disappears.
- */
 export function openGameCardModal(appid, { fallback = null } = {}) {
   const id = Number(appid);
   if (!Number.isFinite(id) || id <= 0) {
@@ -1340,15 +1105,6 @@ export function openGameCardModal(appid, { fallback = null } = {}) {
   return modal;
 }
 
-/**
- * M6c: client-side card for a secondary (GOG/Epic-only) work.
- *
- * There is no `/api/games/game/:appid` for a non-Steam game, and inventing a
- * Steam card would be a lie. Everything is rendered from the union payload the
- * year/decade/genre drilldowns already hold: title, poster, release year,
- * genres when the backend sent them, and **one hours row per source** (never a
- * combined total).
- */
 export function openSecondaryWorkCardModal(work) {
   const card = secondaryWorkCardView(work);
   if (!card) {
@@ -1383,9 +1139,6 @@ export function openSecondaryWorkCardModal(work) {
     copy.append(strip);
   }
 
-  // M6 follow-up: P179 series of a secondary-only work. Same chip as the
-  // Steam card, so «Alan Wake 2» opens the franchise list that includes the
-  // Steam titles of the same owner.
   if (card.franchise && card.franchise.label) {
     const chip = el('button', {
       type: 'button',
@@ -1413,9 +1166,6 @@ export function openSecondaryWorkCardModal(work) {
   facts.append(factRow('источники', storeLabel, 'Работа есть только во вторых библиотеках, не в Steam'));
   body.append(facts);
 
-  // M6 follow-up: developers/publishers come from the store detail document
-  // (Epic CMS / GOG product page). `qid` is shown only when the Wikidata
-  // bridge actually resolved the work — no invented identity.
   if (card.developers.length || card.publishers.length || card.qid) {
     const grid = el('dl', { class: 'game-detail-grid' });
     appendDetailRow(grid, 'разработчики', card.developers.join(', '));

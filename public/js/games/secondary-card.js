@@ -1,9 +1,3 @@
-/* M6c: client-side cards for secondary (non-Steam) works.
- *
- * Split out of `games-view.js` so the «Источники» widget and the games modal
- * card share one normaliser for a GOG/Epic-only work.
- */
-
 import {
   SECONDARY_SOURCE_LABELS, SECONDARY_SOURCE_ORDER, normalizeSecondaryWork,
 } from './normalize/secondary.js';
@@ -15,11 +9,6 @@ export function asSecondaryWork(work) {
   return normalizeSecondaryWork(work);
 }
 
-/**
- * Client-side card for a secondary work. No network: Steam has no card for a
- * GOG/Epic-only game, and inventing one would be a lie. Every source gets its
- * own hours row, never a combined total.
- */
 export function secondaryWorkCardView(work) {
   const row = asSecondaryWork(work);
   if (!row) return null;

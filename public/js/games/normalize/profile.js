@@ -5,8 +5,6 @@ export function normalizeProfile(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const persona = firstString(raw.personaName, raw.persona, raw.name, raw.userKey, raw.key);
   if (!persona) return null;
-  // `sources.profile.timeCreated` is unix seconds in the real payload (§5.1);
-  // a bare number must not reach `formatDateRu`, which only understands dates.
   const memberSinceRaw = raw.memberSince ?? raw.timeCreated ?? null;
   const memberSinceSeconds = numOrNull(memberSinceRaw);
   const memberSince =

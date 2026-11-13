@@ -1,5 +1,3 @@
-/* Donut chart: ring arcs, centre label and an optional interactive legend. */
-
 import {
   clear, el, fmtInt, fmtPercent, showTooltip, moveTooltip, hideTooltip, toNum,
 } from '../ui.js';
@@ -25,29 +23,6 @@ function ringSlice(cx, cy, outer, inner, from, to) {
   ].join(' ');
 }
 
-/**
- * Donut chart with optional interactive legend.
- *
- * Interaction can run in two modes:
- *  - uncontrolled (default, used by ratings): clicking pins a segment locally;
- *  - controlled (`opts.onSelect` supplied, used by decades): clicking calls
- *    onSelect(seg) and the caller owns the selection, passing it back via
- *    opts.selectedKey and/or the returned `setSelected(key)` controller.
- *
- * @param {HTMLElement} host
- * @param {object} opts
- * @param {Array<{key?:string,label:string,value:number,color:string}>} opts.segments
- * @param {string|number} [opts.centerValue]
- * @param {string} [opts.centerLabel]
- * @param {HTMLElement} [opts.legendHost]
- * @param {string} [opts.ariaLabel]
- * @param {(seg:object,total:number)=>string} [opts.primary] tooltip first line
- *   (default `«label — value»`); the games charts add the unit there
- * @param {(seg:object,total:number)=>string} [opts.secondary]
- * @param {string|null} [opts.selectedKey] persistently highlighted segment
- * @param {(seg:object)=>void} [opts.onSelect] controlled selection handler
- * @returns {{setSelected:(key:string|null)=>void}}
- */
 export function renderDonut(host, opts = {}) {
   const { legendHost = null, ariaLabel = '' } = opts;
   const segments = (opts.segments || [])

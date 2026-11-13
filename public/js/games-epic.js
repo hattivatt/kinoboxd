@@ -1,24 +1,3 @@
-/**
- * Epic secondary library — «Подключения» slot (M6b).
- *
- * This module is intentionally self-contained: it renders ONE Epic slot into
- * `#games-connections` and never touches the Steam dashboard, the profile
- * switcher or the shared connections layout. The integration round (M6c) will
- * render the GOG slot next to it on the same screen; nothing here assumes it
- * is the only source.
- *
- * Flow (authorization code, §14.2 — device-code is closed for public clients
- * since 2026: Epic answers 400 unsupported_grant_type/1016):
- *   GET  /api/games/epic/auth-url  → { url }  (epicgames.com/id/login…)
- *   POST /api/games/epic/connect   { code }   (code or the whole redirect URL)
- *   POST /api/games/epic/import    → job (polled)
- *   GET  /api/games/epic/status?owner=steam-<id64>
- *   POST /api/games/epic/disconnect
- *
- * The one-time code is consumed server-side and the access/refresh tokens
- * never leave the server. The UI only shows presence/expiry and library counts.
- */
-
 import { text } from './core/dom.js';
 
 const PROFILE_KEY = 'kinoboxd.games.profile.v1';
@@ -32,8 +11,8 @@ const state = {
   status: null,
   loading: false,
   error: '',
-  authUrl: '', // epicgames.com/id/login… (authorization-code flow)
-  code: '', // what the user typed/pasted; survives re-renders
+  authUrl: '',
+  code: '',
   busy: false,
   importJobId: null,
   importTimer: null,
@@ -176,7 +155,6 @@ function clearImportTimer() {
 function render() {
   const host = state.host;
   if (!host) return;
-  // Defensive: a DOM-free harness may hand a stub host without children APIs.
   if (typeof host.replaceChildren !== 'function') return;
   host.hidden = false;
   host.replaceChildren();
@@ -220,7 +198,6 @@ function render() {
       el('span', { class: 'epic-conn-sub', text: 'Сначала импортируйте Steam-профиль' })
     );
   } else if (status.status === 'not_connected' || status.status === 'auth_expired') {
-    // Authorization-code flow: open the official login page, paste the code.
     actions.append(
       el('button', {
         type: 'button',
@@ -319,11 +296,6 @@ function render() {
   host.append(card);
 }
 
-/**
- * Tell the games dashboard that the Epic library changed (import finished,
- * account connected/disconnected). The stats payload carries the Epic numbers,
- * so it has to be rebuilt — the slot itself never renders Steam data.
- */
 function notifyEpicChanged() {
   if (typeof document === 'undefined' || typeof document.dispatchEvent !== 'function') return;
   document.dispatchEvent(new CustomEvent('games:epic-changed'));
@@ -348,7 +320,6 @@ async function refreshStatus() {
       (status.status === 'not_connected' || status.status === 'auth_expired') &&
       !state.authUrl
     ) {
-      // Prefetch so the click opens the page synchronously (popup blockers).
       void loadAuthUrl();
     }
   } catch (err) {
@@ -359,13 +330,6 @@ async function refreshStatus() {
   }
 }
 
-/**
- * Load the official Epic login URL once (no network call on the server). It is
- * prefetched so the «Войти через Epic» click can open it synchronously — a
- * `window.open` after an `await` is blocked by popup blockers. The card also
- * renders the URL as a plain link, so the flow works even when popups are
- * blocked entirely.
- */
 async function loadAuthUrl() {
   if (!state.owner) return;
   try {
@@ -377,7 +341,6 @@ async function loadAuthUrl() {
   render();
 }
 
-/** Open the login page (synchronous — the URL is prefetched). */
 function openLogin() {
   if (!state.authUrl) {
     loadAuthUrl();
@@ -388,11 +351,6 @@ function openLogin() {
   }
 }
 
-/**
- * Exchange the pasted one-time code (or the whole redirect URL) for a token.
- * The backend stores it 0600, binds the account to the same Steam owner and
- * starts the library import.
- */
 async function connectCode() {
   if (!state.owner || !state.code) return;
   state.error = '';
@@ -489,7 +447,6 @@ async function disconnect() {
   }
 }
 
-/** Mount the Epic slot into an explicit host (integration hook for M6c). */
 export function mountEpicSlot(host) {
   if (!host) return;
   state.host = host;
@@ -497,7 +454,6 @@ export function mountEpicSlot(host) {
   refreshStatus();
 }
 
-/** Entry point: finds `#games-connections` and renders the Epic slot. */
 export function initGamesEpic() {
   const host = document.getElementById('games-connections');
   if (!host) return;
@@ -507,13 +463,11 @@ export function initGamesEpic() {
   }
   state.initialized = true;
   mountEpicSlot(host);
-  // M6c: games.js asks for a refresh when the «Подключения» screen opens.
   document.addEventListener('games:connections-open', () => {
     if (!state.busy) refreshStatus();
   });
   document.addEventListener('click', (event) => {
     if (event.target && event.target.closest && event.target.closest('#games-profile-list')) {
-      // The switcher writes the new key synchronously; let it settle first.
       setTimeout(() => refreshStatus(), 30);
     }
   });
@@ -527,8 +481,6 @@ export function initGamesEpic() {
   }, STATUS_REFRESH_MS);
 }
 
-// Self-mount: index.html loads this module directly; `initGamesEpic` is
-// idempotent enough for the integration round to call it again.
 if (typeof document !== 'undefined') {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initGamesEpic, { once: true });

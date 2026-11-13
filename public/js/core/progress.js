@@ -1,18 +1,5 @@
-/* Progress-percent helpers shared by the tab controllers (U12, P8).
- *
- * The two domains read different job payloads:
- *   - books report page/batch counters (`progressPercent`);
- *   - games report a stage name plus an optional explicit percent, weighted
- *     into 0…100 (`jobProgress`).
- *
- * The functions were already written exactly like this in `books.js` and
- * `games-view.js`; only the definition moves. Wording, DOM ids and the
- * painting of the bar stay in the controllers.
- */
-
 import { numOrNull, text } from './dom.js';
 
-/** Books job → 0…100 from an explicit percent, page/pageTotal or batch/batchTotal. */
 export function progressPercent(status) {
   if (!status) return 0;
   const doneFlag = status.done || status.stage === 'done';
@@ -33,7 +20,6 @@ export function progressPercent(status) {
   return doneFlag ? 100 : 0;
 }
 
-/** Games job → 0…100: explicit percent/progress, else stage weights. */
 export function jobProgress(status) {
   if (!status || typeof status !== 'object') return 0;
   const explicit = numOrNull(status.percent ?? status.progress ?? status.pct);

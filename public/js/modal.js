@@ -1,10 +1,3 @@
-/* Shared modal shell + reusable film-list modal.
- *
- * persons.js, unmatched.js and widgets.js (year click) all open dialogs
- * through openModal() so that Escape, backdrop clicks, focus trapping and
- * body scroll locking behave identically everywhere.
- */
-
 import {
   $, el, clear, fmtInt, fmtRating, icon, plural, toNum, emptyState,
   serviceIcon, toast, debounce, shortErrorMessage,
@@ -14,10 +7,6 @@ import { searchTmdb, matchFilm } from './api.js';
 let seq = 0;
 const stack = [];
 const active = new Set();
-
-/* =========================================================
-   shared poster / rating bits
-   ========================================================= */
 
 export function posterUrl(path, size = 'w92') {
   if (!path || typeof path !== 'string') return null;
@@ -75,17 +64,12 @@ export function filmRating(entry) {
   return node;
 }
 
-/* =========================================================
-   film sorting (shared by the person / studio / year modals)
-   ========================================================= */
-
 export const FILM_SORT_OPTIONS = [
   { key: 'rating', label: 'По моей оценке', hint: 'ваша оценка ↓' },
   { key: 'watched', label: 'По дате просмотра', hint: 'дата просмотра ↓' },
   { key: 'year', label: 'По году выхода', hint: 'год выхода ↓' },
 ];
 
-/* Only offered by callers that opt in (the "watch time" modal). */
 export const EXTRA_SORT_OPTIONS = [
   { key: 'runtime', label: 'По длительности', hint: 'длительность ↓' },
 ];
@@ -98,11 +82,6 @@ function sortStorageKey(scope) {
   return `${SORT_STORAGE_PREFIX}${scope || 'films'}`;
 }
 
-/**
- * Saved sort for a modal type, validated against the known options.
- * `allowed` narrows the accepted keys for one dialog (e.g. runtime is only
- * offered in the watch-time modal); otherwise the fallback applies.
- */
 export function getFilmSort(scope, { allowed = null, fallback = 'rating' } = {}) {
   let value = '';
   try {
@@ -120,7 +99,6 @@ export function setFilmSort(scope, value) {
   try {
     window.localStorage.setItem(sortStorageKey(scope), value);
   } catch {
-    /* private mode / storage disabled — sorting still works for this dialog */
   }
 }
 
@@ -167,13 +145,11 @@ function cmpYear(a, b) {
 function cmpRuntime(a, b) {
   const ar = pickNum(a.runtime);
   const br = pickNum(b.runtime);
-  // Unknown/zero runtimes go to the end.
   const av = ar == null || !Number.isFinite(ar) || ar <= 0 ? -1 : ar;
   const bv = br == null || !Number.isFinite(br) || br <= 0 ? -1 : br;
   return (bv - av) || cmpRating(a, b);
 }
 
-/** Return a new array ordered by the selected sort. Input is not mutated. */
 export function sortFilms(films, sortKey) {
   const list = Array.isArray(films) ? films.slice() : [];
   const comparator =
@@ -189,7 +165,6 @@ export function filmSortHint(sortKey) {
   return option ? option.hint : '';
 }
 
-/** Small native select used in modal headers. */
 export function createFilmSortSelect({
   scope, onChange, extraOptions = [], allowedKeys = null, fallback = 'rating',
 } = {}) {
@@ -219,22 +194,6 @@ export function createFilmSortSelect({
   return { node: wrap, value: select.value, select };
 }
 
-/* =========================================================
-   generic shell
-   ========================================================= */
-
-/**
- * Open a modal shell. The caller supplies the head content (without the
- * close button) and an optional `.modal-body` node.
- *
- * @param {object} opts
- * @param {HTMLElement} [opts.head]  contents of `.modal-head` (close is added)
- * @param {HTMLElement} [opts.body]  usually `el('div', {class:'modal-body'})`
- * @param {string} [opts.labelledBy]
- * @param {string} [opts.className]  extra class on `.modal`
- * @param {() => void} [opts.onClose]
- * @returns {{close:()=>void, panel:HTMLElement, body:HTMLElement|null, head:HTMLElement}|null}
- */
 export function openModal({ head, body = null, labelledBy = '', className = '', onClose } = {}) {
   const root = $('modal-root');
   if (!root) return null;
@@ -267,7 +226,6 @@ export function openModal({ head, body = null, labelledBy = '', className = '', 
   let closed = false;
 
   const onKeyDown = (event) => {
-    // Only the top-most dialog reacts, so Escape closes just one layer.
     if (stack[stack.length - 1] !== onKeyDown) return;
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -319,7 +277,6 @@ export function openModal({ head, body = null, labelledBy = '', className = '', 
   root.append(backdrop);
   closeButton.focus();
 
-  // `titleId` is exposed for callers that need an accessible label.
   panel.dataset.titleId = titleId;
   return handle;
 }
@@ -328,25 +285,6 @@ export function closeAllModals() {
   for (const handle of Array.from(active)) handle.close();
 }
 
-/* =========================================================
-   reusable film list modal (year click, future reuse)
-   ========================================================= */
-
-/**
- * @param {object} opts
- * @param {string} opts.title
- * @param {string} [opts.kicker]
- * @param {string} [opts.subtitle]
- * @param {string} [opts.hint]
- * @param {string} [opts.groupLabel]
- * @param {string} [opts.groupNote]
- * @param {string} [opts.emptyText]
- * @param {number} [opts.batch]
- * @param {Array<{title:string,year?:number,posterPath?:string,rating?:number,voteAverage?:number,watchedDate?:string,meta?:string,runtime?:number,lbUri?:string,kpUrl?:string,tmdbId?:number,kind?:string,imdbId?:string}>} opts.films
- * @param {string} [opts.sortScope]  localStorage scope for the sort selector ('year', ...)
- * @param {Array<{key:string,label:string,hint:string}>} [opts.extraSorts] extra sorts for this dialog only
- * @param {string} [opts.defaultSort] sort used when nothing valid is stored for the scope
- */
 export function openFilmListModal({
   title,
   kicker = '',
@@ -443,18 +381,9 @@ export function openFilmListModal({
   return openModal({ head, body, labelledBy: titleId, className: 'modal-films' });
 }
 
-/* =========================================================
-   film actions menu (aggregator links + manual re-match)
-   ========================================================= */
-
 let filmMenuContext = { uploadId: null, refreshStats: null };
 let openFilmMenu = null;
 
-/**
- * Dashboard-wide context for film rows rendered outside the dashboard
- * render call (persons modal, openFilmListModal rows). widgets.js updates
- * this on every dashboard render.
- */
 export function setFilmMenuContext(context = {}) {
   filmMenuContext = {
     uploadId: context.uploadId !== undefined ? context.uploadId : filmMenuContext.uploadId,
@@ -470,7 +399,6 @@ function closeFilmMenu() {
   if (close) close();
 }
 
-/** Links available for one film, in menu order. */
 function filmLinkItems(film) {
   const items = [];
   if (film.lbUri) items.push({ service: 'lb', label: 'Letterboxd', href: film.lbUri });
@@ -493,16 +421,6 @@ function filmLinkItems(film) {
   return items;
 }
 
-/**
- * Kebab menu shown in the right-hand column of every film row.
- *
- * @param {object} film  filmsIndex-shaped object (slug/title/year/tmdbId/kind/imdbId/lbUri/kpUrl)
- * @param {object} [opts]
- * @param {string|null} [opts.uploadId]  override the dashboard upload id
- * @param {boolean} [opts.allowRematch]  false hides "Исправить матч" (unmatched rows)
- * @param {() => void} [opts.onRematched] called after a successful POST /api/match
- * @returns {HTMLElement|null}
- */
 export function renderFilmMenu(film, opts = {}) {
   if (!film) return null;
   const links = filmLinkItems(film);
@@ -551,15 +469,12 @@ export function renderFilmMenu(film, opts = {}) {
 
   function onKeyDown(event) {
     if (event.key !== 'Escape') return;
-    // Keep the modal open: Escape only dismisses the menu layer.
     event.preventDefault();
     event.stopPropagation();
     closeFilmMenu();
   }
 
   function onWindowChange(event) {
-    // Scrolling the clicked row into view fires a scroll event right after
-    // the menu opens; ignore that first tick so it does not self-dismiss.
     if (Date.now() - openedAt < 350) return;
     if (event && event.type === 'scroll' && popup && popup.contains(event.target)) return;
     closeFilmMenu();
@@ -633,8 +548,6 @@ export function renderFilmMenu(film, opts = {}) {
     document.body.append(popup);
     toggle.setAttribute('aria-expanded', 'true');
 
-    // Fixed-position portal: film lists scroll inside modals, and an
-    // absolutely positioned popup would be clipped by .modal-body.
     const rect = toggle.getBoundingClientRect();
     popup.style.visibility = 'hidden';
     const popupRect = popup.getBoundingClientRect();
@@ -688,16 +601,11 @@ export function filmListRow(film) {
   return row;
 }
 
-/** Russian count phrase used in modal titles: "66 фильмов 2019 года". */
 export function filmCountPhrase(count, year) {
   const n = Math.max(0, Math.round(toNum(count)));
   const base = `${fmtInt(n)} ${plural(n, ['фильм', 'фильма', 'фильмов'])}`;
   return year ? `${base} ${year} года` : base;
 }
-
-/* =========================================================
-   shared TMDB search / match dialog
-   ========================================================= */
 
 const KIND_LABEL = {
   movie: 'фильм',
@@ -720,18 +628,6 @@ function apiErrorCode(error) {
 
 let matchSeq = 0;
 
-/**
- * Manual TMDB search dialog, shared by the unmatched list and the
- * "Исправить матч" action in matched film rows.
- *
- * @param {object} opts
- * @param {object} opts.film  { slug, title, year, kind }
- * @param {string|null} opts.uploadId
- * @param {string} [opts.initialQuery] defaults to the film title
- * @param {'movie'|'tv'|'all'} [opts.kind] pre-selected search type
- * @param {'match'|'rematch'} [opts.mode] changes copy/toast wording
- * @param {(result:object, response:object) => void} [opts.onPicked]
- */
 export function openMatchSearchModal({
   film = {},
   uploadId = null,
@@ -942,7 +838,6 @@ export function openMatchSearchModal({
         try {
           onPicked(result, response);
         } catch {
-          /* dashboard refresh is best-effort */
         }
       }
     } catch (error) {
