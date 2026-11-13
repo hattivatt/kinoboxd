@@ -6,6 +6,7 @@ const { normalizeAuthorName, namesLookAlike } = require('../authors');
 const { surnameSimilarity, FUZZY_SURNAME_SIM, FUZZY_SURNAME_MIN_LEN } = require('./match');
 const { wikidataEnabled } = require('../wikidata-flag');
 const { firstYearOf, saneFirstYearClaim } = require('./claim');
+const { titleVariants, partVariants } = require('./title-variants');
 
 const NAME = 'wikidata';
 const SOURCE_ID = 'wikidataBooks';
@@ -105,24 +106,6 @@ function qidOf(uri) {
   if (!uri) return null;
   const match = /\/entity\/(Q\d+)$/.exec(String(uri));
   return match ? match[1] : null;
-}
-
-function titleVariants(title) {
-  const raw = String(title == null ? '' : title)
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (raw.length < 2) return [];
-  const out = new Set([raw]);
-  const noDots = raw.replace(/ё/g, 'е').replace(/Ё/g, 'Е');
-  out.add(noDots);
-  const stripped = noDots.replace(/[«»"'“”„`]/g, '').replace(/\s+/g, ' ').trim();
-  out.add(stripped);
-  if (stripped) out.add(stripped.charAt(0).toLowerCase() + stripped.slice(1));
-  const head = stripped.split(/\s*[;:]\s*/)[0].trim();
-  if (head) out.add(head);
-  const beforeComma = stripped.split(/,\s*/)[0].trim();
-  if (beforeComma) out.add(beforeComma);
-  return [...out].filter((value) => value.length >= 2 && value.length <= 160);
 }
 
 function seriesClaim(name, ordinal) {
@@ -242,23 +225,49 @@ function authorNamesOf(entry) {
     .map((name) => String(name).trim());
 }
 
+function orderedAuthorHit(name, candidateAuthor) {
+  if (namesLookAlike(name, candidateAuthor)) return true;
+  const a = normalizeAuthorName(name);
+  const b = normalizeAuthorName(candidateAuthor);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const surnameA = a.split(' ').filter(Boolean).pop();
+  const surnameB = b.split(' ').filter(Boolean).pop();
+  if (!surnameA || !surnameB) return false;
+  if (surnameA === surnameB && surnameA.length >= 3) return true;
+  if (surnameA.length < FUZZY_SURNAME_MIN_LEN || surnameB.length < FUZZY_SURNAME_MIN_LEN) {
+    return false;
+  }
+  return surnameSimilarity(surnameA, surnameB) >= FUZZY_SURNAME_SIM;
+}
+
+function nameOrders(name) {
+  const tokens = normalizeAuthorName(name).split(' ').filter(Boolean);
+  const forms = [name];
+  if (tokens.length >= 2 && tokens.slice(1).every((token) => token.length === 1)) {
+    forms.push([...tokens.slice(1), tokens[0]].join(' '));
+  }
+  return forms;
+}
+
+function swappedPair(left, right) {
+  const a = normalizeAuthorName(left).split(' ').filter(Boolean);
+  const b = normalizeAuthorName(right).split(' ').filter(Boolean);
+  if (a.length !== 2 || b.length !== 2) return false;
+  if (Math.min(a[0].length, a[1].length, b[0].length, b[1].length) < 3) return false;
+  return (
+    surnameSimilarity(a[0], b[1]) >= FUZZY_SURNAME_SIM &&
+    surnameSimilarity(a[1], b[0]) >= FUZZY_SURNAME_SIM
+  );
+}
+
 function authorHit(candidateAuthor, authors) {
   if (!candidateAuthor) return false;
-  return authors.some((name) => {
-    if (namesLookAlike(name, candidateAuthor)) return true;
-    const a = normalizeAuthorName(name);
-    const b = normalizeAuthorName(candidateAuthor);
-    if (!a || !b) return false;
-    if (a === b) return true;
-    const surnameA = a.split(' ').filter(Boolean).pop();
-    const surnameB = b.split(' ').filter(Boolean).pop();
-    if (!surnameA || !surnameB) return false;
-    if (surnameA === surnameB && surnameA.length >= 3) return true;
-    if (surnameA.length < FUZZY_SURNAME_MIN_LEN || surnameB.length < FUZZY_SURNAME_MIN_LEN) {
-      return false;
-    }
-    return surnameSimilarity(surnameA, surnameB) >= FUZZY_SURNAME_SIM;
-  });
+  return authors.some(
+    (name) =>
+      swappedPair(name, candidateAuthor) ||
+      nameOrders(name).some((form) => orderedAuthorHit(form, candidateAuthor))
+  );
 }
 
 function candidatesFor(rows, canonicalRows, entry) {
@@ -341,12 +350,36 @@ function pickCandidate(candidates) {
   return sorted[0];
 }
 
-function toResult(candidate, entry) {
+function variantTiers(entry) {
+  const parts = partVariants(entry.title, authorNamesOf(entry));
+  return [titleVariants(entry.title), parts.subtitle, parts.whole];
+}
+
+function resultForTiers(entry, tiers, rows, canonicalRows) {
+  for (const [tier, variants] of tiers.entries()) {
+    if (!variants.length) continue;
+    const wanted = new Set(variants);
+    const collected = rows.filter((row) => row.label && wanted.has(row.label));
+    if (!collected.length) continue;
+    const candidates = candidatesFor(collected, canonicalRows, {
+      title: tier === 0 ? entry.title : variants[0],
+      authors: authorNamesOf(entry),
+    }).filter((candidate) => tier === 0 || candidate.authorHit);
+    const chosen = pickCandidate(candidates);
+    const found = chosen ? toResult(chosen, entry, { wholeWork: tier === 2 }) : null;
+    if (found) return found;
+  }
+  return null;
+}
+
+function toResult(candidate, entry, options = {}) {
+  const wholeWork = options.wholeWork === true;
   const claim = saneFirstYearClaim(
     { ...candidate.claim, source: NAME },
     { authorBirthYear: candidate.authorBirthYear }
   );
   if (!claim) return null;
+  const series = wholeWork ? null : candidate.series;
   return {
     source: NAME,
     sourceId: candidate.workId,
@@ -358,13 +391,13 @@ function toResult(candidate, entry) {
     firstPublishedYearPrecision: claim.precision,
     firstPublishedYearKind: claim.kind,
     publisher: null,
-    series: candidate.series
-      ? { name: candidate.series.name, position: candidate.series.position, source: NAME }
+    series: series
+      ? { name: series.name, position: series.position, source: NAME }
       : null,
-    seriesAll: candidate.series
-      ? [{ name: candidate.series.name, position: candidate.series.position, source: NAME }]
+    seriesAll: series
+      ? [{ name: series.name, position: series.position, source: NAME }]
       : [],
-    wikidataWorkId: candidate.workId,
+    wikidataWorkId: wholeWork ? null : candidate.workId,
     wikidataAuthorIds: [...candidate.authorIds.entries()].map(([name, qid]) => ({ name, qid })),
     genres: [],
     pages: null,
@@ -380,6 +413,7 @@ function toResult(candidate, entry) {
       exact: candidate.exact,
       authorHit: candidate.authorHit,
       candidates: candidate.sitelinks,
+      wholeWork,
     },
     mangaComics: null,
     mangaTexts: [],
@@ -430,8 +464,11 @@ async function lookupTitles(entries, options = {}) {
   for (const [index, batch] of batches.entries()) {
     const values = [];
     const seen = new Set();
+    const tiersByEntry = new Map();
     for (const entry of batch) {
-      for (const variant of titleVariants(entry.title)) {
+      const tiers = variantTiers(entry);
+      tiersByEntry.set(entry, tiers);
+      for (const variant of tiers.flat()) {
         const label = `"${escapeLabel(variant)}"@ru`;
         if (seen.has(label)) continue;
         seen.add(label);
@@ -462,14 +499,10 @@ async function lookupTitles(entries, options = {}) {
     }
 
     for (const entry of batch) {
-      const wanted = new Set(titleVariants(entry.title));
-      const collected = rows.filter((row) => row.label && wanted.has(row.label));
-      const candidates = candidatesFor(collected, canonicalRows, {
-        title: entry.title,
-        authors: authorNamesOf(entry),
-      });
-      const chosen = pickCandidate(candidates);
-      result.byKey.set(String(entry.key), chosen ? toResult(chosen, entry) : null);
+      result.byKey.set(
+        String(entry.key),
+        resultForTiers(entry, tiersByEntry.get(entry), rows, canonicalRows)
+      );
     }
     if (typeof options.onProgress === 'function') {
       options.onProgress({ batch: index + 1, batches: batches.length });

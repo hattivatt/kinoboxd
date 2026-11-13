@@ -1,6 +1,7 @@
 'use strict';
 
 const { CYRILLIC_TITLE, eventKeyOf, isbnOfEvent } = require('./identity');
+const { liveLibMetadata } = require('../year-only');
 
 function createReport(ctx) {
   const { card, litres, gb, wikidata } = ctx.budget;
@@ -86,14 +87,14 @@ function finalizeReport(ctx) {
   report.withMetadata = report.resolved + report.enriched;
   report.unmatched = plan.pending.filter((event) => {
     const bookId = eventKeyOf(event);
-    return !plan.links.has(bookId) && !cache.getWorkDetails(`ll:${bookId}`);
+    return !plan.links.has(bookId) && !liveLibMetadata(cache.getWorkDetails(`ll:${bookId}`));
   }).length;
   report.attempted = state.attemptedKeys.size;
   const pendingKeys = budgetPendingKeys(ctx);
   report.unmatchedKeys = [...state.attemptedKeys].filter(
     (bookId) =>
       !plan.links.has(bookId) &&
-      !cache.getWorkDetails(`ll:${bookId}`) &&
+      !liveLibMetadata(cache.getWorkDetails(`ll:${bookId}`)) &&
       !state.providerErrorKeys.has(bookId) &&
       !pendingKeys.has(bookId)
   );

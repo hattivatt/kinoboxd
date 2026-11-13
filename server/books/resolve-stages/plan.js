@@ -3,6 +3,7 @@
 const segments = require('../segments');
 const { eventKeyOf } = require('./identity');
 const { loadWorks } = require('./corpus');
+const { liveLibMetadata } = require('../year-only');
 
 const PLAN_SHELVES = new Set(['reading', 'wish']);
 
@@ -18,7 +19,7 @@ function expandEvents(ctx) {
       if (!key) return true;
       return !segments.expansionBlocked(event, {
         link: cache.getLink(key),
-        details: cache.getWorkDetails(`ll:${key}`),
+        details: liveLibMetadata(cache.getWorkDetails(`ll:${key}`)),
         yearOverrides: collectionYearOverrides,
       });
     },

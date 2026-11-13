@@ -1,6 +1,7 @@
 'use strict';
 
 const bookCache = require('../book-cache');
+const { liveLibMetadata } = require('../year-only');
 const {
   expansionBlocked,
   hasCollectionSegments,
@@ -180,7 +181,7 @@ function prepareEvents(profiles, options = {}) {
       if (!hasCollectionSegments(raw)) continue;
       const parentLink = identity.linkKey ? bookCache.getLink(identity.linkKey) : null;
       const parentDetails = identity.linkKey
-        ? bookCache.getWorkDetails(`ll:${identity.linkKey}`)
+        ? liveLibMetadata(bookCache.getWorkDetails(`ll:${identity.linkKey}`))
         : null;
       if (expansionBlocked(raw, { link: parentLink, details: parentDetails, yearOverrides })) {
         collectionsBlocked.push({

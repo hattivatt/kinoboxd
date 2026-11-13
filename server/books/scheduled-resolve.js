@@ -3,6 +3,7 @@
 const path = require('path');
 
 const bookCache = require('./book-cache');
+const { liveLibMetadata } = require('./year-only');
 const resolve = require('./resolve');
 const segments = require('./segments');
 const litres = require('./providers/litres');
@@ -83,7 +84,7 @@ function isUnlinked(event) {
   if (!key) return false;
   const link = bookCache.getLink(key);
   if (link && link.workId) return false;
-  if (bookCache.getWorkDetails(`ll:${key}`)) return false;
+  if (liveLibMetadata(bookCache.getWorkDetails(`ll:${key}`))) return false;
   return true;
 }
 
@@ -100,7 +101,7 @@ function expandedProfileEvents(profile) {
       if (!key) return true;
       return !segments.expansionBlocked(event, {
         link: bookCache.getLink(key),
-        details: bookCache.getWorkDetails(`ll:${key}`),
+        details: liveLibMetadata(bookCache.getWorkDetails(`ll:${key}`)),
         yearOverrides,
       });
     },
@@ -537,6 +538,8 @@ module.exports = {
   missedAtOf,
   recentlyMissed,
   candidatePool,
+  expandedProfileEvents,
+  isUnlinked,
   resolveOneProfile,
   runScheduledResolve,
   mergeResolveState,

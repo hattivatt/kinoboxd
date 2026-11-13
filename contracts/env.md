@@ -126,7 +126,7 @@
 | `KINOBOXD_LIVELIB_REIMPORT_TTL_MS` | см. файл | `server/books/import.js:21` | const LIVELIB_REIMPORT_TTL_MS = Number(process.env.KINOBOXD_LIVELIB_REIMPORT_TTL_MS) > 0 |
 | `KINOBOXD_MOBY_KEY_FILE` | см. файл | `server/games/personnel/moby.js:14` | const KEY_FILE_ENV = 'KINOBOXD_MOBY_KEY_FILE'; |
 | `KINOBOXD_PASSWORD` | см. файл | `server/auth.js:10` | typeof process.env.KINOBOXD_PASSWORD === 'string' ? process.env.KINOBOXD_PASSWORD : ''; |
-| `KINOBOXD_SEGMENTS_INCLUDE_MEDIUM` | `''` (server/books/stats/events.js) | `server/books/stats/events.js:110` | const raw = String(process.env.KINOBOXD_SEGMENTS_INCLUDE_MEDIUM \|\| '').trim().toLowerCase(); |
+| `KINOBOXD_SEGMENTS_INCLUDE_MEDIUM` | `''` (server/books/stats/events.js) | `server/books/stats/events.js:111` | const raw = String(process.env.KINOBOXD_SEGMENTS_INCLUDE_MEDIUM \|\| '').trim().toLowerCase(); |
 | `KINOBOXD_STATE_DIR` | см. файл | `server/games/game-cache.js:11` | const STATE_DIR = process.env.KINOBOXD_STATE_DIR |
 | `KINOBOXD_STEAM_KEY_FILE` | см. файл | `server/config.js:18` | const STEAM_KEY_FILE_ENV = 'KINOBOXD_STEAM_KEY_FILE'; |
 | `KINOBOXD_WDQS_ENDPOINT` | `https://query.wikidata.org/sparql (WDQS)` (server/books/authors-wikidata.js) | `server/books/authors-wikidata.js:16` | return fetchOnce(options.endpoint \|\| process.env.KINOBOXD_WDQS_ENDPOINT \|\| WDQS, { |

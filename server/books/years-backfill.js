@@ -14,7 +14,9 @@ const { usedOf, budgetRefused } = require('../core/budget');
 const fsStore = require('../core/fs-store');
 const sources = require('../core/sources');
 const wikidata = require('./providers/wikidata');
-const { storedFirstClaim, isChallengeableClaim } = require('./providers/claim');
+const { isYearOnlyDetails } = require('./year-only');
+const { backfillUnlinkedYears } = require('./unlinked-years');
+const { storedFirstClaim, isChallengeableClaim, canOverrideClaim } = require('./providers/claim');
 const {
   workIdOf,
   storedPrintClaim,
@@ -116,7 +118,9 @@ function detailDocs() {
     const doc = fsStore.readJson(path.join(bookCache.DETAILS_DIR, name), {
       label: 'years-backfill',
     });
-    if (doc && typeof doc === 'object') out.push({ key: path.basename(name, '.json'), doc });
+    if (doc && typeof doc === 'object' && !isYearOnlyDetails(doc)) {
+      out.push({ key: path.basename(name, '.json'), doc });
+    }
   }
   return out;
 }
@@ -224,7 +228,7 @@ async function firstYearForDoc(doc, options = {}) {
   const prefetched = options.yearClaims instanceof Map && workId ? options.yearClaims.get(workId) : null;
   if (prefetched) {
     const confirmed =
-      !stored || (prefetched.match && prefetched.match.authorHit === true);
+      !stored || canOverrideClaim(prefetched);
     if (confirmed) push(prefetched, 'wikidata');
   } else if (asked && workId && !asked.has(workId)) {
     if (options.yearClaimsSkipped === 'breaker') incomplete.push('wikidata-breaker');
@@ -418,7 +422,9 @@ async function backfill(options = {}) {
 
   const profileTitleIndex =
     options.profileTitles instanceof Map ? options.profileTitles : profileTitles();
-  const { yearClaims, yearClaimsError } = await askWikidata(selected, options, {
+  const wikidataBudget =
+    options.wikidataBudget === undefined ? wikidata.budgetFromEnv() : options.wikidataBudget;
+  const { yearClaims, yearClaimsError } = await askWikidata(selected, { ...options, wikidataBudget }, {
     profileTitleIndex,
     report,
   });
@@ -551,6 +557,21 @@ async function backfill(options = {}) {
     report.litresBudgetRemaining = Number(budget.remaining);
   }
   report.litresBudgetExhausted = report.litresBudgetRemaining === 0;
+
+  report.unlinked = ids || options.unlinked === false
+    ? null
+    : await backfillUnlinkedYears({
+        wikidataProvider: options.wikidataProvider,
+        budget: wikidataBudget,
+        sleep: options.sleep,
+        fetchImpl: options.fetchImpl,
+        pauseMs: options.wikidataPauseMs,
+        batchSize: options.wikidataBatchSize,
+        now: checkedAt,
+        recheckDays,
+        dryRun,
+        log,
+      });
 
   const pending = countPending(detailDocs(), queueOptions);
   report.pending = pending;

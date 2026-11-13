@@ -4,6 +4,7 @@ const wikidata = require('../providers/wikidata');
 const {
   claimOf,
   isChallengeableClaim,
+  canOverrideClaim,
   PRECISION_RANK,
   saneFirstYearClaim,
   storedFirstClaim,
@@ -63,7 +64,7 @@ function yearTargets(ctx) {
 function acceptedClaim(current, result) {
   const claim = claimOf(result);
   if (!claim) return null;
-  if (current && !(result.match && result.match.authorHit === true)) return null;
+  if (current && !canOverrideClaim(result)) return null;
   const sane = saneFirstYearClaim(
     { ...claim, source: result.source || 'wikidata' },
     { authorBirthYear: result.authorBirthYear }

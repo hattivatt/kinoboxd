@@ -6,6 +6,7 @@ const { isbnOfEvent, eventKeyOf, chainInput, chainNamesOf } = require('./identit
 const { tryProvider, saveProviderWork, makeLink, countResolution, saveCardMetadata } = require('./chain');
 const { lookupHardcoverByIsbn } = require('./isbn-stage');
 const { unresolvedEvents } = require('./plan');
+const { liveLibMetadata } = require('../year-only');
 
 function splitByIsbn(events) {
   const withIsbn = [];
@@ -23,7 +24,7 @@ async function fetchCards(ctx, events) {
   if (!chain.card) return cardByBook;
   for (const event of events) {
     const bookId = eventKeyOf(event);
-    if (!force && cache.getWorkDetails(`ll:${bookId}`)) continue;
+    if (!force && liveLibMetadata(cache.getWorkDetails(`ll:${bookId}`))) continue;
     const card = await tryProvider(chain.card, chainInput(event), ctx);
     if (card) cardByBook.set(bookId, card);
   }
@@ -102,7 +103,7 @@ async function enrichWithoutIsbn(ctx, events, cardByBook, hardcoverByIsbn) {
   for (const event of events) {
     const bookId = eventKeyOf(event);
     if (plan.links.has(bookId)) continue;
-    if (!force && cache.getWorkDetails(`ll:${bookId}`)) {
+    if (!force && liveLibMetadata(cache.getWorkDetails(`ll:${bookId}`))) {
       report.enriched++;
       report.resolvedLivelibCard++;
       continue;
@@ -118,7 +119,7 @@ async function enrichWithIsbn(ctx, events) {
   for (const event of events) {
     const bookId = eventKeyOf(event);
     if (plan.links.has(bookId)) continue;
-    if (!force && cache.getWorkDetails(`ll:${bookId}`)) {
+    if (!force && liveLibMetadata(cache.getWorkDetails(`ll:${bookId}`))) {
       report.enriched++;
       report.resolvedLivelibCard++;
       continue;

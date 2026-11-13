@@ -50,6 +50,11 @@ function isPrintClaimSource(value) {
   return PRINT_CLAIM_SOURCES.includes(String(value == null ? '' : value));
 }
 
+function canOverrideClaim(result) {
+  const match = result && result.match;
+  return Boolean(match && match.authorHit === true && match.wholeWork !== true);
+}
+
 function isChallengeableClaim(claim) {
   if (!claim) return false;
   return claim.source == null || isPrintClaimSource(claim.source);
@@ -130,6 +135,7 @@ module.exports = {
   storedFirstClaim,
   isPrintClaimSource,
   isChallengeableClaim,
+  canOverrideClaim,
   PRECISIONS,
   PRECISION_RANK,
   KINDS,
