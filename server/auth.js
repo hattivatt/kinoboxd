@@ -71,14 +71,73 @@ function attachCookies(req, res, next) {
 /* Sessions                                                            */
 /* ------------------------------------------------------------------ */
 
-const sessions = new Map(); // token -> { createdAt, expiresAt }
+const sessions = new Map();
+
+function sweepSessions(now = Date.now()) {
+  for (const [token, session] of sessions) {
+    if (session.expiresAt <= now) sessions.delete(token);
+  }
+}
 
 function createSession() {
   const token = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
+  sweepSessions(now);
   sessions.set(token, { createdAt: now, expiresAt: now + SESSION_TTL_MS });
   return token;
 }
+
+const LOGIN_MAX_FAILURES = 5;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_TRACKED = 1000;
+
+function createLoginLimiter(options = {}) {
+  const maxFailures = options.maxFailures || LOGIN_MAX_FAILURES;
+  const windowMs = options.windowMs || LOGIN_WINDOW_MS;
+  const maxTracked = options.maxTracked || LOGIN_MAX_TRACKED;
+  const now = options.now || Date.now;
+  const failures = new Map();
+
+  function live(key) {
+    const entry = failures.get(key);
+    if (!entry) return null;
+    if (entry.resetAt <= now()) {
+      failures.delete(key);
+      return null;
+    }
+    return entry;
+  }
+
+  function retryAfterMs(key) {
+    const entry = live(key);
+    if (!entry || entry.count < maxFailures) return 0;
+    return entry.resetAt - now();
+  }
+
+  function fail(key) {
+    const entry = live(key);
+    if (entry) {
+      entry.count += 1;
+      return;
+    }
+    if (failures.size >= maxTracked) {
+      for (const tracked of failures.keys()) {
+        if (!live(tracked)) continue;
+        failures.delete(tracked);
+        break;
+      }
+    }
+    failures.set(key, { count: 1, resetAt: now() + windowMs });
+  }
+
+  function succeed(key) {
+    failures.delete(key);
+  }
+
+  return { retryAfterMs, fail, succeed, size: () => failures.size };
+}
+
+const loginLimiter = createLoginLimiter();
 
 function getSession(token) {
   if (!token) return null;
@@ -132,10 +191,18 @@ router.post('/login', (req, res) => {
     // Auth disabled: nothing to log in to, but do not error out clients.
     return res.status(200).json({ ok: true, authRequired: false, authed: true });
   }
+  const clientKey = req.ip || 'unknown';
+  const waitMs = loginLimiter.retryAfterMs(clientKey);
+  if (waitMs > 0) {
+    res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
+    return res.status(429).json({ error: 'too_many_attempts', code: 'too_many_attempts' });
+  }
   const password = req.body && req.body.password;
   if (!verifyPassword(password)) {
+    loginLimiter.fail(clientKey);
     return res.status(401).json({ error: 'wrong_password', code: 'wrong_password' });
   }
+  loginLimiter.succeed(clientKey);
   const token = createSession();
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
@@ -164,8 +231,10 @@ module.exports = {
   router,
   isAuthed,
   verifyPassword,
-  // exported for tests
   createSession,
   getSession,
   parseCookies,
+  sweepSessions,
+  createLoginLimiter,
+  loginLimiter,
 };
