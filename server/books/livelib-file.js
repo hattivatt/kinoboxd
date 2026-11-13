@@ -1,57 +1,5 @@
 'use strict';
 
-/**
- * LiveLib export **file** import — the safe alternative to scraping.
- *
- * The file is produced by the community service `Chimildic/livelib-backup`
- * (Google Apps Script web app: https://chimildic.github.io/livelib-backup/).
- * The service reads the reader's public pages in a browser session and hands
- * the user a JSON/CSV file; we only ever parse that file. No request to
- * livelib.ru is made by this module, so importing a file can never look like
- * automated access from our IP (see AGENTS.md §10: LiveLib ban risk).
- *
- * Formats accepted (verified against the service sources, 28.10.2026):
- *
- *   src/gs/book-parser.js   -> one book object per shelf row
- *   src/webpage/export-script.js -> `JSON.stringify(bookArray)` for json,
- *                                   `;`-separated CSV otherwise
- *
- * JSON (top level is an array; `{items|books|data: [...]}` is tolerated):
- *
- *   {
- *     "title": "Аннигиляция",
- *     "bookHref": "https://www.livelib.ru/book/1002745594-annigilyatsiya-...",
- *     "coverHref": "https://s1.livelib.ru/boocover/1002745594/200x305/....jpg",
- *     "readDate": "Сентябрь 2026 г.",          // RU header of the month group
- *     "annotation": "...",
- *     "rating": { "overall": "7.4", "user": "3.5" },   // strings, 5-scale user
- *     "authors": [ { "name": "...", "href": "..." } ],
- *     "genres":  [ { "name": "фэнтези", "href": "...", "topPlace": "№10" } ],
- *     "stats":   { "loved": 0, "reviews": 5, "quotes": 2, "read": 2327 },
- *     "details": { "isbn": "978-5-699-98967-6", "year": "2018",
- *                  "publishers": "Эксмо", "series": "…", "language": "Русский" }
- *   }
- *
- * Only the columns the user ticked in the form are present, so every field is
- * optional. The shelf itself is NOT in the file: the service exports one page
- * at a time (`read`/`unread`/`reading`/`wish`), so the caller tells us which
- * one it is (form field or filename).
- *
- * Mapping into the profile model (§3.3):
- *   - `bookHref` -> `sourceBookId` (LiveLib art_edition id, the same id as
- *     `/book/{id}` and the RSC payload) — this is the stable key;
- *   - `rating.user` is the 5-star personal rating the legacy design shows;
- *     `rating10 = round(5-scale × 2)` keeps one unified 10-scale;
- *   - `readDate` is a month (`Сентябрь 2026 г.`) → `readMonth: '2026-09'`;
- *     `finishedAt` stays null because the export never carries a real day.
- *     A day is accepted only when the value explicitly has one AND it is not
- *     the first of the month (the Goodreads export fabricates `YYYY/MM/01`);
- *   - `details.isbn` may hold several ISBNs -> `isbn`/`isbn13`/`isbn10`;
- *   - `details.publishers|year|language|series` and `genres` are stored on the
- *     event itself: the export already carries them, so the metadata chain is
- *     an enrichment, not a requirement.
- */
-
 const crypto = require('crypto');
 
 const {
@@ -67,12 +15,6 @@ const {
 } = require('./segments');
 
 const ORIGIN = 'livelib-file';
-/**
- * A wishlist («Хочу прочитать») of a heavy reader is easily bigger than the
- * ~1 245 read books of our reference profile, so the cap is not the read
- * collection size: it only catches "two profiles glued together" / a database
- * dump. The 24 MB upload limit is the real ceiling.
- */
 const MAX_BOOKS = 20000;
 
 class LivelibFileError extends Error {
@@ -83,14 +25,8 @@ class LivelibFileError extends Error {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Shelves                                                             */
-/* ------------------------------------------------------------------ */
-
-/** Shelves the service can export, mapped to the profile status labels. */
 const SHELVES = ['read', 'dnf', 'reading', 'wish'];
 
-/** Status label of a shelf — the same vocabulary Hardcover events use. */
 const SHELF_STATUS = {
   read: 'read',
   dnf: 'dnf',
@@ -98,18 +34,15 @@ const SHELF_STATUS = {
   wish: 'wish',
 };
 
-/** Shelves that belong to the reading history (everything else is a plan). */
 const PROFILE_SHELVES = ['read', 'dnf'];
 
 const SHELF_ALIASES = new Map(
   [
-    // Прочитал
     ['read', 'read'],
     ['read books', 'read'],
     ['прочитал', 'read'],
     ['прочитано', 'read'],
     ['finished', 'read'],
-    // Не дочитал (pagename `unread` in the service)
     ['dnf', 'dnf'],
     ['unread', 'dnf'],
     ['did not finish', 'dnf'],
@@ -117,13 +50,11 @@ const SHELF_ALIASES = new Map(
     ['не дочитал', 'dnf'],
     ['недочитал', 'dnf'],
     ['брошено', 'dnf'],
-    // Читаю сейчас
     ['reading', 'reading'],
     ['currently-reading', 'reading'],
     ['currently reading', 'reading'],
     ['читаю сейчас', 'reading'],
     ['читаю', 'reading'],
-    // Хочу прочитать
     ['wish', 'wish'],
     ['to-read', 'wish'],
     ['want to read', 'wish'],
@@ -132,24 +63,17 @@ const SHELF_ALIASES = new Map(
   ].map(([alias, shelf]) => [alias, shelf])
 );
 
-/** Normalize a shelf token (RU/EN/goodreads label); null when unknown. */
 function shelfOf(value) {
   const key = cleanText(value).toLowerCase().replace(/ё/g, 'е');
   if (!key) return null;
   return SHELF_ALIASES.get(key) || null;
 }
 
-/**
- * Guess the shelf from a file name. The service names its files
- * `livelib-{username}-{pagename}-{date}.{ext}`, e.g.
- * `livelib-margaret-read-28.10.2026.json`.
- */
 function shelfFromFilename(filename) {
   const name = cleanText(filename).toLowerCase().replace(/ё/g, 'е');
   if (!name) return null;
   const stem = name.replace(/\.[a-z0-9]+$/, '');
   const parts = stem.split(/[-_.\s]+/).filter(Boolean);
-  // Longest match first so "currently-reading" beats "reading".
   for (const shelf of ['currently-reading', 'did-not-finish', 'to-read', 'unread', 'wish', 'reading', 'read']) {
     if (parts.includes(shelf) || stem.includes(`-${shelf}-`) || stem.endsWith(`-${shelf}`)) {
       return shelfOf(shelf);
@@ -157,10 +81,6 @@ function shelfFromFilename(filename) {
   }
   return null;
 }
-
-/* ------------------------------------------------------------------ */
-/* Dates                                                               */
-/* ------------------------------------------------------------------ */
 
 const MONTHS = new Map(
   [
@@ -176,20 +96,12 @@ const MONTHS = new Map(
     ['октябрь', 10], ['октября', 10], ['октябре', 10],
     ['ноябрь', 11], ['ноября', 11], ['ноябре', 11],
     ['декабрь', 12], ['декабря', 12], ['декабре', 12],
-    // The service shows the nominative form ("Декабрь 2025 г."), the older
-    // page headers used the prepositional one ("прочитано в марте 2023"), and
-    // a hand-edited column may hold either. English is accepted for tolerance.
     ['january', 1], ['february', 2], ['march', 3], ['april', 4], ['may', 5],
     ['june', 6], ['july', 7], ['august', 8], ['september', 9], ['october', 10],
     ['november', 11], ['december', 12],
   ].map(([name, month]) => [name, month])
 );
 
-/**
- * Leading words a date column may carry: «прочитано в марте 2023»,
- * «read in March 2023». Stripped before parsing; the month word itself never
- * starts with any of them.
- */
 const DATE_PREFIX = /^(?:прочитан[оа]?|прочитал[аи]?|читал[аи]?|read|finished)\s+(?:in|в)?\s*/i;
 
 function pad2(value) {
@@ -206,42 +118,25 @@ function isoDay(year, month, day) {
   return iso;
 }
 
-/**
- * Parse the `readDate` value of the export.
- *
- * Returns `{ finishedAt, readMonth, precision }`:
- *   - `day`   — an explicit real day (`2024-03-02`, `02.03.2024`);
- *   - `month` — month + year (`Сентябрь 2026 г.`, `2026-09`, `09.2026`);
- *   - `year`  — only a year (`2025 г.`) — no month, so no timeline bucket;
- *   - `null`  — nothing usable.
- *
- * A `01` day is treated as month precision: the Goodreads flavour of the
- * export fabricates `YYYY/MM/01` out of the same month header, and inventing a
- * day would put fake dots on the reading calendar.
- */
 function parseFileReadDate(raw) {
   let value = cleanText(raw).toLowerCase().replace(/ё/g, 'е');
   if (!value) return { finishedAt: null, readMonth: null, precision: null };
-  // «прочитано в марте 2023» / «read in March 2023» -> «марте 2023»
   if (DATE_PREFIX.test(value)) value = value.replace(DATE_PREFIX, '').trim();
   else if (/^в\s+/.test(value)) value = value.replace(/^в\s+/, '');
   if (!value) return { finishedAt: null, readMonth: null, precision: null };
 
-  // ISO day: 2024-03-02
   let match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (match) {
     const [, year, month, day] = match;
     return dayResult(Number(year), Number(month), Number(day));
   }
 
-  // Goodreads flavour: 2024/03/02
   match = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(value);
   if (match) {
     const [, year, month, day] = match;
     return dayResult(Number(year), Number(month), Number(day));
   }
 
-  // RU dotted day: 02.03.2024
   match = /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s|$)/.exec(value);
   if (match) {
     const [, day, month, year] = match;
@@ -249,8 +144,6 @@ function parseFileReadDate(raw) {
     if (result.precision) return result;
   }
 
-  // Month + year: "сентябрь 2026 г." / "сентябрь 2026" / "сентября 2026" /
-  // "марте 2023 году" (the page header of the old design).
   match = /^([\p{L}]+)\.?\s+(\d{4})\s*(?:г(?:од[ау]?)?\.?)?$/u.exec(value);
   if (match) {
     const month = MONTHS.get(match[1]);
@@ -260,14 +153,12 @@ function parseFileReadDate(raw) {
     }
   }
 
-  // Day + month name + year: "2 марта 2024" (hand-edited / Goodreads flavour).
   match = /^(\d{1,2})\s+([\p{L}]+)\.?\s+(\d{4})\s*(?:г(?:од[ау]?)?\.?)?$/u.exec(value);
   if (match) {
     const month = MONTHS.get(match[2]);
     if (month) return dayResult(Number(match[3]), month, Number(match[1]));
   }
 
-  // Numeric month: 2026-09 / 09.2026 / 09/2026
   match = /^(\d{4})[-.](\d{1,2})$/.exec(value);
   if (match) {
     const year = Number(match[1]);
@@ -285,7 +176,6 @@ function parseFileReadDate(raw) {
     }
   }
 
-  // Year only: "2025 г." / "2025" / "2025 году"
   match = /^(\d{4})\s*(?:г(?:од[ау]?)?\.?)?$/.exec(value);
   if (match) {
     const year = Number(match[1]);
@@ -304,7 +194,6 @@ function parseFileReadDate(raw) {
       return { finishedAt: null, readMonth: null, precision: null };
     }
     if (day === 1) {
-      // Fabricated first-of-month (export header) — keep the month only.
       return { finishedAt: null, readMonth: `${year}-${pad2(month)}`, precision: 'month' };
     }
     const iso = isoDay(year, month, day);
@@ -313,11 +202,6 @@ function parseFileReadDate(raw) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Values                                                              */
-/* ------------------------------------------------------------------ */
-
-/** Number with either decimal separator; null for empty/garbage. */
 function numOrNull(value) {
   const raw = cleanText(value).replace(',', '.');
   if (!raw) return null;
@@ -325,13 +209,10 @@ function numOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-/** Personal rating on the 5-star scale the export uses; null when absent. */
 function rating5Of(value) {
   const number = numOrNull(value);
   if (number == null || number <= 0) return null;
   if (number >= 1 && number <= 5) return number;
-  // A value that already looks 1..10 is halved instead of clamped: some users
-  // hand-edit the column to the LiveLib 10-point scale.
   if (number > 5 && number <= 10) return Math.round(number) / 2;
   return null;
 }
@@ -341,7 +222,6 @@ function rating10Of(value) {
   return rating5 == null ? null : Math.round(rating5 * 2);
 }
 
-/** ISBN-13 check digit (mod 10); true for a well-formed 978/979 number. */
 function isbn13ChecksumOk(digits) {
   if (!/^\d{13}$/.test(digits)) return false;
   let sum = 0;
@@ -349,15 +229,6 @@ function isbn13ChecksumOk(digits) {
   return (10 - (sum % 10)) % 10 === Number(digits[12]);
 }
 
-/**
- * First usable ISBN of the column (may hold a list — the service joins every
- * ISBN of an edition with `,`).
- *
- * A checksum-valid number always wins: LiveLib data is dirty, and a garbled
- * ISBN would send the resolve chain to a query that cannot match. When nothing
- * validates, the first well-formed-looking number is kept (the display value
- * is still useful) but `isbn13` — the matching key — stays null.
- */
 function isbnOf(value) {
   const raw = cleanText(value);
   if (!raw) return { isbn: null, isbn13: null, isbn10: null };
@@ -389,7 +260,6 @@ function yearOf(value) {
   return year >= 1000 && year <= 2100 ? year : null;
 }
 
-/** LiveLib book id from `/book/1002745594-slug` or a bare id. */
 function bookIdOf(hrefOrId) {
   const value = cleanText(hrefOrId);
   if (!value) return null;
@@ -399,11 +269,6 @@ function bookIdOf(hrefOrId) {
   return null;
 }
 
-/**
- * Absolute URL. The service prefixes `bookHref` with `BASE_URL` itself, but a
- * hand-edited file may carry `/book/123-slug` — and a relative cover would be
- * a dead link in the dashboard.
- */
 function absoluteUrl(value) {
   const raw = cleanText(value);
   if (!raw) return null;
@@ -413,12 +278,6 @@ function absoluteUrl(value) {
   return raw;
 }
 
-/**
- * Identity of a record when the file has no «Ссылка на книгу» column — which
- * is the service's default (the checkbox is unticked). Title + first author
- * surname is stable across re-exports and makes a repeated upload idempotent
- * instead of appending a second copy of the same shelf.
- */
 function titleKeyOf(title, authors) {
   const name = cleanText(title);
   if (!name) return null;
@@ -428,12 +287,10 @@ function titleKeyOf(title, authors) {
   return `${normalized}|${surname}`;
 }
 
-/** Short stable id fragment for a title-keyed event (no book id in file). */
 function titleHashOf(titleKey) {
   return crypto.createHash('sha1').update(titleKey).digest('hex').slice(0, 10);
 }
 
-/** Language code from the RU column (`Русский` -> `ru`). */
 function languageOf(value) {
   const raw = cleanText(value).toLowerCase();
   if (!raw) return null;
@@ -476,11 +333,6 @@ function genresOf(value) {
   return [...new Set(raw.split(/\s*,\s*|\s*;\s*/).map(cleanText).filter(Boolean))];
 }
 
-/* ------------------------------------------------------------------ */
-/* JSON                                                                */
-/* ------------------------------------------------------------------ */
-
-/** Pick a key case-insensitively from a list of aliases. */
 function pick(source, aliases) {
   if (!source || typeof source !== 'object') return undefined;
   const wanted = aliases.map((alias) => alias.toLowerCase());
@@ -501,7 +353,6 @@ function detailValue(source, aliases) {
   return pick(details, aliases);
 }
 
-/** One raw JSON/CSV record -> the normalized shape the importer consumes. */
 function normalizeRecord(raw, options = {}) {
   const book = asObject(raw);
   if (!book) return null;
@@ -509,8 +360,6 @@ function normalizeRecord(raw, options = {}) {
   const title = cleanText(pick(book, ['title', 'название', 'name']));
   const bookHref = cleanText(pick(book, ['bookHref', 'bookHrefs', 'url', 'ссылка на книгу', 'ссылка']));
   const bookId = bookIdOf(bookHref) || bookIdOf(pick(book, ['bookId', 'id', 'artId']));
-  // A row with neither a title nor a book id cannot be matched to anything:
-  // it is dropped instead of becoming an anonymous event.
   if (!title && !bookId) return null;
 
   const ratingBlock = asObject(pick(book, ['rating', 'оценка', 'рейтинг']));
@@ -525,9 +374,6 @@ function normalizeRecord(raw, options = {}) {
 
   const readDateRaw = pick(book, ['readDate', 'дата прочтения', 'dateRead', 'finishedAt']);
   const date = parseFileReadDate(readDateRaw);
-  // «Читаю сейчас» has no finish date: an export may carry the start instead.
-  // The service's default columns do not include it, so this is an optional
-  // extension (RU/EN hand-edited column, Goodreads-style value).
   const startedRaw = pick(book, [
     'startedAt', 'startDate', 'dateStarted', 'dateAdded', 'addedAt',
     'дата начала', 'дата начала чтения', 'начало чтения', 'дата добавления',
@@ -538,11 +384,6 @@ function normalizeRecord(raw, options = {}) {
   const isbnRaw = detailValue(book, ['isbn']);
   const isbn = isbnOf(isbnRaw);
   const authors = authorsOf(pick(book, ['authors', 'автор', 'авторы']));
-  // Collection/omnibus rows carry several works in one publisher title
-  // («Том 2. В краю лесов. Тесс из рода д'Эрбервиллей (сборник)»). The split is
-  // additive: the record keeps its own title and keys, the works live in their
-  // own fields (СБОРНИКИ-ЭВРИСТИКА.md §5.1/§5.2). `firstCounts` is the
-  // whole-file frequency table used to recognise a catalogue line.
   const collection = collectionFieldsOf(title, { firstCounts: options.firstCounts || null });
 
   return {
@@ -559,9 +400,6 @@ function normalizeRecord(raw, options = {}) {
     startedAt: started.finishedAt,
     startMonth: started.readMonth,
     startPrecision: started.precision,
-    // Per-row shelf: CSV has a «Полка»/`Shelves` column, and a hand-edited
-    // JSON may carry the same token. The file-level shelf still wins; this is
-    // only the fallback when the name/form cannot tell the page.
     shelfHint: shelfOf(pick(book, ['shelf', 'shelves', 'полка', 'status', 'статус'])) || null,
     rating5: rating5Of(ratingUserRaw),
     communityRating: numOrNull(ratingOverallRaw),
@@ -609,15 +447,6 @@ function parseJsonDocument(text) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* CSV                                                                 */
-/* ------------------------------------------------------------------ */
-
-/**
- * Minimal delimited parser (RFC4180 quotes, CRLF, BOM). `parseCsv` from
- * `server/upload.js` is comma-only, and the service writes `;` (so that the
- * comma stays usable inside `Автор`/`Жанры` cells).
- */
 function parseDelimited(text, delimiter) {
   const rows = [];
   let row = [];
@@ -666,7 +495,6 @@ function detectDelimiter(headerLine) {
   return semicolons >= commas ? ';' : ',';
 }
 
-/** CSV header -> canonical field name (RU titles of the export + EN). */
 const CSV_COLUMNS = new Map(
   [
     ['название', 'title'], ['title', 'title'], ['name', 'title'],
@@ -727,8 +555,6 @@ function parseCsvDocument(text) {
     });
     records.push(record);
   }
-  // The catalogue line is recognised by repetition across the whole file, so
-  // the collection parser needs the frequency table before normalization.
   const firstCounts = firstSegmentCounts(records.map((record) => record.title).filter(Boolean));
   const out = [];
   for (const record of records) {
@@ -761,19 +587,6 @@ function parseCsvDocument(text) {
   return out;
 }
 
-/* ------------------------------------------------------------------ */
-/* Document                                                            */
-/* ------------------------------------------------------------------ */
-
-/**
- * Parse an uploaded export file.
- *
- * @param {Buffer|string} input raw file bytes
- * @param {{filename?: string}} [options] used for format sniffing and the
- *        shelf guess
- * @returns {{format:'json'|'csv', books: object[], shelf: string|null,
- *            warnings: string[], stats: object}}
- */
 function parseExportFile(input, options = {}) {
   const text = Buffer.isBuffer(input) ? input.toString('utf8') : String(input == null ? '' : input);
   if (text.length > 24 * 1024 * 1024) {
@@ -792,8 +605,6 @@ function parseExportFile(input, options = {}) {
   if (looksJson) {
     format = 'json';
     const rows = parseJsonDocument(trimmed);
-    // Catalogue-line detection needs the whole file (a repeated first segment),
-    // so the frequency table is built before any row is normalized.
     const titles = [];
     for (const row of rows) {
       const book = asObject(row);
@@ -811,11 +622,6 @@ function parseExportFile(input, options = {}) {
     books = parseCsvDocument(trimmed);
   }
 
-  // Export artifacts: the very same book id repeated with byte-identical
-  // fields is one row, not a volume. Rows *without* a book id are deliberately
-  // kept even when identical — the user's verdict (28.10.2026) is that every
-  // export row is a volume of a `/work/` page, and deduping those erased manga
-  // volumes ("Вторжение гигантов" ×6, "Большой куш" ×13).
   let exactDuplicateRows = 0;
   const exactSeen = new Set();
   books = books.filter((book) => {
@@ -850,8 +656,6 @@ function parseExportFile(input, options = {}) {
   let withRating = 0;
   let withIsbn = 0;
   let withGenres = 0;
-  // Collection rows are additive: the row is still one record, its works live
-  // in `collectionSegments` and never change the row count/keys.
   let collections = 0;
   let collectionWorks = 0;
   let catalogRows = 0;
@@ -898,8 +702,6 @@ function parseExportFile(input, options = {}) {
     );
   }
 
-  // The shelf is a property of the exported page, not of a row. A file-level
-  // hint wins; a per-row `shelf` column (Goodreads flavour) fills the rest.
   const fileShelf = shelfOf(options.shelf) || shelfFromFilename(options.filename) || null;
   const rowShelf = books.reduce((found, book) => found || book.shelfHint || null, null);
 
@@ -927,16 +729,8 @@ function parseExportFile(input, options = {}) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Profile                                                             */
-/* ------------------------------------------------------------------ */
-
-/** Build one profile event out of a normalized record. */
 function buildFileEvent(book, shelf, position) {
   const suffix = position > 1 ? `#${position}` : '';
-  // Stable identity: the LiveLib book id when the file has the link column,
-  // otherwise a title+author hash (the service's default column set has no
-  // link, and a positional id would duplicate a re-exported shelf).
   const fileKey = book.bookId
     ? `id:${book.bookId}`
     : book.titleKey
@@ -981,8 +775,6 @@ function buildFileEvent(book, shelf, position) {
     coverUrl: book.coverHref || null,
     communityRating: book.communityRating == null ? null : book.communityRating,
     bookStats: book.bookStats || null,
-    // Additive collection fields (СБОРНИКИ-ЭВРИСТИКА §5.1): the record keeps
-    // its own title; the works are resolved/counted separately.
     ...(Array.isArray(book.collectionSegments) && book.collectionSegments.length >= 2
       ? {
           segmentTitles: [...book.segmentTitles],
@@ -993,7 +785,6 @@ function buildFileEvent(book, shelf, position) {
   };
 }
 
-/** Fill fields the incoming row knows and the stored event does not. */
 function fillMissing(target, incoming) {
   let changed = 0;
   const setIfEmpty = (key, value) => {
@@ -1021,9 +812,6 @@ function fillMissing(target, incoming) {
       changed++;
     }
   }
-  // Collection fields are derived from the title and stored additively. A
-  // re-import of the same (or an enriched) export must not duplicate them:
-  // the segment keys are stable, so the field is only filled when absent.
   if (Array.isArray(incoming.collectionSegments) && incoming.collectionSegments.length >= 2) {
     const have = Array.isArray(target.collectionSegments) ? target.collectionSegments : [];
     if (have.length < 2) {
@@ -1040,7 +828,6 @@ function fillMissing(target, incoming) {
     target.rating10 = incoming.rating10;
     changed++;
   }
-  // Dates: an exact day always wins; a month only fills a gap.
   if (incoming.finishedAt && !target.finishedAt) {
     target.finishedAt = incoming.finishedAt;
     target.readMonth = null;
@@ -1049,7 +836,6 @@ function fillMissing(target, incoming) {
     target.readMonth = incoming.readMonth;
     changed++;
   }
-  // A start date (reading shelf) uses the same add-only rule.
   if (incoming.startedAt && !target.startedAt) {
     target.startedAt = incoming.startedAt;
     target.startMonth = null;
@@ -1076,14 +862,10 @@ function fillMissing(target, incoming) {
     target.edition = targetEdition;
     changed++;
   }
-  // Audit marker only: the row was originally obtained some other way (a
-  // scrape), so its `origin` must not claim the file created it. `stats` reads
-  // the file as a metadata source only for events of `origin: 'livelib-file'`.
   if (changed) target.fileEnriched = true;
   return changed;
 }
 
-/** Identity used to recognise "the same book on the same shelf". */
 function identityOfEvent(event) {
   if (!event) return null;
   if (event.fileKey) return `key:${event.fileKey}`;
@@ -1092,20 +874,6 @@ function identityOfEvent(event) {
   return titleKey ? `key:tk:${titleHashOf(titleKey)}` : null;
 }
 
-/**
- * Merge one exported shelf into a profile document.
- *
- * Union semantics: an upload never deletes events. Several files (one per
- * shelf, or a re-export that dropped a column) must be able to arrive in any
- * order without wiping what the previous file — or a previous scrape — already
- * contributed. A book already present on the same shelf is *enriched* (dates,
- * ISBN, publisher, series, genres, rating) instead of duplicated; an exact day
- * from a scrape is never downgraded to a month.
- *
- * @param {object|null} existingProfile profile document or null
- * @param {{userKey: string, books: object[], shelf: string,
- *          format: string, filename?: string, now?: string}} input
- */
 function mergeFileIntoProfile(existingProfile, input) {
   const now = input.now || new Date().toISOString();
   const userKey = String(input.userKey);
@@ -1125,9 +893,6 @@ function mergeFileIntoProfile(existingProfile, input) {
         warnings: [],
       };
 
-  // Existing events of the same shelf, keyed by their identity (LiveLib book
-  // id, else the title+author key of a previous file import). A scraped
-  // profile has no `shelf` field: its rows always come from «Прочитано».
   const index = new Map();
   for (const event of profile.events) {
     if (!event) continue;
@@ -1151,9 +916,6 @@ function mergeFileIntoProfile(existingProfile, input) {
     if (key) seenInFile.set(key, position);
     const incoming = position > 1 ? buildFileEvent(book, shelf, position) : preliminary;
     const candidates = key ? index.get(key) || [] : [];
-    // Match by the stable per-record id (position included). A re-import of the
-    // same file must enrich the same rows, not append a second copy of every
-    // repeated title/volume.
     const target =
       candidates.find((event) => event && event.id === incoming.id) ||
       (position === 1 ? candidates[0] || null : null);
@@ -1181,12 +943,7 @@ function mergeFileIntoProfile(existingProfile, input) {
     enriched,
     importedAt: now,
   });
-  // Keep the per-shelf view small and stable.
   profile.shelves = shelfCounts(profile.events);
-  // Several acquisition paths may share one profile document: a scrape always
-  // produces shelf-less events (they are «Прочитано»), a file import marks its
-  // own rows. The document says `mixed` when both contributed, so the UI never
-  // claims a scraped profile was imported from a file.
   const origins = new Set(
     profile.events.map((event) => (event && event.origin ? ORIGIN : 'livelib'))
   );
@@ -1204,7 +961,6 @@ function mergeFileIntoProfile(existingProfile, input) {
   return { profile, added, enriched, skipped, shelf };
 }
 
-/** How many events each shelf holds (drives the plan/watchlist counters). */
 function shelfCounts(events) {
   const counts = { read: 0, dnf: 0, reading: 0, wish: 0 };
   for (const event of Array.isArray(events) ? events : []) {
@@ -1215,22 +971,8 @@ function shelfCounts(events) {
   return counts;
 }
 
-/** Shelves a scrape does NOT read: only a file import can supply them. */
 const FILE_ONLY_SHELVES = ['dnf', 'reading', 'wish'];
 
-/**
- * Carry file-imported plan/abandoned shelves over a scrape.
- *
- * A scrape rebuilds the profile document from `/reader/{name}/read` alone, so a
- * plain overwrite would silently delete «Не дочитал»/«Читаю сейчас»/«Хочу
- * прочитать» events the user uploaded — shelves the scraper never touches.
- * `read` rows are *not* carried over: the scrape covers that collection fully
- * and its rows are richer (exact day, `status_set_at`).
- *
- * @param {object|null} previous profile document being replaced
- * @param {object} scraped freshly scraped profile document (mutated)
- * @returns {{ profile: object, preserved: number }}
- */
 function preserveFileState(previous, scraped) {
   if (!scraped || !Array.isArray(scraped.events)) return { profile: scraped, preserved: 0 };
   const prevEvents = previous && Array.isArray(previous.events) ? previous.events : [];

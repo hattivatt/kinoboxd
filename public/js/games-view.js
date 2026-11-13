@@ -1,25 +1,3 @@
-/* Games tab: pure view-model helpers (no DOM, no network, no globals).
- *
- * Everything the «Игры» dashboard prints about a `GET /api/games/stats`
- * payload is computed here, so the numbers can be pinned by `node --test`
- * without a browser. `games.js` owns the DOM and the `/api/games/*` calls and
- * only asks this module "what should be on the screen".
- *
- * The payload is a DRAFT contract (ИГРЫ-АРХИТЕКТУРА.md §5.1) and the backend
- * was still being written next to this UI, so normalisation is deliberately
- * tolerant:
- *
- *   - a missing block returns `null`/`[]` and the caller hides the widget
- *     instead of rendering a confident zero;
- *   - field names accept the doc spelling and the obvious alternates
- *     (`hours` / `playtimeHours` / `playtime_forever` in minutes);
- *   - nothing here throws on a malformed payload — a broken widget is worse
- *     than a hidden one, and a hidden one is worse than an honest «нет данных».
- *
- * Nothing in this module reads `window`/`document`, which is what makes the
- * headless smoke test (`test/games-ui.test.js`) possible.
- */
-
 import { fmtInt, plural, toNum } from './ui.js';
 import { arr, text, numOrNull, firstString } from './core/dom.js';
 import { normalizeGameStreaks } from './core/streaks.js';
@@ -59,20 +37,12 @@ export {
 
 export { jobProgress } from './core/progress.js';
 
-/* =========================================================
-   honest labels
-   ========================================================= */
-
 export const LAST_PLAYED_HINT =
   'Дата последнего запуска по данным Steam (rtime_last_played). Это не игровая сессия: Steam не отдаёт ни сессии, ни часы по дням.';
 
 export const HOURS_HINT =
   'Часы — сумма playtime_forever из Steam Web API, переведённая из минут. Steam считает время с запущенным клиентом (включая простой и свёрнутое окно), поэтому это «по данным Steam», а не хронометраж.';
 
-/**
- * «Последний раз»: text for the row plus the honest tooltip. `rtime_last_played`
- * may arrive as unix seconds (Web API) or as an ISO string (normalised payload).
- */
 export function lastPlayedInfo(value) {
   if (value == null || value === '') {
     return {
@@ -107,14 +77,6 @@ export function lastPlayedInfo(value) {
   return { text: formatted, title: LAST_PLAYED_HINT, unknown: false };
 }
 
-/* =========================================================
-   client-side drilldowns (films parity: every row is a list)
-   ========================================================= */
-
-/**
- * Steam `type` → Russian label. A missing type is the honest «тип неизвестен»,
- * not «игра»: the library record exists but appdetails has not arrived yet.
- */
 export function gameTypeLabel(type) {
   const key = text(type).toLowerCase();
   if (key === 'game') return 'игра';
@@ -127,7 +89,6 @@ export function gameTypeLabel(type) {
   return '';
 }
 
-/** Sort keys shared by every games list modal (persisted by games-modal.js). */
 export const GAME_SORT_OPTIONS = [
   { key: 'hours', label: 'По часам', hint: 'часы ↓' },
   { key: 'completion', label: 'По completion', hint: 'completion ↓' },
@@ -139,7 +100,6 @@ function cmpGameName(a, b) {
   return String(a && a.name ? a.name : '').localeCompare(String(b && b.name ? b.name : ''), 'ru');
 }
 
-/** Return a new array ordered by the selected games-list sort. */
 export function sortGameRows(rows, sortKey = 'hours') {
   const list = arr(rows).slice();
   const num = (value) => (value == null || !Number.isFinite(Number(value)) ? -1 : Number(value));
@@ -153,8 +113,6 @@ export function sortGameRows(rows, sortKey = 'hours') {
   return list.sort(comparator);
 }
 
-/** Every `gamesIndex` entry that matches `predicate`, as normalised rows. */
-/** Case-insensitive union of two name lists (edition merge). */
 function unionNames(left, right) {
   const out = arr(left).slice();
   for (const name of arr(right)) {
@@ -163,16 +121,6 @@ function unionNames(left, right) {
   return out;
 }
 
-/**
- * Two store editions of one game are **one canonical work** (M5-B): the same
- * rules `stats.js` uses for its aggregates, so a drilldown list always matches
- * the bar it was opened from.
- *
- * - the primary edition keeps the face (name/appid/icon → the card opens it);
- * - `hours` is the canonical total, `hours2w` adds up across editions;
- * - the release year is the earliest edition's (`workYear` = min) and
- *   genres/tags are the union (`workGenres`).
- */
 function mergeEditionRows(previous, row) {
   const face = row.isPrimary === true && previous.isPrimary !== true ? row : previous;
   const other = face === previous ? row : previous;
@@ -198,15 +146,10 @@ function mergeEditionRows(previous, row) {
 export function gameRowsFromIndex(gamesIndex, predicate = null) {
   const out = [];
   if (!gamesIndex || typeof gamesIndex !== 'object') return out;
-  // M5-B: group by canonical work first, so every list/drilldown counts one
-  // row per game — the same unit as `summary.gameCount` and the charts.
   const works = new Map();
   for (const [appid, entry] of Object.entries(gamesIndex)) {
     if (!entry || typeof entry !== 'object') continue;
     const row = normalizeGameIndexEntry(entry, appid);
-    // M6c: a secondary-only work has no appid but is still a real owned work.
-    // It must appear in the same drilldowns as the chart buckets that count it
-    // (years/decades/genres), and its row opens the union card.
     const secondary = row.secondaryOnly === true || (row.appid == null && Boolean(row.workKey));
     if (row.appid == null && !secondary) continue;
     const key = row.canonicalWorkKey
@@ -234,7 +177,6 @@ export function gamesInYear(gamesIndex, year) {
   return gameRowsFromIndex(gamesIndex, (row) => row.releaseYear === target);
 }
 
-/** Games of one release year that carry `genre` (Steam Store, case-insensitive). */
 export function gamesInYearGenre(gamesIndex, year, genre) {
   const rows = gamesInYear(gamesIndex, year);
   const target = text(genre).toLowerCase();
@@ -242,23 +184,11 @@ export function gamesInYearGenre(gamesIndex, year, genre) {
   return rows.filter((row) => arr(row.genres).some((name) => text(name).toLowerCase() === target));
 }
 
-/**
- * Release-year counts recomputed from `gamesIndex` for an optional genre.
- *
- * The unfiltered chart uses the server's `years[]` (already normalised), but
- * a genre filter has to be applied client-side — exactly like the films year
- * chart: no extra request, one pass over the index. Games without a release
- * year are counted apart (`unknown`) so they can be reported honestly instead
- * of being silently dropped or parked on a fake year.
- */
 export function yearCountSeries(gamesIndex, genre = null) {
   const target = text(genre).toLowerCase();
   const map = new Map();
   let unknown = 0;
   let unknownHours = 0;
-  // Canonical rows (M5-B): one row per work, canonical hours — otherwise the
-  // client recount drifts from the server's `years[]` whenever a game has two
-  // store editions with different release years.
   const rows = gameRowsFromIndex(
     gamesIndex,
     target
@@ -295,12 +225,10 @@ export function gamesInDecade(gamesIndex, start) {
     && row.releaseYear >= decade && row.releaseYear <= decade + 9);
 }
 
-/** Records without a release year: the honest «год неизвестен» bucket. */
 export function gamesWithoutYear(gamesIndex) {
   return gameRowsFromIndex(gamesIndex, (row) => row.releaseYear == null);
 }
 
-/** Records Steam never typed (no appdetails): type/year/genres are unknown. */
 export function gamesWithoutType(gamesIndex) {
   return gameRowsFromIndex(gamesIndex, (row) => !row.type);
 }
@@ -312,12 +240,10 @@ export function gamesByGenre(gamesIndex, name) {
     arr(row.genres).some((genre) => text(genre).toLowerCase() === target));
 }
 
-/** Games with `playtime_2weeks > 0` — the «за 2 недели» tile drilldown. */
 export function gamesWithRecentHours(gamesIndex) {
   return gameRowsFromIndex(gamesIndex, (row) => row.hours2w != null && row.hours2w > 0);
 }
 
-/** `years[]` limited to one decade, ascending (the years card is gated). */
 export function yearsInDecade(years, start) {
   const decade = numOrNull(start);
   if (decade == null) return [];
@@ -326,17 +252,12 @@ export function yearsInDecade(years, start) {
     .sort((a, b) => a.year - b.year);
 }
 
-/** «N игр · X ч» — the person row / modal subtitle. */
 export function personSummaryText(person) {
   const count = toCount(person && person.count);
   const hours = numOrNull(person && person.hours);
   return `${fmtInt(count)} ${plural(count, GAME_PLURAL)}${hours != null ? ` · ${hoursText(hours)}` : ''}`;
 }
 
-/**
- * One person's games joined with `gamesIndex` (completion/year/icon live only
- * in the index; the personnel payload carries appid/name/hours).
- */
 export function personGames(person, gamesIndex) {
   const index = gamesIndex && typeof gamesIndex === 'object' ? gamesIndex : {};
   return arr(person && person.games)
@@ -344,8 +265,6 @@ export function personGames(person, gamesIndex) {
       if (!game || typeof game !== 'object') return null;
       const appid = numOrNull(game.appid);
       const workKey = firstString(game.workKey);
-      // M6 follow-up: a secondary-only work has no appid — its row lives in
-      // `gamesIndex` under the `workKey` the personnel payload carries.
       if (appid == null && !workKey) return null;
       const entry = appid != null
         ? index[appid] || index[String(appid)] || null
@@ -370,11 +289,6 @@ export function personGames(person, gamesIndex) {
     .filter(Boolean);
 }
 
-/* =========================================================
-   game card (`GET /api/games/game/:appid`)
-   ========================================================= */
-
-/** Card review badge: `{score, desc, label, color}` from a number or object. */
 function normalizeCardReview(raw) {
   if (raw == null) return null;
   if (typeof raw === 'number' || typeof raw === 'string') {
@@ -411,17 +325,11 @@ function normalizeCardDetails(raw) {
     releaseYear: numOrNull(raw.releaseYear),
     metacritic: numOrNull(raw.metacritic),
     dlcCount: numOrNull(raw.dlcCount),
-    // M7 store artwork: the card prefers the real `header_image` (and the
-    // capsule as a secondary fallback) over a guessed legacy CDN path.
     headerImage: /^https?:\/\//i.test(text(raw.headerImage)) ? text(raw.headerImage) : '',
     capsuleImage: /^https?:\/\//i.test(text(raw.capsuleImage)) ? text(raw.capsuleImage) : '',
-    // First store screenshot (1920×1080): a late landscape fallback when both
-    // the header and the capsule are gone. Never the first choice — it is not
-    // artwork.
     screenshot: /^https?:\/\//i.test(text(arr(raw.screenshots)[0]))
       ? text(arr(raw.screenshots)[0])
       : '',
-    // M4 card extras: tag strip, review badge, franchise label.
     tags: normalizeTagsList(raw.tags),
     reviewScore: normalizeCardReview(raw.reviewScore ?? raw.review),
     franchise: normalizeFranchiseRef(raw.franchise ?? raw.collection),
@@ -466,12 +374,6 @@ function normalizeCardAchievements(raw) {
   };
 }
 
-
-/**
- * `GET /api/games/game/:appid` → the card view model. Links are completed on
- * the client when the server has not cached them yet (the URL shape is fixed
- * by Steam, no request is made).
- */
 export function normalizeGameCard(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const appid = numOrNull(source.appid);
@@ -480,8 +382,6 @@ export function normalizeGameCard(raw) {
   const personnel = normalizeCardPersonnel(source.personnel);
   const last = lastPlayedInfo(source.lastPlayed);
   const linksRaw = source.links && typeof source.links === 'object' ? source.links : {};
-  // A card may carry these at the top level or inside `details` (the server
-  // is free to keep them next to the store document).
   const tags = (details && details.tags && details.tags.length)
     ? details.tags
     : normalizeTagsList(source.tags);
@@ -498,8 +398,6 @@ export function normalizeGameCard(raw) {
   };
   return {
     appid,
-    // Canonical edition of the work (M5-B payload); the cover prefers it so
-    // both editions of one game show the same header.
     primaryAppid: numOrNull(source.primaryAppid ?? source.primary_appid),
     name: firstString(source.name, details && details.name, appid != null ? `appid ${appid}` : ''),
     iconUrl: /^https?:\/\//i.test(text(source.iconUrl)) ? text(source.iconUrl) : '',
@@ -532,15 +430,6 @@ export function normalizeGameCard(raw) {
   };
 }
 
-/* =========================================================
-   widgets
-   ========================================================= */
-
-/**
- * Profile card («Профиль Steam»): persona, avatar, member since, import date.
- * Returns `null` when the payload carries no profile block — the widget is
- * then hidden instead of showing a nameless card.
- */
 export function profileCardView(profile) {
   if (!profile || typeof profile !== 'object') return null;
   const persona = firstString(profile.personaName, profile.persona, profile.userKey, profile.key);
@@ -580,17 +469,10 @@ export function profileCardView(profile) {
   };
 }
 
-/**
- * Summary-strip metrics. Each entry exists only when its number exists:
- * `{ key, icon, label, value, sub, title }`.
- */
 export function summaryMetrics(summary, { profile = null } = {}) {
   const s = summary && typeof summary === 'object' ? summary : {};
   const present = s.present && typeof s.present === 'object' ? s.present : {};
   const out = [];
-  // Without a Steam key the server still answers, but the library numbers are
-  // unknown rather than zero: printing «0 игр / 0 ч» would be a lie, so the
-  // strip keeps only what does not depend on the library (completion).
   const libraryKnown = s.libraryPartial !== true;
 
   const games = toCount(s.gameCount) || toCount(s.ownedCount);
@@ -687,8 +569,6 @@ export function summaryMetrics(summary, { profile = null } = {}) {
         + (otherType > 0 ? `${fmtInt(otherType)} записей отброшено как DLC/софт/демо.` : ''),
     });
   }
-  // M4: community review score. It is deliberately labelled «Steam», because
-  // Steam has no personal ratings and this must not look like one.
   if (s.reviewScore && (s.reviewScore.avg != null || s.reviewScore.median != null)) {
     const fmtScore = (value) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value);
     const avg = s.reviewScore.avg;
@@ -706,10 +586,6 @@ export function summaryMetrics(summary, { profile = null } = {}) {
   return out;
 }
 
-/**
- * Pareto lane: «топ-10% игр = X% часов». `sharePercent` drives the bar, `rest`
- * is what remains for the long tail. `null` when the payload has no share.
- */
 export function paretoView(summary, { topPercent = 10 } = {}) {
   const s = summary && typeof summary === 'object' ? summary : {};
   const sharePercent = percentNumber(s.top10HoursShare);
@@ -730,10 +606,6 @@ export function paretoView(summary, { topPercent = 10 } = {}) {
   };
 }
 
-/**
- * Top-by-hours rows (bar lane). `totalHours` (the library total) turns each
- * row's tooltip into an honest share of all hours.
- */
 export function topHoursRows(topGames, { limit = 10, totalHours = null } = {}) {
   const list = arr(topGames)
     .map((item) => (item && item.name && item.hours != null ? item : null))
@@ -747,8 +619,6 @@ export function topHoursRows(topGames, { limit = 10, totalHours = null } = {}) {
     return {
       rank: index + 1,
       appid: game.appid,
-      // M6c: a secondary-only work has no appid; its own `workKey` opens the
-      // client-side union card instead of a Steam card.
       workKey: game.workKey ?? game.canonicalWorkKey ?? null,
       secondaryOnly: Boolean(game.secondaryOnly || game.appid == null),
       name: game.name,
@@ -768,40 +638,14 @@ export function topHoursRows(topGames, { limit = 10, totalHours = null } = {}) {
 }
 
 export const RECENT_STRIP_LIMIT = 15;
-/** A launch without 2-week hours still counts as «recently played» this long. */
 export const RECENT_STRIP_WINDOW_DAYS = 30;
 
-/**
- * «Недавно играл» top strip (the films/books «Недавно смотрел» pattern).
- *
- * Cards are the first `limit` games by `rtime_last_played` desc. Recent ones
- * (2-week hours > 0 OR last launch inside `RECENT_STRIP_WINDOW_DAYS`) come
- * first; older launches fill the remaining slots in the same rtime order, so
- * the strip is never half-empty. The payload's `recentlyPlayed` is the primary
- * source; `gamesIndex` is the tolerant fallback (and fills the icon/date for
- * entries the payload trimmed), so an older server that only sends the index
- * still paints an honest strip. `now` is injectable for tests.
- *
- * M5-B editions: two store editions of one game (GTA III vs GTA III
- * re-release, BioShock vs Remastered) are **one canonical work** in every
- * other widget, so they are one card here too. `canonicalWorkKey` from the
- * payload/index is the merge key (fallback: appid, then the index's
- * appid→work map so a payload row without the key still merges); 2-week hours
- * add up across editions. The server's `recentlyPlayed` row is the canonical
- * one (primary edition, aggregated hours) and keeps the card face when both
- * sources describe the same work; the index fills the gaps (icon/date) and
- * wins the face only among its own rows.
- */
 export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STRIP_LIMIT, now = Date.now() } = {}) {
   const index = gamesIndex && typeof gamesIndex === 'object' ? gamesIndex : {};
   const max = Math.max(1, toCount(limit) || RECENT_STRIP_LIMIT);
   const cutoff = Math.floor(toNum(now, Date.now()) / 1000) - RECENT_STRIP_WINDOW_DAYS * 86400;
-  /** merge key → { face fields, hours2wByAppid, hoursTotal, fresh, recent } */
   const rows = new Map();
 
-  // appid → canonical work key, taken from the index once. A payload row that
-  // predates `canonicalWorkKey` (or a test fixture without it) then lands in
-  // the same card as its editions instead of painting the work twice.
   const workByAppid = new Map();
   for (const entry of Object.values(index)) {
     if (!entry || typeof entry !== 'object') continue;
@@ -820,7 +664,6 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     const workKey = firstString(item.canonicalWorkKey, entry.canonicalWorkKey)
       || workByAppid.get(appidKey)
       || '';
-    // Canonical work first: editions of one game share a card (M5-B).
     const key = workKey ? `work:${workKey}` : appidKey;
     const primaryAppid = numOrNull(item.primaryAppid ?? entry.primaryAppid) ?? appid;
     const hours2w = numOrNull(item.hours2w ?? item.playtime_2weeks ?? entry.hours2w);
@@ -832,18 +675,13 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     const rtime = epochSeconds(lastPlayed);
     const fresh = hours2w != null && hours2w > 0;
     const recent = rtime > 0 && rtime >= cutoff;
-    // A never-launched game with no 2-week hours has nothing to say here.
     if (!fresh && rtime <= 0) return;
     const iconUrl = firstString(item.iconUrl, item.icon, entry.iconUrl) || '';
-    // New-schema Steam art: the server resolves the real vertical capsule once
-    // (`verticalCapsule`) and says whether it exists at all
-    // (`verticalCapsuleKnown`). The payload row wins; the index fills it.
     const headerImage = firstString(item.headerImage, entry.headerImage) || '';
     const verticalCapsule = firstString(item.verticalCapsule, entry.verticalCapsule) || '';
     const verticalCapsuleKnown =
       item.verticalCapsuleKnown ?? entry.verticalCapsuleKnown ?? null;
     const iconFallbackUrl = firstString(item.iconFallbackUrl, entry.iconFallbackUrl) || '';
-    // M6c: cross-store facts travel with the card face (GOG badge, own poster).
     const sources = arr(item.sources ?? entry.sources)
       .map((value) => String(value))
       .filter(Boolean);
@@ -868,18 +706,13 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
         hours2wByAppid,
         hoursTotal,
         fresh,
-        // «Недавно» = 2-week hours or a launch inside the window. Older launches
-        // still fill the strip after them (the limit is what keeps it short).
         recent: fresh || recent,
-        // Card-face provenance: `true` for the payload's canonical row.
         fromServer: server,
         faceRtime: rtime,
         faceFresh: fresh,
       });
       return;
     }
-    // Same canonical work (or the payload row re-seen in the index): 2-week
-    // hours are additive per edition and never double-count one appid.
     if (fresh) previous.hours2wByAppid.set(appidKey, hours2w);
     for (const source of sources) {
       if (!previous.sources.includes(source)) previous.sources.push(source);
@@ -897,14 +730,10 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     }
     previous.fresh = previous.fresh || fresh;
     previous.recent = previous.recent || (fresh || recent);
-    // The launch stamp is the work's newest one, whatever the source: the
-    // index knows a launch the trimmed payload row may have missed.
     if (rtime > previous.rtime) {
       previous.rtime = rtime;
       previous.lastPlayed = lastPlayed;
     }
-    // The face (name/appid that opens the card) follows the canonical rule:
-    // server row over index row; inside one source, the newest launch wins.
     const winsFace = previous.fromServer === server
       ? rtime > previous.faceRtime || (rtime === previous.faceRtime && fresh && !previous.faceFresh)
       : server;
@@ -921,8 +750,6 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
       if (verticalCapsuleKnown != null) previous.verticalCapsuleKnown = verticalCapsuleKnown;
       if (iconFallbackUrl) previous.iconFallbackUrl = iconFallbackUrl;
     } else if (!previous.iconUrl && iconUrl) {
-      // The server row may arrive without an icon (trimmed payload): the
-      // index is allowed to fill it without touching the face.
       previous.iconUrl = iconUrl;
     }
   };
@@ -935,8 +762,6 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
     || ((right.hours2w || 0) - (left.hours2w || 0))
     || left.name.localeCompare(right.name);
   const all = [...rows.values()].sort(byRecent);
-  // Recent launches first; when there are fewer than `limit`, the older ones
-  // fill the strip in the same rtime order instead of leaving it half-empty.
   const ordered = [
     ...all.filter((row) => row.recent),
     ...all.filter((row) => !row.recent),
@@ -949,8 +774,6 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
       const hoursTotalText = row.hoursTotal != null ? hoursText(row.hoursTotal) : '';
       return {
         appid: row.appid,
-        // The cover is built from the canonical primary edition's appid; the
-        // card still opens on the face appid.
         primaryAppid: row.primaryAppid ?? row.appid,
         name: row.name,
         hours2w,
@@ -960,15 +783,10 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
         lastPlayedText: shortDayText(row.rtime),
         lastPlayedTitle: lastPlayedInfo(row.lastPlayed).title,
         iconUrl: row.iconUrl,
-        // M7: the store header lets the card ask the proxy for the vertical
-        // capsule in the same (new-schema) asset folder.
         headerImage: row.headerImage,
-        // M7-resolve: the server-resolved poster (and «none known» verdict),
-        // plus the small-capsule fallback for a broken 32×32 icon.
         verticalCapsule: row.verticalCapsule,
         verticalCapsuleKnown: row.verticalCapsuleKnown ?? null,
         iconFallbackUrl: row.iconFallbackUrl,
-        // M6c: the card face can carry a non-Steam poster and a store badge.
         coverUrl: row.coverUrl,
         sources: row.sources,
         fresh,
@@ -997,13 +815,8 @@ export function recentStripView(recentlyPlayed, gamesIndex, { limit = RECENT_STR
   };
 }
 
-/* =========================================================
-   M2: decades / years / genres / enrichment
-   ========================================================= */
-
 const YEAR_NOTE = 'Год релиза игры (release_date из Steam Store / Wikidata), а не год, когда вы в неё играли.';
 
-/** `decades[]` → ranked rows, «год неизвестен» always last. */
 export function decadesView(decades) {
   const list = normalizeDecades(decades).filter((item) => item.count > 0);
   if (!list.length) return null;
@@ -1049,15 +862,6 @@ export function decadesView(decades) {
   };
 }
 
-/**
- * `years[]` → ascending bars; the caller paints them with `renderYearBars`.
- *
- * «Год неизвестен» is a real payload bucket (`{ year: null, unknown: true }`)
- * but not a year on the axis: it is reported apart (`unknownCount`) so the note
- * can say «29 без года» instead of silently dropping those games. A payload
- * with only unknown entries still returns a view — the card shows an honest
- * empty state rather than disappearing.
- */
 export function yearsView(years) {
   const list = normalizeYears(years);
   const unknown = arr(years).filter((item) => item && typeof item === 'object' && item.unknown);
@@ -1091,17 +895,6 @@ export function yearsView(years) {
   };
 }
 
-/**
- * «Количество игр по году выхода»: the permanent count chart.
- *
- * Unlike `yearsView` (which feeds the decade-gated «Годы релиза» card), this
- * view is never narrowed by a decade. It paints every release year in the
- * payload and, when a genre is selected, recomputes the counts from
- * `gamesIndex` — the films year-chart parity (a select, no extra request).
- *
- * «Год неизвестен» stays off the axis: it is reported as `unknown` so the
- * widget can say «и ещё 29 игр без года» instead of inventing a column.
- */
 export function yearCountView(years, gamesIndex, { genre = null, unknownYear = null } = {}) {
   const base = yearsView(years);
   const genreName = text(genre);
@@ -1114,11 +907,7 @@ export function yearCountView(years, gamesIndex, { genre = null, unknownYear = n
     series = local.series;
     unknown = local.unknown;
   } else if (base) {
-    // Server-aggregated counts win when they exist: they are the payload
-    // contract, and a client recount would only mask a backend drift.
     series = base.years.map((item) => ({ year: item.year, count: item.count, hours: item.hours }));
-    // `normalizeGamesPayload` keeps «год неизвестен» in `unknownYear`, so the
-    // normalized `years[]` no longer carries the null-year entry itself.
     unknown = base.unknownCount || toCount(unknownYear && unknownYear.count);
   } else {
     series = local.series;
@@ -1152,16 +941,10 @@ export function yearCountView(years, gamesIndex, { genre = null, unknownYear = n
     filtered,
     genre: filtered ? genreName : null,
     note: parts.join(' · '),
-    // A payload without real years is still shown when games are known:
-    // the card reports «все игры без года» rather than pretending to be empty.
     hasData: series.length > 0 || unknown > 0,
   };
 }
 
-/**
- * Genre options for the year-count filter: `genres[]` is `{ name, count,
- * hours }` (no `key`, unlike films), so the name doubles as the value.
- */
 export function yearCountGenreOptions(genres) {
   return arr(genres)
     .filter((item) => item && typeof item === 'object' && text(item.name) && toCount(item.count) > 0)
@@ -1169,7 +952,6 @@ export function yearCountGenreOptions(genres) {
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
 }
 
-/** «68%» for a share ≥10%, «0,4%» below it, «<0,1%» for a sliver. */
 function sharePercentText(share) {
   const value = percentNumber(share);
   if (value == null) return '—';
@@ -1177,24 +959,8 @@ function sharePercentText(share) {
   return percentText(value / 100, value >= 10 ? 0 : 1);
 }
 
-/** Genres past this many are folded behind «Показать все (N)». */
 export const GENRE_CHART_LIMIT = 12;
 
-/**
- * Genre bar chart: one horizontal bar per genre, length = its share of the
- * library playtime (`hours`, default) or of the genre marks (`count`). Both
- * weights are in the payload, so the toggle is local — no extra request.
- *
- * The bar length *is* the printed share (RPG 68% → 68% of the track), which is
- * what makes the numbers readable: «97 игр · 68% часов» is the count подпись,
- * and the drilldown stays the existing genre modal.
- *
- * The hours share comes from the payload (`genres[].share`, the backend divides
- * by the library total — 3977.2 h of 5862.6 h = 68%). When it is missing the
- * share is derived from `totalHours` (or the sum of the genre hours, the only
- * denominator left). Genres overlap, so the shares do not add up to 100% — the
- * hint says so instead of hiding it.
- */
 export function genreChartView(genres, {
   weight = 'hours',
   limit = GENRE_CHART_LIMIT,
@@ -1231,7 +997,6 @@ export function genreChartView(genres, {
       countText,
       hoursText: itemHours,
       shareText: shareLabel,
-      // Bar length = printed share, so the chart and the label never disagree.
       widthPercent: Math.max(2, Math.min(100, Math.round(share * 1000) / 10)),
       primaryText: mode === 'count' ? gamesText : (itemHours || '—'),
       secondaryText: mode === 'count'
@@ -1257,26 +1022,11 @@ export function genreChartView(genres, {
   };
 }
 
-/* =========================================================
-   M4 widgets: tags, Steam review scores, franchises, DLC
-   ========================================================= */
-
 const TAG_PLURAL = ['тег', 'тега', 'тегов'];
 const FRANCHISE_PLURAL = ['франшиза', 'франшизы', 'франшиз'];
 
-/** Tags past this many are folded behind «Показать все (N)». */
 export const TAG_CHART_LIMIT = 12;
 
-/**
- * Tag bars, the same visual language as the genre chart (U3): bar length is
- * the share of library hours (`hours`), of tag marks (`count`) or of the
- * SteamSpy tag weight (`weight`).
- *
- * `hours`/`count` reuse `genreChartView` — the item shape is identical, so the
- * chart, the fallback denominator and the fold behaviour stay one
- * implementation. Only the wording («тег», not «жанр») and the extra `weight`
- * mode are tags-specific.
- */
 export function tagsChartView(tags, {
   weight = 'hours',
   limit = TAG_CHART_LIMIT,
@@ -1345,18 +1095,12 @@ export function tagsChartView(tags, {
   };
 }
 
-/** Games of one tag from the light `gamesIndex` (case-insensitive). */
 export function gamesByTag(gamesIndex, name) {
   const target = text(name).toLowerCase();
   if (!target) return [];
   return gameRowsFromIndex(gamesIndex, (row) => arr(row.tags).some((tag) => text(tag).toLowerCase() === target));
 }
 
-/**
- * Steam community score distribution (1–9) as donut segments, highest first.
- * The block is explicitly community data: `honestNote` is what the UI prints
- * so the widget is never mistaken for a personal rating.
- */
 export function scoresView(scores, reviewScore = null) {
   const rows = normalizeScores(scores);
   const total = rows.reduce((sum, row) => sum + row.count, 0);
@@ -1398,7 +1142,6 @@ export function scoresView(scores, reviewScore = null) {
   };
 }
 
-/** Games of one review bucket, from the index (`reviewScore` / `reviewDesc`). */
 export function gamesByReviewBucket(gamesIndex, bucket) {
   const target = resolveReviewBucket(bucket);
   if (target == null) return [];
@@ -1408,7 +1151,6 @@ export function gamesByReviewBucket(gamesIndex, bucket) {
   });
 }
 
-/** Franchise ranked list (dedicated endpoint): label + games + hours. */
 export function franchisesView(franchises) {
   const list = normalizeFranchises(franchises)
     .filter((item) => item.gamesCount > 0 || item.hoursSum != null || item.appids.length > 0);
@@ -1451,12 +1193,6 @@ export function franchisesView(franchises) {
   };
 }
 
-/**
- * Games of one franchise. Explicit `appids` are authoritative (the endpoint
- * knows the membership); only when the payload has none does the index's
- * `franchise` label decide — that is the tolerant fallback for an older
- * payload and for the game card.
- */
 export function gamesInFranchise(gamesIndex, franchise) {
   const ref = normalizeFranchiseRef(franchise);
   if (!ref) return [];
@@ -1466,9 +1202,6 @@ export function gamesInFranchise(gamesIndex, franchise) {
   const targetLabel = ref.label.toLowerCase();
   return gameRowsFromIndex(gamesIndex, (row) => {
     if (explicit) {
-      // Explicit membership is authoritative: a Steam row matches by appid, a
-      // secondary-only row by its work key (the merged edition row keeps
-      // `canonicalWorkKey`, which is what `workKeys` names).
       if (row.appid != null && ids.has(Number(row.appid))) return true;
       const rowKeys = [row.workKey, row.canonicalWorkKey].filter(Boolean);
       return rowKeys.some((key) => workKeys.has(key));
@@ -1480,7 +1213,6 @@ export function gamesInFranchise(gamesIndex, franchise) {
   });
 }
 
-/** Response of `/api/games/franchises` (array or `{ franchises: [] }`). */
 export function normalizeFranchisesResponse(raw) {
   return normalizeFranchises(raw);
 }
@@ -1500,16 +1232,11 @@ function progressPart(label, resolved, total, percent) {
     percent: value,
     percentText: value == null ? '' : `${Math.round(value)}%`,
     text: `${label} ${resolvedText}/${totalText}`,
-    // §8.3: a 100% badge is noise — the widget hides that part.
     visible: value == null || value < 100,
     complete: value != null && value >= 100,
   };
 }
 
-/**
- * Enrichment coverage (`summary.metadata`): «детали 312/340», «кредиты 187/340».
- * The widget is the honest answer to «почему жанров меньше, чем игр».
- */
 export function metadataProgressView(metadata) {
   if (!metadata || typeof metadata !== 'object') return null;
   const details = progressPart(
@@ -1546,19 +1273,8 @@ function filterReasonText(reason) {
   return FILTER_REASONS[key] || (key ? `причина: ${key}` : 'причина не сообщена');
 }
 
-/**
- * `meta.filters` → the honest checkbox state + what actually happened.
- *
- * Requested ≠ applied is the whole point: the server may accept
- * `includeFree=0` but still count free games because `details` are not
- * imported yet. The UI says so instead of silently showing the same numbers.
- */
 export function filtersView(filters, { includeFree = true, includeDlc = false } = {}) {
   const block = filters && typeof filters === 'object' ? filters : null;
-  // `requested` in §5.4 is the VALUE of the include flag, not «filter is on»:
-  // includeFree=true means free games are included (no exclusion), includeDlc
-  // =true means DLC are requested. The filter is actually doing something when
-  // the requested value differs from the default (free: on, DLC: off).
   const make = (key, label, requestedFallback, filterOn, onText, offText) => {
     const entry = block && block[key] && typeof block[key] === 'object' ? block[key] : null;
     const requested = entry && entry.requested != null ? entry.requested : requestedFallback;
@@ -1590,8 +1306,6 @@ export function filtersView(filters, { includeFree = true, includeDlc = false } 
     'includeDlc', 'DLC', includeDlc,
     (requested) => requested === true, 'включить', 'исключены',
   );
-  // M5-B «мин. часов»: numeric, always applied once the payload exists, but
-  // the excluded count is printed so the user sees why the totals moved.
   const minHoursRaw =
     block && block.minHours && typeof block.minHours === 'object' ? block.minHours : null;
   let minHours = null;
@@ -1623,7 +1337,6 @@ export function filtersView(filters, { includeFree = true, includeDlc = false } 
     includeDlc: dlc,
     minHours,
     items: minHours ? [free, dlc, minHours] : [free, dlc],
-    // A checkbox may be on/off; `requested` is what the server understood.
     state: { includeFree: free.requested !== false, includeDlc: dlc.requested === true },
     honest,
     note: honest
@@ -1635,15 +1348,10 @@ export function filtersView(filters, { includeFree = true, includeDlc = false } 
   };
 }
 
-/* =========================================================
-   M2: achievements calendar + streaks
-   ========================================================= */
-
 export const CALENDAR_HINT =
   'Календарь по датам разблокировок достижений (unlockTimestamp), а не по игровому времени: '
   + 'Steam не отдаёт сессии и часы по дням. День с достижением ≠ день, когда вы играли.';
 
-/** `achievementDays[]` + `timeline[]` → the calendar widget view. */
 export function calendarView(achievementDays, timeline = []) {
   const days = normalizeAchievementDays(achievementDays);
   if (!days.length) return null;
@@ -1673,7 +1381,6 @@ export function calendarView(achievementDays, timeline = []) {
   };
 }
 
-/** Achievement streak card, with a local fallback from the calendar days. */
 export function achievementStreaksView(streaks, achievementDays = []) {
   const value = normalizeGameStreaks(streaks, normalizeAchievementDays(achievementDays));
   if (!value) return null;
@@ -1699,16 +1406,6 @@ export function achievementStreaksView(streaks, achievementDays = []) {
   };
 }
 
-/* =========================================================
-   M3: personnel
-   ========================================================= */
-
-/**
- * Role order: the developer block first (§7.1), then the people roles by
- * priority. `studio` is kept as an alias: an older server still answers
- * `role=studio` (developers + publishers mixed), and the label stays
- * «Разработчики» — publishers have their own category now.
- */
 export const PERSONNEL_ROLES = [
   {
     key: 'developer',
@@ -1789,11 +1486,6 @@ const PERSON_ROLE_LABELS = {
   'voice actor': 'озвучка',
 };
 
-/**
- * Any role spelling the payload/URL may carry → the UI key. `studio` (the old
- * server key that mixed developers and publishers) maps to `developer`, so the
- * select keeps one entry labelled «Разработчики». Unknown roles return ''.
- */
 export function normalizePersonnelRole(role) {
   const key = text(role).toLowerCase();
   if (!key) return '';
@@ -1846,13 +1538,6 @@ function normalizePersonItem(raw) {
   };
 }
 
-/**
- * `GET /api/games/personnel?role=…` → view model. The endpoint is M3 and may
- * be absent on an M1/M2 server; an empty body is a valid «кредитов нет».
- *
- * `coverage.byRole` is kept: the role select is built from what the payload
- * actually has instead of hard-coding eight categories.
- */
 export function normalizePersonnel(raw, fallbackRole = '') {
   const source = raw && typeof raw === 'object' ? raw : {};
   const items = arr(source.items).map(normalizePersonItem).filter(Boolean);
@@ -1890,12 +1575,6 @@ export function normalizePersonnel(raw, fallbackRole = '') {
   };
 }
 
-/**
- * Role options for the inline select, in `PERSONNEL_ROLES` order: developers
- * first (always), publishers when the payload has studio credits, people roles
- * only when `coverage.byRole` reports at least one game. A payload without
- * `byRole` keeps the full list, so an older server never collapses the select.
- */
 export function personnelRoleOptions(payload) {
   const data = payload && payload.roleLabel && Array.isArray(payload.items)
     ? payload
@@ -1916,7 +1595,6 @@ export function personnelRoleOptions(payload) {
       options.push(role);
     }
   }
-  // The selected role must stay selectable even when its block is empty.
   if (current && !options.some((role) => role.key === current)) {
     const extra = PERSONNEL_ROLES.find((role) => role.key === current);
     if (extra) options.splice(1, 0, extra);
@@ -1924,7 +1602,6 @@ export function personnelRoleOptions(payload) {
   return options.map((role) => ({ key: role.key, label: role.label, hint: role.hint }));
 }
 
-/** «399 разработчиков» — the role-aware plural used by the widget note. */
 export function personnelRoleCountText(count, role) {
   const key = normalizePersonnelRole(role) || PERSONNEL_ROLES[0].key;
   const entry = PERSONNEL_ROLES.find((item) => item.key === key) || PERSONNEL_ROLES[0];
@@ -1968,7 +1645,6 @@ function personRows(items, { weight = 'hours', limit = 0 } = {}) {
   }));
 }
 
-/** Personnel screen rows for one role, sorted by hours (default) or count. */
 export function personnelRows(payload, { weight = 'hours', limit = 0 } = {}) {
   const data = payload && payload.roleLabel && Array.isArray(payload.items)
     ? payload
@@ -1977,7 +1653,6 @@ export function personnelRows(payload, { weight = 'hours', limit = 0 } = {}) {
   return personRows(data.items, { weight, limit });
 }
 
-/** Dashboard studios strip (`stats.studios`), same weights, shorter list. */
 export function studiosView(studios, { weight = 'hours', limit = 8 } = {}) {
   const items = normalizeStudios(studios);
   if (!items.length) return null;
@@ -2004,7 +1679,6 @@ export function studiosView(studios, { weight = 'hours', limit = 8 } = {}) {
   };
 }
 
-/** «кредиты: 55%» — hidden at 100% (§8.3). */
 export function coverageBadge(percent) {
   const value = percentNumber(percent);
   if (value == null) return null;

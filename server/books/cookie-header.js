@@ -1,21 +1,8 @@
 'use strict';
 
-/**
- * Cookie header parsing/validation, shared by the LiveLib scraper (which seeds
- * its anonymous jar from a stored header) and the cookie store.
- *
- * No filesystem or network access on purpose: `server/books/livelib.js` can be
- * required on its own (tests, tooling) without touching the book cache.
- *
- * Security: a header is user input. Every error message describes the *format*
- * problem and never echoes the value, so a rejected paste cannot leak into a
- * log or an API response through an error string.
- */
-
 const MAX_HEADER_LENGTH = 8192;
 const MAX_COOKIES = 80;
 
-// RFC 6265 token grammar for a cookie name.
 const COOKIE_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 class CookieError extends Error {
@@ -26,20 +13,6 @@ class CookieError extends Error {
   }
 }
 
-/**
- * Normalise a user-supplied cookie header into `a=b; c=d`.
- *
- * Accepts:
- *   - `"Cookie: a=b; c=d"` (what DevTools/curl copy gives you),
- *   - `"a=b; c=d"`,
- *   - `{ a: 'b', c: 'd' }` (pairs),
- *   - an array of the above.
- *
- * Rejects (CookieError, code `invalid_cookie_header`):
- *   - control characters (a multi-line paste would otherwise smuggle headers),
- *   - pairs without `=`, empty names, non-token names,
- *   - an empty result, or one longer than MAX_HEADER_LENGTH.
- */
 function normalizeCookieHeader(raw) {
   const parts = [];
   const push = (value) => {
@@ -96,7 +69,6 @@ function normalizeCookieHeader(raw) {
     const name = piece.slice(0, eq).trim();
     const value = piece.slice(eq + 1).trim();
     if (!COOKIE_NAME_RE.test(name)) {
-      // The name locates the format problem; the value is not echoed.
       throw new CookieError(
         'Cookie header: имя cookie содержит недопустимые символы.',
         'invalid_cookie_header'
@@ -116,12 +88,9 @@ function normalizeCookieHeader(raw) {
   return [...pairs.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
 }
 
-/** Split a (normalised or raw) header into a `Map<name, value>`. */
 function parseCookieHeader(header) {
   const jar = new Map();
   if (!header) return jar;
-  // Accept a raw `Cookie: ...` value too: callers seed a jar straight from what
-  // the user pasted, and a stray prefix must not become part of the first name.
   const text = String(header).replace(/^\s*cookie\s*:\s*/i, '');
   for (const chunk of text.split(';')) {
     const piece = chunk.trim();
@@ -133,7 +102,6 @@ function parseCookieHeader(header) {
   return jar;
 }
 
-/** Count pairs without exposing values. */
 function countCookies(header) {
   return parseCookieHeader(header).size;
 }

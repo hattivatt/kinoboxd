@@ -1,31 +1,5 @@
 'use strict';
 
-/*
- * Re-evaluate every automatic TMDB match in cache/index.json.
- *
- * Usage:
- *   node server/rematch.js                 # full run
- *   npm run rematch                        # same
- *   kinoboxd-backfill rematch              # NixOS wrapper
- *   REMATCH_DRY_RUN=1 node server/rematch.js
- *   REMATCH_CONCURRENCY=8 node server/rematch.js
- *
- * Rules:
- *  - manual matches are values like { id, kind } and are NEVER touched;
- *  - integer values are automatic matches and are re-searched;
- *  - false values (known misses) are retried;
- *  - a changed result updates the index atomically; details are fetched for
- *    the new id when they are not in the cache yet;
- *  - transport errors keep the existing value (nothing is written), so a
- *    flaky network never turns a good match into false.
- *
- * The key itself (`normalized title|year`, optionally prefixed with `tv|`)
- * is the only source of the title/year. A lookup into the cached KinoPoisk
- * profiles supplies the localized title and the real media kind, which is
- * important for romanized titles (`Hilreo` -> `Хилер`) and TV entries stored
- * under an unscoped legacy key.
- */
-
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -60,7 +34,6 @@ function parseIndexKey(key) {
   return { title, year, scope };
 }
 
-/** Keys from the cached KinoPoisk profiles: title+year -> localized info. */
 async function loadKpLookup() {
   const lookup = new Map();
   const dir = path.join(cache.CACHE_DIR, 'kp');
@@ -98,8 +71,6 @@ async function loadKpLookup() {
 function lookupInfo(lookup, parsed) {
   const direct = cache.makeKindKey(parsed.title, parsed.year, parsed.scope);
   if (lookup.has(direct)) return lookup.get(direct);
-  // Legacy unscoped TV keys: the source profile knows it is a series even
-  // though the index key has no `tv|` prefix.
   const unscopedTv = cache.makeKindKey(
     parsed.title,
     parsed.year,
@@ -165,18 +136,12 @@ async function resolveEntry(key, value, lookup) {
     return { status: current == null ? 'still-failed' : 'unchanged' };
   }
 
-  // A year-less exact search can return a recent film with the same name
-  // ("Healer" 2025 for a 2014 entry, "Akahige" 1997 for the 1965 classic).
-  // Keep an existing match when it already has a plausible year; for a false
-  // entry simply stay false. Both are reported as `guarded`, not as a change.
   if (next != null && parsed.year) {
     const candidateYear = tmdb.releaseYear(found);
     const delta =
       candidateYear != null ? Math.abs(candidateYear - parsed.year) : null;
     const voteCount = Number(found.vote_count) || 0;
 
-    // Two obscure same-name entries with almost no votes: do not churn a
-    // working match just because the new candidate has one extra vote.
     if (current != null && voteCount < 10) {
       const oldDetails = cache.getDetails(current);
       const oldYear = oldDetails ? tmdb.releaseYear(oldDetails.details) : null;
@@ -201,9 +166,6 @@ async function resolveEntry(key, value, lookup) {
       }
       const oldPlausible =
         oldYear != null && Math.abs(oldYear - parsed.year) <= 2;
-      // Far outside the release window is never an improvement. A 2-year
-      // gap is only tolerated when it replaces an already implausible or
-      // missing entry (festival vs wide release).
       if (hardGuard || current == null || oldPlausible || oldYear == null) {
         return {
           status: 'guarded',
@@ -217,9 +179,6 @@ async function resolveEntry(key, value, lookup) {
   }
 
   if (next == null) {
-    // No confident match. Never downgrade an existing automatic id to false
-    // based only on the title/year key: the id may have come from a
-    // localized search context that the key no longer carries.
     if (current != null) {
       return { status: 'unconfirmed', keep: current };
     }
@@ -236,7 +195,6 @@ async function resolveEntry(key, value, lookup) {
       await cache.saveDetails(next, data);
       detailsFetched = true;
     } catch (err) {
-      // The new id is still valid; a later enrich/backfill can fetch details.
       if (process.env.DEBUG_REMATCH) {
         console.warn(`[rematch] details fetch failed for ${kind} ${next}: ${err.message}`);
       }
@@ -339,7 +297,6 @@ async function runRematch() {
 
   if (!DRY_RUN) {
     cache.flushIndex();
-    // Give the debounced writer a chance to settle before the process exits.
     await sleep(50);
   }
 

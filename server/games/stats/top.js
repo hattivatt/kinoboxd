@@ -1,24 +1,5 @@
 'use strict';
 
-/**
- * Top lists of the games payload: `topGames` (20 heaviest works),
- * `recentlyPlayed` (10), `recently2w` (2-week playtime) and the `backlog`
- * rows (200 names, sorted). A secondary-only work is a row of its own with
- * `appid: null`; a Steam work shows its display total (Steam + GOG + Epic).
- *
- * S1 «распил god-функции»: pure over `chartWorks`/`visibleWorks` and the
- * per-work metadata helpers. The key order of every entry is the payload
- * contract.
- *
- * `recentlyPlayed` (03.11.2026): the strip is "launched lately", and Steam
- * does not always expose a launch timestamp — `GetOwnedGames` can answer
- * `rtime_last_played: 0` on every row of an owner who is clearly playing
- * (verified on steam-76561198203871831: 226 rows with rtime=0, 6 games with
- * two-week hours). A work with **2-week hours > 0 but no rtime** therefore
- * joins the strip on the hours alone; its `lastPlayed` stays `null` — no date
- * is ever invented. Sorting: rtime desc, then two-week minutes desc.
- */
-
 const { RECENT_LIMIT, TOP_LIMIT, BACKLOG_LIMIT } = require('./constants');
 const {
   round1,
@@ -61,9 +42,6 @@ function buildTop(ctx) {
 
   const topGames = byHoursDesc.slice(0, TOP_LIMIT).map((work) => {
     const game = work.primary;
-    // M6c: a work that exists only outside Steam has no appid — the card keeps
-    // `appid: null` and points at its own work key instead of inventing a Steam
-    // identity. `hours` is the display total of the work (Steam + GOG + Epic).
     if (work.secondaryOnly) {
       const entry = work.union;
       return {
@@ -109,15 +87,11 @@ function buildTop(ctx) {
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
     };
-    // M6c: a Steam work that is also owned on GOG/Epic shows the display total
-    // (`hours`) plus the per-source breakdown.
     if (work.union && work.union.sources.length > 1) {
       entry.sources = [...work.union.sources];
       entry.hoursBySource = hoursBySourceOf(work.union);
       entry.hoursSteam = round1((Number(work.union.steamMinutes) || 0) / 60);
     }
-    // B6: the work's own metadata (base version) when the owned row is a
-    // regional SKU without a store page. Additive: `name` stays the edition.
     const canonicalName = workCanonicalName(work);
     if (canonicalName) entry.canonicalName = canonicalName;
     if (work.games.length > 1 || canonicalName) {
@@ -150,16 +124,12 @@ function buildTop(ctx) {
       name: work.primary.name || null,
       hours2w: work.minutes2w ? minutesToHours(work.minutes2w) : 0,
       hoursTotal: round1(work.hours),
-      // `rtime = 0` = "Steam did not expose a launch date", not a date.
       lastPlayed: isoOfSeconds(work.rtime),
       iconUrl: iconUrlOf(work.primary.appid, work.primary.img_icon_url),
       headerImage: headerImageOf(detailOf(details, work.primary.appid)),
       ...artFieldsOf(artOf(art, work.primary.appid)),
       canonicalWorkKey: work.workKey,
       editionCount: work.games.length,
-      // M6c: when the same work is owned outside Steam, the strip card can say
-      // so (a small «GOG» badge) and show per-source hours. Additive: a
-      // Steam-only payload keeps exactly the M1 shape.
       ...(gogUnion && gogUnion.byAppid[String(work.primary.appid)]
         ? {
             sources: gogUnion.byAppid[String(work.primary.appid)].sources,

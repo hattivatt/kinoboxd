@@ -4,13 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const AdmZip = require('adm-zip');
 
-// `HttpError` used to live here. It moved to `server/core/errors.js`; the
-// re-export keeps every existing importer working while they migrate.
 const { HttpError } = require('./core/errors');
-
-/* ------------------------------------------------------------------ */
-/* CSV parsing (RFC4180-ish: quotes, escaped quotes, CRLF, BOM)        */
-/* ------------------------------------------------------------------ */
 
 function parseCsv(text) {
   if (!text) return [];
@@ -47,7 +41,6 @@ function parseCsv(text) {
       row = [];
       field = '';
     } else if (c === '\r') {
-      // swallow, \r\n handled by the \n branch
     } else {
       field += c;
     }
@@ -62,7 +55,6 @@ function parseCsv(text) {
   const out = [];
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
-    // skip fully empty lines
     if (r.length === 1 && r[0].trim() === '') continue;
     const obj = {};
     for (let j = 0; j < headers.length; j++) {
@@ -112,18 +104,12 @@ function validDate(value) {
   return s;
 }
 
-/* ------------------------------------------------------------------ */
-/* ZIP handling                                                        */
-/* ------------------------------------------------------------------ */
-
 function findEntry(entries, fileName) {
   const wanted = fileName.toLowerCase();
   const hits = entries.filter(
     (e) => !e.isDirectory && path.posix.basename(e.entryName).toLowerCase() === wanted
   );
   if (hits.length === 0) return null;
-  // Prefer the shallowest match (Letterboxd puts files at the root, but a
-  // re-zipped folder must work too). Stable for equal depth.
   hits.sort((a, b) => a.entryName.split('/').length - b.entryName.split('/').length);
   return hits[0];
 }
@@ -135,14 +121,6 @@ function readCsvEntry(zip, entries, name) {
   return parseCsv(text);
 }
 
-/* ------------------------------------------------------------------ */
-/* Dataset building                                                    */
-/* ------------------------------------------------------------------ */
-
-/**
- * Parse a Letterboxd export ZIP buffer.
- * Returns { summary, films, events }.
- */
 function parseLetterboxdZip(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new HttpError(400, 'Uploaded file is empty.', 'empty_file');
@@ -170,16 +148,11 @@ function parseLetterboxdZip(buffer) {
     );
   }
 
-  const films = new Map(); // slug -> film record
-  const events = []; // { slug, date, rating: number|null, source }
+  const films = new Map();
+  const events = [];
   const diarySlugs = new Set();
 
-  // Some Letterboxd exports use a per-user short link in diary.csv and the
-  // canonical short link in watched.csv/ratings.csv for the SAME film. Both
-  // end in different slugs (e.g. boxd.it/85jq3H vs boxd.it/29Xu for The
-  // Wizard of Oz). To avoid counting one film twice we merge diary/ratings
-  // rows into an existing film with the same normalized title + year.
-  const titleYear = new Map(); // "title|year" -> slug | null (ambiguous)
+  const titleYear = new Map();
 
   function titleYearKey(title, year) {
     const t = String(title || '').toLowerCase().trim().replace(/\s+/g, ' ');
@@ -202,8 +175,6 @@ function parseLetterboxdZip(buffer) {
     return typeof slug === 'string' ? slug : null;
   }
 
-  // The canonical Letterboxd URI (`https://boxd.it/25Lk`) lives in every CSV
-  // row; it is kept on the film so the dashboard can deep-link back to it.
   function fullUri(rawUri, slug) {
     const value = String(rawUri || '').trim();
     if (/^https?:\/\//i.test(value)) return value;
@@ -237,7 +208,6 @@ function parseLetterboxdZip(buffer) {
     return film;
   }
 
-  // watched.csv -------------------------------------------------------
   let watchedCount = 0;
   for (const row of watchedRows || []) {
     watchedCount++;
@@ -252,12 +222,9 @@ function parseLetterboxdZip(buffer) {
     if (date && (!film.watchedCsvDate || date > film.watchedCsvDate)) {
       film.watchedCsvDate = date;
     }
-    // A watched.csv event is only used for films that have no diary entries.
-    // (resolved after diary.csv is parsed)
     events.push({ slug: film.slug, date, rating: null, rewatch: false, source: 'watched' });
   }
 
-  // ratings.csv -------------------------------------------------------
   for (const row of ratingRows || []) {
     const slug = slugFromUri(getField(row, 'Letterboxd URI'));
     const title = getField(row, 'Name');
@@ -282,7 +249,6 @@ function parseLetterboxdZip(buffer) {
     }
   }
 
-  // diary.csv ---------------------------------------------------------
   for (const row of diaryRows || []) {
     const slug = slugFromUri(getField(row, 'Letterboxd URI'));
     const title = getField(row, 'Name');
@@ -325,7 +291,6 @@ function parseLetterboxdZip(buffer) {
     });
   }
 
-  // watched.csv fallback events for films without diary entries
   const watchedOnlyEvents = events.filter(
     (e) => e.source === 'watched' && !diarySlugs.has(e.slug)
   );
@@ -333,11 +298,6 @@ function parseLetterboxdZip(buffer) {
   events.length = 0;
   events.push(...watchedOnlyEvents, ...diaryEvents);
 
-  // Resolve final ratings and last watched date ------------------------
-  // The watched.csv `Date` is when the film was marked watched (often the
-  // export/import day), not a viewing date. Per the dashboard rule only
-  // diary.csv supplies a real watch date; films without a diary row keep
-  // `null` and the UI treats them as undated instead of inventing a day.
   for (const film of films.values()) {
     film.rating =
       film.diaryRating !== null ? film.diaryRating : film.ratingsRating;
@@ -350,14 +310,11 @@ function parseLetterboxdZip(buffer) {
     delete film.watchedCsvDate;
   }
 
-  // Timeline events for watched-only films get the film rating (if any).
   for (const event of events) {
     if (event.source === 'watched' && event.rating === null) {
       const film = films.get(event.slug);
       if (film && film.rating !== null) event.rating = film.rating;
     }
-    // Attachments and the unit tests address events by film title/year as
-    // well, so keep the denormalized fields on every event.
     const film = films.get(event.slug);
     if (film) {
       event.title = film.title;
@@ -367,12 +324,8 @@ function parseLetterboxdZip(buffer) {
     event.rewatch = Boolean(event.rewatch);
   }
 
-  // Drop events without a usable date (they cannot be placed on timeline)
   const datedEvents = events.filter((e) => e.date);
 
-  // watchlist.csv ------------------------------------------------------
-  // The contract keeps the watchlist as raw archive data for a future UI;
-  // stats never consume it. One entry per Letterboxd URI (last row wins).
   const watchlist = [];
   const watchlistSeen = new Map();
   for (const row of watchlistRows || []) {
@@ -394,8 +347,6 @@ function parseLetterboxdZip(buffer) {
 
   const ratedFilms = [...films.values()].filter((f) => f.rating !== null).length;
 
-  // The displayed period comes from real diary viewings only. watched.csv
-  // carries the import date, which would stretch the period to the export day.
   let dateFrom = null;
   let dateTo = null;
   for (const e of events) {
@@ -437,10 +388,6 @@ function parseLetterboxdZip(buffer) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* In-memory upload store                                              */
-/* ------------------------------------------------------------------ */
-
 const uploads = new Map();
 const MAX_UPLOADS = 30;
 
@@ -451,7 +398,6 @@ function createUpload(dataset) {
     ...dataset,
     createdAt: Date.now(),
   });
-  // Keep memory bounded on a long-running server.
   while (uploads.size > MAX_UPLOADS) {
     const oldest = uploads.keys().next().value;
     uploads.delete(oldest);

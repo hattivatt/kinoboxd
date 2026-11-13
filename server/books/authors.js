@@ -1,47 +1,7 @@
 'use strict';
 
-/**
- * Author identity for the books tab (AGENTS.md §5.2).
- *
- * A LiveLib profile lists authors in the Russian spelling the user saw
- * («Агата Кристи»), while the metadata chain returns the canonical English one
- * («Agatha Christie»). Counting them as two people doubles the authors widget
- * and splits one author's works across two rows.
- *
- * The merge is deliberately conservative — a false merge is worse than a
- * missed one:
- *
- *   1. exact normalized identity (case, «ё», punctuation, diacritics);
- *   2. the Hardcover author id (`hcId` in a details document) when both sides
- *      carry one;
- *   3. a length-aware Levenshtein distance ≤ 2 between the *transliterated*
- *      surnames (ISO-9/GOST table) **plus** a mandatory given-name signal:
- *      - full given names must be within the same distance,
- *      - an abbreviated side (`J. K.`) must have every initial covered by the
- *        full side (`Джон Рональд Руэл` → J. R. R.).
- *      The name check is what kills the known traps: Сьюзан Кинг vs Стивен
- *      Кинг (surname equal, given `syuzan` vs `stiven` = 4), Марджори Ролингс
- *      vs J. K. Rowling (m vs j/k), Шарль де Костер vs G. B. Oster (sharl vs
- *      gb), Георг Эберс vs Giulia Enders (given names far apart).
- *
- * A transliteration never catches an established exonym (Кристи → Christie,
- * Шекспир → Shakespeare, Моэм → Maugham, Лавкрафт → Lovecraft): those need the
- * optional Wikidata bridge in `authors-wikidata.js`, and the persisted map
- * below so a manual/one-off merge survives a rebuild.
- *
- * The result is persisted in `cache-book/authors.json`
- * (`{ schemaVersion, canonical: {normalizedName: displayName}, aliases }`);
- * `canonical` is the durable alias table, `fingerprint` only says which corpus
- * produced it. Manual entries are kept on every save.
- */
-
 const { cleanText } = require('./normalize');
 
-/* ------------------------------------------------------------------ */
-/* Normalisation                                                       */
-/* ------------------------------------------------------------------ */
-
-/** Lowercase, «ё»→«е», strip diacritics and punctuation, collapse spaces. */
 function normalizeAuthorName(name) {
   return cleanText(name)
     .normalize('NFD')
@@ -60,26 +20,19 @@ function hasLatin(value) {
   return /[a-z]/i.test(String(value || ''));
 }
 
-/** Tokens of a normalized name. */
 function tokensOf(name) {
   return normalizeAuthorName(name).split(' ').filter(Boolean);
 }
 
-/** Surname = last token; "Джефф Вандермеер" → "вандермеер". */
 function surnameKey(name) {
   const tokens = tokensOf(name);
   return tokens.length ? tokens[tokens.length - 1] : '';
 }
 
-/** Given-name tokens (everything before the surname). */
 function givenTokens(name) {
   const tokens = tokensOf(name);
   return tokens.slice(0, Math.max(0, tokens.length - 1));
 }
-
-/* ------------------------------------------------------------------ */
-/* Transliteration                                                     */
-/* ------------------------------------------------------------------ */
 
 const TRANSLIT = {
   а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z',
@@ -88,11 +41,6 @@ const TRANSLIT = {
   щ: 'shch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
 };
 
-/**
- * Rough ISO-9/GOST transliteration, then a light phonetic fold so the same
- * sound spelled by two traditions compares equal: `дж`→`j` (Джоан/Joan),
- * `ch`→`k` (Christie/Кристи), `ph`→`f`, `x`→`ks`.
- */
 function translit(value) {
   const text = normalizeAuthorName(value);
   let out = '';
@@ -100,7 +48,6 @@ function translit(value) {
     if (TRANSLIT[char] != null) out += TRANSLIT[char];
     else if (char === ' ') out += ' ';
     else if (/[a-z0-9]/.test(char)) out += char;
-    // Unknown punctuation is already gone in normalizeAuthorName.
   }
   return out
     .replace(/dzh/g, 'j')
@@ -133,12 +80,10 @@ function levenshtein(left, right) {
   return previous[b.length];
 }
 
-/** A short word allows one edit, a longer one two (research: ≤2 length-aware). */
 function maxDistanceFor(value) {
   return String(value || '').length <= 4 ? 1 : 2;
 }
 
-/** `J. K.` → ['j','k']; `Джон` → ['j']; `J.R.R.` → ['j','r','r']. */
 function initialsOfGiven(tokens) {
   const out = [];
   for (const token of tokens) {
@@ -147,8 +92,6 @@ function initialsOfGiven(tokens) {
       out.push(token);
       continue;
     }
-    // A full first name still contributes its initial for the abbreviated
-    // comparison (`Джон` → j).
     out.push(token[0]);
   }
   return out;
@@ -158,11 +101,6 @@ function isAbbreviated(token) {
   return token.length === 1;
 }
 
-/**
- * Do two given-name sequences describe the same person? Full names are
- * compared with the same length-aware distance; an abbreviated side only needs
- * its initials covered by the full side.
- */
 function givenNamesCompatible(left, right) {
   if (!left.length || !right.length) return false;
   const leftShort = left.every(isAbbreviated);
@@ -173,12 +111,8 @@ function givenNamesCompatible(left, right) {
     const short = leftShort && rightShort ? (left.length <= right.length ? leftInitials : rightInitials) : leftShort ? leftInitials : rightInitials;
     const full = leftShort && rightShort ? (left.length <= right.length ? rightInitials : leftInitials) : leftShort ? rightInitials : leftInitials;
     if (leftShort && rightShort) {
-      // Two abbreviated spellings must agree on every initial.
       return short.length === full.length && short.every((initial) => full.includes(initial));
     }
-    // A full name may have fewer initials than the abbreviated form when the
-    // abbreviation adds a middle name: «Джоан Роулинг» ↔ «J. K. Rowling».
-    // The first initial still has to agree, and every shared position too.
     if (short.length > full.length) {
       if (!short.length || !full.length || short[0] !== full[0]) return false;
       return short.slice(0, full.length).every((initial, index) => initial === full[index]);
@@ -188,19 +122,15 @@ function givenNamesCompatible(left, right) {
   const a = left.join(' ');
   const b = right.join(' ');
   if (a === b) return true;
-  // Given names are allowed the full two edits (Джоан/Joanne), only very
-  // short ones are held to one.
   const limit = (a.length <= 3 || b.length <= 3) ? 1 : 2;
   return levenshtein(a, b) <= limit;
 }
 
-/** Transliterated-name compatibility of two Cyrillic/Latin spellings. */
 function namesLookAlike(left, right) {
   const leftSurname = translit(surnameKey(left));
   const rightSurname = translit(surnameKey(right));
   if (!leftSurname || !rightSurname) return false;
   if (leftSurname === rightSurname) {
-    // The surname alone is not enough: the given name must also agree.
     return givenNamesCompatible(
       givenTokens(left).map(translit).filter(Boolean),
       givenTokens(right).map(translit).filter(Boolean)
@@ -214,14 +144,7 @@ function namesLookAlike(left, right) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Grouping                                                            */
-/* ------------------------------------------------------------------ */
-
 function displayPreference(name, stats) {
-  // Canonical English spelling wins when both exist (the metadata chain's
-  // namespace is English), then an author with a Hardcover id, then the most
-  // used spelling.
   const latin = hasLatin(name) && !hasCyrillic(name);
   return [
     latin ? 1 : 0,
@@ -240,13 +163,6 @@ function comparePreference(left, right) {
   return left.name.localeCompare(right.name, 'ru');
 }
 
-/**
- * @param {Array<{name: string, id?: string|null, workId?: string}>} entries
- *        every author occurrence (one per work);
- * @param {{canonical?: object, manual?: object}} [persisted]
- * @returns {{groups: Array, canonicalOf: Map<string,string>, aliases: object,
- *            mergedGroups: number, mergedNames: number}}
- */
 function groupAuthors(entries, persisted = {}) {
   const statsByKey = new Map();
   for (const entry of entries) {
@@ -278,12 +194,10 @@ function groupAuthors(entries, persisted = {}) {
     const left = find(a);
     const right = find(b);
     if (left === right) return;
-    // Keep the lexicographically smaller key as the root for determinism.
     if (left < right) parent.set(right, left);
     else parent.set(left, right);
   };
 
-  // 1. Hardcover author id: same id → same person, whatever the spelling.
   const byId = new Map();
   for (const stats of statsByKey.values()) {
     for (const id of stats.ids) {
@@ -295,8 +209,6 @@ function groupAuthors(entries, persisted = {}) {
     for (let i = 1; i < list.length; i++) union(list[0], list[i]);
   }
 
-  // 2. Persisted alias table (manual edits included): a display name anchors
-  //    every spelling mapped to it.
   const persistedCanonical = persisted && typeof persisted.canonical === 'object' && persisted.canonical
     ? persisted.canonical
     : {};
@@ -317,14 +229,11 @@ function groupAuthors(entries, persisted = {}) {
     if (!statsByKey.has(key)) continue;
     const anchorKey = normalizeAuthorName(display);
     if (!statsByKey.has(anchorKey)) {
-      // The canonical spelling is not in the corpus: keep the mapping for the
-      // output name but no union is possible.
       continue;
     }
     union(key, anchorKey);
   }
 
-  // 3. Transliteration + given-name guard, only across scripts.
   const cyrillic = keys.filter((key) => hasCyrillic(key));
   const latin = keys.filter((key) => hasLatin(key) && !hasCyrillic(key));
   for (const leftKey of cyrillic) {
@@ -366,7 +275,6 @@ function groupAuthors(entries, persisted = {}) {
   return { groups, canonicalOf, aliases, mergedGroups, mergedNames };
 }
 
-/** Fingerprint of the corpus (sort of normalized names) for the cache file. */
 function fingerprintOfNames(names) {
   const list = [...new Set((names || []).map(normalizeAuthorName).filter(Boolean))].sort();
   return list.join('|');

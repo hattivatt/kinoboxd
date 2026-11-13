@@ -1,10 +1,3 @@
-/* Login gate + logout button.
- *
- * main.js owns view switching; this module owns the password form and the
- * topbar "Выйти" button. When a protected request returns 401 auth_required,
- * api.js dispatches `kinoboxd:auth-required` and main.js shows this view.
- */
-
 import { login, logout } from './api.js';
 import { $, clear } from './ui.js';
 
@@ -43,14 +36,12 @@ export function initAuth({ onSuccess, onLoggedOut } = {}) {
 }
 
 export function setAuthUi({ authRequired = false } = {}) {
-  // Every topbar (films, books, games) carries a logout button.
   for (const id of ['logout-btn', 'books-logout-btn', 'games-logout-btn']) {
     const button = $(id);
     if (button) button.hidden = !authRequired;
   }
 }
 
-/** Reset the form before showing the login view. */
 export function prepareLogin({ resetInput = false } = {}) {
   setError('');
   setBusy(false);
@@ -132,7 +123,6 @@ async function handleLogout() {
   try {
     await logout();
   } catch {
-    // A logout failure still means the cookie is unusable for us; show login.
   } finally {
     for (const button of buttons) button.disabled = false;
   }

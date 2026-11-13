@@ -1,37 +1,5 @@
 'use strict';
 
-/**
- * Google Books provider (optional `GB_API_KEY`, anonymous fallback).
- *
- * Lookup order: ISBN -> title+author. Both are read-only GETs against
- * `volumes`. The ISBN path is the precise matcher for a tail that still has an
- * ISBN; the title path is the last net for a Cyrillic tail that has none (the
- * Литрес budget is bounded, so GB answers the rest).
- *
- * Credentials: `GB_API_KEY` (alias `BOOKS_GOOGLE_API_KEY`), dev fallback
- * `config/gbooks-token` — resolved by `server/config.js` and never logged. An
- * anonymous request still works; the key only raises the per-IP quota.
- *
- * Politeness / budget (AGENTS.md):
- *   - `BOOKS_GB_BUDGET` books per run (default 300, one budget unit per book,
- *     whatever the number of HTTP requests inside it);
- *   - `DEFAULT_REQUEST_DELAY_MS` (400 ms) before every request;
- *   - 403/429 trips a 30 min breaker (same rule as Литрес) instead of hammering
- *     the endpoint for every remaining book;
- *   - a network/5xx error is thrown (the resolve job treats it as a deferral:
- *     no negative cache, the book is asked again on the next run).
- *
- * Year semantics: `volumeInfo.publishedDate` is the year of the *edition* the
- * volume record describes, not the work's first publication (a 2016 АСТ reprint
- * of «Дюна» is not 2016). It is returned as `year` only; `firstPublishedYear`
- * stays empty, so the merge can never dress it up as a first-publication claim.
- * The year chart may still use it through the honest legacy `edition` channel.
- *
- * Returned fields: title, authors, publisher, year, categories -> genres,
- * pageCount -> pages, industryIdentifiers -> isbn13/isbn10, imageLinks ->
- * cover, infoLink -> links.pageUrl.
- */
-
 const { fetchJson, defaultSleep, createSourceClient } = require('./http');
 const sources = require('../../core/sources');
 const { detectManga, collectMangaTexts } = require('./manga');
@@ -49,10 +17,6 @@ const { isBreakerOpen, tripBreaker, resetBreaker, createBudget, budgetFromEnv } 
 const YEAR_MIN = -3000;
 const YEAR_MAX = 2100;
 
-/**
- * `&key=…` for the query string, or '' when no key is configured.
- * The value never leaves this function (no logging, no error message).
- */
 function authority() {
   let key = null;
   try {
@@ -63,7 +27,6 @@ function authority() {
   return key ? `&key=${encodeURIComponent(key)}` : '';
 }
 
-/** Log line safe to keep: no URL, no key, only the query title. */
 function maskedLog(message) {
   console.log(`[gbooks] ${message}`);
 }
@@ -89,14 +52,6 @@ function genresOf(categories) {
   return out;
 }
 
-/**
- * Parse `volumeInfo.publishedDate` into a sane year.
- *
- * Google sends `YYYY`, `YYYY-MM` or `YYYY-MM-DD` (and occasionally an ISO
- * timestamp). Ancient works may carry a negative year (`-0500-01-01`), which
- * must survive as -500 instead of being read as +500. Zero/garbage is not a
- * year.
- */
 function yearOf(publishedDate) {
   const text = String(publishedDate == null ? '' : publishedDate).trim();
   if (!text) return null;
@@ -128,9 +83,6 @@ function normalizeVolume(item, query, method, options = {}) {
   const genres = genresOf(volume.categories);
   const title = String(volume.title);
   const authors = (Array.isArray(volume.authors) ? volume.authors : []).map((name) => String(name));
-  // Canonical volume URL first: `infoLink` is country-specific
-  // (books.google.com.vn) and carries the search query (`dq=…`) when the
-  // volume was found by a phrase search.
   const pageUrl = item.id
     ? `https://books.google.com/books?id=${item.id}`
     : volume.canonicalVolumeLink || volume.infoLink || null;
@@ -138,8 +90,6 @@ function normalizeVolume(item, query, method, options = {}) {
   if (method === 'title') {
     const scored = scoreCandidate(query, { title, authors }, { fuzzyAuthor: true, minSim: 0.7 });
     if (!scored) return null;
-    // Same confidence ladder as Литрес: an exact normalized title is a strong
-    // claim, a fuzzy one can never outrank an exact hit or an ISBN match.
     const confidence = scored.exact ? 0.95 : Number((0.68 + scored.score * 0.2).toFixed(2));
     return {
       source: NAME,
@@ -205,12 +155,6 @@ function titleQueryOf(input) {
   return parts.join(' ');
 }
 
-/**
- * Plain phrase query (no `intitle:`/`inauthor:` operators). Google's fielded
- * operators do not index Cyrillic titles at all (probe 29.10.2026: `intitle:`
- * returns 0 for every Russian title tested, while the plain phrase finds the
- * same editions), so a Cyrillic title is searched plain first.
- */
 function plainQueryOf(input) {
   const author = Array.isArray(input.authors) ? input.authors.find(Boolean) : null;
   return [quote(input.title), quote(author)].filter(Boolean).join(' ');
@@ -218,13 +162,6 @@ function plainQueryOf(input) {
 
 const CYRILLIC_TITLE = /[а-яё]/i;
 
-/**
- * Title queries in the order worth spending requests on.
- *
- * Cyrillic: plain only (the fielded operators are dead for Russian titles).
- * Latin: fielded first, plain as the one fallback for an edition that is only
- * indexed under the bare phrase. At most two title requests per book.
- */
 function titleQueriesOf(input) {
   const plain = plainQueryOf(input);
   if (CYRILLIC_TITLE.test(String(input.title || ''))) return plain ? [plain] : [];
@@ -252,8 +189,6 @@ async function search(query, input, method, options) {
       label: `${NAME} ${method}`,
     });
   } catch (err) {
-    // 403 (key/quota blocked) and 429 (quota exhausted) are the same verdict:
-    // stop asking for 30 minutes instead of burning the rest of the run.
     if (Number(err && err.status) === 429 || Number(err && err.status) === 403) tripBreaker();
     throw err;
   }
@@ -269,19 +204,11 @@ async function search(query, input, method, options) {
   return results;
 }
 
-/**
- * @param {{isbn13?:string, isbn10?:string, title?:string, authors?:string[]}} input
- * @returns {Promise<object|null>} normalized work
- */
 async function getWork(input = {}, options = {}) {
   if (isBreakerOpen()) return null;
   const budget = options.budget || null;
-  // One budget unit per book, even when the lookup needs two HTTP requests
-  // (ISBN search + title fallback). Exhausted budget = "not asked", so the
-  // resolve job keeps the book pending instead of writing it off.
   if (budget && typeof budget.take === 'function' && !budget.take()) return null;
   const memo = options.negativeMemo instanceof Map ? options.negativeMemo : null;
-  // One canonical ISBN per lookup: the derived ISBN-10 is not queried twice.
   const isbn = normalizeIsbn(input.isbn13) || normalizeIsbn(input.isbn10);
 
   if (isbn) {
@@ -308,7 +235,6 @@ async function getWork(input = {}, options = {}) {
   return null;
 }
 
-/** Called by resolve: a 403/429 trips the breaker so the rest of the run is skipped. */
 function noteError(error) {
   const status = Number(error && error.status);
   if (status === 403 || status === 429) {

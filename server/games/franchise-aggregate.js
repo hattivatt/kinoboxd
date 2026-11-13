@@ -1,36 +1,5 @@
 'use strict';
 
-/**
- * Franchise aggregation for `GET /api/games/franchises` (ИГРЫ §4.4, §5.1).
- *
- * Bottom-up and pure: it reads the library + `details/<appid>.json` +
- * `links/<appid>.json` and never calls the network. The route owns the lazy
- * kick; this module only says how much is still pending.
- *
- * Two sources, in this order:
- *
- *   1. **Wikidata P179** (`links/<appid>.json`, written by `franchise.js`) —
- *      `source: "wikidata"`, `confidence: "high"`. A game with a WD series is
- *      never re-guessed by the title heuristic.
- *   2. **Title heuristic** — `source: "heuristic"`, `confidence: "low"`. This
- *      is deliberately minimal (the champion of the heuristic is M4-C): a
- *      group is only a franchise when **at least two owned games** share the
- *      same normalised head («Fallout», «Half-Life», «Civilization»), so a
- *      single title can never invent a franchise. False-pair guards from the
- *      spec (`Dark Souls` ≠ `Darkest Dungeon`, `Hitman` ≠ `Hitman's
- *      Bodyguard`) are kept as a blacklist even though exact-head grouping
- *      already separates them.
- *
- * Release years are the store's `details.releaseYear` when present, otherwise
- * the Wikidata `P577` year — that is the whole point of the WD pass: the 21
- * region-locked `success:false` games and the coarse (`Q4 2026`, month-only)
- * store dates get a year from WD when Wikidata knows it. Unknown stays
- * unknown, never 0.
- *
- * Only games are counted (`details.type` absent or `"game"`); DLC/demo/
- * software/video are skipped exactly like `gameCount` in the stats payload.
- */
-
 const gameCache = require('./game-cache');
 const franchise = require('./franchise');
 const {
@@ -51,7 +20,6 @@ const {
 } = require('./franchise/aggregate-games');
 
 function buildFranchiseEntries(games) {
-  // ---- aggregate ----
   const buckets = new Map();
   const touch = (key, meta, game) => {
     if (!buckets.has(key)) {
@@ -119,8 +87,6 @@ function buildFranchiseEntries(games) {
           .slice()
           .sort((a, b) => b.hours - a.hours || a.appid - b.appid)
           .map((game) => game.appid),
-        // M6 follow-up: identity of the secondary-only members (a Steam row is
-        // addressed by `appid`, a GOG/Epic row by its `workKey`).
         workKeys: bucket.games
           .filter((game) => game.workKey)
           .slice()
@@ -159,14 +125,6 @@ function buildFranchiseEntries(games) {
   return { franchises, gamesWithFranchise, bySource };
 }
 
-/**
- * Build the franchise payload for one cached profile.
- *
- * @param {string} profileKey `steam-<steamid64>`
- * @param {{readDetails?:Function, readLinks?:Function, getProfile?:Function,
- *          getLibrary?:Function, now?:Function, ttlMs?:number}} [options]
- * @returns {object|null} null when the profile/library is not cached
- */
 function buildFranchises(profileKey, options = {}) {
   const startedAt = Date.now();
   const parsed = gameCache.parseProfileToken(profileKey);
@@ -176,8 +134,6 @@ function buildFranchises(profileKey, options = {}) {
   const readDetails = options.readDetails || gameCache.getDetails;
   const readLinks = options.readLinks || franchise.readLinks;
   const nowMs = typeof options.now === 'function' ? options.now() : Date.now();
-  // The 90-day links TTL is the same knob the writer uses (`franchise.js`);
-  // without it `links.fresh` and `pending.wikidata` would always say «fresh».
   const ttlMs = options.ttlMs != null && Number.isFinite(Number(options.ttlMs))
     ? Number(options.ttlMs)
     : franchise.ttlMsFromEnv();
@@ -209,8 +165,6 @@ function buildFranchises(profileKey, options = {}) {
     totals: {
       franchises: franchises.length,
       gamesTotal,
-      // M6 follow-up: GOG/Epic-only works are part of `gamesTotal` (they are
-      // owned works of the same owner), reported here as their own number.
       secondaryWorks: secondaryGames,
       gamesInFranchises: franchises.reduce((sum, entry) => sum + entry.gamesCount, 0),
       hoursInFranchises: round1(franchises.reduce((sum, entry) => sum + entry.hoursSum, 0)),
@@ -226,22 +180,13 @@ function buildFranchises(profileKey, options = {}) {
         withFranchise: secondaryWithFranchise,
         pending: secondaryFranchisePending,
       },
-      // A game can have a WD QID but no P179 — that is a real «no franchise»
-      // answer, not a missing one; `links.fresh` is the 90-day cache signal.
       links: { ...linksCoverage, ttlDays: ttlMs ? Math.round(ttlMs / 86400000) : null },
       releaseYears: release,
     },
     pending: {
-      // Games the WD pass has not answered inside the TTL (the route may kick).
       wikidata: pendingWikidata,
-      // B6: `qid: null` rows whose base version is still unknown (the bridge
-      // runs in the same job, so this is part of the same kick decision).
       bridge: bridgePending,
-      // M6 follow-up: secondary-only works whose P179 answer is not cached
-      // yet. The franchise job asks them in the same pass, so this is the
-      // lazy-kick signal for a deploy that happened after the last import.
       secondary: secondaryFranchisePending,
-      // Games with no year from either source.
       releaseYears: release.unknown,
       unavailableDetails: release.unavailableDetails,
       running: false,

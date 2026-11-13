@@ -1,31 +1,5 @@
 'use strict';
 
-/**
- * One HTTP client for every metadata source.
- *
- * Two transports live here and nowhere else:
- *
- *   - `fetchOnce` — the `fetch` path. It is the right one for sources that
- *     need a cookie jar and manual redirect hops (`books/livelib`, `kp`), for
- *     a POST body (`wikidata` SPARQL, `hardcover` GraphQL) and for anything
- *     that is tested by injecting `fetchImpl`. `fetchImpl` is resolved at
- *     CALL time, so a test that replaces `global.fetch` is honoured.
- *   - `nodeRequest` — the `node:http(s)` path. It is the only one that can use
- *     a custom DNS resolver (`lookup`), which Steam needs
- *     (`GAMES_STEAM_DNS_SERVERS`), and it caps the body while streaming. It
- *     reproduces the redirect/limit semantics the games sources had.
- *
- * On top of those, `fetchJson` / `fetchText` / `postJson` add the shared retry
- * policy (bounded retries for 429/5xx, `Retry-After` support). Sources whose
- * retry policy is genuinely different (TMDB's 4 transport retries + 5 rate
- * limit retries, WDQS' 8 attempts, Hardcover's rate gate) keep their own loop
- * but call `fetchOnce`/`nodeRequest`, so no module outside this file opens a
- * socket.
- *
- * Per-source politeness (pause, budget, breaker, TTL) is declared in
- * `server/core/sources.js`; this module only owns one request.
- */
-
 const http = require('http');
 const https = require('https');
 const { URL } = require('url');
@@ -33,11 +7,6 @@ const { URL } = require('url');
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_RETRIES = 2;
 
-/**
- * Resolve a caller timeout. `undefined`/`null` -> the source default; `0` ->
- * no deadline (explicitly requested, e.g. WDQS); a finite non-negative number
- * -> that many ms. Negative/NaN is a misconfiguration and falls back.
- */
 function resolveTimeoutMs(value, fallback = DEFAULT_TIMEOUT_MS) {
   if (value == null) return fallback;
   const ms = Number(value);
@@ -48,7 +17,6 @@ const MAX_RETRY_AFTER_MS = 10000;
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_USER_AGENT = 'kinoboxd/1.0 (metadata)';
 
-/** Transport failure with a stable code and the HTTP status when there was one. */
 class HttpTransportError extends Error {
   constructor(message, code, status, retryAfterMs, cause) {
     super(message);
@@ -88,7 +56,6 @@ function backoffFor(attempt) {
   return BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
 }
 
-/** Default UA only when the caller did not supply one under any casing. */
 function withUserAgent(headers, userAgent) {
   const out = { ...(headers || {}) };
   const has = Object.keys(out).some((name) => name.toLowerCase() === 'user-agent');
@@ -100,18 +67,6 @@ function byteLength(text) {
   return Buffer.byteLength(String(text == null ? '' : text), 'utf8');
 }
 
-/**
- * One `fetch` request. Returns `{ status, headers, body, url, response }`
- * with the body already read as text.
- *
- * Options: `fetchImpl`, `method`, `headers`, `body`, `redirect`
- * (`'follow'` default, `'manual'` returns the 3xx answer), `timeoutMs`,
- * `userAgent`, `maxBytes`, `label`.
- *
- * `timeoutMs` follows the project-wide env convention: `undefined`/`null`
- * means the 15 s default, `0` means "no deadline" (the WDQS book-author bridge
- * waits as long as the endpoint needs), a positive number is that many ms.
- */
 async function fetchOnce(url, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const label = options.label || 'provider';
@@ -142,8 +97,6 @@ async function fetchOnce(url, options = {}) {
     if (typeof response.text === 'function') {
       body = await response.text();
     } else if (typeof response.json === 'function') {
-      // Test doubles in the tree expose `json()` only; normalise them here so
-      // the transport stays the single reader of a response.
       body = JSON.stringify(await response.json());
     } else {
       body = '';
@@ -174,17 +127,6 @@ async function fetchOnce(url, options = {}) {
   };
 }
 
-/**
- * One `node:http(s)` request with streaming body cap and optional manual
- * redirects. Returns the same shape as `fetchOnce`.
- *
- * Options: `method`, `headers`, `body`, `timeoutMs`, `lookup`, `maxBytes`,
- * `followRedirect` (default true), `maxRedirects` (default 0), `label`.
- * `timeoutMs: 0` disables the deadline, like `fetchOnce`.
- *
- * Error codes: `invalid_url`, `network_error`, `timeout`, `response_too_large`,
- * `too_many_redirects`.
- */
 function nodeRequest(target, options = {}) {
   const label = options.label || 'provider';
   const timeoutMs = resolveTimeoutMs(options.timeoutMs);
@@ -258,9 +200,6 @@ function nodeRequest(target, options = {}) {
           if (settled) return;
           size += chunk.length;
           if (size > maxBytes) {
-            // Reject first, then abort without an error argument: passing the
-            // error to `destroy()` makes the same object surface as an
-            // uncaught stream error on some Node versions.
             finishReject(
               new HttpTransportError(`${label} response is larger than ${maxBytes} bytes`, 'response_too_large', status)
             );
@@ -278,9 +217,6 @@ function nodeRequest(target, options = {}) {
           });
         });
         res.on('error', (err) => {
-          // A stream error we raised ourselves (`response_too_large` destroys
-          // the request) must keep its code instead of being re-labelled as a
-          // network failure.
           if (err instanceof HttpTransportError) {
             finishReject(err);
             return;
@@ -314,10 +250,6 @@ function nodeRequest(target, options = {}) {
   });
 }
 
-/**
- * GET a JSON document with bounded retries.
- * @returns {Promise<object>} parsed JSON body
- */
 async function fetchJson(url, options = {}) {
   const sleep = options.sleep || defaultSleep;
   const retries = Number.isInteger(options.retries) ? options.retries : DEFAULT_RETRIES;
@@ -383,10 +315,6 @@ async function fetchJson(url, options = {}) {
   throw lastError || new HttpTransportError(`${label} failed`, 'provider_error');
 }
 
-/**
- * GET a text document (HTML/XML/SPARQL results) with the same retry policy as
- * `fetchJson`. Returns the body as-is.
- */
 async function fetchText(url, options = {}) {
   const sleep = options.sleep || defaultSleep;
   const retries = Number.isInteger(options.retries) ? options.retries : DEFAULT_RETRIES;
@@ -439,10 +367,6 @@ async function fetchText(url, options = {}) {
   throw lastError || new HttpTransportError(`${label} failed`, 'provider_error');
 }
 
-/**
- * POST a JSON document and parse a JSON answer with the retry policy of
- * `fetchJson`.
- */
 async function postJson(url, payload, options = {}) {
   const sleep = options.sleep || defaultSleep;
   const retries = Number.isInteger(options.retries) ? options.retries : DEFAULT_RETRIES;
@@ -511,10 +435,6 @@ async function postJson(url, payload, options = {}) {
   throw lastError || new HttpTransportError(`${label} failed`, 'provider_error');
 }
 
-/**
- * Bind the defaults of one source (`label`, headers, timeouts, injections).
- * Every method still accepts per-call overrides.
- */
 function createHttpClient(defaults = {}) {
   return {
     fetchJson: (url, options = {}) => fetchJson(url, { ...defaults, ...options }),
@@ -526,10 +446,6 @@ function createHttpClient(defaults = {}) {
   };
 }
 
-/**
- * One `fetch` request whose body is read as bytes (art relays, binary
- * downloads). Returns `{ status, headers, buffer, url, response }`.
- */
 async function fetchBinary(url, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const label = options.label || 'provider';
@@ -588,12 +504,6 @@ async function fetchBinary(url, options = {}) {
   };
 }
 
-/**
- * Adapt a `fetchOnce` result to the small `Response` surface the legacy
- * SPARQL clients pass to their callers (`ok`, `status`, `headers`,
- * `text()`, `json()`). Used where a module owns its own retry loop but must
- * stop opening sockets itself.
- */
 function responseFacade(result) {
   return {
     ok: result.status >= 200 && result.status < 300,

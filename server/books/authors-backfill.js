@@ -1,20 +1,5 @@
 'use strict';
 
-/**
- * Author-alias backfill (manual entry point).
- *
- *   node server/books/authors-backfill.js --profile=livelib-Margaret [--wikidata] [--recheck] [--limit=100]
- *
- * Without `--wikidata` it only reports the groups the offline rule (normalise +
- * transliteration + author ids) would merge. With `--wikidata` it runs the same
- * bridge the server now runs on its own (`authors-bridge.js`): the *unresolved*
- * spellings go to WDQS and the result is persisted into `cache-book/authors.json`.
- *
- * Since 28.10.2026 the bridge is DEFAULT-ON in `/api/books/stats`, so this
- * script is a diagnostic/manual tool, not a required deployment step. `--recheck`
- * forgets the "already asked" set and asks for every candidate again.
- */
-
 const bookCache = require('./book-cache');
 const authors = require('./authors');
 const bridge = require('./authors-bridge');
@@ -98,7 +83,6 @@ async function main() {
     return;
   }
 
-  // `--recheck` forgets what was already asked; `--limit` bounds one pass.
   if (options.recheck) {
     for (const key of Object.keys(persisted.wikidata.checked || {})) delete persisted.wikidata.checked[key];
   }

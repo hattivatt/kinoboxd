@@ -8,13 +8,6 @@ const { assertOnlyParams, parseAccountId, parseOwner } = require('./params');
 function register(router, ctx) {
   const { errorProfile } = ctx;
 
-  /* -------------------------- contract -------------------------- */
-
-  /**
-   * The isolated contract for the M6c integration: one entry per Epic game,
-   * with `workKey`/`steamAppId` deliberately `null` (the union is built by
-   * the integration round, not here). `hoursBySource` stays split.
-   */
   router.get('/epic/exported', async (req, res, next) => {
     try {
       assertOnlyParams(req, ['owner', 'accountId'], 'GET /api/games/epic/exported');

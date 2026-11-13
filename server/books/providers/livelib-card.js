@@ -1,18 +1,5 @@
 'use strict';
 
-/**
- * LiveLib card provider — the last, most precise source for Russian editions.
- *
- * The bulk LiveLib pass has no genres/ISBN for every row; the public
- * `/book/{llBookId}` HTML does: `DetailedInfo` rows (ISBN, publisher, year,
- * series, pages, language), a `ShortInfoGenres` block and a JSON-LD `Book`.
- *
- * Politeness: one request per book, 2 s pause, hard per-run budget
- * (`BOOKS_LIVELIB_CARD_BUDGET`, default 300). The budget is NOT persisted: the
- * next run gets a fresh allowance, so a large profile is enriched over several
- * runs without hammering the site in one go.
- */
-
 const cheerio = require('cheerio');
 
 const livelib = require('../livelib');
@@ -23,11 +10,7 @@ const { seriesEntryOf } = require('./series-name');
 const { cleanText, normalizeIsbn, isbn10Of } = require('../normalize');
 
 const NAME = 'livelib-card';
-// The card provider has always used a fixed 2 s; the 1.5-2.5 s random range
-// is the bulk import's pause. `core/sources` keeps both values.
 const DEFAULT_PAUSE_MS = sources.SOURCES.livelib.cardPauseMs;
-// Same LiveLib source row as the bulk importer, but a card-only breaker key and
-// its own budget variable.
 const source = createSourceClient({
   name: NAME,
   source: 'livelib',
@@ -100,9 +83,6 @@ function parseCardHtml(html, input = {}) {
   const $ = cheerio.load(String(html || ''));
   const rows = readDetailRows($);
   const book = readJsonLd($);
-  // Two shapes exist on LiveLib cards: the `ShortInfoGenres` link block and
-  // `td.genre-card` cells on older layouts. Both are cheap to read; neither
-  // replaces the other across the whole site.
   const genreValues = $(
     'section[class*="ShortInfoGenres"] a[href*="/genre/"], td.genre-card, .genre-card'
   )
@@ -155,10 +135,6 @@ function parseCardHtml(html, input = {}) {
   };
 }
 
-/**
- * @param {{llBookId?:string, sourceBookId?:string, title?:string,
- *          authors?:string[], year?:number, coverUrl?:string}} input
- */
 async function getWork(input = {}, options = {}) {
   const bookId = input.llBookId || input.sourceBookId;
   if (!bookId) return null;
@@ -183,8 +159,6 @@ async function getWork(input = {}, options = {}) {
       `card ${bookId}`
     );
   } catch (err) {
-    // DDoS-Guard answers 403 the same way as a real rate limit: stop the whole
-    // run instead of retrying 900+ cards against a blocked IP.
     if (err && (err.code === 'livelib_blocked' || err.code === 'livelib_http_error')) {
       tripBreaker();
     }

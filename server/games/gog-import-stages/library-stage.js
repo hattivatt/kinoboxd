@@ -44,8 +44,6 @@ async function runLibraryStage(job, { tokenApi, tokenDoc, userKey, user }) {
   const library = gogCache.getLibrary(userKey) || previous;
   const products = Array.isArray(library && library.products) ? library.products : [];
   if (!products.length) {
-    // A genuinely empty library is possible, but an empty page set usually
-    // means the token lost access. Keep the snapshot and say so.
     job.warning = job.warning || 'library_empty';
   }
   return { library, products };

@@ -9,15 +9,6 @@ const personnelJobs = require('../personnel/jobs');
 function register(router, ctx) {
   const { deps, storeClient, errorProfile, resolveProfileOrThrow } = ctx;
 
-  /* --------------------------- enrich ------------------------- */
-
-  /**
-   * `POST /api/games/enrich` — fetch metadata for the library of one profile.
-   * Body: `{ profile, force?, phases?, recheckDays? }` (query fallback for
-   * curl). `phases` is `details` | `spy` | `reviews` | `all` (comma-separated
-   * or an array); the default is `all`, i.e. run whatever is missing/stale.
-   * Resumable: the cache is the progress; `force` re-fetches all.
-   */
   router.post('/enrich', (req, res, next) => {
     try {
       const body = req.body && typeof req.body === 'object' ? req.body : {};
@@ -32,7 +23,6 @@ function register(router, ctx) {
             : req.query.phases != null
               ? req.query.phases
               : req.query.phase;
-      // Unknown phase names are a 400 (`invalid_phases`), never a silent no-op.
       const phases = enrichJobs.parsePhases(rawPhases, 'all');
       let recheckDays;
       const rawRecheck = body.recheckDays != null ? body.recheckDays : req.query.recheckDays;
@@ -55,20 +45,14 @@ function register(router, ctx) {
         spyClient: deps.spyClient || undefined,
         reviewsClient: deps.reviewsClient || undefined,
       });
-      // Credits follow the details: the personnel pass waits for this enrich
-      // job (`waitForEnrich`), so the widget gets people without a second
-      // manual step (ИГРЫ §2.4 fix).
       let personnelJob = null;
       if (deps.autoPersonnel !== false) {
         personnelJob = personnelJobs.kickQuietly(scope.parsed.key, {
           ...(deps.personnelOptions || {}),
           waitForEnrich: true,
-          // Explicit «Обогатить» must not be swallowed by the lazy cooldown.
           forceKick: true,
         });
       }
-      // M4-B: franchises/release years follow the same explicit action and
-      // share the WDQS lock with the credits pass.
       let franchiseJob = null;
       if (deps.autoFranchise !== false) {
         franchiseJob = franchiseJobs.kickQuietly(scope.parsed.key, {

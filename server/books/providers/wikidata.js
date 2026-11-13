@@ -1,51 +1,5 @@
 'use strict';
 
-/**
- * Wikidata provider — the year claim for works nobody else dates.
- *
- * Why it exists: Hardcover, Литрес and Open Library answer with an *edition*
- * year for a translated reprint, and none of them knows the work behind it.
- * Wikidata does, and for a Russian library it is the only source that has the
- * Russian title of a foreign work («Убийство в доме викария» → 1930,
- * «Ребекка» → 1938, «Скупой» → 1668). Measured on the live cache: 43 of 97
- * undated Russian titles resolved to an author-verified work with a date.
- *
- * The provider is a *year-only* source. It returns no ISBN, pages, genres or
- * cover, so it must never become the primary result of a resolve; it is asked
- * by `resolve-stages/year-stage.js` and `years-backfill.js`, batched.
- *
- * Contract (`lookupTitles(entries, options)`):
- *   entries  [{ key, title, authors: [names] }]
- *   returns  { byKey: Map<key, result>, asked: Set<key>,
- *              skipped: null|'budget'|'breaker'|'disabled', queries }
- * A key present in `byKey` with a `null` value means «asked, no claim» — an
- * answer. A key absent from `byKey` was never asked (budget/breaker) and must
- * not be written into the negative cache.
- *
- * Matching rules (each one is a measured failure mode):
- *   - the item must be a literary work (`P31` → subclass of `Q7725634`); an
- *     edition item is only usable through its `P629` canonical work, whose date
- *     is the one that counts — otherwise «Одиссея» (1997 translation) is read
- *     as a 1997 work;
- *   - a claim without an author match is only accepted when it is the single
- *     candidate and the title matched exactly: «Бретёр» by Ю. Яковлева must
- *     not become Turgenev's 1847 novella;
- *   - two author-verified candidates are never averaged: the one with more
- *     sitelinks wins, ties fall back to the earliest year (the merge rule);
- *   - `P577` (publication) is preferred over `P571` (inception/composition);
- *     the century/millennium precision and the `composition` kind travel with
- *     the claim, so an ancient text is not dressed up as an exact year.
- *
- * Politeness (measured on WDQS): one batch costs TWO queries — the label
- * search (~2 s for 12 titles) and a `VALUES`-bound follow-up for the canonical
- * works of the matched items (~0.5 s). The obvious single query (a `P629`
- * UNION with the canonical dates inside the label search) times out server-side
- * with HTTP 504 after 60 s, so it is not an option. 1.2 s pause between
- * queries, 3 attempts with backoff, `429`/`502`/`503`/`504` honour
- * `Retry-After`, a failed query trips the 30 min breaker. The per-run budget
- * (`BOOKS_WIKIDATA_BUDGET`, default 300) counts *books*, not queries.
- */
-
 const { fetchOnce, defaultSleep, createSourceClient } = require('./http');
 const sources = require('../../core/sources');
 const { normalizeAuthorName, namesLookAlike } = require('../authors');
@@ -70,20 +24,10 @@ const LITERARY_WORK = 'wd:Q7725634';
 
 const sleepOf = (options) => (typeof options.sleep === 'function' ? options.sleep : defaultSleep);
 
-/**
- * Master switch, shared with the author-alias bridge: `0`/`off` = off.
- *
- * `test/helpers/env.zeroBudgets()` sets `KINOBOXD_BOOKS_WIKIDATA=0`, so a suite
- * that wants an offline process does not have to inject a fake provider.
- */
 function isDisabled() {
   return !wikidataEnabled();
 }
 
-/**
- * Wikibase time value -> integer year (`1930-10-01T00:00:00Z`,
- * `-0800-00-00T00:00:00Z`).
- */
 function coreTimeToYear(value) {
   const text = String(value == null ? '' : value).trim();
   const match = /^([+-]?)(\d+)-/.exec(text);
@@ -93,13 +37,6 @@ function coreTimeToYear(value) {
   return match[1] === '-' ? -year : year;
 }
 
-/**
- * Wikibase precision -> the payload vocabulary.
- *
- * 11/10/9 are day/month/year, 8 a decade, 7 a century, 6 a millennium. A
- * coarser value is stored by Wikibase as the start of its period, which is
- * exactly the number the chart wants («VIII в. до н.э.» -> -800).
- */
 function precisionLabelOf(value) {
   const precision = Number(value);
   if (precision === 11 || precision === 10 || precision === 9) return 'year';
@@ -109,18 +46,6 @@ function precisionLabelOf(value) {
   return null;
 }
 
-/* ------------------------------------------------------------------ */
-/* Queries                                                             */
-/* ------------------------------------------------------------------ */
-
-/**
- * Query 1: the search. Labels are the driving table.
- *
- * The type filter is written as a join (`?item wdt:P31 ?type . ?type wdt:P279*
- * wd:Q7725634`), not as the chained path `wdt:P31/wdt:P279*`: the chained form
- * makes the planner walk the whole literary-work subtree and the server answers
- * 504 after 60 s (measured).
- */
 const SEARCH_QUERY = `
 SELECT ?label ?item ?itemLabel ?author ?authorLabel ?sitelinks
        ?p577 ?p577Prec ?p571 ?p571Prec ?seriesLabel ?ordinal
@@ -149,11 +74,6 @@ WHERE {
 }
 LIMIT 900`;
 
-/**
- * Query 2: are the matched items editions of another work, and when was that
- * work first published? Bound by `VALUES ?item`, so it is a lookup, not a
- * search (~0.5 s regardless of the batch).
- */
 const CANONICAL_QUERY = `
 SELECT ?item ?canonical ?canonicalLabel
        ?canonicalP577 ?canonicalP577Prec ?canonicalP571 ?canonicalP571Prec
@@ -187,14 +107,6 @@ function qidOf(uri) {
   return match ? match[1] : null;
 }
 
-/**
- * Search spellings of one title.
- *
- * LiveLib exports carry the reader's spelling: «Властелин Колец» (capital К),
- * «Убийство в "Восточном экспрессе"» (quotes), «Приключения Алисы в стране
- * чудес ; Сквозь зеркало…» (two books in one row). Wikidata's label is one of
- * the normalised variants, so all of them are asked in the same `VALUES`.
- */
 function titleVariants(title) {
   const raw = String(title == null ? '' : title)
     .replace(/\s+/g, ' ')
@@ -227,12 +139,6 @@ function timeClaim(value, precisionValue) {
   return { year, precision: precisionLabelOf(precisionValue) || 'year' };
 }
 
-/**
- * Normalise both query shapes into one row list.
- *
- * A search row carries the item's own dates and author; a canonical row says
- * «this item is an edition of Q…» and carries the dates of that work.
- */
 function parseResponse(payload) {
   const bindings =
     payload && payload.results && Array.isArray(payload.results.bindings)
@@ -326,10 +232,6 @@ async function sparql(query, options = {}) {
   throw error;
 }
 
-/* ------------------------------------------------------------------ */
-/* Matching                                                            */
-/* ------------------------------------------------------------------ */
-
 function normalizeTitleKey(value) {
   return normalizeAuthorName(value);
 }
@@ -359,14 +261,6 @@ function authorHit(candidateAuthor, authors) {
   });
 }
 
-/**
- * Collapse search rows (+ canonical rows) into candidate works.
- *
- * An item that `P629`-links another work is an edition/translation: only the
- * canonical work may speak, with its own dates. An edition whose canonical
- * work has no date contributes nothing — the print run in hand is not a
- * first-publication claim.
- */
 function candidatesFor(rows, canonicalRows, entry) {
   const canonicalByItem = new Map();
   for (const row of canonicalRows || []) {
@@ -432,10 +326,6 @@ function candidatesFor(rows, canonicalRows, entry) {
 function pickCandidate(candidates) {
   if (!candidates.length) return null;
   const verified = candidates.filter((candidate) => candidate.authorHit);
-  // An author claim that does not match the reader's author is a rejection,
-  // not a missing signal: Wikidata says this work belongs to someone else
-  // («Бретёр» by Turgenev is not the Yakovleva book with the same title).
-  // Only an item with no author claim at all may be accepted implicitly.
   const unowned = candidates.filter((candidate) => !candidate.authorHit && !candidate.hasAuthor);
   const pool = verified.length ? verified : unowned;
   if (!pool.length) return null;
@@ -494,19 +384,6 @@ function toResult(candidate, entry) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Public API                                                          */
-/* ------------------------------------------------------------------ */
-
-/**
- * Ask Wikidata for the first-publication year of a batch of titles.
- *
- * @param {Array<{key:string, title:string, authors?:string[]}>} entries
- * @param {{budget?:object, sleep?:Function, fetchImpl?:Function, batchSize?:number,
- *          pauseMs?:number, onProgress?:Function}} [options]
- * @returns {Promise<{byKey:Map<string, object|null>, asked:Set<string>,
- *                    skipped:null|'budget'|'breaker'|'disabled', queries:number}>}
- */
 async function lookupTitles(entries, options = {}) {
   const list = (Array.isArray(entries) ? entries : []).filter(
     (entry) => entry && entry.key != null && entry.title
@@ -598,12 +475,6 @@ async function lookupTitles(entries, options = {}) {
   return result;
 }
 
-/**
- * Chain-compatible single-book lookup. The resolve chain never calls it (the
- * year is asked by the dedicated stages, batched); it exists so the provider
- * satisfies the registry contract and so `years-backfill --ids` can ask one
- * book through the same code path.
- */
 async function getWork(input = {}, options = {}) {
   const keyOfInput = options.key || 'single';
   const found = await lookupTitles(

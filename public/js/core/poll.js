@@ -1,17 +1,3 @@
-/* One poller for the three tab controllers (U12, P8).
- *
- * `books.js`, `games.js` and `main.js` each had their own
- * `startPolling`/`stopPolling` pair around a `setTimeout` chain. The chains
- * differ in *what* they poll, not in *how*: a sequence guard (stop must
- * invalidate an in-flight tick), a "still on screen?" predicate, and a fixed
- * interval between ticks. That mechanic lives here once.
- *
- * `tick` may return `false` to stop the chain after the current tick (a
- * terminal state such as a failed job); anything else keeps it running.
- * `stop()` bumps the sequence, so an `await` already in flight cannot
- * schedule a new tick.
- */
-
 export function createPoller({
   intervalMs,
   tick,

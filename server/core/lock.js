@@ -1,26 +1,9 @@
 'use strict';
 
-/**
- * Best-effort cross-process file lock.
- *
- * Two callers may walk the same cache: an in-process job (import, enrich,
- * lazy GET) and a separate one-shot process (a backfill script or a systemd
- * timer). A lock file created with `wx` is the shared gate; it needs no
- * daemon, works across processes, and a killed run is recovered by the stale
- * check below (a dead pid, or a holder older than `staleMs`).
- *
- * Best-effort by design: when the lock cannot be taken within `waitMs`, the
- * caller skips this pass instead of corrupting the cache.
- *
- * This is the implementation that `books/resolve-lock.js` and
- * `games/personnel/lock.js` used to carry as a byte-for-byte duplicate.
- */
-
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-/** A pass that has held the lock longer than this is considered dead. */
 const DEFAULT_STALE_MS = 60 * 60 * 1000;
 const DEFAULT_POLL_MS = 1000;
 
@@ -35,22 +18,10 @@ function pidAlive(pid) {
     process.kill(value, 0);
     return true;
   } catch (err) {
-    // EPERM: the process exists but belongs to another user (systemd unit vs
-    // server). Still alive.
     return err && err.code === 'EPERM';
   }
 }
 
-/**
- * Create one named lock bound to `options.path`.
- *
- * @param {object} options
- * @param {string} options.path      absolute lock-file path
- * @param {string} [options.name]    owner label recorded in the file
- * @param {string} [options.owner]   default owner when a call omits it
- * @param {number} [options.staleMs] default stale window
- * @param {number} [options.pollMs]  default poll interval
- */
 function createLock(options = {}) {
   const filePath = options.path;
   if (!filePath) throw new Error('createLock: "path" is required');
@@ -73,7 +44,6 @@ function createLock(options = {}) {
     }
   }
 
-  /** Is the lock held by a live process (and not older than `staleMs`)? */
   function isLocked(callOptions = {}) {
     const now = callOptions.now == null ? Date.now() : Number(callOptions.now);
     const staleMs = Number.isFinite(Number(callOptions.staleMs))
@@ -89,7 +59,6 @@ function createLock(options = {}) {
     return pidAlive(current.pid);
   }
 
-  /** Try to take the lock once: a token on success, `null` when it is busy. */
   function tryAcquire(owner) {
     if (isLocked()) return null;
     const token = `${process.pid}:${Date.now()}:${crypto.randomBytes(6).toString('hex')}`;
@@ -111,7 +80,6 @@ function createLock(options = {}) {
       return token;
     } catch (err) {
       if (err && err.code === 'EEXIST') {
-        // The holder may have died between `isLocked` and `open`.
         if (isLocked()) return null;
         try {
           fs.unlinkSync(filePath);
@@ -120,15 +88,10 @@ function createLock(options = {}) {
         }
         return tryAcquire(owner);
       }
-      // A read-only state dir must not crash the job: the caller treats it busy.
       return null;
     }
   }
 
-  /**
-   * Acquire the lock, polling until `waitMs` runs out.
-   * Returns `{ok, token, waitedMs}`; `ok:false` means the pass must not run.
-   */
   async function acquire(callOptions = {}) {
     const owner = callOptions.owner || defaultOwner;
     const waitMs = Number.isFinite(Number(callOptions.waitMs))
@@ -149,7 +112,6 @@ function createLock(options = {}) {
     }
   }
 
-  /** Release the lock only when this process still owns it. */
   function release(token) {
     if (!token) return false;
     const current = read();
@@ -162,12 +124,10 @@ function createLock(options = {}) {
     }
   }
 
-  /** Test helper: remove the lock file regardless of owner. */
   function clear() {
     try {
       fs.unlinkSync(filePath);
     } catch (err) {
-      /* already gone */
     }
   }
 

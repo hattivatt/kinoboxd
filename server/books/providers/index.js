@@ -1,21 +1,5 @@
 'use strict';
 
-/**
- * Metadata provider registry + normalisation/merge helpers.
- *
- * Normalized result (one book, one provider, later merged):
- *   {
- *     source, sourceId, title, authors: [names], year, publisher,
- *     series: {name, position}|null, genres: [names], pages,
- *     isbn13, isbn10, cover, links: {pageUrl}, language,
- *     confidence: 0..1, match: {method,...}, mangaComics: true|false|null
- *   }
- *
- * Merge rule: the *primary* provider keeps content fields (Hardcover is the
- * canonical work namespace when present), missing pages/cover/year/publisher
- * are filled from the extras; `metadataSources` lists every contributor.
- */
-
 const hardcover = require('./hardcover');
 const litres = require('./litres');
 const googlebooks = require('./googlebooks');
@@ -47,14 +31,6 @@ const REGISTRY = {
   'livelib-card': livelibCard,
 };
 
-/**
- * Provider order for *content* (title, authors, genres, cover).
- *
- * `wikidata` is last on purpose: it is a year-only source (no ISBN, no pages,
- * no genres), so it must never become the primary result of a resolve. The
- * resolve chain never calls it either — `resolve-stages/year-stage.js` and
- * `years-backfill.js` ask it separately, batched, for the year claim only.
- */
 const PRIORITY = ['hardcover', 'litres', 'googlebooks', 'openlibrary', 'wikidata', 'livelib-card'];
 
 function listProviders() {
@@ -69,7 +45,6 @@ function providerNames() {
   return [...PRIORITY];
 }
 
-/** Resolve an explicit provider list (names or modules); default = all. */
 function selectProviders(requested) {
   if (requested == null) return listProviders();
   const names = Array.isArray(requested) ? requested : [requested];
@@ -94,7 +69,6 @@ function firstValue(primary, extras, field) {
   return null;
 }
 
-/** First-publication claim rules live in their own module (see `claim.js`). */
 function firstList(primary, extras, field) {
   if (primary && Array.isArray(primary[field]) && primary[field].length) return [...primary[field]];
   for (const extra of extras) {
@@ -150,7 +124,6 @@ function mergedManga(entries) {
   return null;
 }
 
-/** Union of every provider's detection corpus (subjects/categories/tags/…). */
 function mergedMangaTexts(entries) {
   const out = [];
   for (const entry of entries) {
@@ -162,10 +135,6 @@ function mergedMangaTexts(entries) {
   return out;
 }
 
-/**
- * Merge a primary result with enrichment results (no extra requests; used when
- * a LiveLib card identifies a book that Hardcover/Google/OL also knows).
- */
 function mergeResults(primary, extras = []) {
   if (!primary) return null;
   const others = extras.filter((entry) => entry && entry.source !== primary.source);
@@ -183,14 +152,8 @@ function mergeResults(primary, extras = []) {
   }
   const mangaTexts = mergedMangaTexts([primary, ...others]);
   const genres = firstList(primary, others, 'genres');
-  // A clean primary plus a comics signal in an extra's subject list must not
-  // stay `false`: re-run the detector over the merged corpus.
   const detectedManga = detectManga({ genres, texts: mangaTexts });
   const year = firstValue(primary, others, 'year');
-  // Work-level first publication, not the edition in hand (see
-  // `earliestFirstClaim`): the year chart uses this and nothing else. The
-  // claim travels with its precision and kind so an ancient work can be
-  // rendered as a century instead of a fake exact year.
   const firstClaim = mergedFirstClaim([primary, ...others], year);
   return {
     source: primary.source,
@@ -226,7 +189,6 @@ function mergeResults(primary, extras = []) {
   };
 }
 
-/** Build a cache details document (schema 2) from a merged provider result. */
 function resultToDetails(result, options = {}) {
   if (!result) return null;
   const workId = result.workId || `${result.source}:${result.sourceId}`;
@@ -262,11 +224,6 @@ function resultToDetails(result, options = {}) {
         : Number.isFinite(Number(result.year))
         ? Number(result.year)
         : null,
-    // Work-level first publication (year chart), distinct from the edition
-    // year above. Providers fill it when they know it (Hardcover work release,
-    // Open Library first_publish_year, Литрес date_written_at, Wikidata P577/P571)
-    // together with the precision of that claim and the statement it comes
-    // from; an absent precision means an exact print year.
     firstPublishedYear:
       result.firstPublishedYear == null || result.firstPublishedYear === ''
         ? null
@@ -283,8 +240,6 @@ function resultToDetails(result, options = {}) {
     editionLanguage: result.language || null,
     coverUrl: result.cover || null,
     mangaComics: result.mangaComics == null ? null : Boolean(result.mangaComics),
-    // Flattened text corpus for re-detection at stats-read time. It keeps OL
-    // subjects / HC taggings that never became display `genres`.
     mangaTexts: Array.isArray(result.mangaTexts) ? [...result.mangaTexts] : [],
     metadataSources: Array.isArray(result.metadataSources)
       ? [...result.metadataSources]

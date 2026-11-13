@@ -1,5 +1,3 @@
-/* Persons widget: role switcher, ranked list, batched rendering, filmography modal. */
-
 import {
   $, el, clear, fmtInt, fmtRating, plural, toNum, emptyState, slugTitle,
 } from './ui.js';
@@ -45,10 +43,6 @@ let sorted = [];
 let bound = false;
 let avgCache = new WeakMap();
 let closeModalFn = null;
-
-/* =========================================================
-   init + static bindings
-   ========================================================= */
 
 export function initPersons(nextStats) {
   if (closeModalFn) closeModalFn();
@@ -117,10 +111,6 @@ function bindStatic() {
     });
   }
 }
-
-/* =========================================================
-   data helpers
-   ========================================================= */
 
 function roleList() {
   const raw = stats && stats.persons ? stats.persons[role] : null;
@@ -213,10 +203,6 @@ function avatarEl(name, path, extraClass = 'avatar', size = 'w185') {
   });
   return img;
 }
-
-/* =========================================================
-   list rendering
-   ========================================================= */
 
 function render() {
   const select = $('persons-role');
@@ -330,10 +316,6 @@ function personRow(person, index) {
 
   return row;
 }
-
-/* =========================================================
-   modal
-   ========================================================= */
 
 const REASON_TAGS = {
   voice: 'озвучка',
@@ -534,7 +516,6 @@ function openModal(person) {
   }
 
   if (!films.length) {
-    // Keep the selector reachable even when the list is empty.
     const control = createFilmSortSelect({ scope: PERSON_SORT_SCOPE });
     head.append(control.node);
   }

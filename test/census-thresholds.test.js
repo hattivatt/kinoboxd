@@ -10,25 +10,22 @@ const BIG_FUNCTION_LINES = 300;
 
 const MODULE_ALLOWLIST = {
   'public/js/books.js': 3834,
-  'public/js/games-view.js': 2017,
-  'public/js/games.js': 3465,
-  'public/js/widgets.js': 1971,
+  'public/js/games.js': 3133,
+  'public/js/widgets.js': 1843,
   'public/js/main.js': 1819,
-  'server/games/franchise.js': 1569,
-  'server/books/livelib.js': 1508,
-  'public/js/games-modal.js': 1474,
+  'public/js/games-view.js': 1691,
   'scripts/gen-contracts.js': 1343,
-  'server/kp.js': 1337,
-  'server/books/livelib-file.js': 1284,
+  'server/books/livelib.js': 1256,
+  'server/games/franchise.js': 1230,
+  'public/js/games-modal.js': 1224,
   'server/tmdb.js': 1187,
-  'server/books/import.js': 1008,
-  'server/games/enrich.js': 1005,
-  'server/games/sources/epic.js': 1003,
-  'server/books/hardcover.js': 992,
-  'public/js/modal.js': 982,
+  'server/kp.js': 1159,
+  'server/books/livelib-file.js': 1026,
   'server/books/book-cache.js': 927,
-  'server/wikidata.js': 918,
-  'server/games/steam.js': 876,
+  'public/js/modal.js': 877,
+  'server/games/enrich.js': 841,
+  'server/books/hardcover.js': 827,
+  'server/games/sources/epic.js': 803,
 };
 
 const FUNCTION_ALLOWLIST = {};
@@ -44,7 +41,7 @@ const HELPER_BASELINE = {
   pad2: 2,
 };
 
-const COMMENT_LINES_BASELINE = 14359;
+const COMMENT_LINES_BASELINE = 1780;
 
 const DEAD_MODULE_ALLOWLIST = new Set(['server/core/store.js']);
 
@@ -88,7 +85,7 @@ test('census function lengths calibrate on the two known giants', () => {
   const measured = new Map(
     census.longestFunctions({ minLines: 1 }).map((entry) => [functionKey(entry), entry.length]),
   );
-  assert.equal(measured.get('server/games/epic.js:createClient'), 38, 'epic createClient');
+  assert.equal(measured.get('server/games/epic.js:createClient'), 37, 'epic createClient');
   assert.equal(measured.get('server/books/resolve.js:resolveProfile'), 18, 'books resolveProfile');
 });
 

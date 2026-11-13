@@ -14,12 +14,6 @@ function register(router, ctx) {
     fetch: deps.steamArtFetch || deps.fetch,
   });
 
-  /* ------------------------ game card ------------------------- */
-
-  // Steam art CDN proxy (fix-round 02.11.2026, ИГРЫ §8.2 artwork). The owner's
-  // ISP blocks the Steam CDN in Vietnam; the server relays the public asset.
-  // The upstream URL is built from type/appid/hash, never from client input.
-  // The global `/api` auth gate in `server/index.js` already protects it.
   router.get(
     '/steam-art/:type/:appid',
     (req, res, next) => {
@@ -78,7 +72,6 @@ function register(router, ctx) {
             }
           : null;
       const cached = gameCache.getAchievements(scope.parsed.userKey, appid);
-      // M4: cached tags and review summary (no network, no fabrication).
       const spyDoc = gameCache.getSpy(appid);
       const tags = spyDoc && spyDoc.success && Array.isArray(spyDoc.tags) ? spyDoc.tags : [];
       const reviewDoc = gameCache.getReviews(appid);
@@ -94,11 +87,7 @@ function register(router, ctx) {
               source: 'steam-reviews',
             }
           : null;
-      // M3: cached credits for this appid (no network, no fabrication).
       const personnel = personnelForGame(appid);
-      // M4-B: franchise / release year from links/<appid>.json (written by the
-      // WD pass). `null` when Wikidata has not answered yet — the card says so
-      // instead of pretending the game has no franchise.
       const wdLinks = franchise.readLinks(appid);
       const achievements = cached
         ? {
@@ -131,17 +120,10 @@ function register(router, ctx) {
           ? `https://media.steampowered.com/steamcommunity/public/images/apps/${appid}/${game.img_icon_url}.jpg`
           : null,
         achievements,
-        // M2: store appdetails (null until the enrich job has fetched it).
         details,
-        // M4: SteamSpy tags (top-20, weighted) and the community review grade
-        // (reference only — Steam has no personal 1..10 ratings, ИГРЫ §1.2).
         tags,
         review,
-        // M3: credits for this game from cache-games/personnel/<appid>.json
-        // (studios from details + Wikidata/Moby, people, honest `pending`).
-        // Never a network call — the personnel job fills the cache.
         personnel: personnelForGame(appid),
-        // M4-B: Wikidata series + P577 year (cache-games/links/<appid>.json).
         franchise: wdLinks.franchiseKey
           ? {
               key: wdLinks.franchiseKey,
@@ -171,9 +153,6 @@ function register(router, ctx) {
               ...(details ? [] : ['details']),
               ...(tags.length ? [] : ['tags']),
               ...(review ? [] : ['reviews']),
-              // `personnelForGame` already says whether details/credits are
-              // missing for this appid, so the card never claims a full
-              // payload it does not have (and never lists what is present).
               ...(personnel && Array.isArray(personnel.pending)
                 ? personnel.pending
                 : ['personnel']),

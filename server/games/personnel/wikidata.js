@@ -1,51 +1,5 @@
 'use strict';
 
-/**
- * Wikidata credit provider for games (ИГРЫ-АРХИТЕКТУРА §2.4, §7.2).
- *
- * This module is the *transport* only: it knows how to ask WDQS for the
- * people/companies credited on a set of video games and how to normalise the
- * answer. The *policy* (which games to ask about, when to cache, how the
- * result is merged with Steam studios and Moby credits) lives in
- * `personnel.js`; the personal layer never invents a role, it only forwards
- * `roleSource: 'wikidata'` (ИГРЫ §7.2 «роль показывается только с roleSource»).
- *
- * Properties (the doc's own table, §7.2):
- *
- *   P86  composer          → role `composer`   (high)
- *   P287 designed by       → role `designer`   (high; «неровно», but verified)
- *   P57  director          → role `director`   (high; game director)
- *   P58  screenwriter      → role `writer`     (low: rare/ambiguous for games)
- *   P943 programmer        → role `programmer` (high)
- *   P162 producer          → role `producer`   (high)
- *   P170 creator           → role `creator`    (low: generic)
- *   P178 developer         → studio role `developer`
- *   P123 publisher         → studio role `publisher`
- *
- * There is no stable "artist" property on Wikidata (ИГРЫ §2.4 table: «свойство
- * нестабильно»), so `artist` comes from MobyGames only. Never derive a role
- * from a name — an unmapped property is dropped, not guessed.
- *
- * Politeness (same class as the book Wikidata bridge):
- *   - batches of ≤450 QIDs, one SPARQL query per batch, pause between batches;
- *   - `429`/`403`/`5xx`/network → count a failure; three failures open a
- *     30-minute cooldown (`disabledUntil`) so a blocked WDQS is not hammered;
- *   - while the breaker is half-open (failures > 0) at most one attempt per
- *     minute (`minOutageGapMs`);
- *   - `Retry-After` (seconds or HTTP date) wins when it is longer;
- *   - the cooldown is persisted in `cache-games/state/personnel-wikidata.json`,
- *     so a restart does not reset it. Tests inject `stateStore`/`now`/`fetchImpl`
- *     and never touch the network.
- *
- * Kill switch: `KINOBOXD_GAMES_WD=off`.
- *
- * Steam appids: Wikidata carries `P1733` (Steam application ID), so a game can
- * be resolved without a pre-built `links/<appid>.json`. `creditsForAppids()`
- * does both steps in one query, which is what the live coverage probe and the
- * future `kinoboxd-games-personnel` job use. `personnel.js` prefers the
- * resolved QID from `links/` when it exists (ИГРЫ §4.1: «резолв один раз»).
- */
-
 const gameCache = require('../game-cache');
 const { fetchOnce, responseFacade } = require('../../core/http');
 const sources = require('../../core/sources');
@@ -61,7 +15,6 @@ const USER_AGENT = 'kinoboxd/1.0 (games personnel; https://github.com/hattivatt/
 
 const STATE_PATH = require('path').join(gameCache.STATE_DIR, 'personnel-wikidata.json');
 
-/** Wikidata property → local role (+ confidence, §7.2). */
 const PROPERTY_ROLES = {
   P86: { role: 'composer', confidence: 'high' },
   P287: { role: 'designer', confidence: 'high' },
@@ -72,13 +25,11 @@ const PROPERTY_ROLES = {
   P170: { role: 'creator', confidence: 'low' },
 };
 
-/** Studio properties: `developer` / `publisher` (§2.4, §4.2). */
 const STUDIO_PROPERTIES = {
   P178: 'developer',
   P123: 'publisher',
 };
 
-/** role → confidence, so a person credited twice keeps the stronger signal. */
 const ROLE_CONFIDENCE = new Map();
 for (const info of Object.values(PROPERTY_ROLES)) {
   ROLE_CONFIDENCE.set(info.role, info.confidence);
@@ -97,10 +48,6 @@ function wikidataEnabled() {
   const raw = String(process.env.KINOBOXD_GAMES_WD || '').trim().toLowerCase();
   return !['0', 'off', 'false', 'no'].includes(raw);
 }
-
-/* ------------------------------------------------------------------ */
-/* State (breaker / cooldown)                                          */
-/* ------------------------------------------------------------------ */
 
 function emptyState() {
   return {
@@ -124,7 +71,6 @@ function defaultStateStore() {
       try {
         gameCache.writeJsonAtomicSync(STATE_PATH, { ...emptyState(), ...state });
       } catch (err) {
-        /* best-effort: an unwritable state dir must not hide the real error */
       }
     },
   };
@@ -146,7 +92,6 @@ function maxFailures(options) {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_FAILURES;
 }
 
-/** `Retry-After` is either delta-seconds or an HTTP date. Returns ms or null. */
 function parseRetryAfter(raw, nowMs) {
   if (raw == null) return null;
   const text = String(raw).trim();
@@ -160,10 +105,6 @@ function parseRetryAfter(raw, nowMs) {
   return Math.max(0, at - nowMs);
 }
 
-/* ------------------------------------------------------------------ */
-/* SPARQL                                                              */
-/* ------------------------------------------------------------------ */
-
 function qidValues(qids) {
   return qids
     .map((qid) => String(qid || '').trim())
@@ -173,7 +114,6 @@ function qidValues(qids) {
 }
 
 function appidValues(appids) {
-  // P1733 is an external identifier: its values are strings, not integers.
   return appids
     .map((appid) => String(appid == null ? '' : appid).trim())
     .filter((appid) => /^\d+$/.test(appid))
@@ -200,7 +140,6 @@ const SELECT_TAIL = `  OPTIONAL { ?entity rdfs:label ?label . FILTER(LANG(?label
   OPTIONAL { ?entity wdt:P18 ?image }
 }`;
 
-/** SPARQL for a batch of game QIDs. */
 function creditsQuery(qids) {
   return `SELECT ?game ?kind ?role ?entity ?label ?image WHERE {
   VALUES ?game { ${qidValues(qids)} }
@@ -208,7 +147,6 @@ ${creditBranches()}
 ${SELECT_TAIL}`;
 }
 
-/** SPARQL for a batch of Steam appids: resolves P1733 and credits in one pass. */
 function appidCreditsQuery(appids) {
   return `SELECT ?game ?appid ?kind ?role ?entity ?label ?image WHERE {
   VALUES ?appid { ${appidValues(appids)} }
@@ -224,7 +162,6 @@ function sparql(query, options = {}) {
   }
   const timeoutMs =
     options.timeoutMs == null ? DEFAULT_TIMEOUT_MS : Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS;
-  // POST, not GET: 450 QIDs do not fit an URL (WDQS answers 414 around 8 KB).
   return fetchOnce(options.endpoint || process.env.KINOBOXD_WDQS_ENDPOINT || WDQS, {
     fetchImpl,
     method: 'POST',
@@ -238,10 +175,6 @@ function sparql(query, options = {}) {
     label: 'games-personnel-wikidata',
   }).then(responseFacade);
 }
-
-/* ------------------------------------------------------------------ */
-/* Parsing                                                             */
-/* ------------------------------------------------------------------ */
 
 function lastSegment(value) {
   const text = String(value == null ? '' : value);
@@ -265,7 +198,6 @@ function cleanLabel(value) {
   return String(value == null ? '' : value).replace(/\s+/g, ' ').trim() || null;
 }
 
-/** Folded comparison form; mirrors `personnel.normalizeName` (NFKC, lowercase, ё→е). */
 function foldLabel(value) {
   return String(value == null ? '' : value)
     .normalize('NFKC')
@@ -276,7 +208,6 @@ function foldLabel(value) {
     .trim();
 }
 
-/** `short` is a whole-word prefix/suffix of `long` (never the whole string). */
 function isWordFragment(short, long) {
   const a = foldLabel(short);
   const b = foldLabel(long);
@@ -284,21 +215,6 @@ function isWordFragment(short, long) {
   return b.startsWith(`${a} `) || b.endsWith(` ${a}`);
 }
 
-/**
- * Canonical name of a Wikidata entity (§4.2).
- *
- * `mul` is Wikidata's language-neutral label: by definition the spelling that
- * is valid in every language, so it is the best identity anchor available.
- * Some items carry a truncated English label next to a complete `mul` one —
- * Q3539040 reads «Development Studio» in English while `mul`/ja/it all say
- * «Paradox Development Studio» (round 01.11.2026: the fragment made the same
- * studio appear twice, once as `wd:Q3539040` and once as the Steam
- * `developers[]` string, because the Steam↔Wikidata unification compares
- * normalized names). The `mul` spelling therefore wins when the English label
- * is only a word-fragment (prefix/suffix) of it. A genuinely shorter `mul`
- * («Warner Bros.» vs the English «Warner Bros. Entertainment») never degrades
- * the name: there the English label is the more specific one and stays.
- */
 function canonicalLabel(entry) {
   const en = cleanLabel(entry.nameEn);
   const mul = cleanLabel(entry.nameMul);
@@ -307,22 +223,12 @@ function canonicalLabel(entry) {
   return { name, nameEn: en };
 }
 
-/**
- * Turn a SPARQL results document into `Map<gameKey, credits>`.
- *
- * @param {object} data WDQS JSON (`results.bindings`)
- * @param {{keyBy?: 'qid'|'appid'}} [options] which game column identifies the
- *        document (appid queries also return `?appid`).
- * @returns {Map<string, {qid:string, appid:number|null,
- *          people:Array, studios:Array}>}
- */
 function parseCreditsResponse(data, options = {}) {
   const keyBy = options.keyBy === 'appid' ? 'appid' : 'qid';
   const rows =
     data && data.results && Array.isArray(data.results.bindings) ? data.results.bindings : [];
   const games = new Map();
-  // Intermediate accumulators keep labels from several OPTIONAL rows.
-  const people = new Map(); // `${gameKey}\u0000${qid}` → entry
+  const people = new Map();
   const studios = new Map();
 
   for (const row of rows) {
@@ -368,8 +274,6 @@ function parseCreditsResponse(data, options = {}) {
       else entry.nameOther = entry.nameOther || label;
     }
     if (image && !entry.image) entry.image = image;
-    // P58/P170 are `low` (§7.2: screenwriter is rare for games, P170 is
-    // generic). A person with any `high` property keeps `high`.
     const confidence = ROLE_CONFIDENCE.get(role);
     if (confidence === 'high' || !entry.confidence) {
       entry.confidence = confidence || entry.confidence || 'high';
@@ -393,8 +297,6 @@ function parseCreditsResponse(data, options = {}) {
     };
   };
 
-  // Studios first: the person pass below drops a company that is already a
-  // studio of the same game (e.g. CD Projekt RED credited as P162 producer).
   for (const entry of studios.values()) {
     const studio = finalize(entry, 'wikidata');
     if (studio) games.get(entry.gameKey).studios.push(studio);
@@ -403,19 +305,12 @@ function parseCreditsResponse(data, options = {}) {
     const person = finalize(entry, 'wikidata');
     if (!person) continue;
     const doc = games.get(entry.gameKey);
-    // A company credited as `producer` (P162) is not a person: when the same
-    // QID is already a studio of this game (P178/P123), the studio record wins
-    // (ИГРЫ §7.2: roles come from properties, but a company is never a person).
     if (doc.studios.some((studio) => studio.qid === person.qid)) continue;
     if (person.image) person.image = person.image.replace(/^http:\/\//, 'https://');
     doc.people.push(person);
   }
   return games;
 }
-
-/* ------------------------------------------------------------------ */
-/* Requests with politeness                                            */
-/* ------------------------------------------------------------------ */
 
 function responseError(response, stage) {
   const status = Number(response && response.status) || 0;
@@ -430,26 +325,10 @@ function responseError(response, stage) {
   });
 }
 
-/**
- * Run one SPARQL query per batch and merge the parsed documents.
- *
- * @param {string[]} qids game QIDs (batched here, ≤450 per query)
- * @param {object} [options]
- * @returns {Promise<{credits: Map, queries: number, batches: number,
- *          skipped?: string, disabledUntil?: string|null,
- *          retryAfterMs?: number|null, errors: string[]}>}
- */
 async function fetchCredits(qids, options = {}) {
   return runBatched(qids, (batch) => creditsQuery(batch), 'qid', options);
 }
 
-/**
- * Same as `fetchCredits` but keyed by Steam appid; resolves `P1733` in the
- * same query, so no `links/<appid>.json` is needed.
- *
- * @returns {Promise<{credits: Map<string, object>, queries: number, ...}>}
- *          `credits` keys are appid strings (`"292030"`).
- */
 async function creditsForAppids(appids, options = {}) {
   return runBatched(appids, (batch) => appidCreditsQuery(batch), 'appid', options);
 }
@@ -490,7 +369,6 @@ async function runBatched(values, buildQuery, keyBy, options) {
       return result;
     }
   }
-  // Half-open breaker: at most one attempt per minute while WDQS is failing.
   if (Number(state.failures) > 0 && state.lastAttemptAt) {
     const last = Date.parse(state.lastAttemptAt);
     if (Number.isFinite(last) && nowMs - last < minOutageGapMs(options)) {
@@ -511,7 +389,6 @@ async function runBatched(values, buildQuery, keyBy, options) {
     try {
       store.write(state);
     } catch (err) {
-      /* best-effort */
     }
 
     let response;
@@ -550,9 +427,6 @@ async function runBatched(values, buildQuery, keyBy, options) {
       if (failure) return result;
       continue;
     }
-    // The dispatcher is shared: callers may inject their own parser (the
-    // franchise pass parses P179/P577, not credits) while keeping the exact
-    // same batching, pause and breaker semantics.
     const parse = typeof options.parse === 'function'
       ? options.parse
       : (payload) => parseCreditsResponse(payload, { keyBy });
@@ -566,7 +440,6 @@ async function runBatched(values, buildQuery, keyBy, options) {
     try {
       store.write(state);
     } catch (err) {
-      /* best-effort */
     }
 
     if (pauseMs > 0 && index + 1 < batches.length) await sleep(pauseMs);
@@ -575,10 +448,6 @@ async function runBatched(values, buildQuery, keyBy, options) {
   return result;
 }
 
-/**
- * Record a failed attempt. Returns true when the caller must stop (breaker
- * opened or a hard stop), false when the next batch may still be tried.
- */
 function registerFailure(state, store, options, now, err, result) {
   const nowMs = now();
   state.failures = Number(state.failures || 0) + 1;
@@ -588,8 +457,6 @@ function registerFailure(state, store, options, now, err, result) {
   result.errors.push(state.lastError);
 
   const status = Number(err && err.status) || 0;
-  // 4xx other than 403/429 is a query problem, not an outage: retrying the same
-  // batch is pointless, but it must not disable the provider for everything.
   const outage = status === 0 || status === 403 || status === 429 || status >= 500;
 
   if (state.failures >= maxFailures(options) && outage) {
@@ -599,7 +466,6 @@ function registerFailure(state, store, options, now, err, result) {
     try {
       store.write(state);
     } catch (writeErr) {
-      /* best-effort */
     }
     result.skipped = 'wikidata_disabled';
     return true;
@@ -607,7 +473,6 @@ function registerFailure(state, store, options, now, err, result) {
   try {
     store.write(state);
   } catch (writeErr) {
-    /* best-effort */
   }
   if (status && status !== 403 && status !== 429 && status < 500) return true;
   return false;

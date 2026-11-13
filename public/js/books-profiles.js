@@ -1,30 +1,3 @@
-/* Books profile registry (shared client store) + pure helpers.
- *
- * A *books profile* is one reading account of one service — the user's model
- * (28.10.2026): Hardcover-34748 and LiveLib-Margaret are DIFFERENT profiles,
- * never merged into one statistics payload.
- *
- *   { id, label, sources: [ { source: 'livelib', username } ], savedAt }
- *   { id, label, sources: [ { source: 'hardcover', userId } ], savedAt }
- *
- * The reading events stay on the server (`cache-book/profiles/*`), but which
- * of them belong to "my profile" is decided by the browser. `/api/books/stats`
- * accepts exactly one `profile=` token (`livelib-<username>` or
- * `hardcover-<id>`), so switching profiles changes the request, not the cache.
- *
- * Storage: the shared client registry (./core/profile-store.js — one IndexedDB
- * database, legacy book labels copied over on first run). The active profile id
- * lives in localStorage (`kinoboxd.books.profile.v1`, readable synchronously at
- * boot) with an in-memory fallback for private mode.
- *
- * K6 wrote profiles with two sources (`sources: [livelib, hardcover]`); those
- * legacy records are split into two single-source profiles by `loadRegistry`
- * (Hardcover keeps the id, the second gets a new one and an explicit label).
- *
- * No cookie / token values ever land here: the LiveLib cookie is sent once to
- * the server and only kept by the backend.
- */
-
 import {
   getStore, getActive, setActive, ready as storeReady, storageMode as storeStorageMode,
 } from './core/profile-store.js';
@@ -37,29 +10,19 @@ const SOURCES = ['livelib', 'hardcover'];
 const DOMAIN = 'books';
 const profiles = getStore(DOMAIN);
 
-/* =========================================================
-   pure helpers (unit-tested without a browser)
-   ========================================================= */
-
 function trim(value) {
   return value == null ? '' : String(value).trim();
 }
 
-/** LiveLib reader names: letters/digits/underscore/dot/dash, no spaces. */
 export function isValidLivelibUsername(value) {
   const username = trim(value).replace(/^@/, '');
   return /^[\w.\-]{1,64}$/u.test(username);
 }
 
-/** Hardcover user id is numeric (`me` is not a stable profile key). */
 export function isValidHardcoverUser(value) {
   return /^\d{1,12}$/.test(trim(value));
 }
 
-/**
- * One source entry for a profile. Returns null for an unknown source or an
- * empty/invalid account, so callers can filter `[a, b].map(...).filter(Boolean)`.
- */
 export function normalizeSource(source, value) {
   const key = trim(source).toLowerCase();
   if (!SOURCES.includes(key)) return null;
@@ -81,7 +44,6 @@ export function sourceAccount(profile, source) {
   return trim(source === 'hardcover' ? entry.userId : entry.username);
 }
 
-/** Deduped, validated sources in a stable order (LiveLib → Hardcover). */
 export function profileSources(profile) {
   const list = Array.isArray(profile && profile.sources) ? profile.sources : [];
   const bySource = new Map();
@@ -94,47 +56,32 @@ export function profileSources(profile) {
   return SOURCES.map((source) => bySource.get(source)).filter(Boolean);
 }
 
-/**
- * The one source a profile stands for. Hardcover wins when a legacy record
- * still carries two accounts (the migration keeps it on the original id); for
- * every record written by this build the array already has length 1.
- */
 export function primarySource(profile) {
   const list = profileSources(profile);
   if (!list.length) return null;
   return list.find((entry) => entry.source === 'hardcover') || list[0];
 }
 
-/** `/api/books/stats?profile=` value: ONE token (`livelib-Margaret`). */
 export function profileKey(profile) {
   const entry = primarySource(profile);
   if (!entry) return '';
   return entry.source === 'livelib' ? `livelib-${entry.username}` : `hardcover-${entry.userId}`;
 }
 
-/** @deprecated alias of `profileKey`, kept for the switcher/tests. */
 export function profileKeys(profile) {
   const key = profileKey(profile);
   return key ? [key] : [];
 }
 
-/** @deprecated alias of `profileKey`: the API takes one profile, not a CSV. */
 export function profileQuery(profile) {
   return profileKey(profile);
 }
 
-/** Exactly one source name ('' when the profile carries nothing). */
 export function profileSourceNames(profile) {
   const entry = primarySource(profile);
   return entry ? [entry.source] : [];
 }
 
-/**
- * Sources that the server actually scoped a stats payload to
- * (`payload.sources.profiles.selected`, e.g. `["livelib-Margaret"]`).
- * Returns [] when the payload carries no scope (legacy server) so callers can
- * fall back to `connected`.
- */
 export function scopeSourceNames(profilesBlock) {
   const list = profilesBlock && Array.isArray(profilesBlock.selected)
     ? profilesBlock.selected
@@ -147,7 +94,6 @@ export function scopeSourceNames(profilesBlock) {
   return names;
 }
 
-/** Human summary for the switcher: «LiveLib @Margaret» / «Hardcover 34748». */
 export function profileSummary(profile) {
   const entry = primarySource(profile);
   if (!entry) return '';
@@ -156,11 +102,6 @@ export function profileSummary(profile) {
     : `Hardcover ${entry.userId}`;
 }
 
-/**
- * Set (or replace) the profile's source. A profile is one source, so this
- * resets `sources` to that single entry: importing a second service creates a
- * second profile, never a union.
- */
 export function withSource(profile, source, value) {
   const entry = normalizeSource(source, value);
   if (!entry) return profile;
@@ -182,11 +123,6 @@ function fallbackId() {
   return `bk:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/**
- * Canonical record. `label` falls back to the accounts it carries (never to a
- * hardcoded 34748/Margaret), sources are deduped per source and ordered
- * LiveLib → Hardcover to keep the request URL stable.
- */
 export function normalizeProfile(input) {
   const raw = input && typeof input === 'object' ? input : {};
   const record = {
@@ -201,16 +137,6 @@ export function normalizeProfile(input) {
   return record;
 }
 
-/**
- * Server-side profiles → local profiles the user can adopt with one click.
- * Used when this browser has no local profiles but the server still has
- * imported source caches (old install, cleared localStorage).
- *
- * One server profile = one local profile (one source + one account), so this
- * returns a LIST: adopting both Hardcover and LiveLib creates two switcher
- * entries, never a union. When several accounts of a source exist, the latest
- * import wins per source.
- */
 export function adoptServerProfiles(serverProfiles) {
   const rows = (Array.isArray(serverProfiles) ? serverProfiles : [])
     .map((item, index) => ({ item, index }))
@@ -236,15 +162,6 @@ export function adoptServerProfiles(serverProfiles) {
   ));
 }
 
-/**
- * K6 profiles carried two sources in one record. Split such a record into
- * single-source profiles: Hardcover keeps the original id (it was the primary
- * source of the union model), the other one gets a fresh id. A custom user
- * label survives on the primary record; the split-off record is named after
- * its account («LiveLib Margaret», «Hardcover 34748»).
- *
- * Pure: returns records to save, the caller persists them.
- */
 export function splitMultiSourceProfile(profile) {
   const entries = profileSources(profile);
   if (entries.length === 0) return { records: [], unchanged: true };
@@ -252,8 +169,6 @@ export function splitMultiSourceProfile(profile) {
 
   const primaryEntry = entries.find((entry) => entry.source === 'hardcover') || entries[0];
   const oldLabel = trim(profile && profile.label);
-  // K6's autoLabel joined the accounts as "@Margaret + 34748"; a label equal
-  // to that (or to the single-source auto label) is not a user's name.
   const legacyAuto = entries
     .map((entry) => (entry.source === 'livelib' ? `@${entry.username}` : entry.userId))
     .join(' + ');
@@ -272,23 +187,10 @@ export function splitMultiSourceProfile(profile) {
       savedAt: Number(profile && profile.savedAt) || Date.now(),
     });
   });
-  // Primary first so callers can rely on records[0].
   records.sort((a, b) => (a.id === trim(profile && profile.id) ? -1 : 1));
   return { records, unchanged: false, primaryId: records[0].id };
 }
 
-/**
- * First-run migration. Old builds kept the accounts in
- * localStorage (`kinoboxd.books.accounts.v1`) and pre-filled 34748/Margaret in
- * the HTML. Only *actually remembered* accounts are migrated — no defaults are
- * invented. Returns a profile or null.
- */
-/**
- * First-run migration from the very old builds that kept accounts in
- * localStorage (`kinoboxd.books.accounts.v1`). Only *actually remembered*
- * accounts are migrated — no defaults are invented — and each account becomes
- * its own single-source profile. Returns an array (possibly empty).
- */
 export function migrateLegacyAccounts(accounts) {
   if (!accounts || typeof accounts !== 'object') return [];
   const sources = [];
@@ -302,10 +204,6 @@ export function migrateLegacyAccounts(accounts) {
   }));
 }
 
-/**
- * Tolerant 403 detection for the LiveLib anti-bot block. Accepts an ApiError,
- * a job status object or a plain string (job.error / status.error).
- */
 export function isLivelibBlocked(value) {
   if (!value) return false;
   const codeBlocked = (code) => {
@@ -336,16 +234,10 @@ export function isLivelibBlocked(value) {
   return isLivelibBlocked(trim(value.message || value.error));
 }
 
-/**
- * Accept a pasted `Cookie: __ddg1=...; ...` header.
- * Strips the optional «Cookie:» prefix, collapses line breaks into `; ` and
- * rejects values that cannot be a cookie header. Never logs the value.
- */
 export function sanitizeCookieHeader(raw) {
   let value = trim(raw);
   if (!value) return '';
   value = value.replace(/^cookie\s*:\s*/i, '');
-  // A pasted header is often wrapped over several lines: fold it into one.
   value = value.replace(/[\r\n\t]+/g, ' ');
   value = value.replace(/\s{2,}/g, ' ');
   value = value.replace(/;\s*;+/g, ';');
@@ -353,7 +245,6 @@ export function sanitizeCookieHeader(raw) {
   value = value.trim().replace(/[;\s]+$/, '');
   if (!value || !value.includes('=')) return '';
   if (value.length > 8000) return '';
-  // A header is not JSON and not a URL; reject accidental paste of the page.
   if (/^[[{<]/.test(value) || /\s[<>]/.test(value)) return '';
   return value;
 }
@@ -361,10 +252,6 @@ export function sanitizeCookieHeader(raw) {
 export function looksLikeCookieHeader(raw) {
   return Boolean(sanitizeCookieHeader(raw));
 }
-
-/* =========================================================
-   registry (shared client store; IndexedDB, memory fallback)
-   ========================================================= */
 
 export async function ready() {
   return storeReady();
@@ -419,10 +306,6 @@ export async function removeProfile(id) {
   return true;
 }
 
-/* =========================================================
-   active profile id (localStorage; per browser)
-   ========================================================= */
-
 export function getActiveId() {
   return getActive(DOMAIN);
 }
@@ -431,33 +314,26 @@ export function setActiveId(id) {
   return setActive(DOMAIN, id);
 }
 
-/** Split legacy two-source records into single-source profiles. */
 async function migrateMultiSourceRecords(records) {
   const multi = records.filter((profile) => profileSources(profile).length > 1);
   if (!multi.length) return false;
   for (const record of multi) {
     const { records } = splitMultiSourceProfile(record);
     for (const next of records) {
-      // Keep the original id on the primary record; the split-off one is new.
       await saveProfile(next, { keepId: next.id });
     }
   }
   return true;
 }
 
-/** Local registry snapshot used by the UI: { profiles, active }. */
 export async function loadRegistry() {
   let list = await listProfiles();
-  // K6 wrote union profiles (livelib + hardcover in one record). The single-
-  // profile contract splits them once, on first load after the upgrade.
   if (await migrateMultiSourceRecords(list)) {
     list = await listProfiles();
   }
   const wanted = getActiveId();
   const active = list.find((profile) => profile.id === wanted) || null;
   if (!active && list.length) {
-    // Never resurrect a deleted profile id: keep "no active profile" honest
-    // instead of silently picking someone else's data.
     setActiveId(null);
   }
   return { profiles: list, active };

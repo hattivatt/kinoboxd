@@ -1,62 +1,13 @@
 'use strict';
 
-/**
- * Collection / omnibus titles -> separate works (S9 heuristic).
- *
- * Ported verbatim from `hc-migrate/lib/segment.js` (the reference
- * implementation, `СБОРНИКИ-ЭВРИСТИКА.md`). LiveLib carries an
- * anthology/omnibus row as ONE record whose title concatenates the publisher's
- * catalogue line, the volume marker and the actual works:
- *
- *   «Американская фантастика. Комплект из 14 томов. Том 8. Планета изгнания.
- *    Слово для «леса» и «мира» одно. Рассказы (сборник)»
- *
- * The row is unmatchable as a whole while each work inside is a normal book.
- * The module does exactly two things:
- *
- *   1. `parseCollectionTitle()` — a *conservative* splitter: split on `. `
- *      (period + space) only, drop publisher/volume/qualifier junk, detect the
- *      catalogue line, and return `works` only when at least TWO real works
- *      remain. One work after junk removal is an ordinary book (e.g. «Кафе
- *      "Таро". Том 4») and is left alone. A row is only split when it carries a
- *      structural marker (`editionMarker || qualifier || tail_genre`, §2.3).
- *   2. `segmentEventsOf()` — per-work synthetic events for the resolve chain
- *      and the stats payload. The parent record stays the host row: its title,
- *      its keys and its identity are never rewritten (§5.1/§5.2 of the spec).
- *
- * Boundaries (§6 of `СБОРНИКИ-ЭВРИСТИКА.md`, not negotiable):
- *   - no marker -> one book, even when the title contains `. `;
- *   - a volume marker in the middle with <= 1 content segment after it -> one
- *     book (the subtitle of that volume);
- *   - a segment without an author is never searched (no blind title search):
- *     the provider author gate is what stops false positives;
- *   - the anthology's rating is NOT spread over its works (`rating: null`);
- *   - the date is inherited from the parent (month precision included);
- *   - the catalogue line is not a work (`catalogSeries`, never in `works`).
- */
-
 const crypto = require('crypto');
 
 const { cleanText, normalizeTitle } = require('./normalize');
 const { namesLookAlike } = require('./authors');
 
-/** Resolve-link confidence that counts as a confirmed segment (high). */
 const SEGMENT_HIGH_SCORE = 0.9;
-/** `medium` links (fuzzy title+author, 0.7..0.9) need an explicit opt-in. */
 const SEGMENT_MEDIUM_SCORE = 0.7;
 
-/* ------------------------------------------------------------------ */
-/* Title splitting                                                     */
-/* ------------------------------------------------------------------ */
-
-/**
- * Split a raw title on `. ` only.
- *
- * Deliberately NOT a regex split: `Р.И.К.` / `Дж. Р. Р. Толкин` / `Eyeshield 21,
- * Vol. 2` must survive. A period is a separator when it is followed by
- * whitespace and is not the period of an initial (`Дж.`, `Р.`) or of a known
- * abbreviation (`Vol.`, `т.`, `г.`).
- */
 const NO_SPLIT_TOKENS = new Set([
   'vol', 'volume', 'tome', 'tom', 'part', 'book', 'band', 'no',
   'т', 'тт', 'кн', 'г', 'гг', 'стр', 'им', 'др', 'пр',
@@ -75,7 +26,6 @@ function splitTitleSegments(rawTitle) {
     const candidate = text.slice(start, index).trim();
     const words = candidate.split(/\s+/).filter(Boolean);
     const lastWord = words.length ? words[words.length - 1] : '';
-    // Initial: `Дж.`, `Р.` — a one-letter word, or a bare `Дж`-style digraph.
     if (/^\p{Lu}$/u.test(lastWord)) continue;
     if (words.length === 1 && lastWord.length <= 2 && /^\p{Lu}\p{Ll}?$/u.test(lastWord)) continue;
     if (NO_SPLIT_TOKENS.has(lastWord.toLowerCase())) continue;
@@ -109,10 +59,8 @@ const JUNK_RES = [
   /^\(?сборник[^)]*\)?$/i,
 ];
 
-/** Segments that are just a genre word are junk only in the trailing position. */
 const TAIL_GENRE_RE = /^(?:рассказы|повести|стихотворения|сказки|пьесы|эссе)$/i;
 
-/** «Том 8», «Книга 2», «В четырёх томах», «Комплект из 14 томов». */
 function isEditionMarker(segmentText) {
   const text = cleanText(segmentText);
   if (!text) return false;
@@ -146,20 +94,11 @@ function classifySegment(segment) {
     body,
     kind: junkReasons.length ? 'junk' : 'content',
     junkReasons,
-    // A trailing «(сборник)» is edition metadata; the body stays a work title.
     qualifier: Boolean(qualifier),
     editionMarker: isEditionMarker(body),
   };
 }
 
-/**
- * Frequency of the first content segment across many raw titles. The catalogue
- * line («Наруто», «Кафе "Таро"», «Библиотека современной фантастики») repeats at
- * the head of several rows; a one-off first segment is just the first work.
- *
- * @param {string[]} rawTitles
- * @returns {Map<string, number>} normalized first segment -> count
- */
 function firstSegmentCounts(rawTitles) {
   const counts = new Map();
   for (const title of rawTitles || []) {
@@ -173,12 +112,6 @@ function firstSegmentCounts(rawTitles) {
   return counts;
 }
 
-/**
- * Parse one raw title into a possible multi-work collection.
- *
- * @param {string} rawTitle
- * @param {{firstCounts?: Map<string,number>|null, catalogMin?: number}} [options]
- */
 function parseCollectionTitle(rawTitle, { firstCounts = null, catalogMin = 3 } = {}) {
   const raw = cleanText(rawTitle);
   const rawSegments = splitTitleSegments(raw);
@@ -200,10 +133,6 @@ function parseCollectionTitle(rawTitle, { firstCounts = null, catalogMin = 3 } =
 
   if (!content.length) return result([], null);
 
-  // Multi-work splitting needs structural evidence that the row really is an
-  // anthology/omnibus: a volume/edition marker or a collection qualifier.
-  // Without it «Дьюи. Кот из библиотеки, который потряс весь мир» or
-  // «Геймдизайн. Рецепты успеха…» are one book with a subtitle, not two works.
   const hasCollectionMarker = segments.some(
     (segment) =>
       segment.editionMarker ||
@@ -219,9 +148,6 @@ function parseCollectionTitle(rawTitle, { firstCounts = null, catalogMin = 3 } =
     .map((segment) => segment.index);
   const lastMarker = markerIndexes.length ? markerIndexes[markerIndexes.length - 1] : null;
 
-  // «Серия. Том N. Подзаголовок тома»: a volume marker *between* two content
-  // segments and a single content segment after it is one book (the subtitle),
-  // not a collection. Same for «У Понта Эвксинского. В двух томах. Том 1».
   if (lastMarker != null && lastMarker > 0) {
     const after = content.filter((segment) => segment.index > lastMarker);
     if (after.length <= 1) {
@@ -238,7 +164,6 @@ function parseCollectionTitle(rawTitle, { firstCounts = null, catalogMin = 3 } =
     const followedByMarker = firstMarker != null && firstMarker > first.index;
     const catalogCandidate = followedByMarker || repeats >= catalogMin;
     if (catalogCandidate && content.length >= 3) {
-      // Dropping the catalogue line must leave at least two works.
       catalog = first.body;
     }
   }
@@ -248,30 +173,18 @@ function parseCollectionTitle(rawTitle, { firstCounts = null, catalogMin = 3 } =
     index: segment.index,
   }));
 
-  // A single work after junk removal is an ordinary book.
   if (works.length < 2) {
     return result([{ title: content[0].body, index: content[0].index }], null);
   }
   return result(works, catalog);
 }
 
-/* ------------------------------------------------------------------ */
-/* Segment identity                                                    */
-/* ------------------------------------------------------------------ */
-
-/** Stable per-work key (survives a re-import and a title re-export). */
 function segmentKeyOf(title) {
   const normalized = normalizeTitle(title);
   if (!normalized) return null;
   return crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 10);
 }
 
-/**
- * Parse a record title into the additive fields of the profile event:
- * `segmentTitles` (display/audit), `collectionSegments` (title + stable key)
- * and `catalogSeries`. Returns null for an ordinary book, so nothing is added
- * to the event (the payload/keys stay byte-identical for 97% of the rows).
- */
 function collectionFieldsOf(title, options = {}) {
   const parsed = parseCollectionTitle(title, options);
   if (!parsed.isCollection) return null;
@@ -287,7 +200,6 @@ function collectionFieldsOf(title, options = {}) {
   return fields;
 }
 
-/** Does this event carry >= 2 parsed works? */
 function hasCollectionSegments(event) {
   return Boolean(
     event &&
@@ -297,7 +209,6 @@ function hasCollectionSegments(event) {
   );
 }
 
-/** Resolve-cache identity of a segment (never the parent's own id). */
 function segmentFileKeyOf(parentEvent, segmentKey) {
   if (!parentEvent || !segmentKey) return null;
   const base = parentEvent.fileKey
@@ -310,7 +221,6 @@ function segmentFileKeyOf(parentEvent, segmentKey) {
   return base ? `${base}::seg:${segmentKey}` : null;
 }
 
-/** Candidate manual-year-override keys of a record (the user's edit wins). */
 function manualYearKeysOf(event) {
   if (!event) return [];
   const keys = [];
@@ -333,14 +243,6 @@ function manualYearKeysOf(event) {
   return keys;
 }
 
-/**
- * Existing links / enrichment / manual year corrections are stronger than the
- * segmentation heuristic: a row already decided as ONE book is never re-opened
- * (§6, "не переоткрывать решения пользователя").
- *
- * @param {object} event profile record
- * @param {{link?: object|null, details?: object|null, yearOverrides?: object|null}} context
- */
 function expansionBlocked(event, { link = null, details = null, yearOverrides = null } = {}) {
   if (!hasCollectionSegments(event)) return true;
   if (link && link.workId) return true;
@@ -353,14 +255,6 @@ function expansionBlocked(event, { link = null, details = null, yearOverrides = 
   return false;
 }
 
-/**
- * Synthetic per-work events of one collection record.
- *
- * The parent record is NOT included: it stays the host row (`title`, keys,
- * rating, date) and is never matched as a whole. A segment inherits the
- * parent's authors (the anthology's author is the works' author) and its date,
- * but NOT the anthology rating, ISBN, publisher, series, cover or year.
- */
 function segmentEventsOf(parentEvent) {
   if (!hasCollectionSegments(parentEvent)) return [];
   const out = [];
@@ -398,8 +292,6 @@ function segmentEventsOf(parentEvent) {
       communityRating: null,
       bookStats: null,
       segmentKey: key,
-      // Host identity for the candidate pool (is the row itself a visible
-      // work? then its unproven works are worth asking about).
       collectionParentKey: parentEvent.sourceBookId
         ? String(parentEvent.sourceBookId)
         : parentEvent.fileKey
@@ -418,10 +310,6 @@ function segmentEventsOf(parentEvent) {
   return out.length >= 2 ? out : [];
 }
 
-/**
- * Expand a record list for the resolve pool / candidate pool: a collection
- * record is replaced by its works, every other row is passed through.
- */
 function expandProfileEvents(events, options = {}) {
   const out = [];
   for (const event of Array.isArray(events) ? events : []) {
@@ -436,7 +324,6 @@ function expandProfileEvents(events, options = {}) {
   return out;
 }
 
-/** Author gate shared with the migration: any record author must look alike. */
 function segmentAuthorConfirmed(recordAuthors, providerAuthors) {
   const ours = (recordAuthors || []).map(cleanText).filter(Boolean);
   const theirs = (providerAuthors || []).map(cleanText).filter(Boolean);
@@ -448,7 +335,6 @@ function segmentAuthorConfirmed(recordAuthors, providerAuthors) {
   return false;
 }
 
-/** Confidence class of a resolve link for a segment. */
 function segmentConfidenceOf(score) {
   const value = Number(score);
   if (!Number.isFinite(value)) return 'low';

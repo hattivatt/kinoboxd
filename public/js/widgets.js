@@ -1,5 +1,3 @@
-/* Dashboard widgets: summary strip + charts + persons. */
-
 import {
   $, el, clear, fmtInt, fmtPercent, fmtRating, fmtPeriod, fmtWatchTime, plural, icon,
   monthName, monthShort, toNum, emptyState, showTooltip, moveTooltip, hideTooltip, debounce, slugTitle,
@@ -49,8 +47,6 @@ const GENRE_RU = {
   Western: 'Вестерн',
 };
 
-/* Runtime buckets arrive from the backend in display order; these labels are
- * the only UI wording that differs from the compact payload keys. */
 const RUNTIME_BUCKET_LABELS = {
   '<40': 'До 40 мин',
   '40-59': '40–59 мин',
@@ -64,7 +60,6 @@ const RUNTIME_BUCKET_LABELS = {
 };
 const RUNTIME_BUCKET_ORDER = Object.keys(RUNTIME_BUCKET_LABELS);
 
-/** Normalize one keyword-taxonomy bucket (categories / origins / periods). */
 function mapTaxonomy(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -80,11 +75,6 @@ function mapTaxonomy(value) {
     .filter((item) => item.key && item.name && item.count > 0);
 }
 
-/**
- * Build a modal-ready film object from one filmsIndex entry. Link fields are
- * copied verbatim so every openFilmListModal() row can render them and they
- * keep working after re-sorting.
- */
 function filmFromEntry(slug, entry, extra = {}) {
   const e = entry && typeof entry === 'object' ? entry : {};
   return {
@@ -193,8 +183,6 @@ function normalizeStats(raw) {
       .filter((item) => item.label && item.count > 0),
     franchises: array(source.franchises)
       .map((item) => ({
-        // Synthetic parent rows (the MCU) have no TMDB collection id; `key`
-        // is the stable handle for them. TMDB collections keep key=null.
         key: item && typeof item.key === 'string' ? item.key : null,
         collectionId: toNum(item && item.collectionId),
         name: String(item && item.name ? item.name : '').trim(),
@@ -278,8 +266,6 @@ function normalizeStats(raw) {
 
 export function renderDashboard(rawStats, hooks = {}) {
   dashHooks = hooks && typeof hooks === 'object' ? hooks : {};
-  // Film rows live inside modals rendered outside this call (persons,
-  // openFilmListModal), so hand them the current upload id and refresh hook.
   setFilmMenuContext({
     uploadId: typeof dashHooks.getUploadId === 'function' ? dashHooks.getUploadId() : null,
     refreshStats: typeof dashHooks.refreshStats === 'function'
@@ -304,8 +290,6 @@ export function renderDashboard(rawStats, hooks = {}) {
   renderGenres(stats);
   renderFranchises(stats);
   renderRuntimeHistogram(stats);
-  /* Full dashboard render always starts with no decade picked: the years
-     card is intentionally empty until the user selects a decade. */
   selectedDecade = null;
   renderDecades(stats);
   renderYears(stats);
@@ -319,10 +303,6 @@ export function renderDashboard(rawStats, hooks = {}) {
   renderWatchCalendar(stats);
   initPersons(stats);
 }
-
-/* =========================================================
-   summary strip
-   ========================================================= */
 
 function renderSummary(stats) {
   const host = $('summary-strip');
@@ -344,9 +324,6 @@ function renderSummary(stats) {
   const ratedShare = filmCount > 0 ? fmtPercent(ratedCount, filmCount) : '';
   const isKinopoisk = Boolean(summary.source && summary.source.type === 'kinopoisk');
 
-  // The film tile keeps films as its primary number ("1 376") and uses the
-  // sub-line for viewings only when viewings differ from films (attachment)
-  // or a rewatch exists, so the default look of the strip is unchanged.
   const filmSubDefault = summary.dateFrom || summary.dateTo
     ? (isKinopoisk ? 'по профилю Кинопоиска' : 'по данным дневника')
     : '';
@@ -413,7 +390,6 @@ function renderSummary(stats) {
   if (summary.unmatchedCount > 0) host.append(renderUnmatchedMetric(stats));
 }
 
-/* "watch time" tile: opens the longest-viewings list (runtime desc). */
 function renderWatchMetric(stats, watch) {
   const node = el('button', {
     type: 'button',
@@ -438,7 +414,6 @@ function renderWatchMetric(stats, watch) {
   return node;
 }
 
-/** All films with their runtime, longest first (unknown runtime at the end). */
 function openRuntimeModal(stats) {
   const films = [];
   for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
@@ -468,7 +443,6 @@ function openRuntimeModal(stats) {
   });
 }
 
-/* unmatched tile: only when there is at least one film without a TMDB match */
 function renderUnmatchedMetric(stats) {
   const count = stats.summary.unmatchedCount;
   const node = el('button', {
@@ -506,7 +480,6 @@ function renderUnmatchedMetric(stats) {
   return node;
 }
 
-/* source tile: Letterboxd ZIP or Kinopoisk profile */
 function formatFetchedAt(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -597,10 +570,6 @@ function renderSourceMetric(source, attachedLb = null) {
   return metricNode;
 }
 
-/* =========================================================
-   A. ratings
-   ========================================================= */
-
 function renderRatings(stats) {
   const donutHost = $('ratings-donut');
   const legendHost = $('ratings-legend');
@@ -661,7 +630,6 @@ function renderRatings(stats) {
   });
 }
 
-/* Letterboxd ratings are half-stars (0.5-5 -> 1-10); KinoPoisk already 1-10. */
 function filmScore(entry, isKp) {
   if (!entry || entry.rating == null) return 0;
   const rating = Number(entry.rating);
@@ -692,10 +660,6 @@ function openRatingsModal(stats, score, isKp) {
     batch: 60,
   });
 }
-
-/* =========================================================
-   B. genres
-   ========================================================= */
 
 function renderGenreRow(host, item, max, { isCategory = false, onClick = null, kindLabel = null } = {}) {
   const row = el('div', { class: `genre-row${isCategory ? ' is-category' : ''}${onClick ? ' is-clickable' : ''}` });
@@ -756,9 +720,6 @@ function renderGenres(stats) {
   const note = $('genres-note');
   if (!host) return;
 
-  // stats.genres is already the merged genre + category list (count desc,
-  // name asc on ties) from the backend. Re-sorting here keeps old cached
-  // payloads consistent and makes the widget independent of payload order.
   const items = stats.genres
     .slice()
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
@@ -778,8 +739,6 @@ function renderGenres(stats) {
 
   const max = Math.max(1, ...items.map((item) => item.count));
   for (const item of items) {
-    // Genre buckets use the "genre-<id>" key; keyword taxonomy buckets use
-    // short slugs ("musical", "anime", …). Only the latter are categories.
     const isCategory = !/^genre-/.test(item.key || '');
     renderGenreRow(host, item, max, {
       isCategory,
@@ -788,14 +747,11 @@ function renderGenres(stats) {
   }
 }
 
-/** Films of one merged genre/category bucket. */
 function openGenreModal(stats, item, { isCategory = false } = {}) {
   let films = [];
   if (Array.isArray(item.films) && item.films.length) {
     films = filmsFromSlugs(stats.filmsIndex, item.films);
   } else {
-    // Fallback for old payloads / genre buckets without a films array:
-    // match the localized genre name against the film index.
     const target = String(item && item.name ? item.name : '').trim().toLowerCase();
     if (target) {
       for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
@@ -818,10 +774,6 @@ function openGenreModal(stats, item, { isCategory = false } = {}) {
     sortScope: isCategory ? 'taxonomy' : 'genre',
   });
 }
-
-/* =========================================================
-   B2. franchises (TMDB collections)
-   ========================================================= */
 
 function renderFranchises(stats) {
   const host = $('franchises-list');
@@ -873,10 +825,6 @@ function openFranchiseModal(stats, item) {
     defaultSort: 'year',
   });
 }
-
-/* =========================================================
-   B3. runtime histogram
-   ========================================================= */
 
 function runtimeBucketOf(runtime) {
   const minutes = Number(runtime);
@@ -948,10 +896,6 @@ function openRuntimeBucketModal(stats, item) {
     defaultSort: 'runtime',
   });
 }
-
-/* =========================================================
-   B4. decades × scores heatmap
-   ========================================================= */
 
 function matrixHeatLevel(count, max) {
   if (!count || !max) return 0;
@@ -1080,10 +1024,6 @@ function openDecadeScoreModal(stats, decadeLabel, score) {
   });
 }
 
-/* =========================================================
-   B5. auteur index (plain sentence)
-   ========================================================= */
-
 function renderAuteurIndex(stats) {
   const section = $('w-auteur-widget');
   const line = $('auteur-line');
@@ -1127,12 +1067,6 @@ function renderAuteurIndex(stats) {
   }
 }
 
-/* =========================================================
-   C/D. decades + years (linked)
-   ========================================================= */
-
-/* Selected decade drives the years card. null = nothing selected, which is
-   the default state: the years donut is not rendered at all. */
 let selectedDecade = null;
 let decadesDonut = null;
 
@@ -1250,14 +1184,9 @@ function renderYears(stats) {
   });
 }
 
-/* =========================================================
-   C2. keyword categories modal helper
-   ========================================================= */
-
 const ORIGIN_COLORS = ['#00e054', '#40bcf4', '#ff8000', '#e8253f', '#b18cff', '#ffd166', '#00c9a7', '#f472b6'];
 const PERIOD_COLORS = ['#e8253f', '#ffd166', '#40bcf4', '#00e054', '#b18cff', '#ff8000', '#00c9a7', '#f472b6'];
 
-/** Build modal-ready film rows from the slugs stored in a taxonomy bucket. */
 function filmsFromSlugs(filmsIndex, slugs) {
   const films = [];
   for (const slug of Array.isArray(slugs) ? slugs : []) {
@@ -1268,7 +1197,6 @@ function filmsFromSlugs(filmsIndex, slugs) {
   return films;
 }
 
-/** Shared modal for categories / origins / periods (all carry `films`). */
 function openTaxonomyModal(stats, item, { kicker = '', sortScope = 'taxonomy' } = {}) {
   const films = filmsFromSlugs(stats.filmsIndex, item.films);
   const avg = item.avgRating != null ? ` · средняя оценка ${fmtRating(item.avgRating)}` : '';
@@ -1283,10 +1211,6 @@ function openTaxonomyModal(stats, item, { kicker = '', sortScope = 'taxonomy' } 
     sortScope,
   });
 }
-
-/* =========================================================
-   C3. originals / adaptations donut
-   ========================================================= */
 
 function renderOrigins(stats) {
   const donutHost = $('origins-donut');
@@ -1337,10 +1261,6 @@ function renderOrigins(stats) {
   });
 }
 
-/* =========================================================
-   C4. film movements / periods donut + list
-   ========================================================= */
-
 function renderPeriods(stats) {
   const section = $('w-periods-widget');
   const donutHost = $('periods-donut');
@@ -1349,7 +1269,6 @@ function renderPeriods(stats) {
   if (!donutHost || !legendHost) return;
 
   const periods = stats.periods.filter((item) => item.count > 0);
-  // A donut with one wedge carries no information; hide the whole widget.
   if (section) section.hidden = periods.length < 2;
   if (periods.length < 2) {
     clear(donutHost);
@@ -1395,15 +1314,6 @@ function renderPeriods(stats) {
   });
 }
 
-/* =========================================================
-   D2. views by release year
-   ========================================================= */
-
-/* Country and genre/style picked in the year-bars widget. null = "all", in
- * which case the chart is rendered straight from stats.years (no extra work).
- * The choices survive refreshStats() because renderDashboard() does not touch
- * them; main.js resets both when the profile switcher selects another
- * profile or the uploadId changes. */
 let selectedCountry = null;
 let selectedGenreKey = null;
 
@@ -1412,7 +1322,6 @@ export function resetYearBarsFilters() {
   selectedGenreKey = null;
 }
 
-/** Countries of all matched films: [{ name, count }], most films first. */
 function countryCounts(filmsIndex) {
   const map = new Map();
   for (const entry of Object.values(filmsIndex || {})) {
@@ -1427,14 +1336,6 @@ function countryCounts(filmsIndex) {
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
 }
 
-/**
- * Build the combined country + genre/style predicate over filmsIndex.
- *
- * TMDB genre buckets use a "genre-<id>" key and are matched against the
- * localized genre names in filmsIndex (case-insensitive). Derived taxonomy
- * buckets ("giallo", "spaghetti-western", "noir", …) arrive with an explicit
- * `films` slug list, so membership is a set lookup.
- */
 function yearBarsPredicate(country, genre) {
   const genreName =
     genre && /^genre-/.test(genre.key || '')
@@ -1460,7 +1361,6 @@ function yearBarsPredicate(country, genre) {
   };
 }
 
-/** Local aggregation by release year for the active filters. */
 function yearsForFilters(filmsIndex, predicate) {
   const map = new Map();
   for (const [slug, entry] of Object.entries(filmsIndex || {})) {
@@ -1489,7 +1389,6 @@ function renderCountryFilter(stats, countries) {
   };
 }
 
-/** Sorted copy of the merged genre/category list (count desc). */
 function genreFilterOptions(stats) {
   return (Array.isArray(stats.genres) ? stats.genres : [])
     .filter((item) => item && item.key && item.name && toNum(item.count) > 0)
@@ -1524,14 +1423,11 @@ function renderYearBarsWidget(stats) {
   }
 
   const countries = countryCounts(stats.filmsIndex);
-  // A profile switch may leave a country that does not exist in the new data.
   if (selectedCountry && !countries.some((country) => country.name === selectedCountry)) {
     selectedCountry = null;
   }
 
   const genreOptions = genreFilterOptions(stats);
-  // Same rule for the genre/style filter: a refresh can remove a bucket when
-  // the last film is re-matched, and a profile switch replaces the list.
   if (selectedGenreKey && !genreOptions.some((item) => item.key === selectedGenreKey)) {
     selectedGenreKey = null;
   }
@@ -1576,9 +1472,6 @@ function renderYearBarsWidget(stats) {
   if (typeof ResizeObserver === 'function') {
     const rerender = debounce(() => {
       if (!host.clientWidth) return;
-      // An empty filtered result is rendered as a static empty state; calling
-      // renderYearBars here would overwrite it with the chart's generic
-      // "no year data" message.
       if (filtersActive && !series.length) return;
       renderYearBars(host, series, { onYearClick });
     }, 160);
@@ -1588,8 +1481,6 @@ function renderYearBarsWidget(stats) {
   }
 }
 
-/* Year column click: films of that release year, user rating first. The
- * country and genre/style filters are applied together. */
 function filmsForYear(filmsIndex, year, country = null, genre = null) {
   const target = toNum(year);
   if (!target) return [];
@@ -1642,11 +1533,6 @@ function openYearModal(stats, year) {
   });
 }
 
-/* =========================================================
-   E. timeline
-   ========================================================= */
-
-/** Films whose last watched date falls into one `YYYY-MM` bucket. */
 function openMonthModal(stats, month) {
   const prefix = String(month || '');
   const films = [];
@@ -1718,10 +1604,6 @@ function renderTimelineWidget(stats) {
   }
 }
 
-/* =========================================================
-   F. recently watched strip
-   ========================================================= */
-
 const MONTHS_GEN = [
   'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
   'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
@@ -1730,7 +1612,6 @@ const MONTHS_SHORT_GEN = [
   'янв.', 'февр.', 'мар.', 'апр.', 'мая', 'июн.',
   'июл.', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.',
 ];
-/** Days between today's local calendar date and a UTC `YYYY-MM-DD`. */
 function daysSince(value) {
   const parts = dateParts(value, true);
   if (!parts) return null;
@@ -1739,7 +1620,6 @@ function daysSince(value) {
   return Math.round((today - Date.UTC(parts.year, parts.month - 1, parts.day)) / 86400000);
 }
 
-/** "сегодня" / "вчера" / "3 дня назад" / "2025-06-14". */
 function relativeDayLabel(value) {
   const diff = daysSince(value);
   if (diff == null) return String(value || '');
@@ -1814,8 +1694,6 @@ function renderRecentlyWatched(stats) {
         toggle.click();
         return;
       }
-      // A film without any external links still opens a one-row list so the
-      // card never becomes a dead end.
       openFilmListModal({
         kicker: 'Недавно смотрел',
         title,
@@ -1847,10 +1725,6 @@ function renderRecentlyWatched(stats) {
   }
 }
 
-/* =========================================================
-   G. watch calendar heatmap + streaks
-   ========================================================= */
-
 function openWatchDayModal(stats, day) {
   const counts = new Map();
   for (const slug of Array.isArray(day.slugs) ? day.slugs : []) {
@@ -1866,8 +1740,6 @@ function openWatchDayModal(stats, day) {
     films.push(filmFromEntry(slug, entry, viewings > 1 ? { meta: 'повтор' } : {}));
   }
 
-  // Fallback for an older payload without per-day slugs: use films whose
-  // latest watchedDate is this day (still exact for one-viewing days).
   if (!films.length) {
     for (const [slug, entry] of Object.entries(stats.filmsIndex || {})) {
       if (!entry || typeof entry !== 'object') continue;

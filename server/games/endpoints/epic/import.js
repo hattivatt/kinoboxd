@@ -7,8 +7,6 @@ const { assertOnlyParams, parseAccountId, parseBool, parseOwner } = require('./p
 function register(router, ctx) {
   const { deps, store, importer, errorProfile } = ctx;
 
-  /* --------------------------- import --------------------------- */
-
   async function startFromRequest(req, res, forceDefault) {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const owner = parseOwner(body.owner != null ? body.owner : body.profile, {

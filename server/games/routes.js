@@ -1,24 +1,5 @@
 'use strict';
 
-/**
- * `/api/games/*` router assembly (M1 import/achievements + M2 enrich). Mounted
- * under the existing auth gate in server/index.js, exactly like `/api/books`.
- *
- * The endpoint groups live in `server/games/endpoints/*.js` and are registered
- * here in this order (route order decides matching, so it must not change):
- *
- *   profiles      GET  /profiles
- *   import        POST /import, POST /import/steam, POST /refresh,
- *                 GET /import/status, GET /import/:jobId
- *   enrich        POST /enrich, GET /enrich/status, GET /enrich/:jobId
- *   stats         GET  /secondary-details/status, GET /stats
- *   achievements  GET  /achievements
- *   game          GET  /steam-art/:type/:appid, GET /game/:appid
- *
- * Query contract is strict: an unknown parameter is a 400
- * `unexpected_parameter`, never a silent ignore (same rule as books).
- */
-
 const express = require('express');
 
 const { HttpError, mapDomainError } = require('../core/errors');
@@ -70,16 +51,10 @@ const GAMES_ERROR_PROFILE = {
       defaultStatus: 502,
     },
   ],
-  // Job starters throw plain errors with an explicit HTTP status
-  // (`invalid_profile`/`unknown_profile` from the enrich job).
   fallback: { code: 'games_error' },
   retryAt: true,
 };
 
-/**
- * Resolve `?profile=` to exactly one cached games profile. Mirrors the books
- * contract: missing/repeated/malformed/unknown → 400 with the available keys.
- */
 function resolveProfileOrThrow(raw) {
   const value = raw == null ? '' : String(raw).trim();
   const available = gameCache.listProfiles().map((entry) => entry.key);

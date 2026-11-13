@@ -9,8 +9,6 @@ const { assertOnlyParams, resolveAccount } = require('./params');
 function register(router, ctx) {
   const { deps, store, errorProfile } = ctx;
 
-  /* ------------------------- disconnect ------------------------- */
-
   router.post('/epic/disconnect', async (req, res, next) => {
     try {
       assertOnlyParams(req, [], 'POST /api/games/epic/disconnect');
@@ -41,8 +39,6 @@ function register(router, ctx) {
         accountId: resolved.accountId,
         owner: resolved.owner || null,
         remoteRevoked,
-        // The snapshot is data, not a secret: keep it so the UI can say
-        // "данные от <fetchedAt>, требуется переподключение" (§14.4 rule 7).
         snapshotKept: Boolean(library),
         snapshotFetchedAt: library ? library.fetchedAt || null : null,
         status: 'not_connected',

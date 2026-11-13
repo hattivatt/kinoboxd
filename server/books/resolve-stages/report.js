@@ -2,18 +2,6 @@
 
 const { CYRILLIC_TITLE, eventKeyOf, isbnOfEvent } = require('./identity');
 
-/**
- * Resolve report of one profile pass:
- *   { total, skippedPlanShelf, cached, resolvedIsbn, resolvedTitle,
- *     resolvedGoogle, resolvedOpenLibrary, resolvedLitres,
- *     resolvedLivelibCard, resolvedHardcoverCard, resolvedHardcoverFromLitres,
- *     enriched, withMetadata, ambiguous, unmatched, requests, corpusSize,
- *     resolvedWorkIds, providerChain, cardBudget, litresBudget, lookupErrors }
- *
- * `lookupErrors` lists the ISBN-batch failures (e.g. `hardcover_token_missing`)
- * that were degraded to a warning: the pass continues with the other providers
- * instead of failing the import job.
- */
 function createReport(ctx) {
   const { card, litres, gb, wikidata } = ctx.budget;
   return {
@@ -45,9 +33,6 @@ function createReport(ctx) {
       used: 0,
       remaining: wikidata ? wikidata.limit : 0,
     },
-    // Year-claim stage (`year-stage.js`): how many resolved works had no
-    // first-publication year, how many Wikidata could date, and whether the
-    // question was refused (`budget`/`breaker`) instead of answered.
     yearCandidates: 0,
     yearClaims: 0,
     yearClaimSkipped: null,
@@ -104,10 +89,6 @@ function finalizeReport(ctx) {
     return !plan.links.has(bookId) && !cache.getWorkDetails(`ll:${bookId}`);
   }).length;
   report.attempted = state.attemptedKeys.size;
-  // A provider that ran out of budget did NOT answer: an event whose best
-  // matcher is that provider stays pending instead of being written off as
-  // hopeless (otherwise the badge could claim "готово" while 200 Cyrillic
-  // books are still waiting for the next Litres allowance).
   const pendingKeys = budgetPendingKeys(ctx);
   report.unmatchedKeys = [...state.attemptedKeys].filter(
     (bookId) =>
@@ -116,15 +97,9 @@ function finalizeReport(ctx) {
       !state.providerErrorKeys.has(bookId) &&
       !pendingKeys.has(bookId)
   );
-  // Raw bookkeeping for callers that persist per-candidate state (the
-  // scheduled resolve). `attemptedKeys` now contains `file:tk:…` keys too, so
-  // `attempted` is the honest size of the asked set.
   report.attemptedKeys = [...state.attemptedKeys];
   report.askedKeys = [...state.askedKeys];
   report.providerErrorKeys = [...state.providerErrorKeys];
-  // Keys a provider could not ask because of its per-run budget. The scheduled
-  // resolve uses this to refuse a "nothing found" verdict for a book that
-  // Google Books simply never got to this run.
   report.budgetPendingKeys = [...pendingKeys];
   report.missedByKey = {};
   for (const [key, providers] of state.missedByKey) {

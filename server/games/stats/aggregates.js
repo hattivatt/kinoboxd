@@ -1,16 +1,5 @@
 'use strict';
 
-/**
- * Aggregate sections of the games payload: `years`/`decades`, the
- * playtime-weighted `genres` wall, SteamSpy `tags`, community `scores`,
- * DLC facts, Wikidata franchise coverage, the M2 mode/early-access/F2P/
- * platform blocks.
- *
- * S1 «распил god-функции»: pure over `chartWorks`/`visibleWorks` and the
- * per-work metadata helpers. Every bucket counts a canonical work once;
- * secondary-only works join the same buckets (M6c).
- */
-
 const { UNKNOWN_YEAR_LABEL, TAG_LIMIT, REVIEW_SCORE_LABELS } = require('./constants');
 const {
   round1,
@@ -44,7 +33,6 @@ function buildAggregates(ctx) {
     workHasFlag,
   } = ctx.workMeta;
 
-  /* ---------------- M2 aggregates (only when details exist) ---------------- */
   const yearMap = new Map();
   const decadeMap = new Map();
   let unknownYearCount = 0;
@@ -63,8 +51,6 @@ function buildAggregates(ctx) {
     pushBucket(decadeMap, Math.floor(year / 10) * 10, hours, work.secondaryOnly);
   }
 
-  // M6c: a secondary-only work carries a release year from its store catalogue,
-  // so the year chart is meaningful even before Steam details exist.
   const chartsHaveData = hasDetails || secondaryVisible.length > 0;
   const years = chartsHaveData
     ? [...yearMap.entries()]
@@ -101,9 +87,6 @@ function buildAggregates(ctx) {
 
   const realYears = years.filter((entry) => entry.year != null);
 
-  // Genres: the wall is playtime-weighted, so `hours` (and `weight`, kept for
-  // the frontend) drives the size; `count`/`share` stay available. One work
-  // counts once even when two editions carry the same genre.
   const genreMap = new Map();
   for (const work of chartWorks) {
     const hours = hoursOf(work);
@@ -133,11 +116,6 @@ function buildAggregates(ctx) {
         )
     : [];
 
-  /* ---------------- M4: SteamSpy tags ---------------- */
-  // `count` = how many works of this library carry the tag, `hours` = their
-  // playtime, `weight` = the summed SteamSpy popularity weight (the same
-  // number the store tag cloud uses). Tags are metadata, not owner events:
-  // one game can carry 20 of them and none of them is invented.
   const tagMap = new Map();
   let gamesWithTags = 0;
   for (const work of visibleWorks) {
@@ -173,10 +151,6 @@ function buildAggregates(ctx) {
         .slice(0, TAG_LIMIT)
     : [];
 
-  /* ---------------- M4: community review scores ---------------- */
-  // Steam's `review_score` is a 1..9 community grade, never a personal rating
-  // (ИГРЫ §1.2). Buckets are the nine store levels; only `count`/`hours` are
-  // serialized — the per-game score lives in `gamesIndex`.
   const scoreCounts = new Map();
   const scoreValues = [];
   let gamesWithReviews = 0;

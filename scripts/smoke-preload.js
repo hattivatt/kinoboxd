@@ -1,19 +1,5 @@
 'use strict';
 
-/**
- * Smoke preload (`NODE_OPTIONS=--require`): seed the in-memory film upload.
- *
- * Why: `GET /api/stats` needs an `uploadId` that only `POST /api/upload`
- * creates, and a finished enrich job. A real upload would call TMDB over the
- * network, which the smoke run must not do. This preload (loaded BEFORE
- * `server/index.js`) registers the golden upload in the same in-memory store
- * and replaces `enrich.getJob` with a fixed, already-done job. `server/stats.js`
- * destructures `getJob` at require time, so patching the export here is enough
- * and no production file is touched.
- *
- * The upload id is written to `$SMOKE_TMP/upload-id` for the shell script.
- */
-
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -40,6 +26,5 @@ try {
   }
   console.log(`[smoke-preload] film upload seeded: ${upload.uploadId}`);
 } catch (err) {
-  // Never break the server start: the smoke script reports films as blocked.
   console.error(`[smoke-preload] disabled: ${err && err.message ? err.message : err}`);
 }

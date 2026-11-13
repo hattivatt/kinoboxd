@@ -1,44 +1,5 @@
 'use strict';
 
-/**
- * Epic store-metadata source of the secondary library.
- *
- * Two public endpoints and one owner-token fallback:
- *
- *   1. **CMS product page** — `store-content.ak.epicgames.com/api/en-US/
- *      content/products/{slug}` (public, `200` from this network). The base
- *      page is `type === 'productHome'`; `data.meta` has release date/tags/
- *      developer/publisher and `data.hero.portraitBackgroundImageUrl` is the
- *      vertical poster. The request carries a browser `User-Agent` (a bot
- *      string is the first thing an edge challenge looks at) and a failed
- *      primary host is retried once against the IPv4 mirror
- *      `store-content-ipv4.ak.epicgames.com`. A `403`/`429` from either host
- *      trips the 30-minute breaker with `code: 'cms_blocked'`; the first three
- *      failed answers are dumped (status + ≤2 KB body, tokens masked) to
- *      `cache-games/debug/epic/<slug>.json`.
- *   2. **Catalog bulk** (`createClient().getCatalogBulk`, **owner token**) —
- *      the only store-owned source left for a stale CMS page (Alan Wake 2:
- *      poster, no date/tags). One request per `catalogItemId`, same per-run
- *      budget/pause, same breaker; the result is written to
- *      `catalog/<catalogItemId>.json` and re-normalized. A `401` triggers one
- *      silent token refresh + retry, a still-expired token is **deferred**
- *      (`catalogPending`); a definitive empty answer is a 30-day negative
- *      probe (`catalog-probe/`). Every attempt lands in the per-owner ledger
- *      (`state/catalog-state.json`) so «resolved 1/1 with an empty card» can
- *      be told apart from «the job never asked».
- *   3. **Title probe** (`discoverEpicSlug`) — last-resort slug discovery for an
- *      exclusive that is in neither `productmapping` nor the catalog: the
- *      store slug is almost always the title in kebab-case, and the public CMS
- *      answers `200`/`404` without a token. The guess is **validated** (the
- *      page's own `productName` must equal the library title), so a wrong slug
- *      can never attach another game's poster/genres.
- *
- * A network/5xx answer is deferred (nothing is cached, the previous detail
- * stays); a `404` is a negative entry (`not_found`, 30 days, 7 days for a
- * guessed slug). Nothing is ever invented: an empty answer leaves the field
- * empty and the coverage says so.
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -83,12 +44,8 @@ const { SecondaryDetailsError, maskSecrets } = require('../secondary/errors');
 const { applyWikidataFacts } = require('../secondary');
 
 const EPIC_CONTENT_HOST = 'store-content.ak.epicgames.com';
-// Cloudflare fronts the store CMS; the IPv4-only name is the same origin and
-// is the documented workaround for an edge that rejects a network's IPv6 path.
 const EPIC_CONTENT_MIRROR_HOST = 'store-content-ipv4.ak.epicgames.com';
 const EPIC_HOSTS = [EPIC_CONTENT_HOST, EPIC_CONTENT_MIRROR_HOST];
-// A browser UA: the CMS (and its CDN) answers a bot string with a challenge on
-// some edges. The value is a plain desktop Chrome string, no cookies, no token.
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -99,20 +56,6 @@ function epicUrl(slug, host = EPIC_CONTENT_HOST) {
   return `https://${host}/api/en-US/content/products/${encodeURIComponent(String(slug))}`;
 }
 
-/* ------------------------------------------------------------------ */
-/* Epic catalog refetch (owner token)                                  */
-/* ------------------------------------------------------------------ */
-
-/**
- * A stale Epic CMS page (Alan Wake 2: `meta` has only `customReleaseDate:
- * "Coming Soon"`) has no tags/release date. The catalog bulk is the only
- * store-owned source left, and it requires the **owner's** token. This block
- * is the bounded fallback: it is reached only for an Epic work whose CMS page
- * has no meta and whose catalog document is missing/stale, uses the same
- * per-run budget and pause as the Epic details phase, and never invents a
- * genre/date.
- */
-
 function createCatalogClient(options = {}) {
   try {
     const store = options.tokenStore || tokenStore;
@@ -122,12 +65,6 @@ function createCatalogClient(options = {}) {
   }
 }
 
-/**
- * One silent refresh + one retry. `getAccessToken` already refreshes a token
- * that is within two minutes of expiry; a 401 after that means the token was
- * revoked, but Epic sometimes rejects a token that the local clock still
- * considers valid. The retry is bounded (exactly one) and never prints a value.
- */
 async function trySilentTokenRefresh(options, accountId) {
   const client =
     options.epicClient || options.catalogClient || createCatalogClient(options);
@@ -160,28 +97,9 @@ async function trySilentTokenRefresh(options, accountId) {
   }
 }
 
-/**
- * Fetch `catalog/<catalogItemId>.json` with the owner's token. Returns
- * `{ catalog, pending, deferred, warning, skipped }`:
- *
- *   - `catalog` — the saved catalog document (or null);
- *   - `pending` — the owner may still get this metadata later (401/expired,
- *     rate limit, network): the detail is written but coverage stays pending,
- *     so the next kick retries. A *negative* answer is not pending;
- *   - `warning` — the job/status code (`catalog_auth_expired`, `catalog_blocked`,
- *     `catalog_empty`, …).
- *
- * Guards: no token / not connected → `skipped: 'not_connected'` (library-only,
- * previous behaviour); a fresh negative probe → `skipped: 'probe'`; a spent
- * budget → `skipped: 'budget'`. A 403/429 trips the **existing** Epic
- * secondary-details breaker (no new breaker is introduced).
- */
 async function refetchEpicCatalog(options = {}) {
   const catalogItemId = options.catalogItemId ? String(options.catalogItemId) : '';
   const ownerKey = options.ownerKey ? String(options.ownerKey) : '';
-  // Every early exit is recorded: `bySource.epic.lastSkip` must be able to say
-  // «not_connected because the token was unbound», «probe», «budget», … — a
-  // silent return is what made the production symptom undiagnosable.
   const skip = (reason, entry = {}) => {
     recordSkip(ownerKey, {
       source: 'epic',
@@ -197,9 +115,6 @@ async function refetchEpicCatalog(options = {}) {
   let accountId =
     options.epicAccountId || (ownerKey ? epicCache.epicAccountForOwner(ownerKey) : null);
   if (!accountId && ownerKey) {
-    // Self-heal an unbound/old-format token (one token, no other owner claims
-    // it). A mismatch/ambiguity is *not* guessed at: the reason goes to the
-    // status ledger instead.
     const binding =
       typeof epicCache.ensureEpicOwnerBinding === 'function'
         ? await epicCache.ensureEpicOwnerBinding(ownerKey, {
@@ -296,7 +211,6 @@ async function refetchEpicCatalog(options = {}) {
         ...entry,
       });
     } catch (err) {
-      /* diagnostics must never break the job */
     }
   };
 
@@ -311,8 +225,6 @@ async function refetchEpicCatalog(options = {}) {
   } catch (err) {
     const code = (err && err.code) || 'epic_http_error';
     if (code === 'epic_auth_expired') {
-      // One silent refresh (rerun the token), then one retry. If that fails,
-      // the metadata is deferred, not denied: the next kick tries again.
       if (await trySilentTokenRefresh(options, accountId)) {
         try {
           result = await attempt();
@@ -343,15 +255,10 @@ async function refetchEpicCatalog(options = {}) {
     try {
       await epicCache.saveEpicCatalogItem(catalogItemId, item);
     } catch (err) {
-      /* a read-only cache must not fail the fetch */
     }
     const yearHas = Boolean(item.releaseDate);
     const genresOk = epicGenresFromCategories(item.categories).length > 0;
     if (!catalogHasMeta(item)) {
-      // The catalog knows the item but has no date/categories either: this is
-      // a definitive dead end, not a retryable one. Remember it for 30 days
-      // and leave a dump — «the item exists but its shape is empty» is exactly
-      // the Alan Wake 2 symptom that used to be invisible.
       writeCatalogProbe(catalogItemId, 'empty', { namespace, code: 'no_meta' });
       record({ code: 'catalog_empty', reason: 'no_meta', status: transport.httpStatus, message: null });
       noteCatalogAttempt(ownerKey, catalogItemId, {
@@ -366,8 +273,6 @@ async function refetchEpicCatalog(options = {}) {
       });
       return { catalog: item, pending: false, deferred: false, warning: 'catalog_empty' };
     }
-    // `shape_ok` is the only outcome that needs no follow-up: a release date
-    // AND a real genre line. `ok` (one of them) is dumped for the owner.
     noteCatalogAttempt(ownerKey, catalogItemId, {
       namespace,
       result: yearHas && genresOk ? 'shape_ok' : 'ok',
@@ -393,8 +298,6 @@ async function refetchEpicCatalog(options = {}) {
       return catalogFailure(failure, 'network', { record, catalogItemId, namespace, ownerKey });
     }
   }
-  // A 200 without the item is a definitive answer for this catalog id: remember
-  // it for 30 days so a polled kick does not repeat the request.
   writeCatalogProbe(catalogItemId, failure ? 'http_error' : 'empty', {
     namespace,
     code: failure ? failure.code || null : null,
@@ -416,10 +319,6 @@ async function refetchEpicCatalog(options = {}) {
   return { catalog: null, pending: false, deferred: false, warning };
 }
 
-/**
- * Status + byte size of the chunk that carried this catalog id. A fake client
- * may omit `chunks` (tests) — then the fields stay `null`, never invented.
- */
 function catalogTransportFacts(result, catalogItemId) {
   const id = String(catalogItemId == null ? '' : catalogItemId);
   const has = (entry) =>
@@ -443,11 +342,6 @@ function catalogTransportFacts(result, catalogItemId) {
   return { httpStatus: null, bytes: null };
 }
 
-/**
- * Record one catalog attempt in the owner ledger and dump a diagnostic file
- * for anything short of `shape_ok`. Both are best-effort: diagnostics must
- * never fail the job.
- */
 function noteCatalogAttempt(ownerKey, catalogItemId, entry = {}) {
   if (!ownerKey || !catalogItemId) return null;
   const recorded = recordCatalogAttempt(ownerKey, catalogItemId, entry);
@@ -526,18 +420,6 @@ function catalogFailure(err, kind, context = {}) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Epic CMS transport                                                  */
-/* ------------------------------------------------------------------ */
-
-/* ------------------------- Epic CMS transport ---------------------- */
-
-/**
- * Keep the first `MAX_DEBUG_FILES` failed CMS answers for the owner to send
- * back. The body is truncated to 2 KB and secrets are masked; the file name is
- * the slug, so a re-run overwrites its own dump instead of growing the folder.
- * Diagnostics must never fail the request.
- */
 function dumpEpicFailure(slug, info = {}) {
   try {
     fs.mkdirSync(DEBUG_DIR, { recursive: true });
@@ -545,8 +427,6 @@ function dumpEpicFailure(slug, info = {}) {
     if (!fs.existsSync(file)) {
       let count = 0;
       for (const name of fs.readdirSync(DEBUG_DIR)) {
-        // The catalog ledger has its own cap (`MAX_CATALOG_DEBUG_FILES`): a
-        // catalog failure must not evict the CMS dumps and vice versa.
         if (name.endsWith('.json') && !name.startsWith('catalog-')) count++;
       }
       if (count >= MAX_DEBUG_FILES) return null;
@@ -573,17 +453,6 @@ function dumpEpicFailure(slug, info = {}) {
   }
 }
 
-/**
- * Fetch one Epic CMS product page: primary host first, then the IPv4 mirror
- * when the primary fails for a reason that may be edge-specific (network,
- * `403`, `5xx`, a non-JSON challenge page). A `404` is the product's own
- * verdict and is **not** retried against the mirror; `429` is an account/IP
- * rate limit and is not retried either.
- *
- * Returns `{ payload, host, url }`. Every failed answer is dumped (capped).
- * `onExtraRequest` is called for the mirror attempt so the job budget counts
- * the real request count.
- */
 async function fetchEpicProduct(slug, options = {}) {
   const hosts = Array.isArray(options.hosts) && options.hosts.length
     ? options.hosts
@@ -597,7 +466,6 @@ async function fetchEpicProduct(slug, options = {}) {
       try {
         options.onExtraRequest();
       } catch (err) {
-        /* a counting hook must never break the fetch */
       }
     }
     try {
@@ -622,27 +490,11 @@ async function fetchEpicProduct(slug, options = {}) {
   throw lastError || new SecondaryDetailsError('CMS Epic недоступна.', 'secondary_details_unreachable');
 }
 
-/* ------------------------------------------------------------------ */
-/* slug discovery                                                      */
-/* ------------------------------------------------------------------ */
-
-
-/**
- * Last-resort slug discovery for an Epic exclusive that is in neither
- * `productmapping` (~1 283 records) nor the catalog's `productSlug`/`urlSlug`:
- * the store slug of a game is almost always its title in kebab-case, and the
- * public CMS answers `200`/`404` without a token. The guess is **validated** —
- * the page's own `productName` must equal the library title, so a wrong slug
- * can never attach another game's poster/genres.
- */
 async function discoverEpicSlug(options = {}) {
   const title = options.title ? String(options.title).trim() : '';
   const guess = slugFromTitle(title);
   if (!guess || guess.length < 3) return null;
   if (comparableTitle(title).length < 3) return null;
-  // A previous probe of this guess 404'd. It is a short-lived memory (7 days),
-  // not a verdict: the same guess is retried later, and an explicit slug from
-  // the catalog always bypasses it.
   if (!options.force) {
     const known = readDetail('epic', guess);
     if (
@@ -665,15 +517,11 @@ async function discoverEpicSlug(options = {}) {
     });
   } catch (err) {
     if (err && err.code === 'secondary_details_not_found') {
-      // The guess is not a verdict about the product: remember it briefly so
-      // the next kick does not probe again, and stay «library-only».
       writeDetail('epic', guess, 'not_found', null, { probe: true, title: title || null });
       return null;
     }
     if (err && (err.status === 403 || err.status === 429)) {
       tripBreaker('epic', 'cms_blocked', err.status);
-      // The reason travels with the error: the job warning and the status
-      // ledger must say «blocked by the CMS», not «no metadata».
       err.breakerCode = 'cms_blocked';
     }
     throw err;
@@ -684,21 +532,12 @@ async function discoverEpicSlug(options = {}) {
     (payload && payload.pages && payload.pages[0] && payload.pages[0].productName) ||
     null;
   if (!name || comparableTitle(name) !== comparableTitle(title)) return null;
-  // The validated page is the product page itself — no second request.
   return { slug: guess, payload, host: fetched.host || null };
 }
 
-/**
- * Use the cached catalog when it is fresh, otherwise refetch it with the
- * owner's token. A stale-but-present catalog is still returned as a fallback
- * even when the refetch is deferred: a real store date beats no date.
- */
 async function ensureEpicCatalog(options = {}) {
   const catalog = options.catalog;
   const detail = options.detail || null;
-  // Reuse is justified only by a document that answers the missing fact: a
-  // freshly imported catalog with a date but no genre must not silence the
-  // request (see `catalogAnswersMissing`).
   if (
     catalogHasMeta(catalog) &&
     catalogIsFresh(catalog) &&
@@ -718,14 +557,12 @@ function noteCatalogResult(result, options = {}) {
     try {
       options.onWarning(result.warning);
     } catch (err) {
-      /* a diagnostic hook must never break the fetch */
     }
   }
   if (result.deferred && typeof options.onCatalogDeferred === 'function') {
     try {
       options.onCatalogDeferred(result.warning);
     } catch (err) {
-      /* ignore */
     }
   }
 }
@@ -740,9 +577,6 @@ async function resolveEpic(slug, options = {}) {
     comparableTitle(title).length >= 3 &&
     (options.probeBudget == null || options.probeBudget >= 2);
   if (!id) {
-    // Two requests are needed (probe + product page): only try when the job
-    // still has that much budget left. Without a title there is nothing to
-    // guess — the caller reports the work as `library-only`.
     if (!canProbe) {
       return { data: null, status: 'not_found', cached: false, reason: 'no_slug' };
     }
@@ -755,8 +589,6 @@ async function resolveEpic(slug, options = {}) {
     probedHost = discovered.host;
   }
   const { doc, fresh } = readDetail('epic', id);
-  // A probe negative cache (`probe: true`) is a memory about a *guess*, not a
-  // verdict about this id — an explicitly addressed product is re-fetched.
   const probeOnlyNegative = Boolean(
     doc && doc.status === 'not_found' && doc.probe === true
   );
@@ -764,9 +596,6 @@ async function resolveEpic(slug, options = {}) {
     let data = doc.status === 'ok' ? doc.data : null;
     let catalogSkipped = null;
     let catalogSkipReason = null;
-    // A detail cached before the catalog existed (Alan Wake 2: poster only)
-    // is completed in place: the raw CMS payload is not cached, so the catalog
-    // fields are merged additively. No catalog item → nothing to do.
     if (
       data &&
       options.catalogItemId &&
@@ -775,8 +604,6 @@ async function resolveEpic(slug, options = {}) {
         catalogItemId: options.catalogItemId,
       })
     ) {
-      // `detail: data` is what keeps a cached-but-unhelpful catalog document
-      // from silencing the request (the import writes one without a ledger).
       const ensured = await ensureEpicCatalog({ ...options, detail: data });
       noteCatalogResult(ensured, options);
       catalogSkipped = ensured.skipped || null;
@@ -797,9 +624,6 @@ async function resolveEpic(slug, options = {}) {
           delete next.catalogSkipped;
         }
       } else if (next.catalogChecked !== true || next.catalogPending || next.catalogSkipped) {
-        // Filled, definitively empty, or «not connected»: the one-time
-        // completion attempt is over. A later connect still re-imports and the
-        // run-phase `completingCatalog` path retries regardless of this marker.
         next = { ...next, catalogChecked: true };
         delete next.catalogPending;
         delete next.catalogSkipped;
@@ -819,9 +643,6 @@ async function resolveEpic(slug, options = {}) {
         data = next;
       }
     }
-    // A partial document whose year is still empty is completed from the
-    // identity bridge (`links/secondary.json`). Additive: a catalog/store year
-    // always wins; no bridge entry → the document stays honestly partial.
     if (data) {
       const withYear = applyWikidataFacts(data, { store: 'epic', slug: id });
       if (withYear !== data) {
@@ -871,10 +692,6 @@ async function resolveEpic(slug, options = {}) {
       host = fetched.host || null;
     } catch (err) {
       let recovered = null;
-      // A catalog/productmapping slug can be stale (the catalog knows the base
-      // game, the owned SKU has a different slug). A validated title probe is
-      // the only way to tell «removed product» from «wrong slug»; it runs once
-      // and must match the library title.
       if (err && err.code === 'secondary_details_not_found' && canProbe) {
         const guess = slugFromTitle(title);
         if (guess && guess !== id) {
@@ -899,14 +716,9 @@ async function resolveEpic(slug, options = {}) {
   }
   let catalog = options.catalog;
   let catalogPending = false;
-  // Stale CMS page (Alan Wake 2): `meta` has no tags/releaseDate at all, so
-  // the catalog bulk is the only store-owned source left. It needs the
-  // owner's token and is bounded by the same budget/breaker as this phase.
   let catalogSkipped = null;
   let catalogSkipReason = null;
   if (epicPageNeedsCatalog(payload)) {
-    // No detail document yet: both year and genres are missing, so a date-only
-    // cached catalog is not enough to skip the request.
     const ensured = await ensureEpicCatalog({ ...options, detail: null });
     noteCatalogResult(ensured, options);
     if (ensured.catalog) catalog = ensured.catalog;
@@ -919,10 +731,6 @@ async function resolveEpic(slug, options = {}) {
     title: options.title,
     catalog,
   });
-  // After the catalog pass: if neither the CMS page nor the catalog carried a
-  // release date (or a genre line), the bridged Wikidata item (P6278 slug →
-  // QID → P577/P136) may know it. Developers/poster are untouched; no bridge
-  // entry → the document stays honestly partial.
   const data = applyWikidataFacts(normalized, {
     store: 'epic',
     slug: normalized.slug || id,
@@ -930,10 +738,6 @@ async function resolveEpic(slug, options = {}) {
   if (catalogPending) {
     data.catalogPending = true;
   } else {
-    // The catalog question is settled for this detail: either the CMS page
-    // carried its own meta, the catalog filled it, or the answer was
-    // definitively empty. This is what keeps a polled `/stats` from re-kicking
-    // a work whose store metadata is as complete as the stores allow.
     data.catalogChecked = true;
   }
   if (catalogSkipped) data.catalogSkipped = catalogSkipped;
@@ -943,8 +747,6 @@ async function resolveEpic(slug, options = {}) {
   data.metaGenresOk = flags.genresOk;
   data.metaCheckedAt = isoOf(nowMs());
   writeDetail('epic', id, 'ok', data);
-  // Persist a discovered slug so the read model (`secondary/index.js joinGames`) can
-  // key the union entry `epic:<slug>` and attach this detail next request.
   if (options.catalogItemId && data.slug) {
     try {
       epicCache.saveEpicSlugOverride(options.catalogItemId, data.slug, {
@@ -952,7 +754,6 @@ async function resolveEpic(slug, options = {}) {
         source: 'cms-title-probe',
       });
     } catch (err) {
-      /* a read-only cache must not fail the fetch */
     }
   }
   return {
@@ -968,7 +769,6 @@ async function resolveEpic(slug, options = {}) {
 const EPIC_SOURCE = {
   id: 'epic',
   capabilities: {
-    // A same-owner secondary library: entries + playtime + store metadata.
     journal: false,
     library: true,
     playtime: true,

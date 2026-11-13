@@ -1,45 +1,5 @@
 'use strict';
 
-/*
- * Backfill cached TMDB details.
- *
- * Usage:
- *   npm run backfill:keywords              # keywords, credits untouched
- *   npm run backfill:imdb                  # IMDb ids for deep links
- *   npm run backfill:collections           # belongs_to_collection (franchises)
- *   npm run backfill:wikidata              # P136/P462/P135/P144 tags
- *   npm run backfill:mcu                   # MCU membership (cache/mcu.json)
- *   npm run rematch                        # re-evaluate cache/index.json
- *   BACKFILL_CONCURRENCY=4 npm run backfill:imdb   (default 8)
- *   node server/backfill.js collections
- *   BACKFILL_TARGET=imdb node server/backfill.js
- *
- * Targets
- * - keywords: refresh every entry whose `details.keywords` is not an array
- *   (empty array counts as done).
- * - imdb: add `details.imdb_id`.
- *     * movie: re-fetch GET /movie/{id}?language=ru-RU&append_to_response=keywords
- *       through the normal normalizer, so the whole card is refreshed;
- *     * tv: GET /tv/{id}/external_ids (details do not carry imdb_id) and patch
- *       the existing file, keeping aggregated credits/docs untouched.
- * - collections: add `details.belongs_to_collection` to movie entries fetched
- *   before the field was normalized. A `null` value is meaningful (standalone
- *   film), so presence of the key is the idempotency marker; `collection_checked`
- *   is kept as an explicit marker for older runs. TV is skipped (TMDB does not
- *   expose collections for series).
- * - wikidata: query WDQS by IMDb id (P345), 450 ids per batch, with a P4947
- *   TMDB-id fallback for films without an IMDb id. Results are persisted in
- *   cache/wd-tags.json after every batch. Idempotent: already checked ids are
- *   skipped; WIKIDATA_REFRESH=1 forces a refetch.
- * - mcu: one WDQS query for the P179 membership of Q642878 (Marvel Cinematic
- *   Universe), persisted as cache/mcu.json. stats.js merges it over the
- *   built-in canonical film list, so a new MCU release can be picked up
- *   without a code change. Idempotent by nature (the file is replaced).
- *
- * All targets are idempotent: a valid `imdb_id` / `imdb_checked` marker or a
- * checked Wikidata id makes the entry a skip.
- */
-
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -88,23 +48,16 @@ function hasImdbId(details) {
   return Boolean(details && tmdb.normalizeImdbId(details.imdb_id));
 }
 
-/** True when a previous `imdb` run already looked at this file. */
 function imdbChecked(details) {
   return Boolean(details && details.imdb_checked === true);
 }
 
-/** True when a previous `collections` run (or the current normalizer) wrote
- *  the field. `null` is a valid, meaningful value for standalone films. */
 function collectionChecked(entry) {
   const details = entry && entry.details;
   if (!details) return false;
   return Object.prototype.hasOwnProperty.call(details, 'belongs_to_collection')
     || details.collection_checked === true;
 }
-
-/* ------------------------------------------------------------------ */
-/* keyword target                                                      */
-/* ------------------------------------------------------------------ */
 
 async function refreshKeywords(item) {
   const { id, kind, credits } = item;
@@ -120,8 +73,6 @@ async function refreshKeywords(item) {
         kind === 'tv'
           ? tmdb.normalizeTvPayload(details, credits || { cast: [], crew: [] })
           : tmdb.normalizeDetailsPayload(details, credits || { cast: [], crew: [] });
-      // Never drop an IMDb id that a previous imdb run already stored (the
-      // TV normalizer has no external_ids in this code path).
       if (!payload.details.imdb_id && item.previousImdbId) {
         payload.details.imdb_id = item.previousImdbId;
       }
@@ -137,10 +88,6 @@ async function refreshKeywords(item) {
   }
   return { ok: false, error: lastError };
 }
-
-/* ------------------------------------------------------------------ */
-/* imdb target                                                         */
-/* ------------------------------------------------------------------ */
 
 async function refreshImdb(item) {
   const { id, kind } = item;
@@ -179,10 +126,6 @@ async function refreshImdb(item) {
   return { ok: false, error: lastError };
 }
 
-/* ------------------------------------------------------------------ */
-/* collections target                                                  */
-/* ------------------------------------------------------------------ */
-
 async function refreshCollections(item) {
   const { id } = item;
   let lastError = null;
@@ -197,8 +140,6 @@ async function refreshCollections(item) {
         details,
         item.credits || { cast: [], crew: [] }
       );
-      // Re-fetching through the normalizer must not erase markers written by
-      // the other backfill targets.
       if (!payload.details.imdb_id && item.previousImdbId) {
         payload.details.imdb_id = item.previousImdbId;
       }
@@ -215,10 +156,6 @@ async function refreshCollections(item) {
   }
   return { ok: false, error: lastError };
 }
-
-/* ------------------------------------------------------------------ */
-/* main                                                                */
-/* ------------------------------------------------------------------ */
 
 async function readAllFiles() {
   const detailsDir = path.join(cache.CACHE_DIR, 'details');
@@ -306,7 +243,6 @@ async function runWikidataTarget(files, names, unreadable) {
 
 async function main() {
   if (TARGET === 'rematch') {
-    // Re-evaluate index.json only; it does not need the details scan.
     const { runRematch } = require('./rematch');
     return runRematch();
   }
@@ -335,7 +271,6 @@ async function main() {
         credits: file.entry.credits || null,
       });
     } else if (TARGET === 'collections') {
-      // TV details have no belongs_to_collection; only movies need a refetch.
       if (file.kind === 'tv' || collectionChecked(file.entry)) {
         skipped++;
         continue;
@@ -430,7 +365,6 @@ async function main() {
   );
 
   if (TARGET === 'imdb') {
-    // Re-read from disk so the numbers reflect what was actually persisted.
     const fresh = await readAllFiles();
     const cov = coverage(fresh.files);
     console.log(

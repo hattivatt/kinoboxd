@@ -6,8 +6,6 @@ const { parseForce } = require('../../core/params');
 function register(router, ctx) {
   const { deps, client, importer, storeClient, errorProfile, resolveProfileOrThrow } = ctx;
 
-  /* ------------------------- import -------------------------- */
-
   function startFromRequest(req, res) {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const rawTarget =
@@ -42,7 +40,6 @@ function register(router, ctx) {
       personnelOptions: deps.personnelOptions,
       franchiseOptions: deps.franchiseOptions,
       enrichClient: storeClient || undefined,
-      // M4: the automatic pass is details+spy; `reviews` stays manual.
       enrichPhases: deps.enrichPhases,
       spyClient: deps.spyClient || undefined,
     });
@@ -66,12 +63,6 @@ function register(router, ctx) {
     }
   });
 
-  /**
-   * `POST /api/games/refresh` — re-read the library/achievements of an already
-   * imported profile (ИГРЫ-АРХИТЕКТУРА §5). Always `force`: a manual refresh
-   * exists to bypass the TTLs, so it never returns the cached snapshot.
-   * Body: `{ profile: "steam-<steamid64>" }` (query fallback for curl).
-   */
   router.post('/refresh', (req, res, next) => {
     try {
       const body = req.body && typeof req.body === 'object' ? req.body : {};

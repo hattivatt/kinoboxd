@@ -1,29 +1,5 @@
 'use strict';
 
-/**
- * Epic cache (M6b) — `cache-games/` files owned by the Epic secondary library.
- *
- * The Steam cache module (`game-cache.js`) is deliberately untouched: GOG
- * (M6a) is developed in parallel and will add its own files to the same
- * namespace, so every Epic path lives here instead of extending the Steam
- * module. This keeps the two branches file-disjoint apart from one mount line
- * in `server/index.js` and one slot in the UI.
- *
- * Layout (ИГРЫ-АРХИТЕКТУРА §14.4):
- *
- *   profiles/epic-<accountId>.json      displayName/ownerKey/connectedAt
- *   library/epic-<accountId>.json       merged entitlements+library snapshot
- *   playtime/epic-<accountId>.json      artifactId → totalTime (seconds)
- *   catalog/<catalogItemId>.json        Epic catalog bulk metadata (global)
- *   catalog/productmapping.json         appName → slug (public fallback)
- *   tokens/epic-<accountId>.json        0600, handled by epic-token-store.js
- *
- * TTLs: library 24 h (like Steam), playtime 24 h, catalog 180 d,
- * productmapping 7 d. The library/playtime TTLs only gate *reuse*; a stale
- * snapshot is still served (with `status: 'stale'`) instead of pretending the
- * account has zero games (§14.4 rule 7).
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -64,11 +40,6 @@ function epicProfileKeyOf(accountId) {
   return `epic-${assertAccountId(accountId)}`;
 }
 
-/**
- * `epic-<accountId>` token parser. Deliberately separate from
- * `gameCache.parseProfileToken` (steam-only): a games stats request must never
- * accept an Epic token as its owner profile.
- */
 function parseEpicProfileToken(token) {
   const value = String(token == null ? '' : token).trim();
   const match = /^epic-([A-Za-z0-9._-]{1,80})$/i.exec(value);
@@ -92,10 +63,6 @@ function catalogPath(catalogItemId) {
   return path.join(CATALOG_DIR, `${gameCache.safeKey(catalogItemId)}.json`);
 }
 
-/* ------------------------------------------------------------------ */
-/* Profiles                                                            */
-/* ------------------------------------------------------------------ */
-
 async function saveEpicProfile(profile) {
   const accountId = assertAccountId(profile && profile.accountId);
   const doc = {
@@ -114,7 +81,6 @@ function getEpicProfile(accountId) {
   return hit ? hit.data : null;
 }
 
-/** All Epic profiles, newest connection/import first. */
 function listEpicProfiles() {
   let names = [];
   try {
@@ -155,7 +121,6 @@ function listEpicProfiles() {
   return result;
 }
 
-/** Same-owner libraries (`libraries[]` of the owner profile, §14.4). */
 function librariesForOwner(ownerKey) {
   const wanted = String(ownerKey == null ? '' : ownerKey).trim();
   if (!wanted) return [];
@@ -174,11 +139,6 @@ function librariesForOwner(ownerKey) {
     }));
 }
 
-/**
- * The first Epic account bound to an owner. The games model is one owner →
- * one Epic library (§14.4 rule 1); a second account is refused by the auth
- * layer with `owner_mismatch` instead of silently summing libraries.
- */
 function epicAccountForOwner(ownerKey) {
   const wanted = String(ownerKey == null ? '' : ownerKey).trim();
   if (!wanted) return null;
@@ -186,30 +146,6 @@ function epicAccountForOwner(ownerKey) {
   return entry ? entry.accountId : null;
 }
 
-/**
- * Owner-binding self-heal, **read-only** half (fix 02.11.2026).
- *
- * The catalog phase can only address an Epic library when `epicAccountForOwner`
- * finds the binding. A token file written before the «one owner» rule — or one
- * whose profile was lost — has no `ownerKey`, so the phase used to exit with
- * `not_connected` while a perfectly usable token sat in `tokens/`. This helper
- * decides, synchronously, what the binding actually is:
- *
- *   { state: 'bound',         accountId, hasAccessToken }
- *   { state: 'profile_missing', accountId, hasAccessToken } — token names the
- *        owner (old `ownerProfile` accepted), the profile file does not;
- *   { state: 'unbound',       accountId, hasAccessToken }  — exactly one token
- *        without any binding: it may be adopted by the owner **if** the owner
- *        has no other account and no token names another owner;
- *   { state: 'owner_mismatch', otherOwner }               — a token names a
- *        different owner: visible, never a silent reassignment;
- *   { state: 'ambiguous',     candidates[] }              — several candidate
- *        tokens without an unambiguous owner;
- *   { state: 'none' }                                     — no token at all.
- *
- * It never reads a token value into the result (only presence), never writes.
- * The write half is `ensureEpicOwnerBinding`.
- */
 function epicBindingForOwnerSync(ownerKey) {
   const wanted = String(ownerKey == null ? '' : ownerKey).trim();
   if (!wanted) return { state: 'no_owner', accountId: null, hasAccessToken: false };
@@ -251,9 +187,6 @@ function epicBindingForOwnerSync(ownerKey) {
     if (ownerOf(only) === wanted) return withToken('profile_missing', only);
     return withToken('owner_mismatch', null, { otherOwner: ownerOf(only) });
   }
-  // Several token files: adoption is ambiguous by construction. The owner is
-  // told *why* (one of the candidates names another owner) instead of the job
-  // silently picking a person.
   if (foreign.length) {
     return {
       state: 'owner_mismatch',
@@ -274,13 +207,6 @@ function epicBindingForOwnerSync(ownerKey) {
   };
 }
 
-/**
- * Owner-binding self-heal, **write** half. Called from the catalog job (never
- * from a polled read path): when the binding is missing but unambiguous, the
- * single token is adopted by the owner and both files are updated. A token that
- * names another owner, or several candidate tokens, is **never** reassigned —
- * the caller gets the reason and reports it in `/secondary-details/status`.
- */
 async function ensureEpicOwnerBinding(ownerKey, options = {}) {
   const wanted = String(ownerKey == null ? '' : ownerKey).trim();
   const state = epicBindingForOwnerSync(wanted);
@@ -298,9 +224,6 @@ async function ensureEpicOwnerBinding(ownerKey, options = {}) {
     }
     if (!doc) return { ...state, state: 'unbound', adopted: false };
     try {
-      // Reuse the secret-safe writer: it re-normalizes the document and keeps
-      // the 0600/mode guarantees. The token value is passed through, never
-      // logged, never returned.
       await store.saveTokens({ ...doc, ownerKey: wanted });
     } catch (err) {
       return { ...state, state: 'unbound', adopted: false, code: 'bind_write_failed' };
@@ -334,10 +257,6 @@ async function markEpicDisconnected(accountId) {
   });
 }
 
-/* ------------------------------------------------------------------ */
-/* Library                                                             */
-/* ------------------------------------------------------------------ */
-
 async function saveEpicLibrary(accountId, library) {
   const id = assertAccountId(accountId);
   const doc = {
@@ -370,10 +289,6 @@ function listEpicLibraries() {
   return result;
 }
 
-/* ------------------------------------------------------------------ */
-/* Playtime                                                            */
-/* ------------------------------------------------------------------ */
-
 async function saveEpicPlaytime(accountId, playtime) {
   const id = assertAccountId(accountId);
   const doc = {
@@ -390,10 +305,6 @@ function getEpicPlaytime(accountId) {
   const hit = gameCache.readJsonWithFingerprint(playtimePath(accountId));
   return hit ? hit.data : null;
 }
-
-/* ------------------------------------------------------------------ */
-/* Catalog metadata (global, not per owner)                            */
-/* ------------------------------------------------------------------ */
 
 async function saveEpicCatalogItem(catalogItemId, doc) {
   const key = gameCache.safeKey(catalogItemId);
@@ -418,7 +329,6 @@ function getEpicCatalogItem(catalogItemId) {
   return hit ? hit.data : null;
 }
 
-/** `{ [catalogItemId]: doc }`; missing/corrupt files are simply absent. */
 function listEpicCatalogItems(ids) {
   const result = {};
   if (!Array.isArray(ids)) return result;
@@ -448,22 +358,6 @@ function getProductMapping() {
   return hit ? hit.data : null;
 }
 
-/* ------------------------------------------------------------------ */
-/* Slug overrides (store slug discovered for a catalogItemId)          */
-/* ------------------------------------------------------------------ */
-
-/**
- * `productmapping` covers only ~1 283 appNames, so an Epic exclusive can be
- * absent from it *and* from the catalog's `productSlug`/`urlSlug`. When the
- * secondary-details job discovers the CMS slug by a validated title probe
- * (`Alan Wake 2` → `alan-wake-2`, checked against `productName`), it stores it
- * here. Both the read model (`secondary/epic.joinGames`) and the job targets read
- * this file, so one discovery is enough and a re-import does not lose it.
- *
- * It is deliberately **not** written into the catalog document: that document
- * means "catalog bulk metadata", and fabricating a slug there would also mark
- * the game as `metadataSource: 'epic-catalog'`.
- */
 function slugOverridesPath() {
   return path.join(CATALOG_DIR, 'slug-overrides.json');
 }
@@ -474,7 +368,6 @@ function readSlugOverrides() {
   return data && data.slugs && typeof data.slugs === 'object' ? data.slugs : {};
 }
 
-/** `null` when nothing was discovered for this catalog item. */
 function getEpicSlugOverride(catalogItemId) {
   const id = String(catalogItemId == null ? '' : catalogItemId);
   if (!id) return null;
@@ -482,7 +375,6 @@ function getEpicSlugOverride(catalogItemId) {
   return entry && entry.slug ? String(entry.slug) : null;
 }
 
-/** Remember a validated `catalogItemId → store slug`. Idempotent. */
 function saveEpicSlugOverride(catalogItemId, slug, extra = {}) {
   const id = String(catalogItemId == null ? '' : catalogItemId);
   const value = String(slug == null ? '' : slug).trim();
@@ -505,10 +397,6 @@ function saveEpicSlugOverride(catalogItemId, slug, extra = {}) {
   });
   return entry;
 }
-
-/* ------------------------------------------------------------------ */
-/* TTLs                                                                */
-/* ------------------------------------------------------------------ */
 
 function epicLibraryTtlMs() {
   return envTtl('GAMES_EPIC_LIBRARY_TTL_MS', LIBRARY_TTL_MS);

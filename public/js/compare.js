@@ -1,10 +1,3 @@
-/* Profile comparison view: two cached KinoPoisk profiles side by side.
- *
- * The heavy counters are computed server-side from the persistent caches
- * (/api/compare), so this module only owns the picker and the presentation.
- * Opening the view never changes the active profile or the dashboard data.
- */
-
 import { getKpProfiles, getCompare } from './api.js';
 import {
   $, el, clear, fmtInt, fmtRating, fmtPeriod, fmtWatchTime, plural,
@@ -51,10 +44,6 @@ function setSelectOptions(select, list, selectedId) {
   }
 }
 
-/**
- * Show/hide the topbar and switcher entry points. Exposed so the main module
- * can update them whenever it refreshes the server profile list.
- */
 export function renderCompareAvailability(list) {
   if (Array.isArray(list)) profiles = list;
   const available = profiles.length >= 2;
@@ -325,11 +314,6 @@ function fillPicker({ activeUserId = null } = {}) {
   return true;
 }
 
-/**
- * Open the comparison view. Fetches the server-side profile list on every
- * entry (it may have changed after an import) and pre-runs the comparison for
- * the default pair, so the screen is useful immediately.
- */
 export async function openCompare({ activeUserId = null } = {}) {
   if (typeof handlers.onShow === 'function') handlers.onShow();
   showError('');

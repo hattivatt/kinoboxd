@@ -1,11 +1,5 @@
 'use strict';
 
-/**
- * Hardcover ISBN -> work lookup, shared by the resolve job (batched) and the
- * `hardcover` provider (single ISBN). Extracted from resolve.js so providers
- * can reuse it without a require-cycle.
- */
-
 const hardcover = require('./hardcover');
 const { normalizeIsbn, isbn10Of } = require('./normalize');
 
@@ -46,10 +40,6 @@ query IsbnBatch($isbns: [String!]!) {
   }
 }`;
 
-/**
- * Resolve a set of normalized ISBNs to hardcover works.
- * Returns { byIsbn: Map<isbn, {details, editionId}>, works, queries, requests }.
- */
 async function lookupIsbns(isbns, options = {}) {
   const byIsbn = new Map();
   const works = new Map();

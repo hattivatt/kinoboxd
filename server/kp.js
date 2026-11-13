@@ -1,52 +1,16 @@
 'use strict';
 
-/**
- * KinoPoisk ("Кинопоиск") import.
- *
- * Scrapes the public votes list of a KinoPoisk user profile
- * (https://www.kinopoisk.ru/user/{id}/votes/list/vs/vote/page/{n}/),
- * caches the result in cache/kp/{userId}.json and then feeds the entries
- * through the very same TMDB enrichment pipeline that is used for the
- * Letterboxd uploads (server/enrich.js).
- *
- * When the profile is already cached, an import first checks the newest page
- * (sorted by rating date) and merges only the votes added since the last
- * scrape; a full re-scrape is used when the profile shrank or changed too
- * much. If that check fails (captcha/network) the cached data is used as-is
- * and the job reports a warning.
- *
- * Only one request at a time is made to KinoPoisk, with a 1.5-2.5 s delay
- * between page requests.
- *
- * Pages are requested with 200 entries per page, not the default 50. The
- * legacy list ignores ?per_page=200 / ?navigator_per_page=200; the working
- * form is the one produced by the page's own "показывать" selector:
- *
- *   /user/{id}/votes/list/vs/vote/perpage/200/
- *   /user/{id}/votes/list/vs/vote/perpage/200/page/{n}/
- *
- * ("perpage/200/" must precede "page/{n}/"). The server also stores the
- * setting in the anonymous cookie my_perpages={"79votes":200}; returning to
- * a plain page/{n}/ URL keeps 200 per page as long as that cookie survives.
- * A profile with 1371 votes therefore needs 7 page requests instead of 28.
- */
-
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const net = require('net');
 const cheerio = require('cheerio');
 
-// Yandex frontends can take several seconds to accept a TCP connection.
-// Node 20+ "Happy Eyeballs" aborts each address after 250 ms by default,
-// which makes fetch() time out on such hosts while curl works. Give the
-// connection attempt more time (harmless for the TMDB requests too).
 try {
   if (typeof net.setDefaultAutoSelectFamilyAttemptTimeout === 'function') {
     net.setDefaultAutoSelectFamilyAttemptTimeout(10000);
   }
 } catch (err) {
-  // Older Node versions do not have this hook; nothing to do.
 }
 
 const { HttpError, createUpload } = require('./upload');
@@ -64,32 +28,20 @@ const USER_AGENT = sources.userAgent('kinopoisk');
 const REQUEST_TIMEOUT_MS = sources.timeoutMs('kinopoisk');
 const MIN_PAGE_DELAY_MS = sources.SOURCES.kinopoisk.pauseMs;
 const MAX_PAGE_DELAY_MS = sources.SOURCES.kinopoisk.pauseMaxMs;
-const MAX_SCOPE = 60; // hard stop for pagination loops
+const MAX_SCOPE = 60;
 
-// A delta refresh normally needs exactly one page: the votes list is sorted by
-// rating date (newest first), so every new rating is at the top. If page 1 is
-// entirely new (the cached profile is very stale) we walk further pages until
-// an entry from the cache is seen, but never more than this many pages — past
-// that a full re-scrape is cheaper and safer.
 const REFRESH_MAX_PAGES = 5;
 
-// The list page offers 10/25/50/75/100/200 per page. 200 is applied through
-// the path segment built by the page's own selector (see the file header).
 const PER_PAGE = 200;
 const PER_PAGE_COOKIE = 'my_perpages';
-const PER_PAGE_COOKIE_KEY = '79votes'; // KinoPoisk's list type id for "оценки"
+const PER_PAGE_COOKIE_KEY = '79votes';
 
-// uploadId -> kp job
 const jobs = createJobs({
   name: 'films-kp',
   idPrefix: 'films-kp',
   maxJobs: 0,
   keyOf: (job) => job.uploadId,
 });
-
-/* ------------------------------------------------------------------ */
-/* Errors                                                              */
-/* ------------------------------------------------------------------ */
 
 class KpError extends Error {
   constructor(message, code) {
@@ -106,21 +58,12 @@ function blockedError() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Small helpers                                                       */
-/* ------------------------------------------------------------------ */
-
 const sleep = defaultSleep;
 
 function randomPageDelay() {
   return MIN_PAGE_DELAY_MS + Math.floor(Math.random() * (MAX_PAGE_DELAY_MS - MIN_PAGE_DELAY_MS + 1));
 }
 
-/**
- * URL of a votes page with the per-page setting applied. Page 1 is
- * ".../perpage/200/", later pages ".../perpage/200/page/{n}/"; both were
- * verified against the live site (200 entries, numbering 1..200, 201..400).
- */
 function votesPageUrl(userId, page) {
   const base = `${KP_ORIGIN}/user/${userId}/votes/list/vs/vote/perpage/${PER_PAGE}/`;
   return page > 1 ? `${base}page/${page}/` : base;
@@ -135,7 +78,6 @@ function parseUserId(raw) {
   if (!value) return null;
   const fromUrl = value.match(/\/user\/(\d+)(?:[/?#]|$)/);
   if (fromUrl) return fromUrl[1];
-  // Bare numeric id is accepted as a convenience.
   if (/^\d+$/.test(value)) return value;
   return null;
 }
@@ -163,10 +105,6 @@ async function writeKpCache(userId, data) {
   await fsp.writeFile(tmp, JSON.stringify(data), 'utf8');
   await fsp.rename(tmp, target);
 }
-
-/* ------------------------------------------------------------------ */
-/* HTTP with an anonymous cookie jar                                   */
-/* ------------------------------------------------------------------ */
 
 function makeJar() {
   return new Map();
@@ -232,7 +170,6 @@ async function kpRequest(url, jar) {
   return { status: response.status, headers: response.headers, body: response.body, url };
 }
 
-/** Follow redirects manually so cookies from every hop are collected. */
 async function kpRequestFollow(url, jar, maxHops) {
   let current = url;
   const hops = maxHops || 10;
@@ -278,10 +215,6 @@ function extractUuid(location) {
   }
 }
 
-/**
- * Anonymous bootstrap: the votes page redirects to Yandex SSO, which hands
- * out the cookies (yandexuid, _yasc, _csrf, ...) required by KinoPoisk.
- */
 async function bootstrap(jar, targetUrl) {
   const first = await kpRequest(targetUrl, jar);
   if (first.status === 200) {
@@ -321,10 +254,6 @@ async function bootstrap(jar, targetUrl) {
   return install;
 }
 
-/**
- * Fetch one votes page, re-bootstrapping at most once (two bootstrap attempts
- * per job in total) if the session cookies are not accepted.
- */
 async function fetchVotesPage(url, votesRoot, jar, state) {
   let res = await kpRequest(url, jar);
 
@@ -358,10 +287,6 @@ async function fetchVotesPage(url, votesRoot, jar, state) {
   return res.body;
 }
 
-/* ------------------------------------------------------------------ */
-/* HTML parsing                                                        */
-/* ------------------------------------------------------------------ */
-
 function cleanText(value) {
   return String(value == null ? '' : value)
     .replace(/\u00a0/g, ' ')
@@ -394,7 +319,6 @@ function parseDateToIso(text) {
   const year = match[3];
   const hours = (match[4] || '00').padStart(2, '0');
   const minutes = (match[5] || '00').padStart(2, '0');
-  // KinoPoisk timestamps are Moscow time (UTC+3).
   const date = new Date(`${year}-${month}-${day}T${hours}:${minutes}:00+03:00`);
   if (Number.isNaN(date.getTime())) return null;
   return date.toISOString();
@@ -415,7 +339,6 @@ function detectNick($) {
     const text = cleanText($(selector).first().text());
     if (text && text.length <= 100) return text;
   }
-  // <title>Профиль: Axis - Оценки</title>
   const title = cleanText($('title').first().text());
   const titleMatch = title.match(/^Профиль:\s*(.+?)\s*[-–—|]/i);
   if (titleMatch) return cleanText(titleMatch[1]);
@@ -428,11 +351,6 @@ function detectNick($) {
   return null;
 }
 
-/**
- * Total number of records in the profile, parsed from the pagination line
- * "1—200 из 1371" ("1–200 of 1371"). Returns null when the page does not
- * contain a recognisable summary; callers then skip count-based checks.
- */
 function parseTotalCount($) {
   const readNumber = (value) => {
     const digits = String(value == null ? '' : value).replace(/[^\d]/g, '');
@@ -450,7 +368,6 @@ function parseTotalCount($) {
     return match ? readNumber(match[2]) : null;
   };
 
-  // Prefer the pagination widget, then fall back to the whole page text.
   const selectors = [
     '.navigator',
     '.pages',
@@ -512,10 +429,6 @@ function parseVotesPage(html) {
     const range = ruText.match(
       /((?:19|20)\d{2})\s*[–—-]\s*((?:19|20)\d{2})/
     );
-    // The last year in the node is the release year (titles can contain
-    // their own years, e.g. "2012 (2009)"). For series the parenthetical
-    // range "(2021 – 2024)" describes the run, so the first year (the start
-    // year) is what TMDB's first_air_date_year expects.
     let year = years.length ? years[years.length - 1] : null;
     let yearEnd = null;
     if (type === 'tv' && range) {
@@ -578,18 +491,7 @@ function parseVotesPage(html) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Scraping                                                            */
-/* ------------------------------------------------------------------ */
-
-/**
- * Open an anonymous KinoPoisk session: bootstrap the SSO cookies against the
- * 200-per-page votes root and pin the perpage cookie. Returns the cookie jar
- * and the (possibly already fetched) first page response.
- */
 async function openVotesSession(userId) {
-  // Bootstrap against the 200-per-page page 1, so the SSO install endpoint
-  // redirects straight to a 200-entry page even before the cookie is stored.
   const votesRoot = votesPageUrl(userId, 1);
   const pageUrl = (page) => votesPageUrl(userId, page);
 
@@ -601,7 +503,6 @@ async function openVotesSession(userId) {
     boot = await bootstrap(jar, votesRoot);
     state.bootstrapAttempts = 1;
   } catch (err) {
-    // One more bootstrap attempt (cookies from both attempts accumulate).
     state.bootstrapAttempts = 1;
     console.warn(
       `[kp ${userId}] bootstrap failed (${err.message}); retrying once`
@@ -611,27 +512,16 @@ async function openVotesSession(userId) {
     state.bootstrapAttempts = 2;
   }
 
-  // Cold bootstrap responses reset my_perpages to "[]"; pin the setting after
-  // the session cookies exist so every subsequent page/{n}/ request keeps
-  // 200 entries per page. (The perpage URL already does this server-side —
-  // this is a belt-and-braces measure against redirects dropping the path.)
   jar.set(PER_PAGE_COOKIE, perPageCookieValue());
 
   return { votesRoot, pageUrl, jar, state, boot };
 }
 
-/**
- * Parse page 1, reusing the bootstrap response when it is a genuine
- * 200-per-page page 1 and requesting it again otherwise.
- */
 async function fetchFirstVotesPage(session, userId) {
   let parsed = null;
   const boot = session.boot;
 
   if (boot.status === 200 && boot.body.includes('profileFilmsList')) {
-    // The install endpoint already redirected to the votes page. Only trust
-    // it when it really is a 200-per-page page 1: a 50-entry page 1 with a
-    // large pagination would make us crawl the wrong sequence.
     const candidate = parseVotesPage(boot.body);
     const candidatePages = candidate.maxPage || 1;
     if (
@@ -775,16 +665,6 @@ async function scrapeVotes(userId, onProgress) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Delta refresh (cached profile -> check KinoPoisk for new votes)      */
-/* ------------------------------------------------------------------ */
-
-/**
- * Newest ratedAt in an entry list (ISO strings sort lexicographically).
- * Used only for logging/diagnostics: novelty itself is decided by kpId set
- * membership, because .num is the position at the time of the scrape and
- * shifts whenever a rating is added.
- */
 function newestRatedAt(entries) {
   let newest = null;
   for (const entry of entries || []) {
@@ -795,10 +675,6 @@ function newestRatedAt(entries) {
   return newest;
 }
 
-/**
- * Prepend the freshly rated entries to the cached list, newest first, and
- * deduplicate by kpId. Cached entries keep their original order/fields.
- */
 function mergeKpEntries(newEntries, cachedEntries) {
   const orderedNew = [...(newEntries || [])].sort((a, b) => {
     const left = a && a.ratedAt ? String(a.ratedAt) : '';
@@ -820,25 +696,6 @@ function mergeKpEntries(newEntries, cachedEntries) {
   return merged;
 }
 
-/**
- * Compare the cached profile with KinoPoisk.
- *
- * The votes list is ordered by rating date, newest first, so page 1 holds
- * every rating added since the last scrape. We stop at the first entry that
- * is already in the cache (the intersection point). If page 1 is entirely
- * new (very stale cache) pages 2..REFRESH_MAX_PAGES are fetched until an
- * intersection appears; if it still is not there, a full re-scrape is
- * requested (the delta would be unbounded anyway).
- *
- * A smaller total count than the cache, or a merged size that would exceed
- * KinoPoisk's reported total, means ratings were removed in KinoPoisk. Then
- * merge would silently resurrect deleted entries, so the caller falls back
- * to a full re-scrape as well.
- *
- * Returns { needsFullScrape, reason?, newEntries, pagesFetched, totalCount,
- * kpNick }. Throws KpError when the network/captcha/parse step fails; the
- * caller then keeps the stale cache.
- */
 async function refreshVotes(userId, cached, onProgress) {
   const cachedEntries = Array.isArray(cached.entries) ? cached.entries : [];
   const cachedIds = new Set();
@@ -848,7 +705,6 @@ async function refreshVotes(userId, cached, onProgress) {
   }
 
   if (cachedIds.size === 0) {
-    // Nothing to diff against; treat this like a first import.
     return {
       needsFullScrape: true,
       reason: 'cached profile has no entries',
@@ -893,9 +749,6 @@ async function refreshVotes(userId, cached, onProgress) {
     onProgress({ page: 1, pageTotal: 1, total: newById.size });
   }
 
-  // Page 1 was completely unknown: keep walking until the cached tail is
-  // reached. A short page means this was the end of the list, so there is
-  // nothing more to compare against anyway.
   while (
     !intersection &&
     pagesFetched < REFRESH_MAX_PAGES &&
@@ -967,10 +820,6 @@ async function refreshVotes(userId, cached, onProgress) {
   return { ...base, needsFullScrape: false };
 }
 
-/* ------------------------------------------------------------------ */
-/* Dataset + enrichment                                                */
-/* ------------------------------------------------------------------ */
-
 function buildDataset(userId, cacheData) {
   const fetchedAt = cacheData.fetchedAt || new Date().toISOString();
   const kpNick = cacheData.kpNick == null ? null : cacheData.kpNick;
@@ -999,7 +848,6 @@ function buildDataset(userId, cacheData) {
     films.push({
       slug,
       kpId,
-      // Public page of the title: /film/ for movies, /series/ for TV.
       kpUrl: `${KP_ORIGIN}/${kind === 'tv' ? 'series' : 'film'}/${kpId}/`,
       title,
       titleRu,
@@ -1069,13 +917,6 @@ function startEnrichment(upload, job) {
   enrich.startEnrich(upload);
 }
 
-/* ------------------------------------------------------------------ */
-/* Jobs                                                                */
-/* ------------------------------------------------------------------ */
-
-// KinoPoisk requests are serialized across all imports so that a second
-// import never runs in parallel with the first one (the registry-wide chain).
-
 function startImport(rawUrl) {
   const userId = parseUserId(rawUrl);
   if (!userId) {
@@ -1086,8 +927,6 @@ function startImport(rawUrl) {
     );
   }
 
-  // Coalesce concurrent imports of the same profile: do not scrape, refresh
-  // (or enrich) one user twice in parallel.
   for (const existingJob of jobs.list()) {
     const existingId = existingJob.uploadId;
     if (
@@ -1141,16 +980,10 @@ function startImport(rawUrl) {
     );
   }
 
-  // Both a full scrape and a delta refresh are serialized through the same
-  // chain: KinoPoisk requests never run in parallel across imports.
   jobs.run(job, () => runImport(upload, job, cached), {
-    // The job is stage-driven (like the books import): a failed scrape is
-    // `stage: 'failed'`, and `getStatus` derives `done` from the stage.
     finish: false,
     onError: (self, err) => {
       console.error('[kp] import queue error:', err);
-      // A throw outside scrapeVotes' own try/catch (e.g. a disk error while
-      // merging the delta) must not leave the job stuck in "refresh" forever.
       if (self.stage !== 'done' && self.stage !== 'failed') {
         self.stage = 'failed';
         self.error = `Не удалось импортировать профиль Кинопоиска: ${
@@ -1173,12 +1006,6 @@ function startImport(rawUrl) {
   return { uploadId: upload.uploadId, userId, ...getStatus(upload.uploadId) };
 }
 
-/**
- * Entry point of a queued import. Without a cached profile this is a plain
- * full scrape; with one, only new votes are fetched and merged into the
- * cache (falling back to a full scrape when the profile shrank or changed
- * too much).
- */
 async function runImport(upload, job, cached) {
   if (!cached) return runScrape(upload, job);
 
@@ -1196,9 +1023,6 @@ async function runImport(upload, job, cached) {
       job.setProgress(job.page, job.pageTotal);
     });
   } catch (err) {
-    // KinoPoisk is unavailable (captcha, network, parser): the cached
-    // profile is still valid data from the last successful import, so the
-    // import succeeds with a warning instead of failing outright.
     const reason = err && err.message ? err.message : 'неизвестная ошибка';
     job.warning = `Обновление профиля не удалось, взяты данные из кэша: ${reason}`;
     console.warn(`[kp ${job.userId}] refresh failed; keeping cache: ${reason}`);
@@ -1235,7 +1059,6 @@ async function runImport(upload, job, cached) {
         `${data.entries.length} entries total`
     );
   } else {
-    // No changes: do not touch the cache file (keep its fetchedAt honest).
     console.log(
       `[kp ${job.userId}] delta refresh: no new votes, cache unchanged ` +
         `(${cached.entries.length} entries)`
@@ -1301,7 +1124,6 @@ function getStatus(uploadId) {
   }
 
   const snapshot = jobs.snapshot(job);
-  // Legacy: `error` only appears on a failed import (not as `error: null`).
   if (!job.error) delete snapshot.error;
   const status = {
     ...snapshot,

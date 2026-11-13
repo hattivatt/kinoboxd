@@ -1,22 +1,5 @@
 'use strict';
 
-/**
- * `/api/games/gog/*` router (M6a). Mounted under the existing auth gate, next
- * to `/api/games`, like the personnel and franchise routers.
- *
- *   GET  /api/games/gog/auth-url        → { url, redirectUri, clientSource }
- *   POST /api/games/gog/auth            { code, profile? }
- *   GET  /api/games/gog/status          → accounts (sanitized), never tokens
- *   POST /api/games/gog/import          { account?, profile?, force? } → job
- *   GET  /api/games/gog/import/:jobId
- *   GET  /api/games/gog/import/status?id=…
- *   POST /api/games/gog/logout          { account?, profile? }
- *
- * Contract rules are the same as the rest of the games namespace: an unknown
- * query parameter is a 400 `unexpected_parameter`, a missing/ambiguous account
- * is a 400 with a hint, and a token value is never returned or logged.
- */
-
 const express = require('express');
 
 const { budgetLimitFromEnv } = require('../core/budget');
@@ -79,7 +62,6 @@ function createRouter(deps = {}) {
       res.status(200).json({
         url: api.authorizeUrl(),
         redirectUri: gog.REDIRECT_URI,
-        // Source only: the credentials themselves are never exposed.
         clientSource: gog.clientSource(),
         instructions:
           'Откройте ссылку, войдите в GOG и скопируйте параметр code из адресной строки ' +
@@ -124,9 +106,6 @@ function createRouter(deps = {}) {
         const playtime = gogCache.getPlaytime(account.userKey);
         return {
           ...account,
-          // `authState` (from the sanitized token view) explains *why* a
-          // reconnect would be needed: access-token expiry with a working
-          // refresh token is `expired`, not `needsReconnect`.
           binding: account.authState ? account.authState.binding : null,
           libraryCount:
             library && Array.isArray(library.products) ? library.products.length : null,
@@ -142,18 +121,13 @@ function createRouter(deps = {}) {
         configured: true,
         clientSource: gog.clientSource(),
         accounts: profiles,
-        // The GOG account is a secondary library of an existing Steam owner.
         owners: gameCache.listProfiles().map((entry) => ({
           key: entry.key,
           label: entry.label || entry.personaName || null,
         })),
-        // Same reader as the import (`gog-import.js`): 0 is a real value
-        // («no GOG requests»), not a cue to fall back to 200.
         budget: budgetLimitFromEnv('GAMES_GOG_BUDGET', 200),
         libraryTtlHours: Math.round(gogCache.libraryTtlMs() / 3600000),
         playtimeTtlHours: Math.round(gogCache.playtimeTtlMs() / 3600000),
-        // Where the masked auth trail lives: the file to attach to a bug
-        // report when «подключите GOG заново» appears again. No token values.
         debug: {
           authLifecycle: gogCache.debugPath(gogCache.AUTH_LIFECYCLE_NAME),
           dir: gogCache.DEBUG_DIR,
@@ -220,7 +194,6 @@ function createRouter(deps = {}) {
       try {
         userKey = gogJobs.resolveAccount({ account, profile });
       } catch (err) {
-        // Logging out an already-disconnected account is idempotent, not a 400.
         if (err && err.code === 'gog_not_connected' && account == null && profile == null) {
           res.status(200).json({ disconnected: false, reason: 'not_connected' });
           return;
@@ -228,8 +201,6 @@ function createRouter(deps = {}) {
         throw err;
       }
       const removed = gogCache.deleteToken(userKey);
-      // The library/playtime snapshot stays on disk on purpose: the UI shows
-      // «данные от <дата>, требуется переподключение», not zeroes (§14.4 п. 7).
       res.status(200).json({
         disconnected: removed,
         account: gogCache.profileKeyOf(userKey),

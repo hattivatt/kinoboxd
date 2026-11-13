@@ -1,17 +1,3 @@
-/* Local film profile registry: a thin domain facade over core/profile-store.js.
- *
- * KinoPoisk is the only profile source. A Letterboxd archive is an attachment
- * on the server, not a registry entry: boot removes legacy `type:'lb'`
- * profiles and their `stats`/`files` records.
- *
- * Records are the same shape as before:
- *   { id, type:'kp', label, kpUrl, kpUserId, kpNick, uploadId, savedAt, source }
- *
- * The shared store keeps every record in one IndexedDB object store and
- * degrades to memory when IndexedDB is missing/blocked (private mode).
- * main.js keeps its localStorage session (kinoboxd.session.v1) working.
- */
-
 import {
   getStore, getActive, setActive, ready as storeReady, storageMode as storeStorageMode,
   readDoc, writeDoc, deleteDoc, listDocs,
@@ -42,10 +28,6 @@ export function setActiveId(id) {
 export function getActiveId() {
   return getActive(DOMAIN);
 }
-
-/* =========================================================
-   records
-   ========================================================= */
 
 function fallbackId(record) {
   if (record.kpUserId) return `kp:${record.kpUserId}`;
@@ -78,10 +60,6 @@ function normalizeRecord(input) {
     : labelFor(record);
   return record;
 }
-
-/* =========================================================
-   registry
-   ========================================================= */
 
 export async function listProfiles() {
   return profiles.load();
@@ -125,19 +103,10 @@ export async function clearProfiles() {
   await profiles.clear();
 }
 
-/* =========================================================
-   legacy Letterboxd standalone profiles (soft migration)
-   ========================================================= */
-
 function isLegacyLbId(id) {
   return typeof id === 'string' && id.startsWith('lb:');
 }
 
-/**
- * Letterboxd profiles no longer exist as registry entities. Called once at
- * boot: delete every non-KinoPoisk profile together with its cached stats and
- * stored ZIP. Returns the number of removed profile records.
- */
 export async function migrateLetterboxdProfiles() {
   await storeReady();
   let removed = 0;
@@ -154,10 +123,6 @@ export async function migrateLetterboxdProfiles() {
   }
   return removed;
 }
-
-/* =========================================================
-   stats cache (last successful payload per profile)
-   ========================================================= */
 
 export async function getStatsCache(id) {
   if (!id) return null;
@@ -176,8 +141,6 @@ export async function saveStatsCache(id, stats) {
     return false;
   }
   if (!raw || raw.length > MAX_STATS_JSON) {
-    // Too large to cache: drop any previous copy so a switch never shows stale
-    // data instead of re-fetching from the server.
     await removeStatsCache(id);
     return false;
   }
@@ -188,10 +151,6 @@ export async function removeStatsCache(id) {
   if (!id) return;
   await deleteDoc(DOMAIN, 'stats', id);
 }
-
-/* =========================================================
-   ZIP bytes (Letterboxd re-import after a server restart)
-   ========================================================= */
 
 export async function saveFile(id, file) {
   if (!id || !file) return false;

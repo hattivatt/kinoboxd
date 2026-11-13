@@ -23,7 +23,6 @@ async function fetchCards(ctx, events) {
   if (!chain.card) return cardByBook;
   for (const event of events) {
     const bookId = eventKeyOf(event);
-    // Positive card metadata is persisted at ll:{bookId}; never re-fetch it.
     if (!force && cache.getWorkDetails(`ll:${bookId}`)) continue;
     const card = await tryProvider(chain.card, chainInput(event), ctx);
     if (card) cardByBook.set(bookId, card);
@@ -86,7 +85,6 @@ async function applyCard(ctx, event, card, isbnInput) {
     return;
   }
 
-  // No chain hit: leave the event unresolved (negatives are not persisted).
   if (isbnInput.isbn && ctx.isbnToBookIds.size > 0) {
     cache.appendMatchLog({
       ts: now,
@@ -99,11 +97,6 @@ async function applyCard(ctx, event, card, isbnInput) {
   }
 }
 
-/**
- * Events without an ISBN: the LiveLib card supplies the ISBN + RU metadata. The
- * card is budgeted (default 300/run) and pauses 2 s between requests. Card
- * metadata is saved as `ll:` details; the card ISBN is fed back into Hardcover.
- */
 async function enrichWithoutIsbn(ctx, events, cardByBook, hardcoverByIsbn) {
   const { plan, report, cache, force } = ctx;
   for (const event of events) {

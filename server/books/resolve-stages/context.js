@@ -24,8 +24,6 @@ function createContext(llProfile, options = {}) {
   const cardBudget = options.cardBudget || livelibCard.budgetFromEnv();
   const litresBudget = options.litresBudget || litres.budgetFromEnv();
   const gbBudget = options.gbBudget || googlebooks.budgetFromEnv();
-  // Wikidata is asked once per pass, batched, for the works the chain closed
-  // without a first-publication claim (see `year-stage.js`).
   const negativeMemo = options.negativeMemo || {
     googlebooks: new Map(),
     openlibrary: new Map(),

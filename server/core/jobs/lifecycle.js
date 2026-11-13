@@ -3,12 +3,7 @@
 function createLifecycle(ctx) {
   const { now, keyOf, maskError, errorCode } = ctx;
 
-  /** chainKey -> promise; `null` is the registry-wide chain. */
   const chains = new Map();
-
-  /* ---------------------------------------------------------------- */
-  /* Single-flight                                                    */
-  /* ---------------------------------------------------------------- */
 
   function isLive(job) {
     if (!job || job.done) return false;
@@ -36,10 +31,6 @@ function createLifecycle(ctx) {
     return Boolean(findRunning(key, coalesce));
   }
 
-  /* ---------------------------------------------------------------- */
-  /* Execution                                                        */
-  /* ---------------------------------------------------------------- */
-
   function chainFor(chainKey) {
     const key = chainKey == null ? null : String(chainKey);
     if (!chains.has(key)) chains.set(key, Promise.resolve());
@@ -53,8 +44,6 @@ function createLifecycle(ctx) {
         job.status = 'failed';
       } else {
         job.status = 'done';
-        // Every legacy finalizer forces the terminal stage, whatever stage the
-        // task was in when it returned.
         job.stage = 'done';
         job.percent = 100;
       }
@@ -81,15 +70,6 @@ function createLifecycle(ctx) {
     return job;
   }
 
-  /**
-   * Run `task(job)` on the registry chain (`opts.chainKey` selects a per-key
-   * chain, like the GOG import does per account) and finalize the job.
-   *
-   * `opts.onError(job, err)` replaces the default error snapshot (the books
-   * import keeps its own `stage`-driven failure shape). `opts.finish === false`
-   * skips the default finalizer and lets `opts.onFinish(job)` do it, which is
-   * what the books import needs (`done` is false for a failed job there).
-   */
   function run(job, task, opts = {}) {
     const chainKey = opts.chainKey == null ? null : String(opts.chainKey);
     const previous = chainFor(chainKey);
@@ -110,19 +90,11 @@ function createLifecycle(ctx) {
     return next;
   }
 
-  /**
-   * Single-flight start: a live job for `key` (or one of its `aliasKeys`, or
-   * whatever `opts.coalesce` accepts) is returned as-is; otherwise a job is
-   * created, remembered and queued.
-   */
   function start(key, task, opts = {}) {
     const existing = findRunning(key, opts.coalesce);
     if (existing) return existing;
     const job = ctx.createJob({
       seed: opts.seed == null ? key : opts.seed,
-      // The default `keyOf` reads `job.key`; a domain with its own key field
-      // (`profile`, `userKey`, `targetKey`, `uploadId`) passes it in `fields`
-      // and simply ignores this one.
       key: String(key),
       ...(opts.fields || {}),
     });

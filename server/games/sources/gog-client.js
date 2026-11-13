@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * GOG client endpoints: the OAuth grants (authorize URL, code exchange,
- * refresh), the identity read (`userData.json`), the paginated library
- * (`getFilteredProducts`), the owned-id list and the playtime sessions.
- *
- * Every function takes the explicit `context` built by `createClient`; nothing
- * here reads `process.env` or the file system. `gog.js` composes the pipeline
- * and this factory into the public client object.
- */
-
 const { URL } = require('url');
 
 const gogCache = require('../gog-cache');
@@ -61,9 +51,6 @@ function createTokenGrants(context) {
         'gog_invalid_code'
       );
     }
-    // ONE unit inside the module: `expires_in` (seconds, OAuth2) → ms, and a
-    // value that cannot be seconds is already ms. `gogCache.expiresInMs` is
-    // the only converter; a default of 1 h is used when GOG omits the field.
     const ttlMs = gogCache.expiresInMs(json.expires_in) || 3600 * 1000;
     return {
       accessToken: String(json.access_token),
@@ -89,8 +76,6 @@ function createTokenGrants(context) {
     const url = tokenUrl({
       grant_type: 'authorization_code',
       code: value,
-      // The exchange MUST repeat the exact redirect_uri used in the auth URL,
-      // otherwise GOG answers invalid_grant even for a fresh code.
       redirect_uri: REDIRECT_URI,
     });
     const response = await request(url, { followRedirect: false });
@@ -102,7 +87,6 @@ function createTokenGrants(context) {
           { status: 429 }
         );
       }
-      // Never echo the code or the secret: only GOG's own error code/text.
       const parsed = safeJson(response.body);
       const rawError = parsed && parsed.error ? String(parsed.error) : '';
       const detail = parsed && parsed.error_description
@@ -129,15 +113,10 @@ function createTokenGrants(context) {
     if (response.status < 200 || response.status >= 300) {
       const parsed = safeJson(response.body);
       const rawError = parsed && parsed.error ? String(parsed.error) : '';
-      // GOG's own text («Invalid refresh token, client_id:…») is the only
-      // evidence of *which* half broke; it never contains the token value and
-      // is masked anyway, so it is kept on the error for the lifecycle dump.
       const description = parsed && parsed.error_description
         ? maskSecrets(String(parsed.error_description))
         : '';
       if (rawError === 'invalid_client' || rawError === 'unauthorized_client') {
-        // The app credentials broke, not the user's session: reconnect would
-        // fail the same way, so say so instead of «подключите GOG заново».
         const failure = oauthFailure(response, { rawError });
         throw new GogError(failure.message, failure.code, {
           status: failure.status,
@@ -182,7 +161,6 @@ function createReadEndpoints(context) {
     endpoints,
   } = context;
 
-  /** Identity of the token owner (`embed.gog.com/userData.json`). */
   async function getUserData(tokenDoc) {
     const url = `${endpoints.embed}/userData.json`;
     const response = await authenticatedGet(url, tokenDoc, {
@@ -210,9 +188,6 @@ function createReadEndpoints(context) {
     };
   }
 
-  /* ------------------------- library --------------------------- */
-
-  /** One page of `getFilteredProducts` (100 products by default). */
   async function getFilteredProducts(tokenDoc, { page = 1, mediaType = 1 } = {}) {
     const url =
       `${endpoints.embed}/account/getFilteredProducts` +
@@ -233,10 +208,6 @@ function createReadEndpoints(context) {
     };
   }
 
-  /**
-   * Walk every library page. `maxPages` is a safety valve for tests; the
-   * default follows `totalPages` from the first response.
-   */
   async function fetchAllProducts(tokenDoc, { maxPages = null } = {}) {
     const first = await getFilteredProducts(tokenDoc, { page: 1 });
     const products = [...first.products];
@@ -258,7 +229,6 @@ function createReadEndpoints(context) {
     };
   }
 
-  /** Owned product ids only (`/user/data/games`); useful as a sanity check. */
   async function getOwnedIds(tokenDoc) {
     const url = `${endpoints.embed}/user/data/games`;
     const response = await authenticatedGet(url, tokenDoc, {
@@ -270,17 +240,6 @@ function createReadEndpoints(context) {
     return owned.map(String);
   }
 
-  /* ------------------------- playtime -------------------------- */
-
-  /**
-   * `time_sum` in **minutes** for one product.
-   *
-   * A 404 means "no sessions recorded" (a game that was never launched) — a
-   * real zero, reported as `status:'not_found'` so the importer can re-check it
-   * instead of freezing the zero forever. A 200 without a recognizable field
-   * is **not** a zero: `status:'unparsed'`, `minutes:null` — the caller keeps
-   * it pending and dumps the raw body (`cache-games/debug/gog/`).
-   */
   async function getSessions(tokenDoc, gogGameId, options = {}) {
     const { uid, source: uidSource } = gameplayUserId(tokenDoc);
     if (!uid) {

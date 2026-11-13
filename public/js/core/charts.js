@@ -1,29 +1,11 @@
-/* Shared chart primitives + the year-calendar heatmap (U12).
-
- * Extracted in P8 from charts.js, books-charts.js, games-charts.js and
- * widgets.js. The primitives below were literally identical in every copy.
- *
- * `buildYearCalendar` was NOT identical: each tab words the day differently
- * ("просмотр" / "книга" / "достижение"), reads a different per-day field
- * (rewatchCount / reReadCount / appids) and hands a different object to the
- * click handler. The three variants are therefore kept as separate, frozen
- * functions («застывшие различия») instead of being forced into one
- * parameterised renderer — a partial round must not change wording or
- * payload semantics. A later shell round may unify them.
- *
- * Core modules never import domain modules (books/games/main).
- */
-
 import { el, fmtInt, plural, toNum, showTooltip, moveTooltip, hideTooltip } from '../ui.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 
-/* Standalone month labels for the calendar axis ("май", not "мая"). */
 const CAL_MONTHS_SHORT = [
   'янв', 'фев', 'мар', 'апр', 'май', 'июн',
   'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
 ];
-/* Games uses the genitive-ish short forms it shipped with — frozen. */
 const CAL_MONTHS_GAMES = ['янв', 'февр', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сент', 'окт', 'нояб', 'дек'];
 const ACHIEVEMENT_FORMS = ['достижение', 'достижения', 'достижений'];
 const GAME_FORMS = ['игра', 'игры', 'игр'];
@@ -57,7 +39,6 @@ export function heatLevel(count) {
   return 4;
 }
 
-/** Game names for a day, from the light `gamesIndex` (never a heavy request). */
 function gamesLabel(appids, nameOf) {
   const names = (Array.isArray(appids) ? appids : [])
     .map((appid) => (typeof nameOf === 'function' ? nameOf(appid) : ''))
@@ -68,14 +49,13 @@ function gamesLabel(appids, nameOf) {
   return `${shown.join(', ')}${tail}`;
 }
 
-/* films — «Календарь просмотров» (was widgets.js) */
 export function buildYearCalendarFilm(year, byDate, { onDayClick } = {}) {
   const first = Date.UTC(year, 0, 1);
   const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
   const daysInYear = leap ? 366 : 365;
-  const offset = (new Date(first).getUTCDay() + 6) % 7; // Monday = 0
+  const offset = (new Date(first).getUTCDay() + 6) % 7;
   const columns = Math.ceil((offset + daysInYear) / 7);
-  const pitch = 13; // 11px cell + 2px gap; keep in sync with CSS
+  const pitch = 13;
 
   const row = el('div', { class: 'cal-year', dataset: { year: String(year) } });
   row.append(el('div', { class: 'cal-year-label', text: String(year) }));
@@ -120,8 +100,6 @@ export function buildYearCalendarFilm(year, byDate, { onDayClick } = {}) {
     const date = `${year}-${pad2(dateObj.getUTCMonth() + 1)}-${pad2(dateObj.getUTCDate())}`;
     const day = byDate.get(date) || null;
     const count = day ? toNum(day.count) : 0;
-    // Diary rewatches only: the KinoPoisk rating-date proxy has no flag, so
-    // `rewatchCount` is 0 there by construction.
     const rewatch = day ? Math.max(0, toNum(day.rewatchCount)) : 0;
     const countLabel = `${fmtInt(count)} ${plural(count, ['просмотр', 'просмотра', 'просмотров'])}`;
     const rewatchLabel = `${fmtInt(rewatch)} ${plural(rewatch, ['пересмотр', 'пересмотра', 'пересмотров'])}`;
@@ -159,14 +137,13 @@ export function buildYearCalendarFilm(year, byDate, { onDayClick } = {}) {
   return row;
 }
 
-/* books — «Календарь чтения» (was books-charts.js) */
 export function buildYearCalendarBook(year, byDate, onDayClick) {
   const first = Date.UTC(year, 0, 1);
   const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
   const daysInYear = leap ? 366 : 365;
-  const offset = (new Date(first).getUTCDay() + 6) % 7; // Monday = 0
+  const offset = (new Date(first).getUTCDay() + 6) % 7;
   const columns = Math.ceil((offset + daysInYear) / 7);
-  const pitch = 13; // 11px cell + 2px gap; keep in sync with CSS
+  const pitch = 13;
 
   const row = el('div', { class: 'cal-year', dataset: { year: String(year) } });
   row.append(el('div', { class: 'cal-year-label', text: String(year) }));
@@ -248,14 +225,13 @@ export function buildYearCalendarBook(year, byDate, onDayClick) {
   return row;
 }
 
-/* games — «Календарь достижений» (was games-charts.js) */
 export function buildYearCalendarGame(year, byDate, { onDayClick, nameOf } = {}) {
   const first = Date.UTC(year, 0, 1);
   const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
   const daysInYear = leap ? 366 : 365;
-  const offset = (new Date(first).getUTCDay() + 6) % 7; // Monday = 0
+  const offset = (new Date(first).getUTCDay() + 6) % 7;
   const columns = Math.ceil((offset + daysInYear) / 7);
-  const pitch = 13; // 11px cell + 2px gap; keep in sync with CSS
+  const pitch = 13;
 
   const row = el('div', { class: 'cal-year', dataset: { year: String(year) } });
   row.append(el('div', { class: 'cal-year-label', text: String(year) }));

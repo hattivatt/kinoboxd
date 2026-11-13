@@ -1,33 +1,5 @@
 'use strict';
 
-/**
- * Letterboxd archive attachments for KinoPoisk profiles.
- *
- * A Letterboxd export is no longer a profile of its own. It is attached to a
- * KinoPoisk profile (keyed by `kpUserId`) and supplies the things KinoPoisk
- * does not expose: real watch dates from diary.csv, rewatches and the
- * watchlist. The attachment survives server restarts in
- *
- *   cache/profile-lb/{kpUserId}.json
- *
- * Shape:
- *   {
- *     attachedAt: ISO string,
- *     fileName: "letterboxd-export.zip",
- *     events: [{
- *       tmdbId: number|null, lbSlug, title, year,
- *       rating: 0.5..5|null, watchDate: "YYYY-MM-DD",
- *       rewatch: boolean, source: "diary"|"watched"
- *     }],
- *     watchlist: [{ lbSlug, title, year, listedAt: "YYYY-MM-DD"|null }]
- *   }
- *
- * Events from watched.csv exist only for films that have no diary row; their
- * watchDate is the export/import date, not a real viewing date. They are kept
- * for the watchlist/rewatch backlog but stats.js only trusts diary events for
- * timeline and filmsIndex.watchedDate.
- */
-
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -77,7 +49,6 @@ async function writeAttachment(kpUserId, data) {
   await fsp.rename(tmp, target);
 }
 
-/** Resolve one Letterboxd film to a TMDB id, cache first, network second. */
 async function resolveFilm(film) {
   const movieKey = cache.makeKindKey(film.title, film.year, 'movie');
   const tvKey = cache.makeKindKey(film.title, film.year, 'tv');
@@ -90,7 +61,6 @@ async function resolveFilm(film) {
   if (tvEntry && tvEntry !== false) {
     return { tmdbId: tvEntry.id, kind: tvEntry.kind || 'tv' };
   }
-  // A known miss for both media kinds: do not hammer TMDB on every attach.
   if (movieEntry === false && (tvEntry === false || tvEntry === undefined)) return null;
 
   if (movieEntry === undefined) {
@@ -124,12 +94,6 @@ async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
-/**
- * Parse an uploaded Letterboxd ZIP and turn it into the persistent attachment
- * payload. Both diary.csv and watched.csv are required (the archive is a
- * supplement, not a profile source). Matching is done through the shared TMDB
- * matcher / cache; new TMDB <-> boxd.it pairs are learned globally.
- */
 async function buildAttachment(buffer, fileName) {
   const dataset = parseLetterboxdZip(buffer);
   if (!dataset.files || !dataset.files.diary || !dataset.files.watched) {
@@ -143,7 +107,6 @@ async function buildAttachment(buffer, fileName) {
   const films = new Map();
   for (const film of dataset.films) films.set(film.slug, film);
 
-  // One lookup per film even if the diary contains rewatches of it.
   const uniqueSlugs = [...new Set(dataset.events.map((event) => event.slug))];
   const matches = new Map();
   await mapWithConcurrency(uniqueSlugs, MATCH_CONCURRENCY, async (slug) => {
@@ -156,16 +119,11 @@ async function buildAttachment(buffer, fileName) {
     try {
       match = await resolveFilm(film);
     } catch (err) {
-      // One failed TMDB lookup must not abort the whole archive: the event is
-      // stored unmatched and can be re-attached later.
       console.warn(`[attachment] TMDB lookup failed for "${film.title}" (${film.year}): ${err.message}`);
     }
     matches.set(slug, match);
   });
 
-  // Learn the global TMDB <-> boxd.it map for every matched film (“first
-  // wins” in cache.setLbLink). This is what lets a KinoPoisk dashboard show
-  // Letterboxd links without ever re-attaching an archive.
   let learned = 0;
   for (const slug of uniqueSlugs) {
     const film = films.get(slug);

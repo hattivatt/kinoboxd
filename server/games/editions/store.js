@@ -1,14 +1,5 @@
 'use strict';
 
-/**
- * Persistence of the canonical edition index (`cache-games/editions.json`).
- *
- * One document, `profiles` keyed by `steam-<steamid64>` (the same shape idea as
- * `links/`). The stored entry carries the input fingerprint (library
- * fingerprint + details/links watermarks) and `manual.merges` / `manual.splits`,
- * which survive every rebuild.
- */
-
 const path = require('path');
 
 const gameCache = require('../game-cache');
@@ -21,10 +12,6 @@ const {
 } = require('./index-build');
 
 const EDITIONS_PATH = path.join(gameCache.GAMES_CACHE_DIR, 'editions.json');
-
-/* ------------------------------------------------------------------ */
-/* Persistence (`cache-games/editions.json`, profiles keyed)            */
-/* ------------------------------------------------------------------ */
 
 function readEditionsFile() {
   const hit = gameCache.readJsonWithFingerprint(EDITIONS_PATH);
@@ -52,10 +39,6 @@ function saveEditions(profileKey, doc) {
   return doc;
 }
 
-/**
- * Read the persisted index, or rebuild+persist it when the inputs moved.
- * Manual overrides survive the rebuild. Returns the document (never null).
- */
 function ensureEditions(profileKey, input = {}) {
   const existing = readEditions(profileKey);
   const signature = inputSignature(input.library, input.details, input.links);
@@ -64,7 +47,6 @@ function ensureEditions(profileKey, input = {}) {
     existing &&
     Number(existing.algorithmVersion) === ALGORITHM_VERSION &&
     existing.inputsFingerprint === signature &&
-    // A hand-edited `manual.merges`/`splits` is an input too (audit §4.4d).
     existing.manualFingerprint === manualSignature(manual) &&
     covers(existing, input.games);
   if (fresh) return { doc: existing, rebuilt: false };

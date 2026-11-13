@@ -1,11 +1,7 @@
-/* Payload → year series for the release-year bar chart. */
-
 import { toNum } from '../ui.js';
 
 export function collectYearBuckets(years) {
   const counts = new Map();
-  // The ancient bucket is not a year: it is collected apart so it can be
-  // drawn in its own slot. More than one such entry is summed, never doubled.
   let ancient = null;
   for (const item of Array.isArray(years) ? years : []) {
     const count = Math.max(0, toNum(item && item.count));

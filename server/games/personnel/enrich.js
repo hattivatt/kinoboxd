@@ -41,16 +41,9 @@ function selectSteamTargets(context) {
     if (details.type && details.type !== 'game') continue;
     const links = readLinks(appid);
     const existing = readPersonnelDoc(appid);
-    // Which sources can still add something? `wikidata` counts as covered only
-    // when the document records that Wikidata actually answered (`wdAsked`),
-    // otherwise a failed/skipped run would look complete and the 90-day
-    // freshness window would keep the credits away for three months.
     const needs = ['steam-store'];
     if (wdEnabled && !(existing && existing.wdAsked === true)) needs.push('wikidata');
     if (mobyEnabled && links.mobyId && links.mobyPlatformId) needs.push('mobygames');
-    // A document written under an older label rule is re-fetched once even
-    // while it is still «fresh»: its names may be truncated fragments of the
-    // real ones (§4.2, Q3539040 «Development Studio»).
     const labelsStale =
       wdEnabled &&
       Boolean(existing) &&
@@ -71,8 +64,6 @@ function selectSteamTargets(context) {
 }
 
 async function fetchSteamWikidata(targets, wd, options, report, wdEnabled) {
-  // Wikidata: one appid batch (resolves P1733) for games without a QID, then
-  // one QID batch for the rest. Both are ≤450 values inside the provider.
   const withoutQid = targets.filter((target) => !target.links.qid).map((target) => target.appid);
   if (withoutQid.length && wdEnabled) {
     const result = await wd.creditsForAppids(withoutQid, options);
@@ -81,10 +72,6 @@ async function fetchSteamWikidata(targets, wd, options, report, wdEnabled) {
     report.wdDisabledUntil = result.disabledUntil || report.wdDisabledUntil;
     report.errors.push(...(result.errors || []));
     if (!result.skipped && !(result.errors || []).length) {
-      // Asked AND answered (even with «nothing»): the negative cache is valid
-      // for 90 days, so the game is not asked again on the next run. A network
-      // failure / breaker / HTTP error is NOT an answer — `wdAsked` stays
-      // false and the game is retried.
       for (const target of targets) {
         if (!target.links.qid) target.wdAsked = true;
       }
@@ -133,15 +120,9 @@ function selectSecondaryTargets(context) {
       Boolean(existing) &&
       existing.wdAsked === true &&
       existing.labelRule !== LABEL_RULE_VERSION;
-    // The store credits are recomputed from the live union on every pass; a
-    // document written from an older union (before the developers/publishers
-    // provenance fix, or after the store page changed) carries a different
-    // signature and is re-written even inside the 90-day freshness window.
     const liveStoreStudios = carriedStoreStudios(studiosFromSecondaryWork(work), existing);
     const storeSignature = storeStudiosSignature(liveStoreStudios);
     const storeStale = Boolean(existing) && existing.storeSignature !== storeSignature;
-    // A work with a QID that was already asked is complete; a work without a
-    // QID only needs the store-derived studios, which the document carries.
     const complete = Boolean(existing) && !labelsStale && (!work.qid || existing.wdAsked === true);
     if (!force && complete && fresh && !storeStale) {
       skippedFresh++;
@@ -184,8 +165,6 @@ async function fetchSecondaryWikidata(secondaryTargets, wd, options, report) {
     if (!qid || !askedQids.includes(qid)) continue;
     const hit = result.credits.get(qid) || null;
     if (hit) target.wdCredits = hit;
-    // Asked AND answered (even «no credits»): the negative answer is a
-    // settled 90-day cache, exactly like the Steam pass.
     if (answered) target.wdAsked = true;
   }
 }
@@ -206,22 +185,15 @@ async function writeSecondaryDocs(secondaryTargets, context) {
     } else if (target.wdAsked) {
       sources.add('wikidata');
     } else if (existing && (existing.sources || []).includes('wikidata')) {
-      // WD did not answer this run (cooldown/outage/budget): keep the cached
-      // people instead of wiping them with an empty document.
       studios.push(...(existing.studios || []).filter((entry) => entry.source === 'wikidata'));
       people.push(...(existing.people || []).filter((entry) => entry.source === 'wikidata'));
       sources.add('wikidata');
     }
-    // «Wikidata has answered for this work», not «asked this run»: a pass that
-    // only refreshes the store credits (changed signature) must not reset a
-    // settled Wikidata answer and re-ask on the next pass.
     const wdAnswered =
       Boolean(target.wdCredits) ||
       target.wdAsked === true ||
       (!target.needsAsk && Boolean(existing && existing.wdAsked === true));
     if (!wdAnswered && !existing && work.qid && !target.wdAsked) {
-      // A work with a QID but no answer and no cache: writing now would look
-      // «fresh» for 90 days. Defer, the next pass retries.
       report.secondaryDeferred++;
       continue;
     }
@@ -236,9 +208,6 @@ async function writeSecondaryDocs(secondaryTargets, context) {
         ? LABEL_RULE_VERSION
         : (existing && existing.labelRule) || null,
       studios: mergedStudios,
-      // Signature of the store credits this document was built from: the next
-      // pass compares it with the live union and re-writes a changed list
-      // without waiting for the 90-day TTL.
       storeSignature: target.storeSignature,
       people: mergedPeople,
       sources: [...sources].sort(),
@@ -253,7 +222,6 @@ async function writeSecondaryDocs(secondaryTargets, context) {
   }
 }
 
-/** Credits already cached for a source that did not answer this run. */
 function carryOver(existing, source) {
   if (!existing || !Array.isArray(existing.sources) || !existing.sources.includes(source)) {
     return { studios: [], people: [] };
@@ -280,12 +248,8 @@ async function writeSteamDocs(targets, context) {
       people.push(...target.wdCredits.people);
       sources.add('wikidata');
     } else if (target.links.qid || target.wdAsked) {
-      // Asked, but the game has no WD item/credits: remember the answer so the
-      // negative cache lasts 90 days (ИГРЫ §3.3).
       sources.add('wikidata');
     }
-    // Wikidata/Moby did not answer (cooldown, outage, budget): keep the credits
-    // already cached for that source instead of wiping them with an empty run.
     if (!target.wdCredits && !target.wdAsked) {
       const carried = carryOver(target.existing, 'wikidata');
       if (carried.people.length || carried.studios.length) {
@@ -314,9 +278,6 @@ async function writeSteamDocs(targets, context) {
         }
       }
     }
-    // Nothing was asked successfully and nothing is cached: writing a document
-    // now would look «fresh» and hide the credits for 90 days. Defer instead —
-    // the next pass (or the lazy route kick) retries.
     if (!wdAnswered && !mobyAnswered && !target.existing) {
       report.wdDeferred++;
       continue;
@@ -330,13 +291,7 @@ async function writeSteamDocs(targets, context) {
       name: cleanName(target.name) || null,
       qid: target.qid || target.links.qid || null,
       fetchedAt: new Date(now()).toISOString(),
-      // Persisted verdict: «Wikidata was actually asked» (credits or a negative
-      // answer). `isPersonnelFresh`/`covered` rely on it, so a transient WDQS
-      // failure can never be mistaken for a complete run.
       wdAsked: wdAnswered,
-      // Which label rule produced these names (§4.2). Only a real Wikidata
-      // answer can raise it: a carried-over document keeps its old number and
-      // stays eligible for the one-off re-fetch.
       labelRule: wdAnswered
         ? LABEL_RULE_VERSION
         : (target.existing && target.existing.labelRule) || null,
@@ -355,13 +310,6 @@ async function writeSteamDocs(targets, context) {
   }
 }
 
-/**
- * Fetch credits for the profile's games and persist `personnel/<appid>.json`.
- * Network phase: Wikidata batches + optional MobyGames per game (1.1 s pause).
- *
- * @param {{profileKey:string, limit?:number, force?:boolean, now?:Function,
- *          wikidata?:object, moby?:object, sleep?:Function}} options
- */
 async function enrichPersonnel(options = {}) {
   const parsed = gameCache.parseProfileToken(options.profileKey);
   if (!parsed) {
@@ -394,7 +342,6 @@ async function enrichPersonnel(options = {}) {
     wdDeferred: 0,
     mobyRequests: 0,
     mobyErrors: [],
-    // M6 follow-up: GOG/Epic-only works.
     secondaryGames: 0,
     secondaryUpdated: 0,
     secondarySkippedFresh: 0,
@@ -412,10 +359,6 @@ async function enrichPersonnel(options = {}) {
 
   await fetchSteamWikidata(targets, wd, options, report, wdEnabled);
 
-  /* ------------------------------------------------------------------ */
-  /* Secondary-only works (GOG/Epic): studios from store details, people  */
-  /* from Wikidata when the bridge resolved a QID.                        */
-  /* ------------------------------------------------------------------ */
   const secondaryList = secondaryWorksFor(parsed.key, options.secondaryWorks);
   const secondary = selectSecondaryTargets({
     list: secondaryList,

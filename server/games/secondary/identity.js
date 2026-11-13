@@ -2,10 +2,6 @@
 
 const { round1 } = require('../../core/stats');
 
-/* ------------------------------------------------------------------ */
-/* titles, slugs, edition markers                                      */
-/* ------------------------------------------------------------------ */
-
 const EDITION_SUFFIXES = [
   'game of the year edition',
   'goty edition',
@@ -21,7 +17,6 @@ const EDITION_SUFFIXES = [
   'edition',
 ];
 
-/** Fold a title for cross-store comparison (no store-specific noise). */
 function normalizeTitle(value) {
   let text = String(value == null ? '' : value)
     .replace(/[™®©]/g, ' ')
@@ -33,8 +28,6 @@ function normalizeTitle(value) {
     .replace(/[^a-z0-9а-я]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  // Drop a trailing edition marker, repeatedly: "… Deluxe Edition" and
-  // "… Game of the Year Edition" are the same work as the base game.
   let changed = true;
   while (changed) {
     changed = false;
@@ -48,7 +41,6 @@ function normalizeTitle(value) {
   return text;
 }
 
-/** `game/the_witcher_3_wild_hunt` → `the_witcher_3_wild_hunt`. */
 function normalizeSlug(value) {
   return String(value == null ? '' : value)
     .trim()
@@ -75,17 +67,6 @@ function minutesOf(value) {
   return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
-/**
- * Build the union.
- *
- * @param {object} input
- * @param {Array}  input.products  GOG products (`gogGameId`, `title`, `slug`, …)
- * @param {object} input.minutes   `{ [gogGameId]: minutes }`
- * @param {Array}  input.works     Steam works (`workKey`, `minutes`, `primary`,
- *                                 `games:[{appid, name, playtime_forever}]`)
- * @param {object} input.links     `{ [appid]: linkDoc }` (may carry P2725)
- * @returns {object} union view (plain, JSON-safe)
- */
 function buildGogUnion({ products, minutes, works, links } = {}) {
   const gogProducts = Array.isArray(products) ? products.filter(Boolean) : [];
   const minutesMap = minutes && typeof minutes === 'object' ? minutes : {};
@@ -187,7 +168,6 @@ function buildGogUnion({ products, minutes, works, links } = {}) {
     if (!entry.sources.includes('gog')) entry.sources.push('gog');
     if (!entry.ownedOn.includes('gog')) entry.ownedOn.push('gog');
     entry.storeIds.gog = gogGameId;
-    // GOG editions of one work add up **within** GOG; they never touch Steam.
     entry.hoursBySource.gog = minutesOf(entry.hoursBySource.gog) + gogMinutesValue;
     entry.gog = {
       gogGameId,
@@ -204,7 +184,6 @@ function buildGogUnion({ products, minutes, works, links } = {}) {
     entry.confidence = entry.sources.includes('steam') ? (matchedBy === 'wikidata' ? 'high' : 'medium') : 'single';
   }
 
-  // Per-appid view: every Steam edition of a work inherits the GOG link.
   for (const work of steamWorks) {
     const unionEntry = byWorkKey.get(work.workKey);
     if (!unionEntry) continue;
@@ -260,14 +239,6 @@ function buildGogUnion({ products, minutes, works, links } = {}) {
   };
 }
 
-/**
- * Wikidata labels often spell a numbered sequel with a Roman numeral («Alan
- * Wake II»), while the store says «Alan Wake 2». Exact string matching would
- * miss the canonical Alan Wake 2 case, so a title gets a small, deterministic
- * set of variants (Arabic ↔ Roman, up to 20). No fuzzy matching: every value
- * still goes into a `VALUES` literal and must match a `rdfs:label`/`skos:altLabel`
- * exactly.
- */
 const ROMAN_NUMERALS = [
   ['XX', 20], ['XIX', 19], ['XVIII', 18], ['XVII', 17], ['XVI', 16],
   ['XV', 15], ['XIV', 14], ['XIII', 13], ['XII', 12], ['XI', 11],
@@ -281,13 +252,11 @@ function titleVariants(title) {
   const text = String(title == null ? '' : title).trim();
   if (!text) return [];
   const out = [text];
-  // Trailing Arabic number → Roman numeral: "Alan Wake 2" → "Alan Wake II".
   const arabic = /^(.*?\D)(\d{1,2})$/.exec(text);
   if (arabic) {
     const roman = ARABIC_TO_ROMAN.get(Number(arabic[2]));
     if (roman) out.push(`${arabic[1]}${roman}`);
   }
-  // Trailing Roman numeral → Arabic: "Alan Wake II" → "Alan Wake 2".
   const roman = /^(.*?\D)([IVX]+)$/.exec(text);
   if (roman) {
     const number = ROMAN_TO_ARABIC.get(roman[2]);
@@ -296,11 +265,6 @@ function titleVariants(title) {
   return [...new Set(out)];
 }
 
-/**
- * Raw slugs, de-duplicated by their normalised form: `the-witcher-3-wild-hunt`
- * (Epic) and `the_witcher_3_wild_hunt` (GOG) are the same key but different
- * literals, and Wikidata stores each store's own spelling.
- */
 function uniqueSlugs(values) {
   const out = [];
   const seen = new Set();
@@ -315,7 +279,6 @@ function uniqueSlugs(values) {
   return out;
 }
 
-/** Slugs of the GOG products / Epic games that still need an identity. */
 function collectSlugs({ gogProducts = [], epicGames = [] } = {}) {
   const gogSlugs = uniqueSlugs(gogProducts.map((product) => product && product.slug));
   const epicSlugs = uniqueSlugs(epicGames.map((game) => game && game.slug));

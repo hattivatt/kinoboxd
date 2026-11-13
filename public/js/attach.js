@@ -1,11 +1,3 @@
-/* Letterboxd attachment modal for the active KinoPoisk profile.
- *
- * The archive is not a profile: it enriches the KinoPoisk dashboard with real
- * diary watch dates, rewatches and (stored for later) the watchlist. The
- * server persists it per kpUserId, so a browser reload or a server restart
- * keeps it attached.
- */
-
 import { openModal } from './modal.js';
 import { attachLbZip } from './api.js';
 import { $, el, clear, icon, fmtInt, plural, toast, shortErrorMessage } from './ui.js';
@@ -27,7 +19,6 @@ export function initAttach(nextHandlers = {}) {
   button.addEventListener('click', () => openAttachModal());
 }
 
-/** Show the topbar action only for a KP profile with a live upload. */
 export function updateAttachButton({ active = false, attachment = null } = {}) {
   const button = $('attach-lb');
   if (!button) return;
@@ -230,8 +221,6 @@ export function openAttachModal() {
     },
   });
 
-  // openModal already handles Escape; this only stops an in-flight upload
-  // from touching a detached DOM.
   function onEscape(event) {
     if (event.key === 'Escape') closed = true;
   }

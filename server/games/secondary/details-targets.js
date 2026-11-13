@@ -8,9 +8,6 @@ function targetsForOwner(ownerKey) {
   const gog = [];
   const epic = [];
   if (!key) return { gog, epic, epicNoSlug: 0 };
-  // Both a bound token and a dated snapshot carry the owner: a restored
-  // snapshot without a token still deserves metadata (its games are in the
-  // union), so libraries are read directly and filtered by `ownerProfile`.
   const seenGog = new Set();
   for (const library of gogCache.listLibraries()) {
     if (!library || library.ownerProfile !== key) continue;
@@ -23,9 +20,6 @@ function targetsForOwner(ownerKey) {
     }
   }
   let epicNoSlug = 0;
-  // Read-only binding scan: a token the profile has not adopted yet (exactly
-  // one, no other owner) still addresses this owner's library. The job adopts
-  // it; enumeration here must not report «no Epic» while the games exist.
   const epicBinding =
     typeof epicCache.epicBindingForOwnerSync === 'function'
       ? epicCache.epicBindingForOwnerSync(key)
@@ -34,15 +28,9 @@ function targetsForOwner(ownerKey) {
   if (epicAccount) {
     const library = epicCache.getEpicLibrary(epicAccount);
     const games = (library && library.games) || [];
-    // The library snapshot's own `slug` is only the productmapping fallback
-    // (~1 283 appNames). The catalog bulk (`productSlug`/`urlSlug`) and a
-    // previously discovered slug override cover Epic exclusives such as
-    // Alan Wake 2, which `productmapping` does not list at all.
     const catalog = epicCache.listEpicCatalogItems(
       games.map((game) => game && game.catalogItemId).filter(Boolean)
     );
-    // productmapping keys are appNames or namespaces; an Epic exclusive (Alan
-    // Wake 2) is present only under its namespace.
     let productMapping = {};
     try {
       const mapping = epicCache.getProductMapping();

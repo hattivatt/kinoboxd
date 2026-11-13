@@ -1,28 +1,5 @@
 'use strict';
 
-/**
- * Epic import jobs (M6b).
- *
- *   POST /api/games/epic/import   { accountId?, owner?, force?, label? } → job
- *   GET  /api/games/epic/import/:jobId
- *   GET  /api/games/epic/import/status?id=…
- *
- * Chain (§14.2, §14.4):
- *   queued → auth (token + account) → entitlements → library items
- *   (cursor, filtered: UE/PRIVATE/mobile) → playtime (seconds) → catalog bulk
- *   (metadata) → done.
- *
- * Ownership is merged with entitlements as the primary source and library
- * items as the fallback/enricher (appName, platform, acquisitionDate). The
- * snapshot is written **before** playtime/catalog so a later failure never
- * loses the library. A network/5xx failure is `deferred` (the previous
- * snapshot stays in place); a 401 is `epic_auth_expired` (never "0 games").
- *
- * The job never writes to the Steam cache and never changes Steam hours: the
- * Epic snapshot is a separate file (`library/epic-<accountId>.json`), and the
- * read model (`secondary/epic.js`) keeps `hoursBySource` separate.
- */
-
 const crypto = require('crypto');
 
 const epic = require('./epic');
@@ -33,11 +10,6 @@ const tokenStore = require('./epic-token-store');
 const { refreshForJob } = require('./secondary/title-genres');
 const secondaryDetails = require('./secondary-details');
 
-/**
- * Job registry (core/jobs): single-flight per Epic account id, one import
- * chain and the 20-job ring. `deferred` (network/5xx) stays a domain verdict —
- * the shared finalizer only finishes whatever status the task left.
- */
 const jobs = createJobs({
   name: 'games-epic-import',
   idPrefix: 'games-epic',
@@ -61,7 +33,6 @@ function findRunningJob(accountId) {
   return jobs.findRunning(String(accountId == null ? "" : accountId));
 }
 
-/** Public job view: no token, no device code, no raw HTTP details. */
 function publicStatus(job) {
   if (!job) return null;
   return {
@@ -162,16 +133,6 @@ function totalsOf(games, playtime) {
   };
 }
 
-/**
- * Fill `game.slug` for the games the store metadata job can address, strongest
- * source first:
- *
- *   1. `catalog/<catalogItemId>.json` `slug` (catalog `productSlug`/`urlSlug`) —
- *      this is the source that covers **Epic exclusives** absent from
- *      `productmapping` (Alan Wake 2, §14.2/§14.7);
- *   2. the public `productmapping` appName → slug list (~1 283 records);
- *   3. a previously discovered slug override (`slug-overrides.json`).
- */
 function mergeCatalogSlugs(games, productMapping, catalogDocs) {
   const byAppName = (productMapping && productMapping.byAppName) || {};
   const catalog = catalogDocs && typeof catalogDocs === 'object' ? catalogDocs : {};
@@ -186,10 +147,6 @@ function mergeCatalogSlugs(games, productMapping, catalogDocs) {
       game.slug = byAppName[game.appName];
       continue;
     }
-    // `productmapping` is a flat map whose keys are *either* an appName or a
-    // namespace. Epic exclusives such as Alan Wake 2 live under the namespace
-    // key only (`c4763f…` → `alan-wake-2`), so the library record's namespace
-    // is a legitimate second lookup, not a fabricated slug.
     if (game.namespace && byAppName[game.namespace]) {
       game.slug = byAppName[game.namespace];
       continue;
@@ -201,12 +158,6 @@ function mergeCatalogSlugs(games, productMapping, catalogDocs) {
   }
 }
 
-/**
- * Fetch catalog metadata for the games that need it. Cached items younger
- * than the catalog TTL are reused; failures are warnings, never fatal (the
- * library is the primary artifact). The productmapping endpoint is the public
- * slug fallback when the catalog has no `productSlug`.
- */
 async function fetchCatalog(job, client, games, options) {
   const ids = [...new Set(games.map((game) => game.catalogItemId).filter(Boolean))];
   const cached = epicCache.listEpicCatalogItems(ids);
@@ -245,7 +196,6 @@ async function fetchCatalog(job, client, games, options) {
     }
   }
 
-  // Public appName → slug mapping (no token): one request, cached 7 days.
   let mapping = epicCache.getProductMapping();
   if (!mapping || !gameCache.isFresh(mapping, epicCache.productMappingTtlMs())) {
     try {
@@ -256,7 +206,6 @@ async function fetchCatalog(job, client, games, options) {
         .then((saved) => saved.data);
     } catch (err) {
       job.warnings.push(`productmapping_${(err && err.code) || 'failed'}`);
-      // A stale mapping is still usable; a missing one just means no fallback.
     }
   }
   mergeCatalogSlugs(games, mapping, epicCache.listEpicCatalogItems(ids));
@@ -267,7 +216,6 @@ async function fetchCatalog(job, client, games, options) {
 async function runImport(job, accountId, client, options) {
   const ownerKey = options.ownerKey ? String(options.ownerKey).trim() : null;
 
-  /* ------------------------- 1. auth ---------------------------- */
   job.stage = 'auth';
   job.percent = 5;
   job.requests++;
@@ -296,7 +244,6 @@ async function runImport(job, accountId, client, options) {
   await epicCache.saveEpicProfile(profileDoc);
   job.owner = profileDoc.ownerKey || null;
 
-  /* --------------------- 2. entitlements ------------------------ */
   job.stage = 'entitlements';
   job.percent = 20;
   let entitlements = [];
@@ -307,15 +254,12 @@ async function runImport(job, accountId, client, options) {
   } catch (err) {
     if (err && err.code === 'epic_auth_expired') throw err;
     if (err && err.deferred) {
-      // The entitlement host is known to drift (§14.2); the library-service
-      // fallback may still work. Only give up when *both* are unreachable.
       job.warnings.push(`entitlements_${err.code || 'failed'}`);
     } else {
       job.warnings.push(`entitlements_${(err && err.code) || 'failed'}`);
     }
   }
 
-  /* --------------------- 3. library items ----------------------- */
   job.stage = 'library';
   job.percent = 40;
   let libraryItems = [];
@@ -371,14 +315,11 @@ async function runImport(job, accountId, client, options) {
     fingerprint: fingerprintOf(merged.games, oldPlaytime ? oldPlaytime.totalSeconds : null),
     warnings: [...job.warnings],
   };
-  // Save ownership before playtime/catalog: a later failure must not lose the
-  // library that was already fetched (and must not overwrite it with zeros).
   await epicCache.saveEpicLibrary(accountId, baseLibrary);
 
   job.gameCount = merged.games.length;
   job.ownedCount = merged.games.length;
 
-  /* ------------------------- 4. playtime ------------------------ */
   job.stage = 'playtime';
   job.percent = 60;
   let playtimeDoc = oldPlaytime;
@@ -390,8 +331,6 @@ async function runImport(job, accountId, client, options) {
   } catch (err) {
     if (err && err.code === 'epic_auth_expired') throw err;
     if (err && err.deferred) {
-      // Deferred, not failed: the ownership snapshot above is valid, the old
-      // playtime file (if any) stays in place, and the job says so.
       job.warnings.push(`playtime_${err.code || 'failed'}`);
       throw err;
     }
@@ -419,7 +358,6 @@ async function runImport(job, accountId, client, options) {
   };
   await epicCache.saveEpicLibrary(accountId, libraryWithPlaytime);
 
-  /* ------------------------- 5. catalog ------------------------- */
   job.stage = 'catalog';
   job.percent = 80;
   const catalog = await fetchCatalog(job, client, merged.games, options);
@@ -436,9 +374,6 @@ async function runImport(job, accountId, client, options) {
 
   job.warning = job.warnings.length ? job.warnings.join(' ') : null;
 
-  // M6c: one Wikidata batch (P6278 → P1733) so an Epic game that is also on
-  // Steam joins the same work instead of duplicating it in every chart. Never
-  // fatal; an injected client (tests) skips it entirely.
   job.stage = 'identity';
   job.percent = 96;
   const catalogIds = merged.games.map((game) => game.catalogItemId).filter(Boolean);
@@ -448,8 +383,6 @@ async function runImport(job, accountId, client, options) {
       const meta = (game.catalogItemId && catalogDocs[game.catalogItemId]) || null;
       return {
         slug: (meta && meta.slug) || game.slug || null,
-        // Title/date let the bridge fill a year for a store-exclusive whose
-        // CMS page and catalog both carry no date (Alan Wake 2).
         title: (meta && meta.title) || game.name || null,
         releaseDate: (meta && meta.releaseDate) || null,
       };
@@ -471,14 +404,6 @@ function resolveAccountId(options, tokens) {
   return null;
 }
 
-/**
- * Start (or coalesce into) an Epic import.
- *
- * Options: `{ accountId?, ownerKey?, force?, label?, client?, tokenStore?,
- * autoCatalog?, forceCatalog? }`. Throws synchronously (rejects) with
- * `epic_account_required` / `epic_not_connected` / `owner_mismatch` so the
- * route can answer 400 before a job exists.
- */
 async function startImport(options = {}) {
   const store = options.tokenStore || tokenStore;
   const tokenDocs = await store.listTokenDocs();
@@ -516,9 +441,6 @@ async function startImport(options = {}) {
         'owner_mismatch'
       );
     }
-    // A library imported before the owner was known must become part of the
-    // owner's `libraries[]` on the next import/reuse, otherwise the union
-    // (M6c) would never see it.
     if (!profile || !profile.ownerKey) {
       profile = (
         await epicCache.saveEpicProfile({
@@ -575,8 +497,6 @@ async function startImport(options = {}) {
       `[games-epic-import ${reused.id}] library reused from cache ` +
         `(${reused.ownedCount} games, fetchedAt=${library.fetchedAt})`
     );
-    // M6d: a cached library still needs store metadata for its secondary-only
-    // works; the details job is idempotent (per-product cache).
     if (options.autoSecondaryDetails !== false && !options.client && reused.owner) {
       const status = secondaryDetails.kickSecondaryDetailsQuietly(reused.owner, {
         forceKick: true,
@@ -619,8 +539,6 @@ async function startImport(options = {}) {
   const client = options.client || epic.createClient({ tokenStore: store });
   enqueue(job, async () => {
     await runImport(job, accountId, client, { ...options, ownerKey });
-    // M6d: public store metadata (genres/year/vertical poster) for the works
-    // that have no Steam twin. Never kicked with an injected client (tests).
     if (options.autoSecondaryDetails !== false && !options.client && job.owner) {
       const status = secondaryDetails.kickSecondaryDetailsQuietly(job.owner, {
         forceKick: true,
@@ -633,7 +551,6 @@ async function startImport(options = {}) {
   return publicStatus(job);
 }
 
-/** Wait for the current job chain to settle (tests / shutdown). */
 function whenIdle() {
   return jobs.whenIdle();
 }

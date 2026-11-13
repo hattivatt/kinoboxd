@@ -6,10 +6,6 @@ const tokenStore = require('../epic-token-store');
 const epic = require('../epic');
 const { round1 } = require('../../core/stats');
 
-/* ------------------------------------------------------------------ */
-/* Epic read model                                                     */
-/* ------------------------------------------------------------------ */
-
 const CONTRACT_VERSION = 1;
 
 function minutesToHours(minutes) {
@@ -18,13 +14,6 @@ function minutesToHours(minutes) {
   return round1(value / 60);
 }
 
-/**
- * Steam side of the contract: the **raw library sum** (`totalMinutes` of every
- * entry). `/api/games/stats` reports the filtered journal total (games only,
- * canonical works), which can be a few hours lower — the stats payload
- * therefore overrides this field with its own `totalHours` instead of copying
- * the layer value.
- */
 function steamSide(ownerKey) {
   const match = /^steam-(\d{17})$/.exec(String(ownerKey == null ? '' : ownerKey).trim());
   if (!match) return { hours: null, owned: null };
@@ -58,16 +47,12 @@ function libraryStatus(tokenStatusValue, library) {
 
 function joinGames(library, playtime, catalog) {
   const games = Array.isArray(library && library.games) ? library.games : [];
-  // One file read for the whole library: a slug discovered by the store-metadata
-  // job (validated CMS title probe) is the last resort before `null`.
   let slugOverrides = {};
   try {
     slugOverrides = epicCache.readSlugOverrides();
   } catch (err) {
     slugOverrides = {};
   }
-  // `productmapping` keys are appNames **or namespaces**; an Epic exclusive
-  // (Alan Wake 2) is present only under its namespace key. Read once.
   let productMapping = {};
   try {
     const mapping = epicCache.getProductMapping();
@@ -100,8 +85,6 @@ function joinGames(library, playtime, catalog) {
       entitlementName: game.entitlementName || null,
       entitlementType: game.entitlementType || null,
       sources: Array.isArray(game.sources) ? game.sources : [],
-      // Catalog metadata (global) or the productmapping fallback written by
-      // the importer; `null` means "not fetched", never a fabricated title.
       name,
       title: meta ? meta.title || null : null,
       slug: (meta && meta.slug) || game.slug || mappedSlug || discovered || null,
@@ -115,13 +98,11 @@ function joinGames(library, playtime, catalog) {
           : discovered
             ? 'epic-slug-probe'
             : null,
-      // Seconds stay available for the integration; minutes/hours are the
-      // normalized units (Epic `totalTime` is seconds, §14.2).
       totalTimeSec: tracked ? tracked.totalTimeSec : null,
       totalMinutes: tracked ? tracked.totalMinutes : null,
       hours: tracked ? epic.secondsToHours(tracked.totalTimeSec) : null,
       playtimeKnown: Boolean(tracked),
-      lastPlayed: null, // not in Epic's playtime model — never invented
+      lastPlayed: null,
     };
   });
 }
@@ -142,39 +123,20 @@ function toExportedGame(game, accountId, ownerKey) {
     totalMinutes: game.totalMinutes,
     hours: game.hours,
     platforms: game.platforms,
-    // M6c fills these through the Wikidata bridge (P6278/P2725/P1733) and
-    // unions by `workKey`. The Epic layer never guesses a work key.
     workKey: null,
     steamAppId: null,
   };
 }
 
-/**
- * Build the Epic read model for one owner (or one account).
- *
- * Options: `{ ownerKey, accountId }` — `ownerKey` is a Steam profile token
- * (`steam-<steamid64>`), `accountId` an Epic account id. When both are given
- * they must agree with the stored binding.
- */
 async function buildEpicLayer(options = {}) {
   const { ownerKey, accountId } = resolveOwner(options);
   const steam = steamSide(ownerKey);
   const libraries = ownerKey ? epicCache.librariesForOwner(ownerKey) : [];
   if (!accountId) return emptyLayer(ownerKey, libraries, steam);
-  // Only the redacted summary is needed here (presence/expiry/auth error):
-  // the layer never reads or returns a token value.
   const token = tokenStore.readTokenSummarySync(accountId);
   return composeLayer({ ownerKey, accountId, token, steam, libraries });
 }
 
-/**
- * Synchronous variant for the `/stats` builder (the route is synchronous and
- * polled by the UI). Same numbers as `buildEpicLayer`, but no `exportedGames`
- * array is materialized — the stats payload only needs the aggregate and the
- * per-game `secondaryWorks` entries, and copying 300+ objects on every poll is
- * waste. The contract version and all `hoursBySource`/`ownedBySource` fields
- * are identical, so the UI cannot see two different answers.
- */
 function buildEpicLayerSync(options = {}) {
   const { ownerKey, accountId } = resolveOwner(options);
   const steam = steamSide(ownerKey);
@@ -188,11 +150,6 @@ function buildEpicLayerSync(options = {}) {
   return rest;
 }
 
-/**
- * The `sources.epic` block of the games payload — the same shape as
- * `sources.gog`, so the «Источники» widget and the «Подключения» screen read
- * both secondary libraries through one contract. Numbers stay per source.
- */
 function epicSourceBlock(layer) {
   if (!layer) {
     return {
@@ -223,17 +180,10 @@ function epicSourceBlock(layer) {
     playtimeFetchedAt: (layer.meta && layer.meta.playtimeFetchedAt) || null,
     productCount: layer.summary ? layer.summary.ownedCount : null,
     hours: layer.summary ? layer.summary.hours : null,
-    // A stale snapshot keeps its numbers and its date, never a zero.
     stale: status === 'stale' || status === 'auth_expired' || status === 'not_imported',
   };
 }
 
-/**
- * Epic games as `secondaryWorks` entries. Epic has **no** work identity yet
- * (the Wikidata bridge P6278/P2725/P1733 is M6c), so every game is its own
- * secondary entry with `workKey: null` and is never merged into a Steam work.
- * The shape mirrors the GOG entries so the UI renders one list.
- */
 function epicSecondaryWorks(layer, { limit = 200 } = {}) {
   const games = Array.isArray(layer && layer.games) ? layer.games : [];
   return games
@@ -296,11 +246,6 @@ function emptyLayer(ownerKey, libraries, steam) {
   };
 }
 
-/**
- * Assemble the layer from already-read cache documents. Pure apart from the
- * cache reads inside; the token arrives as a **redacted summary**, so no token
- * value ever reaches this function.
- */
 function composeLayer({ ownerKey, accountId, token, steam, libraries }) {
   const profile = epicCache.getEpicProfile(accountId);
   const library = epicCache.getEpicLibrary(accountId);
@@ -360,8 +305,6 @@ function composeLayer({ ownerKey, accountId, token, steam, libraries }) {
           hours,
           totalTimeSec: playtime ? playtime.totalSeconds : null,
           totalMinutes: playtime ? playtime.totalMinutes : null,
-          // Explicit names for the integration: Epic is a secondary library,
-          // counted separately from Steam (§14.4 rules 2–4).
           externalOwnedCount: ownedCount,
           externalHours: hours,
           libraryExternalNumberCount: ownedCount,
@@ -393,7 +336,6 @@ function composeLayer({ ownerKey, accountId, token, steam, libraries }) {
   };
 }
 
-/** Status-only view: no per-game arrays (for the «Подключения» slot). */
 async function buildEpicSources(ownerKey) {
   const layer = await buildEpicLayer({ ownerKey });
   return {

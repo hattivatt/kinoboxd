@@ -8,16 +8,6 @@ const { normalizeSlug, titleVariants, collectSlugs } = require('./identity');
 const { escapeLiteral, sparqlRequest, chunk, BATCH_SIZE, fetchSecondaryLinks } = require('./bridge');
 const { readCache, writeCache, isSettledTitleEntry, ttlMs } = require('./cache');
 
-/**
- * The title fallback query. It is deliberately exact-literal: the title (and
- * its bounded Roman/Arabic variants) is a `VALUES` constant on both
- * `rdfs:label` and `skos:altLabel`, restricted to video-game items
- * (`P31/P279* Q7889`). It is used **only** for Epic works whose store/catalog
- * metadata has no date — or, since 03.11.2026, no genre line either (a stale
- * CMS page such as Alan Wake 2's). `wdt:P136` (genre) is `OPTIONAL` and only
- * labels the QID the title already resolved: it never creates an identity and
- * never turns an ambiguous title into a link.
- */
 function buildTitleQuery(titles) {
   const values = new Set();
   for (const title of Array.isArray(titles) ? titles : []) {
@@ -45,31 +35,15 @@ function buildTitleQuery(titles) {
 }`;
 }
 
-/**
- * Wikidata P136 labels are lowercase («survival horror», «third-person
- * shooter», «role-playing video game»), while the genre wall draws store
- * genres capitalized («Horror», «Turn-Based»). Only the generic «video game»
- * suffix is dropped and the first letter is capitalized: no renaming, no
- * invented umbrella genre.
- */
 function wikidataGenreName(label) {
   let text = String(label == null ? '' : label).trim();
   if (!text) return null;
-  // The generic class itself is not a genre chip.
   if (/^(?:video\s+)?games?$/i.test(text)) return null;
   text = text.replace(/\s+video\s+games?$/i, '').replace(/\s+games?$/i, '').trim();
   if (!text) return null;
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/**
- * One entry per candidate (`epic:<normalised slug>`), but only when the exact
- * title matched **exactly one** Wikidata item. Several different QIDs for the
- * same label are the «Prey (2006) vs Prey (2017)» case: no link, recorded as
- * `titleMatched: 'ambiguous'` so the pass does not ask again while the cache is
- * fresh. A plain miss is stored the same way (`'miss'`) — in the **title map**,
- * never in `entries`, so it cannot suppress a later `P6278` match.
- */
 function parseTitleResponse(data, candidates) {
   const bindings =
     data && data.results && Array.isArray(data.results.bindings) ? data.results.bindings : [];
@@ -135,24 +109,12 @@ function parseTitleResponse(data, candidates) {
       releasePrecision: date ? date.precision : null,
       releaseDate: date && date.precision === 'day' ? date.iso : null,
       releaseDateSource: date ? 'wikidata' : null,
-      // P136 labels are a **metadata** answer of the resolved QID, never an
-      // identity: they live in this map only (the P6278 entry stays untouched).
       genres: qid ? sanitizeEpicGenres(entry.genres) : [],
     };
   }
   return entries;
 }
 
-/**
- * Candidate list for the title pass: only an Epic work with a slug and a title
- * whose store/catalog/known year is still empty — or, when the caller already
- * knows the genre axis (`genres` property present, even empty), whose genre
- * line is empty too (the «Public» bucket case: the stale cached document is
- * sanitized to `[]` on read and the real P136 genres are asked for once).
- * `releaseYear`/`releaseDate`/`genres` are optional hints the caller already
- * knows. A card without a `genres` key is judged by the year axis only, so the
- * Epic import (which has no detail documents at hand) does not grow the pass.
- */
 function collectTitleCandidates(epicGames) {
   const out = [];
   const seen = new Set();
@@ -173,11 +135,6 @@ function collectTitleCandidates(epicGames) {
   return out;
 }
 
-/**
- * Resolve Epic titles to Wikidata items when the store slug has no `P6278`
- * identity (or no date). The answer goes to `titleEntries`; a miss/ambiguity
- * is cached there with `qid: null` so it is not re-asked while fresh.
- */
 async function fetchSecondaryTitleLinks(input = {}, options = {}) {
   const candidates = collectTitleCandidates(
     input.epicGames || input.titles || []
@@ -274,14 +231,6 @@ async function fetchSecondaryTitleLinks(input = {}, options = {}) {
   return result;
 }
 
-/**
- * Job-side wrapper: refresh the bridge for the slugs of one import.
- *
- * Runs **only for a real import** (`options.client` absent): a job driven by an
- * injected client is hermetic (tests, diagnostics) and must not touch WDQS.
- * Never throws — the import's own result is what the user asked for; the bridge
- * is an enhancement and a WD outage is reported as `skipped`.
- */
 async function refreshForJob({ gogProducts = [], epicGames = [], options = {} } = {}) {
   if (options.client) return { skipped: 'injected_client' };
   if (options.wikidata === false || options.secondaryLinks === false) {
@@ -305,8 +254,6 @@ async function refreshForJob({ gogProducts = [], epicGames = [], options = {} } 
     if (gogSlugs.length || epicSlugs.length) {
       report = await fetchSecondaryLinks({ gogSlugs, epicSlugs }, common);
     }
-    // Separate pass: a title is not a P6278 identity, so it can only fill a
-    // year that the slug pass left empty (the Alan Wake 2 case).
     let titleReport = { queries: 0, resolved: 0, ambiguous: 0, skipped: null, errors: [] };
     if (titleCandidates.length && !report.skipped) {
       titleReport = await fetchSecondaryTitleLinks({ epicGames }, common);

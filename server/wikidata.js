@@ -1,44 +1,5 @@
 'use strict';
 
-/*
- * Wikidata enrichment layer.
- *
- * Films are looked up by their IMDb id (P345) in batches through the Wikidata
- * Query Service (WDQS) and the result is persisted next to the other caches in
- * cache/wd-tags.json:
- *
- *   {
- *     "version": 1,
- *     "updatedAt": "2026-10-23T...",
- *     "labels": { "Q7725634": "literary work", ... },   // P144 type labels
- *     "imdb": { "tt0120735": <tag>, ... },
- *     "tmdb": { "100": <tag>, ... }                     // P4947 fallback
- *   }
- *
- * A <tag> is:
- *
- *   {
- *     "found": true,
- *     "item": "Q164716",          // Wikidata item (P345 match)
- *     "genres": ["Q...", ...],    // P136
- *     "colors": ["Q...", ...],    // P462
- *     "movements": ["Q...", ...], // P135
- *     "basedOn": ["Q...", ...],   // P144 source works
- *     "basedTypes": ["Q...", ...],// P31 of those works
- *     "basedClasses": ["book"],   // resolved source classes (see below)
- *     "checkedAt": "2026-10-23T..."
- *   }
- *
- * Entries for films that have no Wikidata item are stored as
- * `{ found: false, item: null, ... }`, so a repeated backfill is a no-op
- * instead of hammering WDQS forever. WIKIDATA_REFRESH=1 forces a refetch.
- *
- * P144 source classes (priority matches the task's taxonomy rules):
- *   remake > book > comic > play > video-game
- * "remake" means the source work is itself a film (a remake); television
- * sources are deliberately not promoted to an origin category.
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -67,56 +28,46 @@ const counters = {
   batches: 0,
 };
 
-/* ------------------------------------------------------------------ */
-/* P144 type classification                                            */
-/* ------------------------------------------------------------------ */
-
-/*
- * Wikidata classes observed as P144 source types in the local corpus (see the
- * research notes); the label lists are the vocabulary used by
- * /tmp/kb/p144_analyze.js. A few common ids that were not present in the
- * current sample are included so future cache refreshes classify correctly.
- */
 const TYPE_GROUP_IDS = {
   BOOK: [
-    'Q571', // book
-    'Q699', // fairy tale
-    'Q8261', // novel
-    'Q127956', // short story
-    'Q14974', // novella
-    'Q277759', // book series
-    'Q867335', // literary cycle
-    'Q1667921', // novel series
-    'Q2831984', // comic book album
-    'Q7725634', // literary work
-    'Q8275050', // children's book
-    'Q47461344', // written work
+    'Q571',
+    'Q699',
+    'Q8261',
+    'Q127956',
+    'Q14974',
+    'Q277759',
+    'Q867335',
+    'Q1667921',
+    'Q2831984',
+    'Q7725634',
+    'Q8275050',
+    'Q47461344',
   ],
   COMIC: [
-    'Q1114461', // comics character
-    'Q725377', // graphic novel
-    'Q838795', // comic strip
-    'Q1760610', // comic book
-    'Q213369', // webcomic
-    'Q14406742', // comic book series
-    'Q21198342', // manga series
+    'Q1114461',
+    'Q725377',
+    'Q838795',
+    'Q1760610',
+    'Q213369',
+    'Q14406742',
+    'Q21198342',
   ],
   PLAY: [
-    'Q25379', // play
-    'Q116476516', // dramatic work
-    'Q58483083', // dramatico-musical work
+    'Q25379',
+    'Q116476516',
+    'Q58483083',
   ],
   FILM: [
-    'Q11424', // film
-    'Q24856', // film series
-    'Q24862', // short film
-    'Q202866', // animated film
-    'Q17517379', // animated short film
+    'Q11424',
+    'Q24856',
+    'Q24862',
+    'Q202866',
+    'Q17517379',
   ],
   VG: [
-    'Q7889', // video game
-    'Q7058673', // video game series
-    'Q141546978', // video game franchise
+    'Q7889',
+    'Q7058673',
+    'Q141546978',
   ],
 };
 
@@ -125,8 +76,6 @@ for (const [group, ids] of Object.entries(TYPE_GROUP_IDS)) {
   for (const qid of ids) TYPE_GROUP_BY_QID.set(qid, group);
 }
 
-/* The exact label lists p144_analyze.js used. Labels are fetched once and
- * cached in wd-tags.json, so classification follows the researched rules. */
 const TYPE_GROUP_LABELS = {
   BOOK: [
     'novel',
@@ -168,7 +117,6 @@ for (const [group, labels] of Object.entries(TYPE_GROUP_LABELS)) {
   for (const label of labels) LABEL_TO_GROUP.set(label, group);
 }
 
-/* Origin keys used by taxonomy.js. The priority order is the task's rule. */
 const GROUP_TO_ORIGIN = {
   FILM: 'remake',
   BOOK: 'book',
@@ -186,10 +134,6 @@ function groupOfType(typeQid, labels) {
   return label ? LABEL_TO_GROUP.get(label) || null : null;
 }
 
-/**
- * Resolve the P144 source classes for a tag. Returns a de-duplicated list in
- * priority order (remake > book > comic > play > video-game).
- */
 function classifyBasedOn(types, labels) {
   const groups = [];
   for (const type of Array.isArray(types) ? types : []) {
@@ -205,10 +149,6 @@ function classifyBasedOn(types, labels) {
   });
   return groups;
 }
-
-/* ------------------------------------------------------------------ */
-/* Store                                                               */
-/* ------------------------------------------------------------------ */
 
 let store = null;
 let storeMtimeMs = -1;
@@ -262,10 +202,6 @@ function ensureLoaded() {
   return store;
 }
 
-/**
- * Pick up a wd-tags.json written by the backfill CLI while the server is
- * running. Called once per stats build; mtime + size keep it cheap.
- */
 function reloadIfChanged() {
   if (!store) {
     store = readStoreFromDisk();
@@ -316,13 +252,6 @@ function normalizeTmdbId(value) {
   return Number.isFinite(n) && n > 0 ? String(Math.trunc(n)) : null;
 }
 
-/**
- * Tags for one film. IMDb is authoritative when the film has an IMDb id: a
- * negative IMDb result must NOT fall through to the TMDB index, because TMDB
- * movie/TV ids share one numeric namespace and a colliding entry could leak
- * the other kind's tags. The TMDB key is the P4947 fallback only for films
- * that have no IMDb id at all.
- */
 function getTags(imdbId, tmdbId) {
   ensureLoaded();
   const imdb = normalizeImdbId(imdbId);
@@ -360,10 +289,6 @@ function stats() {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* HTTP                                                                */
-/* ------------------------------------------------------------------ */
-
 const sleep = defaultSleep;
 
 function retryAfterMs(response) {
@@ -380,15 +305,9 @@ function backoffMs(attempt, response) {
   const fromHeader = retryAfterMs(response);
   if (fromHeader != null) return fromHeader;
   const base = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** (attempt - 1));
-  // Small jitter avoids synchronised retries from several workers.
   return Math.min(MAX_BACKOFF_MS, base + Math.floor(Math.random() * 500));
 }
 
-/**
- * POST is used instead of the GET form from the brief: 450 IMDb ids make the
- * query URL larger than WDQS' GET limit (HTTP 414). The endpoint and result
- * format are identical.
- */
 async function querySparql(query, log = console.log) {
   let lastError = null;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -453,10 +372,6 @@ async function querySparql(query, log = console.log) {
   throw lastError || new Error('WDQS request failed');
 }
 
-/* ------------------------------------------------------------------ */
-/* Query construction                                                  */
-/* ------------------------------------------------------------------ */
-
 function valuesClause(ids) {
   return ids.map((id) => JSON.stringify(String(id))).join(' ');
 }
@@ -465,7 +380,6 @@ function concatExpr(variable) {
   return `(GROUP_CONCAT(DISTINCT ?${variable}; separator="|") AS ?${variable}s)`;
 }
 
-/** Query keyed by IMDb id (P345). */
 function imdbQuery(imdbIds) {
   const values = valuesClause(imdbIds);
   return `SELECT ?imdb ?item ?genres ?colors ?movements ?basedOn ?basedTypes WHERE {
@@ -492,7 +406,6 @@ function imdbQuery(imdbIds) {
 }`;
 }
 
-/** Query keyed by TMDB id (P4947) for films without an IMDb id. */
 function tmdbQuery(tmdbIds) {
   const values = valuesClause(tmdbIds);
   return `SELECT ?tmdb ?item ?genres ?colors ?movements ?basedOn ?basedTypes WHERE {
@@ -518,10 +431,6 @@ function tmdbQuery(tmdbIds) {
   }
 }`;
 }
-
-/* ------------------------------------------------------------------ */
-/* Parsing                                                             */
-/* ------------------------------------------------------------------ */
 
 function entityId(uri) {
   const value = String(uri == null ? '' : uri).trim();
@@ -554,11 +463,6 @@ function emptyAccumulator() {
   };
 }
 
-/**
- * Merge one WDQS row into an accumulator. The same IMDb id can be present on
- * several Wikidata items (bad data or a film/series pair); research merged
- * their signals and so do we instead of letting the last row win.
- */
 function mergeRow(acc, row) {
   const item = entityId(row.item && row.item.value);
   if (item && !acc.items.includes(item)) acc.items.push(item);
@@ -571,7 +475,6 @@ function mergeRow(acc, row) {
   for (const qid of splitConcat(row.basedTypes)) acc.basedTypes.add(qid);
   const after =
     acc.genres.size + acc.colors.size + acc.movements.size + acc.basedOn.size;
-  // Prefer the item that actually carries the signals; ties keep the first.
   if (item && after > before && after > acc.itemScore) {
     acc.item = item;
     acc.itemScore = after;
@@ -584,7 +487,6 @@ function tagFromAccumulator(acc, labels) {
   return {
     found: true,
     item: acc.item || acc.items[0] || null,
-    // Kept for diagnostics: duplicated P345 values are rare but real.
     items: acc.items.slice().sort(),
     genres: [...acc.genres].sort(),
     colors: [...acc.colors].sort(),
@@ -610,10 +512,6 @@ function negativeTag() {
     checkedAt: new Date().toISOString(),
   };
 }
-
-/* ------------------------------------------------------------------ */
-/* P144 type labels                                                    */
-/* ------------------------------------------------------------------ */
 
 async function fetchTypeLabels(typeIds, log = console.log) {
   const missing = [...new Set(typeIds)].filter((qid) => qid && !store.labels[qid]);
@@ -657,7 +555,6 @@ async function fetchTypeLabels(typeIds, log = console.log) {
   }
 }
 
-/** Recompute basedClasses for every stored tag (cheap, idempotent). */
 function finalizeClasses(log = console.log) {
   ensureLoaded();
   const typeIds = new Set();
@@ -672,8 +569,6 @@ function finalizeClasses(log = console.log) {
   if (!tags.length) return;
   const unresolved = [...typeIds].filter((qid) => !store.labels[qid]);
   if (unresolved.length) {
-    // fetchTypeLabels is async; backfill awaits the async variant before
-    // calling this. Server-side reads just use what is already cached.
     if (log) log(`[wikidata] ${unresolved.length} P144 type label(s) still unresolved`);
   }
   for (const tag of tags) {
@@ -693,10 +588,6 @@ async function prepareClasses(log = console.log) {
   await fetchTypeLabels([...typeIds], log);
   finalizeClasses(null);
 }
-
-/* ------------------------------------------------------------------ */
-/* Backfill                                                            */
-/* ------------------------------------------------------------------ */
 
 function chunk(list, size) {
   const out = [];
@@ -728,12 +619,6 @@ function pct(part, total) {
   return `${((part / total) * 100).toFixed(1)}%`;
 }
 
-/**
- * Enrich the cached films.
- *
- * @param {Array<{tmdbId:number, kind:'movie'|'tv', imdbId:string|null, title?:string, year?:number|null}>} films
- * @param {{force?:boolean, log?:Function}} options
- */
 async function backfill(films, options = {}) {
   const log = typeof options.log === 'function' ? options.log : console.log;
   const force =
@@ -753,7 +638,6 @@ async function backfill(films, options = {}) {
     }
   }
 
-  // Resolve P144 type labels from previous runs before deciding what to skip.
   await prepareClasses(log);
 
   const pendingImdb = [...byImdb.keys()].filter((imdb) => force || !Object.prototype.hasOwnProperty.call(store.imdb, imdb));
@@ -814,12 +698,9 @@ async function backfill(films, options = {}) {
         `matched=${matched} in ${((Date.now() - started) / 1000).toFixed(1)}s ` +
         `(file=${(fileBytes() / 1024).toFixed(0)} KiB)`
     );
-    // Be gentle to WDQS between batches; the query service rate-limits hard
-    // during outages. A short pause also keeps interactive use possible.
     if (index < imdbBatches.length - 1) await sleep(1200);
   }
 
-  // P4947 fallback: only the handful of films without an IMDb id.
   const pendingTmdb = withoutImdb
     .map((film) => normalizeTmdbId(film.tmdbId))
     .filter((id) => id && (force || !Object.prototype.hasOwnProperty.call(store.tmdb, id)));
@@ -867,7 +748,6 @@ async function backfill(films, options = {}) {
     );
   }
 
-  // New P144 types arrived with this run: resolve labels and compute classes.
   await prepareClasses(log);
   persist();
 
@@ -913,6 +793,5 @@ module.exports = {
   reloadIfChanged,
   backfill,
   querySparql,
-  // exposed for tests / diagnostics
   __internal: { imdbQuery, tmdbQuery, splitConcat, entityId },
 };

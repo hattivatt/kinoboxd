@@ -1,16 +1,5 @@
 'use strict';
 
-/**
- * `IStoreBrowseService/GetItems` client: the public, keyless store-frontend API
- * that is the only place publishing the per-asset `library_capsule` hash.
- *
- * One request per appid (`include_assets`), English assets, behind the shared
- * source gate (`core/source-client`): a pause between requests, a breaker on
- * the host, and a per-run budget counter when the caller passes one. Transport
- * failures throw `art_browse_*` codes so the caller can defer instead of
- * caching a negative verdict; an honest «no such item» is `null`.
- */
-
 const { fetchJson } = require('../../core/http');
 const { createSourceGate } = require('../../core/source-client');
 const sources = require('../../core/sources');
@@ -18,8 +7,6 @@ const sources = require('../../core/sources');
 const gameCache = require('../game-cache');
 const { ART_PATH, HASH_RE } = require('./store');
 
-// `IStoreBrowseService/GetItems` is the public, keyless store-frontend API; it
-// is the only place that publishes the per-asset `library_capsule` hash.
 const BROWSE_HOST = 'api.steampowered.com';
 const BROWSE_BREAKER_KEY = `${BROWSE_HOST}/IStoreBrowseService`;
 const BROWSE_URL = `https://${BROWSE_HOST}/IStoreBrowseService/GetItems/v1/`;
@@ -42,15 +29,6 @@ async function browsePause(options = {}) {
   lastBrowseAt = options.now ? Number(options.now()) : Date.now();
 }
 
-/**
- * `IStoreBrowseService/GetItems` for one appid, English assets. Returns
- * `{ libraryCapsule: { hash, file } | null, smallCapsuleHash: string | null }`
- * or `null` when the store has no visible item (an honest «not found»).
- *
- * Throws `{ code: 'art_browse_unreachable' | 'art_browse_rate_limited' |
- * 'art_browse_budget' }` for transport/breaker/budget failures, so the caller
- * can defer instead of caching a negative verdict (AGENTS.md §1).
- */
 async function fetchBrowseAssets(appid, options = {}) {
   if (options.budget && !options.budget.take()) {
     const err = new Error('art browse budget exhausted');
@@ -134,7 +112,6 @@ async function fetchBrowseAssets(appid, options = {}) {
   };
 }
 
-/** Small capsule URL used when the 32×32 community icon is missing or 404s. */
 function smallIconFallbackOf(appid, hashes, browse) {
   const smallHash =
     (browse && browse.smallCapsuleHash) || hashes.capsule || null;

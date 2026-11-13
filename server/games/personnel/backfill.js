@@ -1,31 +1,5 @@
 'use strict';
 
-/**
- * Manual/live driver for the games personnel layer (ИГРЫ §3.9:
- * `kinoboxd-games-personnel`, monthly). Not wired into a systemd unit in this
- * round — deploy files are the orchestrator's, and the M3 brief forbids
- * touching them.
- *
- *   node server/games/personnel/backfill.js --profile=steam-<steamid64>
- *        [--limit=200] [--force] [--json]
- *
- * What it does: for every library game that already has `details/<appid>.json`
- * it fetches Wikidata credits (batched, ≤450 per query; `P1733` resolves the
- * game item when `links/<appid>.json` has no QID) and, only if a MobyGames key
- * is configured, per-game Moby credits (1.1 s pause, `GAMES_MOBY_BUDGET`).
- * Results are written to `cache-games/personnel/<appid>.json`, including a
- * 90-day negative cache for «no credits».
- *
- * The same `personnel.lock` the server's on-demand job uses is taken first
- * (`GAMES_PERSONNEL_LOCK_WAIT_MS`, default 0): the CLI and a route-triggered
- * pass must not spend the WDQS budget twice or race the same documents.
- *
- * The report never contains a token: Moby status reports `source` only.
- * Exit codes: 0 = ran, 1 = bad usage/unknown profile, 2 = WDQS disabled and
- * Moby not configured (nothing could be fetched), 3 = `personnel.lock` is held
- * by another pass (skipped, 0 requests).
- */
-
 const gameCache = require('../game-cache');
 const personnel = require('./personnel');
 const wikidata = require('./wikidata');

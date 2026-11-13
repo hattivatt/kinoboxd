@@ -1,24 +1,3 @@
-/* Games tab: Steam import screen, import progress and the M1 dashboard.
- *
- * One module owns the whole `/api/games/*` namespace:
- *   - import by steamid64 / vanity URL (`POST /api/games/import/steam`),
- *   - job polling (`GET /api/games/import/status`),
- *   - the dashboard built from `GET /api/games/stats?profile=steam-<steamid64>`.
- *
- * Design notes (ИГРЫ-АРХИТЕКТУРА §8.2, M1):
- *  - a games profile is ONE owner: one steamid64, one primary Steam journal.
- *    Two profiles are never summed — switching is the only way to see another;
- *  - «Импортировать» is always enabled: without `STEAM_API_KEY` the server
- *    still returns the profile, achievements and the three most recent games
- *    (`libraryPartial: true`), and the dashboard says so honestly instead of
- *    showing an empty page;
- *  - every block is rendered from `games-view.js` view models, which are
- *    DOM-free and unit-tested; a missing payload block hides its widget, it
- *    never renders a confident zero;
- *  - the dashboard is rebuilt wholesale on every render, so a silent refresh
- *    restores the window scroll (the books pattern) instead of jumping to top.
- */
-
 import {
   getGamesStats, getGamesProfiles, startGamesImportSteam, getGamesImportStatus, startGamesRefresh,
   getGamesPersonnel, getGamesFranchises,
@@ -56,9 +35,6 @@ import {
   configureGamesModals, openGameCardModal, openGameListModal, openPersonModal, personAvatarEl,
   openFranchiseModal, gameCoverVerticalEl, openSecondaryWorkCardModal,
 } from './games-modal.js';
-// M6c: the Epic slot is a self-contained module loaded by index.html. games.js
-// never imports it (that would drag its DOM/timers into DOM-free tests); it
-// asks for a refresh through a DOM event instead.
 const CONNECTIONS_OPEN_EVENT = 'games:connections-open';
 
 function requestEpicRefresh() {
@@ -72,24 +48,14 @@ const JOB_KEY = 'kinoboxd.games.job.v1';
 const FILTERS_KEY = 'kinoboxd.games.filters.v1';
 const WEIGHT_KEY = 'kinoboxd.games.weight.v1';
 const ROLE_KEY = 'kinoboxd.games.role.v1';
-// Legacy key name: the genre widget was a cloud, now it is a bar chart. The
-// stored weight choice survives the change, so the string stays.
 const GENRE_WEIGHT_KEY = 'kinoboxd.games.cloudweight.v1';
-// Tags share the bar-chart idea but keep their own weight (hours/count/weight).
 const TAG_WEIGHT_KEY = 'kinoboxd.games.tagweight.v1';
 const POLL_INTERVAL = 1400;
 const ENRICH_POLL_INTERVAL = 3500;
 const ENRICH_POLL_LIMIT = 120;
-// The profile catalogue is server state (another browser may import a profile).
-// Re-reading it on every tab activation keeps the switcher honest; the throttle
-// keeps a quick tab flip-flop from spamming `/api/games/profiles`.
 const PROFILES_RELOAD_MS = 30_000;
 const GAME_PLURAL = ['игра', 'игры', 'игр'];
 const SECONDARY_WORK_PLURAL = ['работа', 'работы', 'работ'];
-// Donut palettes: the same two arrays films/books use (DECADE_COLORS /
-// YEAR_COLORS in widgets.js / books.js), so «Десятилетия» and «Годы» read as
-// the same charts across tabs. Kept local: the games tab must not import a
-// films/books module just for six hex strings.
 const DECADE_COLORS = ['#00e054', '#40bcf4', '#ff8000', '#e8253f', '#b18cff', '#ffd166'];
 const YEAR_COLORS = [
   '#00e054', '#40bcf4', '#ff8000', '#e8253f', '#b18cff', '#ffd166',
@@ -101,7 +67,7 @@ const PERSONS_BATCH = 50;
 
 const state = {
   active: false,
-  view: 'import', // import | progress | dashboard | personnel
+  view: 'import',
   loading: false,
   loaded: false,
   loadedAt: 0,
@@ -112,32 +78,18 @@ const state = {
   profilesLoaded: false,
   profilesLoadedAt: 0,
   profileKey: '',
-  job: null, // { id, profile, status, failed, startedAt }
+  job: null,
   importBusy: false,
   onActivate: null,
-  // M2: includeFree/includeDlc are sent only when they differ from the server
-  // defaults (free included, DLC excluded) — a default request stays clean.
-  // The min-hours filter follows the same rule: -1 = every game (including
-  // 0-hour ones), 0 = the server default (only games with >0 hours), N = ≥N h.
   filters: { includeFree: true, includeDlc: false, minHours: 0 },
-  // Genre bar chart: weight + «Показать все» (top 12 first).
   genreWeight: 'hours',
   genresExpanded: false,
-  // M4 tag bars: own weight (hours/count/weight) and fold state.
   tagWeight: 'hours',
   tagsExpanded: false,
-  // M4 franchises come from their own route, cached per profile (one owner).
   franchises: { data: null, loading: false, error: null, profile: '' },
-  // M3: personnel weights + per-role cache (one owner, no cross-profile mix).
   weight: 'hours',
   role: 'developer',
-  // The years card is permanent: it paints every release year by default and
-  // a selected decade narrows the chart (clicking it again restores the full
-  // range). The inline persons widget batches locally (the personnel route
-  // returns the whole role — its `limit` is games per person, not persons).
   selectedDecade: null,
-  // «Количество игр по году выхода»: an independent full-width chart. The
-  // decade above never narrows it; only this genre filter does (client-side).
   yearCountGenre: null,
   personnel: {
     role: '', data: null, loading: false, error: null, cache: {}, openId: '',
@@ -146,16 +98,10 @@ const state = {
   enrichTimer: 0,
   enrichSeq: 0,
   enrichTicks: 0,
-  // M6a: GOG connection state. `status` is the sanitized `/gog/status`
-  // payload; `job` is the running GOG import. Tokens never reach the browser.
   gog: { status: null, loading: false, error: null, job: null, timer: 0, connected: false },
 };
 
 let inflightLoad = null;
-
-/* =========================================================
-   tiny helpers
-   ========================================================= */
 
 function readJob() {
   const raw = safeStorageGet(JOB_KEY);
@@ -184,10 +130,6 @@ function saveJob() {
   }));
 }
 
-/* =========================================================
-   screens
-   ========================================================= */
-
 function showScreen(name) {
   const previous = state.view;
   state.view = name;
@@ -196,9 +138,6 @@ function showScreen(name) {
     progress: $('games-progress'),
     dashboard: $('games-dash'),
     personnel: $('games-personnel'),
-    // M6c: one screen for every secondary library (GOG + Epic). It is a real
-    // screen, not a section glued to the dashboard, so the Epic slot and the
-    // GOG card are never painted twice.
     connections: $('games-connections-screen'),
   };
   for (const [key, node] of Object.entries(screens)) {
@@ -209,13 +148,10 @@ function showScreen(name) {
   updateActions();
   const back = $('games-progress-back');
   if (back) back.hidden = false;
-  // M6c: opening «Подключения» refreshes both slots (GOG status + Epic slot).
   if (name === 'connections' && previous !== name) {
     ensureGogStatus();
     requestEpicRefresh();
   }
-  // `onActivate` is main.js's `showView('games')`, which scrolls to top. Calling
-  // it on every render would throw the user back to the top on each poll tick.
   if (previous !== name && state.active && state.onActivate) state.onActivate();
 }
 
@@ -233,9 +169,6 @@ function updateActions() {
   const reimport = $('games-reimport');
   if (reimport) reimport.hidden = state.view === 'progress';
   const connections = $('games-connections-btn');
-  // M6c: «Подключения» is offered only when there is an owner to attach a
-  // library to (a secondary library needs a Steam profile) and never on the
-  // import-progress screen.
   if (connections) connections.hidden = state.view === 'progress' || !state.profileKey;
 }
 
@@ -243,11 +176,6 @@ function showLoading(visible) {
   setLoadingVisible('games-loading', visible);
 }
 
-/**
- * A profile switch empties `state.data` but leaves the previous owner's numbers
- * in the DOM until the new payload lands. Hide the dashboard and show the
- * loader instead: a stale summary under a new chip is a lie (§2.0).
- */
 function markDashboardLoading(visible) {
   const dash = $('games-dash');
   if (dash && visible) dash.hidden = true;
@@ -292,7 +220,6 @@ function setImportBusy(busy) {
   if (label) label.textContent = busy ? 'Импортируем…' : 'Импортировать';
 }
 
-/** Honest boolean key indicator: «настроен / не настроен / неизвестно». */
 function setKeyIndicator(configured) {
   const node = $('games-key-state');
   if (!node) return;
@@ -313,10 +240,6 @@ function setKeyIndicator(configured) {
   node.title = 'Сервер не сообщил состояние ключа. Импорт всё равно попробует собрать профиль.';
 }
 
-/* =========================================================
-   profiles (server-side catalogue, one owner per key)
-   ========================================================= */
-
 function renderProfiles() {
   const host = $('games-profile-list');
   const bar = $('games-profile-bar');
@@ -332,9 +255,6 @@ function renderProfiles() {
   if (empty) empty.hidden = true;
   if (bar) bar.hidden = state.view === 'progress';
 
-  // `label` is the owner-facing name typed at import; the persona is what
-  // Steam says. Two owners of one account are told apart by the label, so it
-  // wins in the chip and the persona stays as the tooltip.
   const items = state.profiles.map((profile) => {
     const active = profile.key === state.profileKey;
     const chipName = text(profile.label) || text(profile.personaName) || profile.key;
@@ -364,24 +284,16 @@ async function switchProfile(key) {
   state.loaded = false;
   state.data = null;
   state.seq += 1;
-  // One owner = one profile: the personnel cache of the previous steamid64
-  // must never be shown for the new one (AGENTS §6, ИГРЫ §2.0).
   state.personnel = {
     role: state.role, data: null, loading: false, error: null, cache: {}, openId: '',
     query: '', expanded: false, visible: PERSONS_INITIAL, rows: [],
   };
-  // Filters are per owner (§8.5: «сброс при смене профиля»): the new profile
-  // starts from ITS stored choice (or the server defaults), never from the
-  // previous owner's F2P/DLC switches.
   state.filters = readStoredFilters(next);
   state.selectedDecade = null;
-  // Franchises belong to one owner too: never reuse the previous cache.
   state.franchises = { data: null, loading: false, error: null, profile: '' };
   state.yearCountGenre = null;
   state.genresExpanded = false;
   syncFilterInputs();
-  // The old owner's numbers are already out of `state.data`; hide the DOM too,
-  // so the switch shows the loader instead of a stale dashboard.
   markDashboardLoading(true);
   renderProfiles();
   await loadStats({ force: true });
@@ -391,8 +303,6 @@ async function switchProfile(key) {
 async function ensureProfiles({ reload = false, maxAgeMs = 0 } = {}) {
   if (state.profilesLoaded) {
     const age = Date.now() - (state.profilesLoadedAt || 0);
-    // `reload` alone is a hard reload (finishImport needs the new chip); with
-    // `maxAgeMs` it is throttled (tab activation: a quick flip-flop is cheap).
     const throttled = reload && maxAgeMs > 0 && age <= maxAgeMs;
     if (!reload || throttled) return state.profiles;
   }
@@ -401,8 +311,6 @@ async function ensureProfiles({ reload = false, maxAgeMs = 0 } = {}) {
     state.profiles = normalizeProfilesList(raw);
     state.profilesLoaded = true;
     state.profilesLoadedAt = Date.now();
-    // `/profiles` reports `steamKey: { configured, source }` (a boolean and a
-    // source label, never the value); an older draft used a bare boolean.
     const flag = raw && typeof raw === 'object'
       ? (raw.steamKeyConfigured
         ?? (raw.steamKey && typeof raw.steamKey === 'object' ? raw.steamKey.configured : raw.steamKey)
@@ -410,8 +318,6 @@ async function ensureProfiles({ reload = false, maxAgeMs = 0 } = {}) {
       : null;
     if (typeof flag === 'boolean') setKeyIndicator(flag);
   } catch {
-    // An older server without the games routes: keep whatever key is stored
-    // locally and let `/stats` report the real state.
     state.profiles = state.profiles || [];
   }
   const stored = text(safeStorageGet(PROFILE_KEY));
@@ -424,10 +330,6 @@ async function ensureProfiles({ reload = false, maxAgeMs = 0 } = {}) {
   return state.profiles;
 }
 
-/* =========================================================
-   data loading
-   ========================================================= */
-
 async function loadStats({ force = false, silent = false } = {}) {
   if (state.loading) {
     if (!force) return;
@@ -435,7 +337,6 @@ async function loadStats({ force = false, silent = false } = {}) {
       try {
         await inflightLoad;
       } catch {
-        /* the inner run reports its own errors */
       }
     }
   }
@@ -462,15 +363,10 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
   const seq = ++state.seq;
   state.loading = true;
   if (!silent) showError(null);
-  // Without a payload for the selected profile there is nothing honest to
-  // show: hide the (previous owner's) dashboard and paint the loader.
   if (!silent && !state.data) markDashboardLoading(true);
   else if (!silent && state.view !== 'dashboard' && state.view !== 'personnel') showLoading(true);
   updateActions();
   try {
-    // Filters are sent only when they differ from the server defaults
-    // (`includeFree=1`, `includeDlc=0`): a default dashboard request stays
-    // exactly `?profile=…`, and `meta.filters` tells us what was applied.
     const query = { profile: state.profileKey };
     if (state.filters.includeFree === false) query.includeFree = false;
     if (state.filters.includeDlc === true) query.includeDlc = true;
@@ -483,7 +379,6 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
     state.loadedAt = Date.now();
     if (data.summary.steamKeyConfigured != null) setKeyIndicator(data.summary.steamKeyConfigured);
     if (!data.has.games && !data.has.profile) {
-      // Nothing imported for this key: the honest screen is the import card.
       state.loaded = false;
       showScreen('import');
       renderProfiles();
@@ -503,7 +398,7 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
     }
   } catch (error) {
     if (seq !== state.seq) return;
-    if (error && error.status === 401) return; // the auth view takes over
+    if (error && error.status === 401) return;
     if (error && (error.status === 404 || error.status === 400)) {
       state.loaded = false;
       state.data = null;
@@ -514,15 +409,11 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
       } else {
         showScreen('import');
         renderProfiles();
-        // 404 = the profile is not imported yet (normal first run). A 400 is a
-        // real answer from the server (`profile_private`, …) and must be shown.
         if (error.status === 400) showError(error, importErrorText(error));
       }
       return;
     }
     if (state.data) {
-      // A background enrichment poll must not spam a toast every 3.5 s: it
-      // just stops the poller and keeps the last good dashboard.
       if (!silent) toast(shortErrorMessage(error), 'error', { duration: 7000 });
       stopEnrichPoll();
       return;
@@ -538,10 +429,6 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
     }
   }
 }
-
-/* =========================================================
-   import
-   ========================================================= */
 
 async function submitImport(event) {
   if (event) event.preventDefault();
@@ -568,7 +455,6 @@ async function submitImport(event) {
       ? (typeof response.profile === 'string' ? response.profile : (response.profile && response.profile.key))
       : '');
     if (!jobId && !profile) {
-      // Some server versions answer "already done" without a job id.
       if (response && (response.done === true || text(response.status) === 'done')) {
         await finishImport(null);
         return;
@@ -577,10 +463,6 @@ async function submitImport(event) {
     }
     state.job = {
       id: jobId,
-      // A vanity import resolves the owner on the server: `profile` is null
-      // until then. Never seed the job with the previously selected key — that
-      // is how the tab kept activating the OLD profile after a second person's
-      // import (P0). The job's owner arrives with the first status poll.
       profile: profile || '',
       status: response && typeof response === 'object' ? response : null,
       failed: null,
@@ -589,8 +471,6 @@ async function submitImport(event) {
     if (profile) {
       state.profileKey = profile;
       safeStorageSet(PROFILE_KEY, profile);
-      // The job owns this profile from now on: highlight its chip immediately
-      // (the progress screen hides the bar, but a reload/resume must agree).
       renderProfiles();
     }
     saveJob();
@@ -609,7 +489,6 @@ async function submitImport(event) {
 
 const poller = createPoller({
   intervalMs: POLL_INTERVAL,
-  // A hidden tab keeps its job in localStorage; `showGames()` restarts the poller.
   shouldContinue: () => Boolean(state.job) && state.active,
   tick: pollOnce,
 });
@@ -620,7 +499,6 @@ function stopPolling() {
 
 function startPolling() {
   poller.stop();
-  // Give the server a moment to register the job before the first status read.
   poller.start(320);
 }
 
@@ -630,9 +508,6 @@ async function pollOnce() {
   try {
     const status = await getGamesImportStatus(job.id, { profile: job.profile });
     job.status = status && typeof status === 'object' ? status : job.status;
-    // P0: a vanity import names its owner only after the profile XML resolves.
-    // The status carries that key — adopt it, so `finishImport`/resume stop
-    // reading the profile that was selected before the import started.
     const resolved = text(status && status.profile);
     if (resolved && resolved !== job.profile) {
       job.profile = resolved;
@@ -653,9 +528,6 @@ async function pollOnce() {
   } catch (error) {
     if (error && error.status === 401) return;
     if (error && error.status === 404) {
-      // The status route may not be mounted (or the job already left the
-      // server's memory). Ask the stats endpoint directly: a payload means the
-      // import finished.
       const done = await tryStatsAfterJob(job.status);
       if (done) return;
       job.failed = 'задача импорта не найдена на сервере (он мог перезапускаться)';
@@ -668,7 +540,6 @@ async function pollOnce() {
   }
 }
 
-/** The profile a finished job activates: its own resolved key first (P0). */
 function jobProfileKey(status) {
   return text(status && status.profile) || text(state.job && state.job.profile) || state.profileKey;
 }
@@ -685,9 +556,6 @@ async function tryStatsAfterJob(status) {
     state.job = null;
     saveJob();
     stopPolling();
-    // The status route may be missing while the payload already exists: the
-    // finished job still owns the profile switch, so repaint the chips here
-    // too (otherwise the new profile stays unhighlighted until a reload).
     await ensureProfiles({ reload: true });
     state.profileKey = key;
     safeStorageSet(PROFILE_KEY, key);
@@ -724,8 +592,6 @@ function jobFailure(status) {
 }
 
 async function finishImport(status) {
-  // P0: the job's own resolved profile wins over whatever was selected before
-  // the import (a vanity import has no key at submit time at all).
   const key = jobProfileKey(status);
   stopPolling();
   state.job = null;
@@ -735,10 +601,6 @@ async function finishImport(status) {
     safeStorageSet(PROFILE_KEY, key);
   }
   await ensureProfiles({ reload: true });
-  // `/api/games/profiles` can lag behind a finished job (or an older server
-  // may not list the profile yet). Never let that reload silently move the
-  // tab back to a previous profile: the job named the profile that just
-  // became active, so re-assert it and repaint the switcher chips.
   if (key) {
     state.profileKey = key;
     safeStorageSet(PROFILE_KEY, key);
@@ -768,8 +630,6 @@ function renderProgress() {
   if (line) {
     line.textContent = job && job.failed ? 'Импорт остановился' : jobStageText(status);
   }
-  // One progress renderer for every domain (`core/shell.js`): a Steam journal
-  // is a single row, books paint one row per source.
   renderJobRows({
     host: $('games-progress-jobs'),
     jobs: job ? [{
@@ -810,14 +670,6 @@ function renderProgress() {
   updateActions();
 }
 
-/* =========================================================
-   dashboard
-   ========================================================= */
-
-/* =========================================================
-   M6a: GOG — same-owner secondary library
-   ========================================================= */
-
 function setGogError(message) {
   const host = $('games-gog-error');
   if (!host) return;
@@ -846,7 +698,6 @@ function gogAccount() {
   return accounts[0] || null;
 }
 
-/** Paint the connect card from the sanitized `/gog/status` payload. */
 function renderGogCard() {
   const node = $('games-gog-status');
   const account = gogAccount();
@@ -887,7 +738,6 @@ async function ensureGogStatus() {
   }
 }
 
-/** «Источники»: Steam journal + GOG + Epic secondary, never summed. */
 function renderSources(data) {
   const widget = $('games-sources-widget');
   const host = $('games-sources-body');
@@ -896,19 +746,12 @@ function renderSources(data) {
   clear(host);
   const note = $('games-sources-note');
   if (note) {
-    // M6c: once secondary-only works exist, the headline is the union («N
-    // работ, включая вне Steam: X»), not a Steam-only count. A Steam-only
-    // profile keeps the old wording so existing expectations stay valid.
     note.textContent = view.secondaryOnly > 0 && view.unionText
       ? view.unionText
       : view.worksTotal != null
         ? `${fmtInt(view.worksTotal)} ${plural(view.worksTotal, GAME_PLURAL)} в объединённой библиотеке`
         : '';
   }
-  // One horizontal row per source: [label | meta | action]. The numbers and the
-  // status live in the middle cell, the connect link is right-aligned in its
-  // own column — a narrow grid cell can no longer split «340 игр» into a
-  // vertical token stack (the M6a bug: the widget had no grid-column span).
   for (const row of view.rows) {
     const node = el('div', {
       class: `games-source-row is-${row.key}${row.journal ? ' is-journal' : ''}`,
@@ -919,8 +762,6 @@ function renderSources(data) {
     if (row.games != null) parts.push(`${fmtInt(row.games)} ${plural(row.games, GAME_PLURAL)}`);
     if (row.hours != null) parts.push(hoursText(row.hours, 1));
     if (parts.length) {
-      // A single nowrap token: «340 игр · 5 852,7 ч» never breaks between the
-      // number and its unit.
       meta.append(el('span', { class: 'games-source-numbers', text: parts.join(' · ') }));
     }
     if (row.statusText) {
@@ -928,8 +769,6 @@ function renderSources(data) {
     }
     node.append(meta);
     const action = el('span', { class: 'games-source-action' });
-    // M6c: both secondary libraries connect on the «Подключения» screen; the
-    // row only links there, it never grows a second connect form.
     if ((row.key === 'gog' || row.key === 'epic') && row.canConnect) {
       const link = el('button', {
         type: 'button',
@@ -948,10 +787,6 @@ function renderSources(data) {
   if (secondary) {
     clear(secondary);
     if (view.secondaryOnly > 0) {
-      // There is no separate «Вне Steam» widget (product decision): the works
-      // live in the year/decade/genre charts and their drilldowns. This block
-      // only carries the per-source hour totals and the honest chart-inclusion
-      // status, so the count is never printed twice.
       if (view.worksTotal == null) {
         secondary.append(el('div', {
           text: `Вне Steam: ${fmtInt(view.secondaryOnly)} ${plural(view.secondaryOnly, SECONDARY_WORK_PLURAL)} `
@@ -989,8 +824,6 @@ function renderSources(data) {
 async function openGogLogin() {
   setGogError('');
   setGogBusy(true);
-  // Open the tab synchronously (inside the click) so the popup blocker does
-  // not swallow it while the auth URL is being fetched.
   const popup = typeof window !== 'undefined' ? window.open('about:blank', '_blank') : null;
   try {
     const info = await getGamesGogAuthUrl();
@@ -1000,7 +833,6 @@ async function openGogLogin() {
       try {
         popup.opener = null;
       } catch (err) {
-        /* cross-origin guard; the tab is still usable */
       }
       popup.location.href = url;
     } else {
@@ -1116,31 +948,20 @@ function renderDashboard(data) {
   configureGamesModals({
     profile: (data.profile && data.profile.key) || state.profileKey,
     gamesIndex: data.gamesIndex,
-    // The drilldowns carry secondary-only rows from `gamesIndex`; the union
-    // card needs the full entry (poster, store links) from `secondaryWorks`.
     secondaryWorks: data.secondaryWorks,
   });
   renderHead(data);
   renderProfileCard(data);
-  // M6a: sources (Steam journal + GOG secondary + Epic «скоро»). Hides itself
-  // only when there is no payload at all; a Steam-only profile still shows the
-  // GOG row with a «Подключить» link.
   renderSources(data);
   renderSummary(data);
   renderPartialNote(data);
   renderFilters(data);
-  // The top strip is first in the grid (films/books pattern): newest launches
-  // first, then the rest of the dashboard.
   renderRecentStrip(data);
   renderTopHours(data);
   renderPareto(data);
-  // M2/M3 widgets: every one of them hides itself when its payload block is
-  // missing, so an M1 server keeps a clean dashboard.
   renderDecades(data);
   renderYears(data);
   renderYearCount(data);
-  // M4: tags + Steam scores, then genres (paired with Pareto) and franchises.
-  // Every widget hides itself when its block is absent.
   renderTags(data);
   renderScores(data);
   renderGenreChart(data);
@@ -1148,13 +969,10 @@ function renderDashboard(data) {
   renderMetadataProgress(data);
   renderCalendar(data);
   renderPersonsWidget(data);
-  // The credits route is lazy and cached per role; a dashboard without it
-  // still renders, and the widget shows the honest «кредиты не собраны».
   if (!state.personnel.data && !state.personnel.loading) ensurePersonnel(state.role);
   scheduleEnrichPoll();
 }
 
-/** M6c: quiet suffix when the server says charts include secondary works. */
 function secondaryChartSuffix(data) {
   const status = data && data.secondaryChart;
   return status && status.included ? status.text : '';
@@ -1315,9 +1133,6 @@ function renderSummary(data) {
   if (!host) return;
   clear(host);
   const metrics = summaryMetrics(data.summary, { profile: data.profile });
-  // No metrics = the payload has no library numbers (or is a partial no-key
-  // import). A summary strip full of dashes would be noise, so it is hidden —
-  // the partial-library banner above already explains why.
   if (!metrics.length) {
     host.hidden = true;
     host.classList.remove('has-unmatched');
@@ -1326,8 +1141,6 @@ function renderSummary(data) {
   host.hidden = false;
   host.classList.add('games-summary');
   host.classList.toggle('has-unmatched', metrics.some((entry) => entry.key === 'unmatched'));
-  // The backlog tile stays a number: its list widget is gone, so a drilldown
-  // would open a list the dashboard no longer shows.
   const clickable = new Set(['recent', 'unmatched']);
   for (const descriptor of metrics) {
     host.append(metric(clickable.has(descriptor.key)
@@ -1365,10 +1178,6 @@ function renderPartialNote(data) {
   host.hidden = false;
 }
 
-/**
- * Open the union card of a secondary-only work. The chart row only carries
- * the numbers; `secondaryWorks` holds the full entry (poster, store links).
- */
 function openSecondaryWorkFor(data, row) {
   const key = row && (row.workKey || row.canonicalWorkKey);
   const works = Array.isArray(data && data.secondaryWorks) ? data.secondaryWorks : [];
@@ -1525,18 +1334,13 @@ function renderRecentStrip(data) {
         primaryAppid: item.primaryAppid,
         iconUrl: item.iconUrl,
         coverUrl: item.coverUrl,
-        // The store header carries the post-2024 asset hash: the vertical
-        // `library_600x900.jpg` lives in the same folder (`?h=<hash>`).
         headerImage: item.headerImage,
-        // Server-resolved poster (preferred) and the «no vertical art» verdict.
         verticalCapsule: item.verticalCapsule,
         verticalCapsuleKnown: item.verticalCapsuleKnown,
         iconFallbackUrl: item.iconFallbackUrl,
       },
       { className: 'games-recent-icon' },
     ));
-    // M6c: the same work can be owned in another store; the badge says so
-    // without touching the Steam hours printed below.
     const extraSources = (item.sources || []).filter((source) => source && source !== 'steam');
     if (extraSources.length) {
       art.append(el('span', {
@@ -1572,11 +1376,6 @@ function renderRecentStrip(data) {
   }
 }
 
-/* =========================================================
-   M2: filters, decades, years, genres, enrichment
-   ========================================================= */
-
-/** Requested-vs-applied is printed as-is: a silent filter would be a lie. */
 function renderFilters(data) {
   const section = $('games-filters');
   const note = $('games-filter-note');
@@ -1588,15 +1387,12 @@ function renderFilters(data) {
     includeFree: state.filters.includeFree,
     includeDlc: state.filters.includeDlc,
   });
-  // Keep the checkboxes in sync with what the server understood.
   if (free && free.checked !== (view.state.includeFree === false)) {
     free.checked = view.state.includeFree === false;
   }
   if (dlc && dlc.checked !== (view.state.includeDlc === true)) {
     dlc.checked = view.state.includeDlc === true;
   }
-  // The stepper shows the stored per-profile value; it is not a checkbox, so
-  // it is only overwritten when it differs (never mid-typing).
   if (hours && String(hours.value) !== String(state.filters.minHours)) {
     hours.value = String(state.filters.minHours);
   }
@@ -1612,7 +1408,6 @@ function renderFilters(data) {
 
 const MIN_HOURS_FLOOR = -1;
 
-/** Clamp the «мин. часов» value: integer, never below -1. */
 function normalizeMinHours(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 0;
@@ -1633,17 +1428,12 @@ function applyFilters(next) {
 }
 
 function selectDecade(data, decade) {
-  // Selection, not navigation: a click narrows the years donut to the decade,
-  // a second click on the same slice brings the full range back (films/books
-  // semantics, widgets.js `selectDecade`). The list itself opens from the
-  // «N игр без года» note, not from a slice.
   const same = state.selectedDecade && state.selectedDecade.start === decade.start;
   state.selectedDecade = same ? null : { start: decade.start, label: decade.label };
   renderDecades(data);
   renderYears(data);
 }
 
-/** «N игр без года» — the honest note line under the decade donut. */
 function unknownYearsButton(count, data) {
   const btn = el('button', {
     type: 'button',
@@ -1688,9 +1478,6 @@ function renderDecades(data) {
   }
   widget.hidden = false;
 
-  // «Год неизвестен» is a bucket, not a decade: it never becomes a slice
-  // (books parity). It is reported as a clickable note line instead, so the
-  // 29 year-less games are visible without inventing a decade for them.
   const rows = view.rows.filter((row) => !row.unknown);
   const unknown = view.rows.find((row) => row.unknown) || null;
   const total = rows.reduce((sum, row) => sum + row.count, 0);
@@ -1789,9 +1576,6 @@ function renderYears(data) {
   const note = $('games-years-note');
   const titleText = $('games-years-title-text');
   if (!widget || !donutHost || !legendHost) return;
-  // The years card is a permanent block: it is never hidden. A hidden card
-  // looked like a lost feature (the 01.11 regression), so the widget stays and
-  // an empty payload gets an honest placeholder instead.
   widget.hidden = false;
   clear(donutHost);
   clear(legendHost);
@@ -1805,15 +1589,10 @@ function renderYears(data) {
     return;
   }
 
-  // Default: every release year in one donut (no decade click required — the
-  // «график всегда есть» requirement). A selected decade narrows the chart to
-  // its ten years; clicking the same decade again restores the full range.
   const years = (decade ? yearsInDecade(data.years, decade.start) : view.years)
     .slice()
     .sort((a, b) => b.year - a.year);
   const total = years.reduce((sum, item) => sum + item.count, 0);
-  // The normalised payload keeps the unknown-year bucket aside (`unknownYear`),
-  // so the note stays honest: 303 known + 29 without a year.
   const unknownCount = view.unknownCount || (data.unknownYear && data.unknownYear.count) || 0;
   if (note) {
     if (decade) {
@@ -1868,14 +1647,6 @@ function renderYears(data) {
   });
 }
 
-/* «Количество игр по году выхода» — the permanent full-width count chart.
- *
- * Independent of `state.selectedDecade` on purpose: the card above («Годы
- * релиза») narrows to a decade when one is clicked, this one always paints
- * every release year. The only filter is the genre select, applied locally
- * from `gamesIndex` (films year-chart parity: no extra request, one select).
- * Unknown years never become a bar — the note says «и ещё N игр без года».
- */
 function renderYearCount(data) {
   const widget = $('games-yearcount-widget');
   const host = $('games-yearcount-chart');
@@ -1889,8 +1660,6 @@ function renderYearCount(data) {
   }
 
   const options = yearCountGenreOptions(data.genres);
-  // A profile switch or a refresh can remove the genre the user picked:
-  // fall back to «Все» instead of showing a silently empty chart.
   if (state.yearCountGenre && !options.some((option) => option.name === state.yearCountGenre)) {
     state.yearCountGenre = null;
   }
@@ -1932,9 +1701,6 @@ function renderYearCount(data) {
     ariaLabel: view.filtered
       ? `Количество игр по году выхода: жанр ${view.genre}`
       : `Количество игр по году выхода: ${view.minYear} — ${view.maxYear}`,
-    // The column height is the game count, so the count is printed above the
-    // bar and the tooltip adds the hours: «34 игры» vs «450 ч» is exactly the
-    // «игры, а не время» distinction the card is about.
     barLabels: true,
     yearNote: (year, item) => (item && item.hours != null
       ? `${hoursText(item.hours)} по данным Steam`
@@ -1953,7 +1719,6 @@ function renderYearCount(data) {
   }
 }
 
-/** Genre select of the year-count chart; «Все» clears the client-side filter. */
 function renderYearCountGenreFilter(options) {
   const select = $('games-yearcount-genre');
   if (!select) return;
@@ -1990,7 +1755,6 @@ function renderGenreChart(data) {
   const view = genreChartView(data.genres, {
     weight: state.genreWeight,
     limit: state.genresExpanded ? 0 : GENRE_CHART_LIMIT,
-    // Fallback denominator only: the payload's `genres[].share` wins when set.
     totalHours: data.summary ? data.summary.totalHours : null,
   });
   if (!view) {
@@ -2084,10 +1848,6 @@ function renderGenreChart(data) {
   }
 }
 
-/* =========================================================
-   M4: tags / Steam scores / franchises / DLC
-   ========================================================= */
-
 function renderTags(data) {
   const widget = $('games-tags-widget');
   const host = $('games-tags-chart');
@@ -2099,7 +1859,6 @@ function renderTags(data) {
   const view = tagsChartView(data.tags, {
     weight: state.tagWeight,
     limit: state.tagsExpanded ? 0 : TAG_CHART_LIMIT,
-    // Same fallback denominator as genres: the payload share wins.
     totalHours: data.summary ? data.summary.totalHours : null,
   });
   if (!view) {
@@ -2250,11 +2009,6 @@ function renderScores(data) {
   });
 }
 
-/**
- * Franchises: the block may arrive in `/stats` (tolerant) or from the
- * dedicated `/api/games/franchises` route, which is asked once per profile.
- * A 404 (backend round not merged yet) hides the widget instead of polling.
- */
 async function ensureFranchises({ force = false } = {}) {
   const profile = state.profileKey;
   if (!profile) return;
@@ -2298,8 +2052,6 @@ function renderFranchises(data) {
   if (loading) loading.hidden = true;
 
   if (!view) {
-    // A successful but empty answer is shown honestly, not hidden: «нет» is
-    // data too (IGDB/Wikidata have no links and the heuristic confirmed none).
     const fetchedEmpty = state.franchises.profile === state.profileKey
       && Array.isArray(state.franchises.data) && !state.franchises.data.length;
     if (fetchedEmpty && !fromPayload.length) {
@@ -2318,7 +2070,6 @@ function renderFranchises(data) {
       ensureFranchises();
       return;
     }
-    // Either loading is already in flight, or the route is absent/failed.
     widget.hidden = true;
     return;
   }
@@ -2489,16 +2240,6 @@ function renderCalendar(data) {
   });
 }
 
-/* =========================================================
-   M3: inline persons widget (films parity)
-   ========================================================= */
-
-/**
- * Role select options follow the payload: developers first, then only the
- * roles the payload reports (`coverage.byRole`), publishers when studio credits
- * exist. The static markup is the fallback until the first payload arrives, so
- * the select is never empty.
- */
 function renderRoleOptions(payload) {
   const select = $('games-persons-role');
   if (!select) return;
@@ -2694,10 +2435,6 @@ function renderPersonsWidget(data) {
   }
 }
 
-/* =========================================================
-   enrichment poll (progress bar stays honest while backfill runs)
-   ========================================================= */
-
 function stopEnrichPoll() {
   if (state.enrichTimer) window.clearTimeout(state.enrichTimer);
   state.enrichTimer = 0;
@@ -2726,10 +2463,6 @@ function scheduleEnrichPoll() {
   }, ENRICH_POLL_INTERVAL);
 }
 
-/* =========================================================
-   M3: personnel screen
-   ========================================================= */
-
 function readViewParam() {
   try {
     const value = new URLSearchParams(window.location.search).get('view');
@@ -2739,7 +2472,6 @@ function readViewParam() {
   }
 }
 
-/** `?tab=games&view=personnel` — the sub-screen is addressable (like books). */
 function writeViewParam(view, { push = true } = {}) {
   try {
     const url = new URL(window.location.href);
@@ -2750,7 +2482,6 @@ function writeViewParam(view, { push = true } = {}) {
     if (push) window.history.pushState(data, '', href);
     else window.history.replaceState(data, '', href);
   } catch {
-    /* history can be unavailable in exotic embeds */
   }
 }
 
@@ -2758,13 +2489,10 @@ function personnelCacheKey(role) {
   return `${state.profileKey}:${role}`;
 }
 
-/** One personnel request; an older server that only knows `studio` is retried. */
 async function fetchPersonnel(role, profileKey = state.profileKey) {
   try {
     return await getGamesPersonnel({ profile: profileKey, role });
   } catch (error) {
-    // `studio` is the pre-split key (developers + publishers mixed). A server
-    // that rejects `developer` still answers it, so the UI never goes empty.
     if (role === 'developer' && error && error.code === 'invalid_role') {
       return getGamesPersonnel({ profile: profileKey, role: 'studio' });
     }
@@ -2775,11 +2503,6 @@ async function fetchPersonnel(role, profileKey = state.profileKey) {
 async function ensurePersonnel(role, { force = false } = {}) {
   const nextRole = normalizePersonnelRole(role) || PERSONNEL_ROLES[0].key;
   if (!state.profileKey) return;
-  // P2: a request started for one owner must never paint another owner's
-  // credits. Capture the profile at request start; every write below is gated
-  // on it still being the selected one (the cache key already names it, but
-  // `state.personnel` is replaced wholesale on a switch, so the role check
-  // alone used to let an in-flight old answer through).
   const requestProfile = state.profileKey;
   const sameOwner = () => state.profileKey === requestProfile;
   const changed = state.role !== nextRole;
@@ -2815,7 +2538,7 @@ async function ensurePersonnel(role, { force = false } = {}) {
   try {
     const raw = await fetchPersonnel(nextRole, requestProfile);
     const data = normalizePersonnel(raw, nextRole);
-    if (!sameOwner()) return; // the tab switched owners while this was in flight
+    if (!sameOwner()) return;
     state.personnel.cache[key] = data;
     if (state.personnel.role === nextRole) {
       state.personnel.data = data;
@@ -2911,8 +2634,6 @@ function renderPersonnelToolbar() {
 }
 
 function personnelRowsFromStats() {
-  // Tolerant fallback: an M2 server already sends `studios` in the stats
-  // payload but may not mount `/api/games/personnel` yet.
   if (state.role !== 'developer' || !state.data) return null;
   const view = studiosView(state.data.studios, { weight: state.weight, limit: 0 });
   if (!view) return null;
@@ -2953,8 +2674,6 @@ function renderPersonnel() {
     }
   }
   if (rows.length && errorHost) {
-    // The route may be missing while `stats.studios` still answers: showing an
-    // error next to real rows would be contradictory.
     clear(errorHost);
     errorHost.hidden = true;
   }
@@ -3045,19 +2764,11 @@ function closePersonnel({ push = true } = {}) {
   if (state.data) renderDashboard(state.data);
 }
 
-/* =========================================================
-   wiring
-   ========================================================= */
-
 export function initGames({ onActivate } = {}) {
   state.onActivate = typeof onActivate === 'function' ? onActivate : null;
   state.profileKey = text(safeStorageGet(PROFILE_KEY));
   state.filters = readStoredFilters();
 
-  // One shell for the three tabs (`core/shell.js`): the source cards and the
-  // one «Подключения» screen are painted from the domain descriptor. Steam is
-  // the journal card of the import screen; GOG is the only card of the
-  // connections screen (Epic paints its own slot in `#games-connections`).
   renderSourceCards({
     grid: $('games-import-grid'),
     sources: GAMES_SHELL.sources.filter((source) => source.id === 'steam'),
@@ -3095,8 +2806,6 @@ export function initGames({ onActivate } = {}) {
   const back = $('games-progress-back');
   if (back) {
     back.addEventListener('click', () => {
-      // The job keeps running on the server; dropping the local job means the
-      // user starts a fresh import on purpose.
       stopPolling();
       state.job = null;
       saveJob();
@@ -3117,9 +2826,6 @@ export function initGames({ onActivate } = {}) {
     refresh.addEventListener('click', () => refreshProfile());
   }
 
-  /* M6c: «Подключения» — one screen for GOG + Epic. The GOG token never
-     reaches the browser (the code is exchanged server-side); the Epic slot
-     lives in the same screen and refreshes itself. */
   const connections = $('games-connections-btn');
   if (connections) {
     connections.addEventListener('click', () => {
@@ -3138,8 +2844,6 @@ export function initGames({ onActivate } = {}) {
       showScreen(state.profileKey ? 'dashboard' : 'import');
     });
   }
-  /* M6c: an Epic connect/import/disconnect changes `hoursBySource.epic` and
-     `secondaryWorks` in the stats payload — rebuild it once, silently. */
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
     document.addEventListener('games:epic-changed', () => {
       if (!state.profileKey || !state.active) return;
@@ -3166,7 +2870,6 @@ export function initGames({ onActivate } = {}) {
   const gogLogout = $('games-gog-logout');
   if (gogLogout) gogLogout.addEventListener('click', () => logoutGogAccount());
 
-  /* M2: filters — requested-vs-applied is printed, never silently dropped. */
   const free = $('games-filter-free');
   if (free) {
     free.addEventListener('change', () => applyFilters({
@@ -3183,8 +2886,6 @@ export function initGames({ onActivate } = {}) {
       minHours: state.filters.minHours,
     }));
   }
-  /* «мин. часов»: a numeric field with −/+ steppers (step 1 hour).
-     -1 = every game, 0 = default (only >0 h), N = ≥N h. Per-profile storage. */
   const hours = $('games-filter-hours');
   if (hours) {
     const commit = (value) => {
@@ -3209,7 +2910,6 @@ export function initGames({ onActivate } = {}) {
     }
   }
 
-  /* M2: genre chart weight (local re-sort, no request). */
   for (const button of document.querySelectorAll('[data-games-genre-weight]')) {
     button.addEventListener('click', () => {
       const next = button.dataset.gamesGenreWeight === 'count' ? 'count' : 'hours';
@@ -3220,7 +2920,6 @@ export function initGames({ onActivate } = {}) {
     });
   }
 
-  /* M4: tag bars weight (hours / count / SteamSpy weight). */
   for (const button of document.querySelectorAll('[data-games-tag-weight]')) {
     button.addEventListener('click', () => {
       const raw = button.dataset.gamesTagWeight;
@@ -3232,7 +2931,6 @@ export function initGames({ onActivate } = {}) {
     });
   }
 
-  /* M3: personnel weights + navigation. */
   for (const button of document.querySelectorAll('[data-games-weight]')) {
     button.addEventListener('click', () => {
       const next = button.dataset.gamesWeight === 'count' ? 'count' : 'hours';
@@ -3249,7 +2947,6 @@ export function initGames({ onActivate } = {}) {
     closePersonnelButton.addEventListener('click', () => closePersonnel({ push: true }));
   }
 
-  /* M3 inline widget: role select (developers first), search and «все персоналии». */
   const roleSelect = $('games-persons-role');
   if (roleSelect) {
     roleSelect.value = state.role;
@@ -3275,11 +2972,6 @@ export function initGames({ onActivate } = {}) {
   }
 }
 
-/**
- * Filter state is per owner (§8.5): the F2P/DLC switches of one profile must
- * not leak into another's dashboard. The legacy shared key is still read as a
- * fallback so an existing choice survives the migration.
- */
 function filtersStorageKey(profileKey = state.profileKey) {
   const key = text(profileKey);
   return key ? `kinoboxd.games.filters.${key}.v1` : FILTERS_KEY;
@@ -3297,7 +2989,6 @@ function readStoredFilters(profileKey = state.profileKey) {
       };
     }
   } catch {
-    /* corrupted storage — fall back to the server defaults */
   }
   return { includeFree: true, includeDlc: false, minHours: 0 };
 }
@@ -3341,15 +3032,11 @@ async function refreshProfile() {
   }
 }
 
-/** Called by main.js when the games tab becomes active. */
 export async function showGames() {
   state.active = true;
   if (state.onActivate) state.onActivate();
   hydrateJob();
   if (state.job) {
-    // Progress is only honest while the job is the selected profile's job (or
-    // has not resolved its owner yet). Otherwise the tab would open on an old
-    // import instead of the profile the user is looking at.
     const owner = text(state.job.profile);
     if (owner && state.profileKey && owner !== state.profileKey) {
       state.job = null;
@@ -3362,18 +3049,13 @@ export async function showGames() {
     }
   }
   if (state.loading) return;
-  // The catalogue is server state (another browser can import a profile):
-  // re-read it on activation, throttled so a tab flip-flop is cheap (P1a).
   await ensureProfiles({ reload: true, maxAgeMs: PROFILES_RELOAD_MS });
-  // M6a: sanitized GOG status for the connect card (never a token).
   await ensureGogStatus();
   if (!state.profileKey) {
     showScreen('import');
     renderProfiles();
     return;
   }
-  // `?tab=games&view=personnel` is addressable: a reload or a shared link
-  // restores the sub-screen instead of silently dropping it.
   if (readViewParam() === 'personnel') {
     await openPersonnel({ push: false });
     return;
@@ -3386,14 +3068,9 @@ export async function showGames() {
     if (state.view === 'dashboard' && !state.personnel.data && !state.personnel.loading) {
       ensurePersonnel(state.role);
     }
-    // A silent background refresh keeps a long-lived tab honest (the library
-    // may have changed on another device). The dashboard is rebuilt wholesale,
-    // so the window scroll is restored explicitly — the books pattern.
     if (Date.now() - (state.loadedAt || 0) > 60_000) {
       await loadStats({ force: true, silent: true });
     }
-    // M6c: the Epic slot is on its own 15 s timer; a tab activation is a good
-    // moment to ask once more (the owner may have changed elsewhere).
     if (state.view === 'connections') requestEpicRefresh();
     return;
   }
@@ -3404,12 +3081,6 @@ function hydrateJob() {
   if (state.job) return;
   const stored = readJob();
   if (!stored) return;
-  // A resumed job may only speak for the owner it names. A stored job whose
-  // profile is not the selected one is stale (the user switched, or another
-  // profile was imported meanwhile): drop it instead of letting it drag the
-  // tab onto an old import and overwrite `kinoboxd.games.profile.v1`.
-  // An unresolved job (vanity import, `profile: ''`) belongs to the flow that
-  // started it, so it is kept.
   if (stored.profile && state.profileKey && stored.profile !== state.profileKey) {
     safeStorageRemove(JOB_KEY);
     return;
@@ -3421,7 +3092,6 @@ function hydrateJob() {
   }
 }
 
-/** Called by main.js when another tab takes over. */
 export function hideGames() {
   state.active = false;
   stopPolling();
@@ -3433,7 +3103,6 @@ export function hideGames() {
   hideTooltip();
 }
 
-/** Drop every in-memory games artefact (logout / different session). */
 export function resetGames() {
   stopPolling();
   stopEnrichPoll();
@@ -3460,6 +3129,5 @@ export function resetGames() {
   showScreen('import');
   renderProfiles();
   setKeyIndicator(null);
-  // A new session must not open on a stale personnel URL.
   if (readViewParam()) writeViewParam('', { push: false });
 }

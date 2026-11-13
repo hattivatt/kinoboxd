@@ -5,11 +5,6 @@ const { round1 } = require('../../core/stats');
 const { yearOfDate } = require('./normalize');
 const { normalizeTitle, normalizeSlug, slugsOfLink } = require('./identity');
 
-/* ------------------------------------------------------------------ */
-/* cross-store union                                                   */
-/* ------------------------------------------------------------------ */
-
-/** `[{name}]` | `['Action']` | `'Action'` → `['Action']`. */
 function genreNames(value) {
   const list = Array.isArray(value) ? value : value == null ? [] : [value];
   const out = [];
@@ -25,19 +20,10 @@ function genreNames(value) {
   return out;
 }
 
-/**
- * GOG's library snapshot carries `tags[]` as slugs (`role-playing`,
- * `open-world`). They are the store's own tag list, so they are a legitimate
- * **fallback** genre source when the product page (`secondary-details.js`) is
- * not cached yet. The canonical genre line from the product page replaces them
- * once it arrives (`genresSource` tracks which one is in use).
- */
 function prettifyTagSlug(value) {
   const text = String(value == null ? '' : value).trim();
   if (!text) return null;
   return text
-    // GOG keeps hyphens in its display names (`Role-playing`), so only
-    // underscores are turned into spaces here.
     .replace(/_+/g, ' ')
     .replace(/^\s+|\s+$/g, '')
     .replace(/^./, (char) => char.toUpperCase());
@@ -59,7 +45,6 @@ function stringList(value) {
     .map(String);
 }
 
-/** `stringList` with duplicates removed, order preserved (case-sensitive). */
 function uniqueStringList(value) {
   const out = [];
   for (const name of stringList(value)) {
@@ -68,7 +53,6 @@ function uniqueStringList(value) {
   return out;
 }
 
-/** Same names in the same order — used to keep `enrichUnionWithDetails` idempotent. */
 function sameStringList(left, right) {
   const a = Array.isArray(left) ? left : [];
   const b = Array.isArray(right) ? right : [];
@@ -85,7 +69,6 @@ function minutesOrNull(value) {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
-/** Flatten the per-account GOG snapshots into one product/minute view. */
 function flattenGogSnapshots(gogSnapshots) {
   const products = [];
   const minutes = {};
@@ -111,8 +94,6 @@ function flattenGogSnapshots(gogSnapshots) {
 }
 
 function registerIdentity(map, ambiguous, key, workKey) {
-  // A QID (or a base appid) must name exactly one work: two works claiming the
-  // same identity is a data conflict, not a match, so the key is dropped.
   if (key == null || key === '') return;
   const value = String(key);
   if (map.has(value) && map.get(value) !== workKey) ambiguous.add(value);
@@ -149,12 +130,6 @@ function steamUnionEntry(work, name) {
     genresSource: null,
     developers: [],
     publishers: [],
-    // Field-level provenance of `developers`/`publishers` (04.11.2026): the
-    // union fills them from the **library snapshot** first, which is a weak
-    // path for Epic (`catalog.developer` is the seller/distributor, AW2 =
-    // «Epic Games Publishing»). The store product page (detail document)
-    // replaces such a value in `enrichUnionWithDetails`; a value with an
-    // unknown/strong provenance is never touched.
     developersSource: null,
     publishersSource: null,
     metadataSources: ['steam-store'],
@@ -183,8 +158,6 @@ function emptyUnionEntry(workKey, fallbackName) {
     genresSource: null,
     developers: [],
     publishers: [],
-    // See the Steam-seeded template above: provenance of the two company
-    // lists, so a store product page can replace a library-snapshot guess.
     developersSource: null,
     publishersSource: null,
     metadataSources: [],
@@ -223,9 +196,6 @@ function seedSteamWorks(steamWorks, linkMap) {
           titleToWork.set(normalized, work.workKey);
         }
       }
-      // The canonical edition key (`editions.coreTitle`) drops edition and
-      // region wrappers, so a GOG «… Ultimate Edition» still finds the Steam
-      // row that is a regional SKU («… PCR», «… RHCP», «… (RU)»).
       const core = editions.coreTitle(name);
       if (core) {
         if (coreTitleToWork.has(core) && coreTitleToWork.get(core) !== work.workKey) {
@@ -242,10 +212,6 @@ function seedSteamWorks(steamWorks, linkMap) {
       for (const slug of slugsOfLink(link)) {
         if (!slugToWork.has(slug)) slugToWork.set(slug, work.workKey);
       }
-      // B6 identity of a regional SKU: its own QID is absent, the base card's
-      // QID/appid is recorded next to it by the franchise pass. The Wikidata
-      // bridge names the **base** game, so these keys are what let a base-game
-      // GOG slug join the SKU the owner actually owns.
       registerIdentity(qidToWork, ambiguousQids, editions.qidOf(link), work.workKey);
       registerIdentity(qidToWork, ambiguousQids, editions.baseQidOf(link), work.workKey);
       registerIdentity(
@@ -283,20 +249,14 @@ function createUnionResolver(index, bridge) {
     const hit = bridge[`${prefix}:${key}`] || bridge[`${prefix}:${slug}`] || null;
     if (!hit) return null;
     const appid = hit.appid != null ? String(hit.appid) : null;
-    // 1. The owner's library contains exactly the appid `P1733` names.
     if (appid) {
       const direct = appidToWork.get(appid);
       if (direct) return direct;
     }
-    // 2. Same Wikidata item, different Steam card (regional SKU): the link
-    //    document names the base item of the SKU the owner owns.
     if (hit.qid) {
       const viaQid = qidToWork.get(String(hit.qid));
       if (viaQid) return viaQid;
     }
-    // 3. `P1733` is the base appid; the link document records it as the SKU's
-    //    base (`wikidata.baseAppid`) even when the base card itself is not
-    //    owned.
     if (appid) {
       const viaBaseAppid = baseAppidToWork.get(appid);
       if (viaBaseAppid) return viaBaseAppid;
@@ -304,14 +264,6 @@ function createUnionResolver(index, bridge) {
     return null;
   };
 
-  /**
-   * Title fallback: the plain normalised key first (existing behaviour), then
-   * the canonical edition key, which drops edition and region wrappers. A
-   * `GOG`/`Epic` copy titled «… Ultimate Edition» therefore finds a Steam row
-   * that is a regional SKU («… PCR»), and vice versa. Both maps are built from
-   * the same set of works and drop ambiguous keys, so the fallback can never
-   * pick between two Steam works with the same normalised title.
-   */
   const resolveByTitle = (name) => {
     const titleKey = normalizeTitle(name);
     if (titleKey) {
@@ -331,7 +283,6 @@ function applyGogProducts({ products, minutes, gogStatus, byWorkKey, resolver, m
   let gogMinutes = 0;
   let gogProducts = 0;
 
-  /* ------------------------------- GOG ------------------------------- */
   for (const product of products) {
     const gogGameId = String(product.gogGameId || product.gogProductId || '');
     if (!gogGameId) continue;
@@ -356,8 +307,6 @@ function applyGogProducts({ products, minutes, gogStatus, byWorkKey, resolver, m
     if (!entry.sources.includes('gog')) entry.sources.push('gog');
     if (!entry.ownedOn.includes('gog')) entry.ownedOn.push('gog');
     entry.storeIds.gog = gogGameId;
-    // A missing playtime answer stays `null` (unknown ≠ 0): only a real number
-    // from the snapshot moves the per-source field.
     if (gogValue != null) {
       entry.hoursBySource.gog = (minutesOrNull(entry.hoursBySource.gog) || 0) + gogValue;
     } else if (entry.hoursBySource.gog == null) {
@@ -373,15 +322,10 @@ function applyGogProducts({ products, minutes, gogStatus, byWorkKey, resolver, m
       category: product.category || null,
       isGame: product.isGame == null ? null : product.isGame,
       isMovie: product.isMovie == null ? null : product.isMovie,
-      // Contract: the UI must tell «never launched» (0) from «playtime not
-      // fetched yet» (also 0) without guessing. A real answer (even 0) is
-      // `true`; a missing snapshot answer stays `false`.
       playtimeKnown: gogValue != null,
       status: gogStatus[gogGameId] || (gogValue == null ? 'pending' : 'ok'),
     };
     if (!entry.name) entry.name = product.title || null;
-    // A work that is also on Steam reports **why** it was joined: `wikidata`
-    // (P2725/P6278 bridge or a P2725 in the link doc) beats `title`.
     if (entry.sources.includes('steam')) {
       if (entry.matchedBy !== 'wikidata' || matchedBy === 'wikidata') {
         entry.matchedBy = matchedBy;
@@ -393,20 +337,15 @@ function applyGogProducts({ products, minutes, gogStatus, byWorkKey, resolver, m
     }
     if (entry.releaseYear == null) {
       entry.releaseYear = yearOfDate(product.releaseDate);
-      // A snapshot date is the **store listing** date, not the original
-      // release: `secondary-details.js` may replace it with the product's
-      // `globalReleaseDate` once that cache exists (M6d).
       if (entry.releaseYear != null) entry.releaseYearSource = 'gog-library';
     }
     if (!entry.genres.length) entry.genres = genreNames(product.genres);
     if (!entry.genres.length && Array.isArray(product.tags) && product.tags.length) {
-      // Fallback until the product page answers: the library's own tag slugs.
       entry.genres = genreNamesFromTags(product.tags);
       if (entry.genres.length) entry.genresSource = 'gog-library';
     }
     if (!entry.developers.length) {
       entry.developers = stringList(product.developers);
-      // A library-snapshot field (weak): the product page may replace it.
       if (entry.developers.length) entry.developersSource = 'gog-catalog';
     }
     if (!entry.publishers.length) {
@@ -424,7 +363,6 @@ function applyEpicGames({ epicLayer, epicGames, byWorkKey, resolver, matched }) 
   let epicMinutes = 0;
   let epicOwned = 0;
 
-  /* ------------------------------- Epic ------------------------------ */
   for (const game of epicGames) {
     if (!game || !game.name) continue;
     epicOwned++;
@@ -458,8 +396,6 @@ function applyEpicGames({ epicLayer, epicGames, byWorkKey, resolver, matched }) 
       slug: game.slug || null,
       namespace: game.namespace || null,
       platforms: Array.isArray(game.platforms) ? game.platforms : [],
-      // Epic's catalog bulk has no artwork field today; the key stays present
-      // and `null` (honest gap), never a fabricated URL.
       image: game.image || null,
       title: game.name || null,
       releaseDate: game.releaseDate || null,
@@ -484,10 +420,6 @@ function applyEpicGames({ epicLayer, epicGames, byWorkKey, resolver, matched }) 
       if (entry.releaseYear != null) entry.releaseYearSource = 'epic-library';
     }
     if (!entry.genres.length) entry.genres = genreNames(game.genres);
-    // Epic's catalog bulk names the **seller/distributor** here (AW2:
-    // «Epic Games Publishing»), so this is the weakest possible developer
-    // source: the CMS product page replaces it as soon as a detail document
-    // exists (`enrichUnionWithDetails`).
     if (!entry.developers.length && game.developer) {
       entry.developers = [String(game.developer)];
       entry.developersSource = 'epic-catalog';
@@ -503,7 +435,6 @@ function applyEpicGames({ epicLayer, epicGames, byWorkKey, resolver, matched }) 
 }
 
 function deriveUnionHours(worksList) {
-  /* --------------------------- derived hours -------------------------- */
   for (const entry of worksList) {
     const steam = minutesOrNull(entry.hoursBySource.steam) || 0;
     const gog = minutesOrNull(entry.hoursBySource.gog) || 0;
@@ -511,18 +442,13 @@ function deriveUnionHours(worksList) {
     const secondary = gog + epic;
     entry.steamMinutes = steam;
     entry.secondaryMinutes = secondary;
-    // Display total: the owner's hours for the work across the stores he owns.
     entry.displayMinutes = steam + secondary;
     entry.hours = round1(entry.displayMinutes / 60);
     entry.secondaryHours = round1(secondary / 60);
-    // Unknown ≠ zero: the store never answered for this work.
     entry.hoursUnknown = Boolean(
       (entry.sources.includes('gog') && entry.hoursBySource.gog == null) ||
         (entry.sources.includes('epic') && entry.hoursBySource.epic == null)
     );
-    // Contract: one release date string for the «Вне Steam» card, GOG first
-    // (its catalogue date is the one the library row already carries), Epic
-    // second. `null` means neither store answered.
     if (entry.releaseDate == null) {
       entry.releaseDate =
         (entry.gog && entry.gog.releaseDate) || (entry.epic && entry.epic.releaseDate) || null;
@@ -582,16 +508,6 @@ function buildSecondaryOnly(worksList) {
     );
 }
 
-/**
- * Build the union view.
- *
- * @param {object} input
- * @param {Array}  input.works          Steam works (`workKey`, `minutes`, `primary`, `games`)
- * @param {Array}  input.gogSnapshots   `[{account, library, playtime}]`
- * @param {object} input.epicLayer      Epic read model (`games[]`, may be null)
- * @param {object} input.links          `{ [appid]: linkDoc }` (may carry P2725)
- * @param {object} input.secondaryLinks `{ 'gog:<slug>'|'epic:<slug>': {qid, appid} }`
- */
 function buildSecondaryUnion({
   works,
   gogSnapshots,
@@ -635,7 +551,6 @@ function buildSecondaryUnion({
     byWorkKey: index.byWorkKey,
     byAppid,
     secondaryOnly,
-    // Kept for the existing GOG block/summary consumers.
     secondaryWorks: secondaryOnly,
     summary: {
       steamWorks: steamWorks.length,
@@ -645,8 +560,6 @@ function buildSecondaryUnion({
       epicGames: epicSide.epicOwned,
       epicMinutes: epicSide.epicMinutes,
       epicHours: round1(epicSide.epicMinutes / 60),
-      // Union over canonical works: Steam works + works that exist only
-      // outside Steam (a GOG/Epic game merged into a Steam work adds no row).
       worksTotal: worksList.length,
       secondaryOnlyWorks: secondaryOnly.length,
       secondaryOnlyGog: secondaryOnly.filter((entry) => entry.sources.includes('gog')).length,

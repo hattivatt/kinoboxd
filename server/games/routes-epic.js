@@ -1,31 +1,5 @@
 'use strict';
 
-/**
- * `/api/games/epic/*` router (M6b). Mounted under the same auth gate as the
- * other games routers (server/index.js) and deliberately on **its own paths**
- * (`/epic/...`), so the parallel GOG branch (M6a) can add `/gog/...` without a
- * route conflict. The integration round (M6c) owns the shared
- * «Подключения» screen and the union aggregates.
- *
- *   GET  /api/games/epic/status?owner=steam-<id64>|accountId=<id>
- *   GET  /api/games/epic/auth-url          (login URL, no network call)
- *   POST /api/games/epic/connect           { code, owner?, label? }   ← primary
- *   POST /api/games/epic/auth              { owner?, label? }         (device-code,
- *                                          unavailable for public clients)
- *   GET  /api/games/epic/auth/:authId
- *   DELETE /api/games/epic/auth/:authId    (cancel)
- *   POST /api/games/epic/import            { accountId?, owner?, force?, label? }
- *   POST /api/games/epic/refresh           { accountId?, owner? }  (force import)
- *   GET  /api/games/epic/import/:jobId
- *   GET  /api/games/epic/import/status?id=…
- *   GET  /api/games/epic/exported?owner=…|accountId=…
- *   POST /api/games/epic/disconnect        { accountId?, owner? }
- *
- * Security: no endpoint returns a device code, access token, refresh token or
- * the launcher client secret. `tokenStore.redactTokens()` is the only token
- * shape that leaves the server (presence + expiry).
- */
-
 const express = require('express');
 
 const { HttpError, mapDomainError } = require('../core/errors');

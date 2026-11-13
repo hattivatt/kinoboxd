@@ -54,10 +54,6 @@ function positionOf(title) {
   return match ? Number(match[1]) : null;
 }
 
-/**
- * Reject obvious traps: collection/adaptation markers on one side only, and
- * volume markers that contradict the candidate's series position.
- */
 function guardReject(llEvent, candidate) {
   const llTitle = String(llEvent.title || '');
   const hcTitle = String(candidate.title || '');
@@ -83,10 +79,6 @@ function yearDelta(llYear, hcYear) {
   return Math.abs(Number(llYear) - Number(hcYear));
 }
 
-/**
- * Score one livelib event against one hardest-cover work.
- * Returns { score, method, evidence } or null when the pair is rejected.
- */
 function scoreCandidate(event, candidate) {
   const titleSim = tokenJaccard(event.title, candidate.title);
   const authorHit = authorsOverlap(event.authors, (candidate.authors || []).map((author) => author.name));
@@ -124,10 +116,6 @@ function scoreCandidate(event, candidate) {
   return null;
 }
 
-/**
- * Pick the single best candidate deterministically.
- * Returns { candidate, score, method, evidence } or null.
- */
 function bestCandidate(event, candidates) {
   const scored = [];
   for (const candidate of candidates) {
@@ -144,7 +132,6 @@ function bestCandidate(event, candidates) {
     return left - right;
   });
   const best = scored[0];
-  // Two equally good, different works are ambiguous: refuse to guess.
   if (scored.length > 1 && scored[1].score === best.score) {
     return { ambiguous: true, score: best.score, evidence: best.evidence };
   }

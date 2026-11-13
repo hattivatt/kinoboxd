@@ -1,5 +1,3 @@
-/* Small DOM / formatting / feedback helpers shared by all modules. */
-
 const numberFmt = new Intl.NumberFormat('ru-RU');
 
 const MONTHS_FULL = [
@@ -18,14 +16,13 @@ export function toNum(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-/** Tiny hyperscript helper: el('div', { class: 'x' }, child, 'text') */
 export function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props || {})) {
     if (value == null || value === false) continue;
     if (key === 'class') node.className = value;
     else if (key === 'text') node.textContent = value;
-    else if (key === 'html') node.innerHTML = value; // static markup only
+    else if (key === 'html') node.innerHTML = value;
     else if (key === 'dataset') Object.assign(node.dataset, value);
     else if (key === 'style' && typeof value === 'object') Object.assign(node.style, value);
     else if (key.startsWith('on') && typeof value === 'function') {
@@ -61,7 +58,6 @@ export function fmtPercent(part, total) {
   return `${p.toFixed(1).replace('.', ',')}%`;
 }
 
-/** Russian plural: plural(3, ['фильм','фильма','фильмов']) → 'фильма' */
 export function plural(n, forms) {
   const abs = Math.abs(Math.round(toNum(n))) % 100;
   const last = abs % 10;
@@ -152,10 +148,6 @@ export function debounce(fn, wait = 150) {
   };
 }
 
-/* =========================================================
-   icons (static trusted markup)
-   ========================================================= */
-
 const ICONS = {
   film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
   book: '<path d="M4 5.2A2.2 2.2 0 0 1 6.2 3H20v15.4H6.5A2.5 2.5 0 0 0 4 20.9z"/><path d="M4 5.2v15.7"/><path d="M8.5 7.5h7"/>',
@@ -188,8 +180,6 @@ export function icon(name, size = 16) {
   return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" ${paint} aria-hidden="true">${body}</svg>`;
 }
 
-/* Service wordmarks for the aggregator links in film lists. They are plain
- * SVG text glyphs so no extra assets or dependencies are needed. */
 const SERVICE_GLYPHS = {
   lb: { text: 'LB', size: 8.5 },
   kp: { text: 'KP', size: 9 },
@@ -207,10 +197,6 @@ export function serviceIcon(service, size = 13) {
     `font-size="${glyph.size}" font-weight="750" letter-spacing="-0.2" fill="currentColor">${glyph.text}</text>` +
     '</svg>';
 }
-
-/* =========================================================
-   tooltip
-   ========================================================= */
 
 let tooltipEl = null;
 
@@ -249,10 +235,6 @@ export function hideTooltip() {
   if (tip) tip.hidden = true;
 }
 
-/* =========================================================
-   toasts
-   ========================================================= */
-
 const TOAST_ICON = { success: 'check', error: 'alert', info: 'info' };
 
 export function toast(message, type = 'info', { duration = 5200 } = {}) {
@@ -283,16 +265,11 @@ export function toast(message, type = 'info', { duration = 5200 } = {}) {
   return dismiss;
 }
 
-/** Remove every visible toast (used before a manual profile refresh). */
 export function dismissToasts() {
   const host = document.getElementById('toasts');
   if (!host) return;
   for (const node of Array.from(host.children)) node.remove();
 }
-
-/* =========================================================
-   inline error block
-   ========================================================= */
 
 export function errorBox({ title, message, actions = [], tone = 'error' }) {
   const box = el('div', {

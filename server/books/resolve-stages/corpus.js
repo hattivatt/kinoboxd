@@ -24,7 +24,6 @@ function loadWorks() {
   return works;
 }
 
-/** normalized title -> details[] for the title/author strategies. */
 function buildCorpus(works) {
   const byTitle = new Map();
   for (const work of works) {
@@ -39,8 +38,6 @@ function buildCorpus(works) {
 function corpusCandidates(corpus, title) {
   const exact = corpus.byTitle.get(normalizeTitle(title));
   if (exact && exact.length) return exact;
-  // Fuzzy: candidate titles that share at least one token. Small corpus
-  // (hundreds of works), so a linear scan is cheaper than an index per token.
   return corpus.works.filter((work) => tokenJaccard(title, work.title) >= FUZZY_GUARDED);
 }
 

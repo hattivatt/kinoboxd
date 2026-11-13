@@ -1,22 +1,5 @@
 'use strict';
 
-/**
- * Profile comparison backend.
- *
- * Two KinoPoisk profiles are compared from their persistent caches
- * (cache/kp/{userId}.json) plus the shared TMDB details/credits cache and the
- * optional Letterboxd attachment. No live KinoPoisk requests are made, so the
- * endpoint keeps working after a server restart.
- *
- * The heavy lifting (rating histogram, genres, persons, runtime, real watch
- * dates from an attachment) is exactly the same code path as /api/stats:
- * kp.buildDataset() turns the cached profile into an upload-shaped dataset,
- * an ephemeral enrich job resolves the TMDB ids from the cache index, and
- * stats.buildStats() computes the counters. stats.buildStats() accepts the
- * injected job so nothing is registered in the live enrich job registry and
- * the regular /api/stats flow is untouched.
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -31,15 +14,9 @@ const { round2 } = require('./core/stats');
 const KP_DIR = path.join(cache.CACHE_DIR, 'kp');
 const ATTACHMENT_DIR = path.join(cache.CACHE_DIR, 'profile-lb');
 
-// Source ids of the films domain (same spelling as `core/sources.js`).
 const KP_SOURCE = 'kinopoisk';
 const LB_SOURCE = 'letterboxd';
 
-// A compare request rebuilds a couple of thousand counters per side. Cache the
-// derived model for as long as the profile file does not change; the cache is
-// small (one entry per profile) and is invalidated by mtime/size. A short TTL
-// bounds staleness if TMDB details/index change without a profile re-import
-// (e.g. a manual rematch on the active dashboard).
 const MODEL_TTL_MS = 60 * 1000;
 const modelCache = new Map();
 
@@ -81,11 +58,6 @@ function averageRating(films) {
   return count > 0 ? round2(sum / count) : null;
 }
 
-/**
- * Build the per-profile compare model:
- *   { summary, tmdbIds, genres: Map(name -> count), actors, directors,
- *     ratings: Map(score -> count) }
- */
 function buildModel(userId) {
   const stat = profileFileStat(userId);
   if (!stat) return null;
@@ -156,7 +128,6 @@ function buildModel(userId) {
   };
 
   modelCache.set(cacheKey, { model, at: Date.now() });
-  // Keep the map bounded even if profiles are re-imported repeatedly.
   if (modelCache.size > 12) {
     const oldest = modelCache.keys().next().value;
     modelCache.delete(oldest);
@@ -174,8 +145,6 @@ function compareSide(userId, model) {
     kpUserId: String(userId),
     nick: model.nick,
     filmCount,
-    // Total viewings, rewatches included. Without an attachment this is the
-    // one-viewing-per-film KinoPoisk rating-date proxy and equals filmCount.
     viewCount,
     rewatchCount,
     hasAttachment: Boolean(model.summary.attachedLb),
@@ -203,10 +172,6 @@ function mergeCounts(countA, countB, limit) {
   return rows.slice(0, limit);
 }
 
-/**
- * List every cached KinoPoisk profile. `entries` is the number of cached votes
- * (one per distinct kpId), `ratedCount` the number of them with a 1..10 rating.
- */
 function listProfiles() {
   let files = [];
   try {
@@ -262,7 +227,6 @@ function listProfiles() {
   return profiles;
 }
 
-/** File mtime as an ISO string (the only honest `updatedAt` a cache file has). */
 function mtimeIso(filePath) {
   try {
     const stat = fs.statSync(filePath);
@@ -272,22 +236,6 @@ function mtimeIso(filePath) {
   }
 }
 
-/**
- * `GET /api/profiles` in the unified owner shape (U8/U15).
- *
- * The flat array is kept: `public/js/compare.js` and `public/js/main.js` both
- * read this endpoint as `Array.isArray(list) ? list : []`, so wrapping it into
- * `{ profiles, sources }` would silently empty the comparison picker (the
- * client migration is P8). The unified fields are therefore additive on every
- * entry, and the two sources of the domain are visible through each owner's
- * `primary`/`enrichers`.
- *
- * - `id`        `kinopoisk-<kpUserId>`; `/api/compare` still takes the bare id.
- * - `label`     always `null`: the film labels live only in the browser's
- *               IndexedDB registry, the server has never stored one.
- * - `updatedAt` the `cache/kp/<id>.json` mtime (the import write), ISO.
- * - `metrics`   the two counters the flat list already carried.
- */
 function listProfileOwners() {
   const profiles = listProfiles().map((entry) => {
     const userKey = String(entry.kpUserId);
@@ -338,15 +286,8 @@ function listProfileOwners() {
   };
 }
 
-// Registered here, read by `GET /api/profiles` in server/index.js: the route
-// stays where it was, only the shape comes from the shared registry.
 profileRegistry.registerDomainProfiles('films', listProfileOwners);
 
-/**
- * Build the comparison payload for two cached profiles.
- * Throws HttpError(400) for a missing/same pair and HttpError(404) for ids
- * that have no usable cached profile.
- */
 function compareProfiles(rawA, rawB) {
   const a = normalizeUserId(rawA);
   const b = normalizeUserId(rawB);
@@ -413,6 +354,5 @@ module.exports = {
   listProfiles,
   listProfileOwners,
   compareProfiles,
-  // exported for tests / diagnostics
   buildModel,
 };

@@ -1,11 +1,5 @@
 'use strict';
 
-/**
- * Pure text/ISBN normalisation shared by the resolve job and the metadata
- * providers. Kept dependency-free so a provider can use it without creating a
- * require-cycle through resolve.js.
- */
-
 function cleanText(value) {
   return String(value == null ? '' : value)
     .replace(/\u00a0/g, ' ')
@@ -13,11 +7,6 @@ function cleanText(value) {
     .trim();
 }
 
-/**
- * Unique non-empty names out of a provider list (`[{name}]` or `["name"]`).
- * Shared by the Литрес and Open Library normalizers; a provider-specific list
- * shape stays at the call site.
- */
 function namesOf(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
@@ -29,21 +18,17 @@ function namesOf(list) {
   return out;
 }
 
-/** Normalize a title for comparison (display keeps the original). */
 function normalizeTitle(title) {
   let value = cleanText(title).toLowerCase();
   value = value.replace(/ё/g, 'е');
   value = value.replace(/[«»“”„"']/g, ' ');
   value = value.replace(/[—–]/g, '-');
-  // Series/volume markers that are not part of the work title.
   value = value.replace(/\((?:[^()]*?(?:#\s*\d+|кн\.?\s*\d+|том\s*\d+|book\s*\d+)[^()]*?)\)/g, ' ');
   value = value.replace(
     /(?<![\p{L}])(?:кн\.?|том|часть|книга|book|vol(?:ume)?)\s*\d+/giu,
     ' '
   );
   value = value.replace(/#\s*\d+\b/g, ' ');
-  // Subtitle after ":" / " - " only when the main part is substantial,
-  // otherwise "Дюна: Мессия" would collapse into "Дюна".
   const split = value.split(/\s*:\s*|\s+-\s+/);
   if (split.length > 1 && split[0].trim().split(/\s+/).filter(Boolean).length >= 3) {
     value = split[0];
@@ -70,7 +55,6 @@ function tokensOf(value) {
   return normalizeTitle(value).split(' ').filter(Boolean);
 }
 
-/** Token Jaccard similarity of two normalized titles. */
 function tokenJaccard(left, right) {
   const a = new Set(tokensOf(left));
   const b = new Set(tokensOf(right));
@@ -81,7 +65,6 @@ function tokenJaccard(left, right) {
   return union === 0 ? 0 : intersection / union;
 }
 
-/** Surname = last token ("Джефф Вандермеер" -> "вандермеер", "J. K. Rowling" -> "rowling"). */
 function surnameOf(name) {
   const tokens = cleanText(name)
     .toLowerCase()
@@ -92,7 +75,6 @@ function surnameOf(name) {
   return tokens.length ? tokens[tokens.length - 1] : '';
 }
 
-/** ISBN-10 -> ISBN-13 (978 prefix only); returns null for invalid input. */
 function isbn10to13(isbn10) {
   const value = String(isbn10 == null ? '' : isbn10).replace(/[^\dXx]/g, '').toUpperCase();
   if (value.length !== 10) return null;
@@ -114,7 +96,6 @@ function isbn10Of(isbn13) {
   return `${core}${check === 10 ? 'X' : check}`;
 }
 
-/** Normalize ISBN-10/13 to the 13-digit form when possible. */
 function normalizeIsbn(value) {
   const digits = String(value == null ? '' : value).replace(/[^\dXx]/g, '').toUpperCase();
   if (digits.length === 13) return digits;

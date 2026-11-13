@@ -1,38 +1,5 @@
 'use strict';
 
-/**
- * On-demand Wikidata/Moby personnel pass (ИГРЫ §2.4, §9 M3, fix 01.11.2026).
- *
- * Why this module exists — the production bug it fixes:
- * `enrichPersonnel()` used to be reachable only through the manual CLI
- * (`backfill.js`) / a hypothetical monthly unit. `GET /api/games/personnel`
- * reads the cache and never fetches, so on a cache where the CLI had not been
- * run the route could only return Steam studios: composer/designer/writer were
- * empty forever («данных по композиторам так и не приехало»). The 87%
- * studios / 35% people coverage measured by the integration snapshot never
- * reached production because nothing in the request path started the pass.
- *
- * The job below is that trigger:
- *
- *   - `kickQuietly(profile)` — fire-and-forget start, used by
- *     import/refresh (`import.js`), `POST /api/games/enrich` and the lazy
- *     `GET /api/games/personnel` path. It never throws into the caller and
- *     coalesces into an already running job for the same profile;
- *   - one pass at a time per process (`chain`) and across processes
- *     (`personnel.lock`, `lock.js`) — two passes would double the WDQS debt
- *     and race `personnel/<appid>.json`;
- *   - it waits for a running store enrich (`enrichJobs.whenIdle()`) before
- *     asking Wikidata, otherwise `details/<appid>.json` is still missing and
- *     the pass has nothing to enrich (that is also why the import kick is
- *     useful at all: import → enrich → personnel, in that order);
- *   - `getStatus`/`isRunning` feed `pending.running` and the «WD: …» badge, so
- *     the widget can say «композиторы появятся после первого прогона» instead
- *     of pretending the answer is final.
- *
- * The pass never blocks an HTTP response: the route starts it and answers from
- * the cache it already has.
- */
-
 const gameCache = require('../game-cache');
 const { createJobs } = require('../../core/jobs');
 const enrichJobs = require('../enrich');
@@ -42,19 +9,11 @@ const mobyProvider = require('./moby');
 const lock = require('./lock');
 
 const MAX_JOBS = 20;
-/** One pass may cover the whole library; WDQS still batches by ≤450. */
 const DEFAULT_LIMIT = 500;
 const DEFAULT_LOCK_WAIT_MS = 5000;
 const DEFAULT_WAIT_FOR_ENRICH_MS = 20 * 60 * 1000;
-/** Lazy route kicks must not rescan the same cache on every page view. */
 const DEFAULT_KICK_COOLDOWN_MS = 10 * 60 * 1000;
 
-/**
- * Job registry (core/jobs): single-flight per profile, one pass chain, the
- * 20-job ring and the lazy re-kick window. The window is the registry's
- * cooldown: a failed pass is never throttled (the WD breaker already protects
- * WDQS), which is core's default `ignore` rule.
- */
 const jobs = createJobs({
   name: 'games-personnel',
   idPrefix: 'games-personnel',
@@ -84,7 +43,6 @@ function codedError(message, code, status = 400) {
   return err;
 }
 
-/** Public job view: no secret ever passes through this module (WD has none). */
 function publicStatus(job) {
   if (!job) return null;
   return {
@@ -109,7 +67,6 @@ function publicStatus(job) {
     wdDisabledUntil: job.wdDisabledUntil,
     wdAnswered: job.wdAnswered == null ? null : job.wdAnswered,
     wdDeferred: job.wdDeferred == null ? null : job.wdDeferred,
-    // M6 follow-up: GOG/Epic-only works in the same pass.
     secondaryGames: job.secondaryGames == null ? null : job.secondaryGames,
     secondaryUpdated: job.secondaryUpdated || 0,
     secondarySkippedFresh: job.secondarySkippedFresh || 0,
@@ -158,12 +115,6 @@ function wikidataStatusFor(options = {}) {
   return personnel.wikidataStatus(state, Date.now(), enabledOf(provider));
 }
 
-/**
- * Why a lazy kick would be pointless right now (`null` = go ahead).
- *
- * @returns {string|null} `library_partial` | `sources_disabled` |
- *          `wikidata_cooldown` | `recent_cooldown` | `profile_not_imported`
- */
 function kickGate(profileKey, options = {}) {
   const parsed = gameCache.parseProfileToken(profileKey);
   if (!parsed) return 'invalid_profile';
@@ -181,9 +132,6 @@ function kickGate(profileKey, options = {}) {
   const cooldownMs = Number.isFinite(Number(options.kickCooldownMs))
     ? Math.max(0, Number(options.kickCooldownMs))
     : DEFAULT_KICK_COOLDOWN_MS;
-  // A failed pass is not throttled: the WD breaker already protects WDQS.
-  // An explicit user action (import/refresh/enrich) sets `forceKick` and skips
-  // this guard — coalescing still prevents a second concurrent pass.
   if (
     options.forceKick !== true &&
     jobs.cooldownRemaining(parsed.key, { windowMs: cooldownMs }) > 0
@@ -200,7 +148,6 @@ function waitForEnrichChain(ms) {
   let timer = null;
   const timeout = new Promise((resolve) => {
     timer = setTimeout(() => resolve('timeout'), timeoutMs);
-    // A pending timer must not keep the process alive (tests / shutdown).
     if (timer && typeof timer.unref === 'function') timer.unref();
   });
   return Promise.race([idle, timeout]).finally(() => {
@@ -262,7 +209,6 @@ async function runPass(job, parsed, options) {
     job.status = 'failed';
     job.stage = 'failed';
     job.code = (err && err.code) || 'games_personnel_failed';
-    // Messages of these providers never contain a token; keep the code only.
     job.error = String((err && err.message) || 'personnel pass failed').slice(0, 300);
     console.error(`[games-personnel ${job.id}] ${job.code}: ${job.error}`);
   } finally {
@@ -288,14 +234,6 @@ function enqueue(job, task) {
   });
 }
 
-/**
- * Start (or coalesce into) one personnel pass for a cached profile.
- *
- * @param {string} profileToken `steam-<steamid64>`
- * @param {{force?:boolean, limit?:number, wikidata?:object, moby?:object,
- *          waitForEnrich?:boolean, waitForEnrichMs?:number,
- *          lockWaitMs?:number, lockPollMs?:number}} [options]
- */
 function startPersonnel(profileToken, options = {}) {
   const parsed = gameCache.parseProfileToken(profileToken);
   if (!parsed) {
@@ -352,11 +290,6 @@ function startPersonnel(profileToken, options = {}) {
   return publicStatus(job);
 }
 
-/**
- * Fire-and-forget start used by import/refresh/enrich and the lazy route.
- * Never throws; returns a status-shaped object with `skipped` set when the
- * gate refused (so the caller can put the reason into its own payload).
- */
 function kickQuietly(profileToken, options = {}) {
   try {
     const parsed = gameCache.parseProfileToken(profileToken);
@@ -398,12 +331,10 @@ function kickQuietly(profileToken, options = {}) {
   }
 }
 
-/** Wait for the current personnel chain to settle (tests / shutdown). */
 function whenIdle() {
   return jobs.whenIdle();
 }
 
-/** Test helper: forget the re-kick guard between cases. */
 function resetCooldown() {
   jobs.resetCooldown();
 }

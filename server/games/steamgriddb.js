@@ -1,32 +1,5 @@
 'use strict';
 
-/**
- * SteamGridDB — optional artwork fallback for SKUs whose vertical capsule Steam
- * does not publish at all (resolve `kind: 'none'`).
- *
- * Keyless services cannot draw a 2:3 poster for every appid: CONTROL Resonant
- * (3669870, live 03.11.2026) has no `library_600x900.jpg` *and* no
- * `library_capsule.jpg` on the Steam CDN, so the card legitimately degrades to
- * a cropped landscape header. SteamGridDB is a community grid database with
- * proper 600×900 grids; it is **opt-in**:
- *
- *   STEAMGRIDDB_API_KEY            env
- *   config/steamgriddb-token       dev fallback (0600, gitignored)
- *
- * Without a key the provider is skipped silently (`status: 'skipped'`), so the
- * resolve document stays `none` exactly as before. The key value is never
- * logged or returned — only the source name.
- *
- * API (documented):
- *   GET /api/v2/games/steam/<appid>      -> { data: { id } }
- *   GET /api/v2/grids/game/<id>?dimensions=600x900&types=static&nsfw=false
- *                                        -> { data: [{ url, width, height }] }
- *
- * Politeness: one appid per resolve, ≤2 requests; `GAMES_SGDB_BUDGET` (50)
- * appids per enrich run, 1 s pause, persisted 30 min breaker on 403/429. A
- * transport/5xx failure is deferred (no negative cache).
- */
-
 const gameCache = require('./game-cache');
 const { createSourceGate } = require('../core/source-client');
 const { fetchJson } = require('../core/http');
@@ -64,7 +37,6 @@ async function pause(options = {}) {
   lastRequestAt = options.now ? Number(options.now()) : Date.now();
 }
 
-/** Only a https URL on a SteamGridDB CDN host may become payload art. */
 function allowedGridUrl(value) {
   let parsed;
   try {
@@ -76,10 +48,6 @@ function allowedGridUrl(value) {
   return CDN_HOST_RE.test(parsed.hostname.toLowerCase());
 }
 
-/**
- * Pick the first usable vertical grid. `nsfw=false` is already requested; an
- * explicit width/height check keeps an unexpected horizontal asset out.
- */
 function pickGrid(data) {
   if (!Array.isArray(data)) return null;
   for (const grid of data) {
@@ -94,12 +62,6 @@ function pickGrid(data) {
   return null;
 }
 
-/**
- * Resolve one appid's 600×900 grid.
- *
- * @returns {Promise<{status:'found'|'none'|'skipped'|'deferred', url?:string,
- *   source?:string, reason?:string}>}
- */
 async function resolveSteamGridDb(rawAppid, options = {}) {
   const appid = Number(rawAppid);
   if (!Number.isSafeInteger(appid) || appid <= 0) return { status: 'none' };

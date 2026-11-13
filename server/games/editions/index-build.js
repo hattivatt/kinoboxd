@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * Canonical work index of the games tab (ИГРЫ-АРХИТЕКТУРА §4.1, M5-B).
- *
- * `buildEditionIndex()` is pure: it takes library rows plus cached details and
- * links, links rows into connected components and returns one document with
- * `canonical` (appid → work entry), `groups` (multi-edition works) and `meta`.
- * `inputSignature()` / `manualSignature()` are the watermarks that decide
- * whether a persisted index is still fresh.
- */
-
 const { numericSignature } = require('./normalize');
 const {
   nodeOf,
@@ -22,10 +12,6 @@ const { round1 } = require('../../core/stats');
 
 const ALGORITHM_VERSION = 2;
 
-/**
- * Build the edition index from library rows + cached details/links.
- * Pure: no disk reads. `manual` is `{ merges: [[a,b]], splits: [[a,b]] }`.
- */
 function buildEditionIndex(input = {}) {
   const games = Array.isArray(input.games) ? input.games : [];
   const details = input.details && typeof input.details === 'object' ? input.details : {};
@@ -67,7 +53,6 @@ function buildEditionIndex(input = {}) {
   };
 
   const appids = [...nodes.keys()];
-  // Pass 1: same Wikidata QID (own or base version) is authoritative.
   const byQid = new Map();
   for (const appid of appids) {
     const node = nodes.get(appid);
@@ -86,8 +71,6 @@ function buildEditionIndex(input = {}) {
     }
   }
 
-  // Pass 2: normalized title. Index by normalized key so only real candidates
-  // reach the (more expensive) guard code.
   const byTitle = new Map();
   for (const appid of appids) {
     const node = nodes.get(appid);
@@ -107,8 +90,6 @@ function buildEditionIndex(input = {}) {
     }
   }
 
-  // Pass 3: fuzzy — only rows with the same numeric signature and a length
-  // within two edits. This is O(k²) inside a signature bucket, tiny in practice.
   const bySignature = new Map();
   for (const appid of appids) {
     const node = nodes.get(appid);
@@ -129,7 +110,6 @@ function buildEditionIndex(input = {}) {
     }
   }
 
-  // Manual merges win over every heuristic (and over a split of the same pair).
   for (const pair of Array.isArray(manual.merges) ? manual.merges : []) {
     if (!Array.isArray(pair) || pair.length < 2) continue;
     const left = Number(pair[0]);
@@ -140,7 +120,6 @@ function buildEditionIndex(input = {}) {
     addEdge(left, right, 'manual');
   }
 
-  // Connected components.
   const seen = new Set();
   const components = [];
   for (const appid of appids) {
@@ -234,10 +213,6 @@ function buildEditionIndex(input = {}) {
   };
 }
 
-/**
- * Cheap watermark of everything the grouping depends on. Details arrive after
- * the library import, so the library fingerprint alone is not enough.
- */
 function inputSignature(library, details, links) {
   const libraryFingerprint = (library && library.fingerprint) || '';
   const describe = (map) => {
@@ -255,15 +230,6 @@ function inputSignature(library, details, links) {
   return `${libraryFingerprint}|d${describe(details)}|l${describe(links)}`;
 }
 
-/**
- * Content fingerprint of the manual overrides.
- *
- * `ensureEditions` used to decide freshness on `inputsFingerprint` only, so
- * editing `manual.merges` / `manual.splits` in `editions.json` did **nothing**
- * until the library or the metadata moved (audit §4.4d: «ручные мержи
- * инертны»). The manual list is part of the inputs, so it gets its own
- * fingerprint and a change forces a rebuild.
- */
 function manualSignature(manual) {
   const pairs = (value) =>
     (Array.isArray(value) ? value : [])
@@ -281,7 +247,6 @@ function manualSignature(manual) {
   return `m[${merges.join(',')}]s[${splits.join(',')}]`;
 }
 
-/** True when every one of `games` has a canonical entry in `doc`. */
 function covers(doc, games) {
   if (!doc || !doc.canonical || typeof doc.canonical !== 'object') return false;
   for (const game of Array.isArray(games) ? games : []) {
@@ -292,10 +257,6 @@ function covers(doc, games) {
   return true;
 }
 
-/**
- * `editionKeyOf(doc, appid)` → the canonical work key of a store row, or a
- * per-appid fallback when the index has not seen it yet.
- */
 function editionKeyOf(doc, appid) {
   const entry = doc && doc.canonical ? doc.canonical[String(appid)] : null;
   return entry && entry.workKey ? entry.workKey : `steam:${appid}`;

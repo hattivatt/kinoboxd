@@ -4,11 +4,6 @@ const cache = require('./cache');
 const tmdb = require('./tmdb');
 const { createJobs } = require('./core/jobs');
 
-/**
- * Film enrich job registry (core/jobs). Keyed by `uploadId` — the upload is
- * the job, so the id *is* the upload id and there is no retention ring: a
- * status may be asked long after the run, and `kp.js` reads the same entry.
- */
 const jobs = createJobs({
   name: 'films-enrich',
   idPrefix: 'films-enrich',
@@ -21,10 +16,6 @@ const inflight = new Map();
 const CONCURRENCY = tmdb.MAX_CONCURRENCY;
 const RETRY_DELAY_MS = 2000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/* ------------------------------------------------------------------ */
-/* One film: cache first, network only when needed                     */
-/* ------------------------------------------------------------------ */
 
 async function resolveFilm(film) {
   const kind = film.kind === 'tv' ? 'tv' : 'movie';
@@ -44,23 +35,16 @@ async function resolveFilm(film) {
     return { tmdbId: null, kind, cached: true };
   }
   if (cachedEntry !== undefined) {
-    // Manual matches store { id, kind }: trust their kind over the one
-    // implied by the upload (e.g. a Letterboxd "movie" that is a TV show).
     const entryKind = cachedEntry.kind || kind;
     if (cache.hasDetails(cachedEntry.id, entryKind)) {
       return { tmdbId: cachedEntry.id, kind: entryKind, cached: true };
     }
     if (!cache.hasDetails(cachedEntry.id)) {
-      // We know the id, but a previous run was interrupted before details
-      // and credits were stored: finish the job without searching again.
       await fetchDetails(cachedEntry.id, entryKind);
       return { tmdbId: cachedEntry.id, kind: entryKind, cached: false };
     }
-    // Details exist for the other media kind (stale index entry): fall
-    // through and search again instead of fetching the wrong endpoint.
   }
 
-  // Several uploads may contain the same title/year; share one lookup.
   if (inflight.has(indexKey)) {
     const shared = await inflight.get(indexKey);
     return { tmdbId: shared, kind, cached: true };
@@ -78,9 +62,6 @@ async function resolveFilm(film) {
       return null;
     }
     cache.setIndexValue(indexKey, found.id);
-    // The search may resolve to a TMDB id that is already cached (e.g. the
-    // same film under a different localized title): do not re-fetch or
-    // overwrite its details.
     if (cache.hasDetails(found.id, kind)) return found.id;
     await fetchDetails(found.id, kind);
     return found.id;
@@ -94,10 +75,6 @@ async function resolveFilm(film) {
     inflight.delete(indexKey);
   }
 }
-
-/* ------------------------------------------------------------------ */
-/* Jobs                                                                */
-/* ------------------------------------------------------------------ */
 
 function countCached(films) {
   let count = 0;
@@ -126,7 +103,7 @@ function startEnrich(upload) {
     startedAt: Date.now(),
     finishedAt: null,
     cached: countCached(films),
-    films: new Map(), // slug -> { tmdbId, matched }
+    films: new Map(),
     inFlight: 0,
   });
   jobs.remember(job);
@@ -137,8 +114,6 @@ function startEnrich(upload) {
   }
 
   jobs.run(job, () => runJob(job, films), {
-    // One upload = one job; the per-upload chain keeps two uploads running in
-    // parallel exactly like the direct call did.
     chainKey: uploadId,
     finish: false,
     onError: (self, err) => {
@@ -195,8 +170,6 @@ async function runJob(job, films) {
         if (result.tmdbId != null) job.matched++;
         else job.failed++;
       } catch (err) {
-        // Network/API failure: leave the film unmatched for this run but do
-        // not poison the cache, so a later enrich can try again.
         job.failed++;
         job.films.set(film.slug, { tmdbId: null, matched: false, error: true });
         console.warn(
@@ -213,10 +186,6 @@ async function runJob(job, films) {
 
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-  // Transport failures (TMDB resets connections in some networks) leave no
-  // index entry, so a single retry pass after the main run can rescue the
-  // tail without poisoning the cache. Only films that failed with an error
-  // are retried; genuine "not found" results stay false.
   const retryFilms = films.filter((film) => {
     const entry = job.films.get(film.slug);
     return entry && entry.error === true;
@@ -246,7 +215,6 @@ async function runJob(job, films) {
             job.matched++;
             retriedSuccesses++;
           } else {
-            // Still a definitive miss; keep it counted as failed.
           }
         } catch (err) {
           console.warn(
@@ -266,8 +234,6 @@ async function runJob(job, films) {
   }
 
   cache.flushIndex();
-  // Learn global TMDB <-> Letterboxd links from this job (Letterboxd uploads
-  // only: those films carry an lbUri). KinoPoisk imports are a no-op here.
   const learned = cache.learnLbLinks(films, job.films);
   cache.flushLbLinks();
   if (learned.added > 0) {
@@ -303,8 +269,6 @@ function getStatus(uploadId, totalHint) {
     };
   }
   return {
-    // Unified job view (id/status/stage/progress/startedAt/finishedAt/error/
-    // partial). The legacy fields keep their exact values.
     ...jobs.snapshot(job),
     total: job.total,
     matched: job.matched,

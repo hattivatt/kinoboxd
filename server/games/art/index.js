@@ -1,14 +1,5 @@
 'use strict';
 
-/**
- * Steam artwork package: the CDN proxy (`./proxy`), its disk cache and
- * per-appid verdicts (`./store`), the store-frontend asset client (`./browse`)
- * and the vertical-capsule resolver (`./resolve`).
- *
- * This barrel is the only entry point: the export set is exactly the one the
- * single-file module had, so callers see no seam.
- */
-
 const {
   ART_DIR,
   RESOLVED_DIR,
@@ -74,7 +65,6 @@ module.exports = {
   fetchUpstream,
   parseRequest,
   createSteamArtHandler,
-  // vertical-art resolve
   readResolvedArt,
   listResolvedArt,
   saveResolvedArt,

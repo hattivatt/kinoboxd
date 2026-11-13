@@ -1,55 +1,5 @@
 'use strict';
 
-/**
- * Library metadata enrichment (M2 details + M4 tags/reviews): a resumable,
- * budgeted pass over the appids of one owned library, split into phases.
- *
- *   POST /api/games/enrich { profile, force?, phases?, recheckDays? } -> job
- *   GET  /api/games/enrich/:jobId | /api/games/enrich/status?id=…
- *
- * Phases (`phases`: `details` | `spy` | `reviews` | `all`, comma-separated or
- * an array; the HTTP route defaults to `all`, a programmatic call to
- * `details` so import-time enrichment keeps its M2 footprint):
- *
- *   details — Steam Store `appdetails` (`details/<appid>.json`)
- *   spy     — SteamSpy tags/owners/ccu (`spy/<appid>.json`)
- *   reviews — Steam review summary (`reviews/<appid>.json`)
- *
- * Invariants:
- *   - **one owner.** The run reads the library of exactly one cached
- *     `steam-<steamid64>` profile; metadata is global per appid (tags, review
- *     scores are not owner-scoped), events/hours are (AGENTS.md §6);
- *   - **resumable.** A candidate is an appid whose document for that phase is
- *     missing or older than the phase re-check window (details 180 days,
- *     spy/reviews 30 days). Re-running the job continues where the previous
- *     run stopped (the cache is the progress); `force: true` re-fetches
- *     everything regardless of freshness;
- *   - **one-time heal (details).** A *fresh* document written before the store
- *     parser kept `headerImage` (02.11.2026, e5bc5b9) is a heal candidate even
- *     though its TTL has not expired: «Обновить профиль» must add the missing
- *     artwork instead of inventing a forced full refetch. The heal is recorded
- *     per appid in `state/details-heal-state.json`, so a document is asked
- *     exactly once — whether the answer was `healed`, `no_artwork` or
- *     `unavailable` — and a failed request is retried on the next run. Only
- *     `success:true` documents are candidates: the 21 honest `unavailable`
- *     rows have no artwork because the store has no page for them, not because
- *     the parser lost a field;
- *   - **budgeted per phase.** `GAMES_STORE_BUDGET` / `GAMES_SPY_BUDGET` /
- *     `GAMES_REVIEWS_BUDGET` (default 340 each) appids per run, one unit per
- *     appid; the remaining count is reported and the next run picks it up;
- *   - **deferred, not negative.** A network/5xx/breaker failure is counted as
- *     deferred and NOT written; a real "no data" answer (store `success:false`,
- *     SteamSpy skeleton, review summary without `query_summary`) is written as
- *     an honest `unavailable` document so the next run does not ask again
- *     inside the TTL;
- *   - only library appids are enriched (cache `profiles/` + `library/`), never
- *     the whole Steam catalogue.
- *
- * Journals: one persisted state file per phase (`state/enrich-state.json`,
- * `state/spy-state.json`, `state/reviews-state.json`), each with the last run
- * per profile, attempted/deferred appids and a ring of the last 10 summaries.
- */
-
 const gameCache = require('./game-cache');
 const { createJobs } = require('../core/jobs');
 const steam = require('./steam');
@@ -66,7 +16,6 @@ const DEFAULT_PHASE_RECHECK_DAYS = 30;
 const MAX_JOBS = 20;
 const MAX_RUNS = 10;
 
-/** Everything that differs between phases, in one place. */
 const PHASE_SPECS = {
   details: {
     name: 'details',
@@ -85,9 +34,6 @@ const PHASE_SPECS = {
     readState: () => gameCache.readEnrichState(),
     saveState: (state) => gameCache.saveEnrichState(state),
     systemicCodes: ['store_rate_limited', 'store_unreachable'],
-    // One-time heal of pre-`headerImage` documents (see the module comment).
-    // Only a real store answer without artwork is a candidate; an
-    // `unavailable` row (success:false) has no page to fetch.
     heal: {
       missing: (doc) =>
         Boolean(doc && doc.success === true && !doc.headerImage),
@@ -142,12 +88,6 @@ const PHASE_ALIASES = {
   appreviews: ['reviews'],
 };
 
-/**
- * Job registry (core/jobs): single-flight per profile, one enrich chain and a
- * 20-job ring. Phase journals (`state/enrich-state.json` and friends) stay the
- * domain's own persistent state — jobs are in-memory, exactly like the map
- * they replace, and a restart resumes from those files, not from a job.
- */
 const jobs = createJobs({
   name: 'games-enrich',
   idPrefix: 'games-enrich',
@@ -185,15 +125,6 @@ function createBudget(limit) {
   return createBudgetImpl(limit, DEFAULT_BUDGET);
 }
 
-/* ------------------------------------------------------------------ */
-/* Phase selection                                                     */
-/* ------------------------------------------------------------------ */
-
-/**
- * Normalise `phases` (`"all"`, `"spy"`, `"details,reviews"` or an array) into
- * an ordered, de-duplicated list. Unknown names are a 400, never a silent
- * no-op — the same rule the query contract follows everywhere else.
- */
 function parsePhases(raw, fallback) {
   const fallbackList = Array.isArray(fallback)
     ? fallback
@@ -237,8 +168,6 @@ function parsePhases(raw, fallback) {
     err.status = 400;
     throw err;
   }
-  // Keep the canonical order (details → spy → reviews) regardless of input
-  // order: details first means the personnel pass sees the finished library.
   return PHASES.filter((name) => out.includes(name));
 }
 
@@ -275,7 +204,6 @@ function emptyPhase(name) {
   };
 }
 
-/** Public phase view: no key/secret ever passes through this module. */
 function publicPhase(phase) {
   if (!phase) return null;
   return {
@@ -314,12 +242,9 @@ function publicPhase(phase) {
   };
 }
 
-/** Public job view: no key/secret ever passes through this module. */
 function publicStatus(job) {
   if (!job) return null;
   return {
-    // Unified job view (id/status/stage/progress/startedAt/finishedAt/error/
-    // partial); the legacy fields below keep their exact value.
     ...jobs.snapshot(job),
     jobId: job.id,
     id: job.id,
@@ -338,8 +263,6 @@ function publicStatus(job) {
       ? Object.fromEntries(Object.entries(job.phases).map(([name, phase]) => [name, publicPhase(phase)]))
       : {},
     recheckDays: job.recheckDays,
-    // Legacy (M2) top-level fields mirror the details phase so the existing UI
-    // and the M2 tests keep reading one stable shape.
     total: job.total,
     selected: job.selected,
     skippedFresh: job.skippedFresh,
@@ -413,10 +336,6 @@ function progressSnapshot(state, profileKey) {
   return entry && typeof entry === 'object' ? entry : {};
 }
 
-/**
- * Mean of the requested phases' progress (0..99). A phase that has not started
- * contributes 0; a finished one 100. The enqueue wrapper sets the final 100.
- */
 function overallPercent(job) {
   const phases = job.phasesRequested && job.phasesRequested.length ? job.phasesRequested : ['details'];
   let sum = 0;
@@ -427,7 +346,6 @@ function overallPercent(job) {
   return Math.min(99, Math.round(sum / phases.length));
 }
 
-/** Coverage of one phase over the whole library (successful documents only). */
 function phaseCoverage(spec, appids) {
   const all = spec.list(appids);
   const resolved = appids.filter((appid) => all[String(appid)] && all[String(appid)].success).length;
@@ -438,25 +356,11 @@ function phaseCoverage(spec, appids) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* One phase                                                           */
-/* ------------------------------------------------------------------ */
-
-/* ------------------------------------------------------------------ */
-/* Vertical-art resolve (details phase, one pass per appid)            */
-/* ------------------------------------------------------------------ */
-
 function artBrowseBudgetLimit() {
   const spec = sources.SOURCES.steamBrowse;
   return budgetLimitFromEnvImpl(spec.budgetEnv, spec.budgetDefault);
 }
 
-/**
- * The resolver the details phase uses. Production talks to the public Steam
- * CDN/store-frontend API; a test must opt in explicitly (`artResolver` or a
- * `fetch`), so the suite never opens a socket. `artResolve: false` disables the
- * sweep entirely.
- */
 function artResolverFor(options) {
   if (options.artResolve === false) return null;
   if (typeof options.artResolver === 'function') return options.artResolver;
@@ -472,19 +376,11 @@ function artResolverFor(options) {
       sgdbKey: options.sgdbKey,
     });
   if (typeof options.fetch === 'function') return passThrough;
-  // A unit test that does not inject a resolver must not accidentally hit the
-  // live Steam CDN: under `node --test` the test file itself is `require.main`.
   const mainFile = require.main && require.main.filename ? require.main.filename : '';
   if (/\.test\.js$/.test(mainFile)) return null;
   return passThrough;
 }
 
-/**
- * Sweep key of one library row: the owner's most useful art targets first —
- * minutes played in the last two weeks, then the last-played timestamp, then
- * total playtime. All three are already on the library row; nothing extra is
- * fetched.
- */
 function artSweepKey(row) {
   return {
     minutes2w: Math.max(0, Number(row && row.playtime_2weeks) || 0),
@@ -493,13 +389,6 @@ function artSweepKey(row) {
   };
 }
 
-/**
- * Reorder the resolve candidates so a fresh or actively played game gets its
- * capsule during the first seconds of the sweep instead of after a 25-minute
- * ascending-appid walk. Only the visit order changes: the candidate set, the
- * counters and the per-appid documents are identical. Ties keep the library
- * order (appid ascending), so the sweep stays deterministic.
- */
 function artSweepOrder(candidates, library) {
   const rows = new Map();
   for (const game of (library && Array.isArray(library.games) && library.games) || []) {
@@ -518,20 +407,6 @@ function artSweepOrder(candidates, library) {
     .map((entry) => entry.candidate);
 }
 
-/**
- * Resolve the vertical capsule for every library appid whose `details`
- * document carries `header_image` and whose resolve document is missing or
- * older than its TTL (180 days positive / 30 days `none`). One pass per
- * appid; the result lives in `cache-games/art/resolved/<appid>.json`.
- *
- * The pass visits `most recently played → most played → rest` (`artSweepOrder`)
- * instead of ascending appid: the owner sees the art of the games they are
- * playing right now first.
- *
- * Counters are additive on the phase: `artCandidates`, `artResolved`,
- * `artNone`, `artDeferred`. A deferred lookup is not a verdict and is retried
- * on the next run.
- */
 async function resolveArtForLibrary(job, phase, appids, options = {}, library = null) {
   const resolver = artResolverFor(options);
   if (!resolver) return;
@@ -579,10 +454,6 @@ async function resolveArtForLibrary(job, phase, appids, options = {}, library = 
   }
 }
 
-/**
- * Run one phase. Pure-ish: all I/O goes through gameCache / the injected
- * client, so tests never touch the network.
- */
 async function runPhase(job, phaseName, scope, options) {
   const spec = PHASE_SPECS[phaseName];
   const phase = job.phases[phaseName];
@@ -615,9 +486,6 @@ async function runPhase(job, phaseName, scope, options) {
   const appids = uniqueAppids(library);
   const cached = spec.list(appids);
 
-  // One-time heal (details): a TTL-fresh document that predates `headerImage`
-  // is still a candidate. The ledger makes it exactly once per appid; a failed
-  // request is not recorded, so the next run retries it.
   let healState = null;
   const healRecorded = new Set();
   const healTargets = new Set();
@@ -655,8 +523,6 @@ async function runPhase(job, phaseName, scope, options) {
   phase.skippedFresh = appids.length - stale.length;
   phase.healCandidates = healList.length;
 
-  // Select at most one budget window, but spend a unit per *attempt* below:
-  // an interrupted run must report the budget it did not use.
   const selected = budget.limit > 0 ? stale.slice(0, budget.limit) : [];
   phase.selected = selected.length;
   phase.remaining = stale.length - selected.length;
@@ -700,12 +566,6 @@ async function runPhase(job, phaseName, scope, options) {
         phase.unavailable++;
         unavailableAppids.push(appid);
       }
-      // Record the one-time heal outcome. `no_artwork` means the store itself
-      // answered without a header image: asking again would not help, the
-      // ledger keeps the document out of every future heal pass (normal TTL
-      // re-checks still happen every 180 days). The marker is also written for
-      // a first-time fetch without artwork, so the deploy that introduced the
-      // heal does not re-ask documents the same run just wrote.
       if (
         spec.heal &&
         (healTargets.has(appid) || (doc.success && !doc.headerImage))
@@ -734,7 +594,6 @@ async function runPhase(job, phaseName, scope, options) {
       deferredAppids.push(appid);
       if (!phase.errors.includes(code)) phase.errors.push(code);
       if (!job.errors.includes(code)) job.errors.push(code);
-      // Breaker/unreachable is systemic: stop instead of hammering the host.
       if (spec.systemicCodes.includes(code)) {
         phase.stoppedBy = code;
         break;
@@ -744,11 +603,7 @@ async function runPhase(job, phaseName, scope, options) {
     phase.percent = selected.length
       ? Math.min(99, Math.round((phase.processed / selected.length) * 100))
       : 0;
-    // Overall progress = the mean of the requested phases' progress, so a long
-    // spy pass does not sit at 0% while the details phase is already done.
     job.percent = overallPercent(job);
-    // Persist progress after every appid: a crash mid-run resumes from the
-    // cache, but the journal still shows where the pass stopped.
     job.setProgress(phase.processed, phase.selected == null ? phase.total : phase.selected);
     state.profiles[profileKey] = {
       ...previous,
@@ -823,7 +678,6 @@ async function runPhase(job, phaseName, scope, options) {
     resolved: coverage.resolved,
     resolvedTotal: coverage.total,
     resolvedPercent: coverage.percent,
-    // Legacy details keys (M2 tests read the run ring).
     ...(phaseName === 'details'
       ? { detailsResolved: coverage.resolved, detailsTotal: coverage.total }
       : {}),
@@ -852,7 +706,6 @@ async function runPhase(job, phaseName, scope, options) {
     unavailableAppids: [...unavailableAppids],
     resolved: coverage.resolved,
     resolvedTotal: coverage.total,
-    // Legacy details key names (M2 tests and the state reader rely on them).
     ...(phaseName === 'details'
       ? { detailsResolved: coverage.resolved, detailsTotal: coverage.total }
       : {}),
@@ -866,10 +719,6 @@ async function runPhase(job, phaseName, scope, options) {
   return phase;
 }
 
-/**
- * Run the requested phases sequentially and keep the legacy top-level fields
- * (M2 details) in sync.
- */
 async function runEnrich(job, scope, options) {
   const phases = options.phases && options.phases.length ? options.phases : ['details'];
   const appids = uniqueAppids(scope.library);
@@ -904,18 +753,6 @@ async function runEnrich(job, scope, options) {
   job.percent = 100;
 }
 
-/**
- * Start (or coalesce into) an enrich job for one cached profile.
- *
- * `profileToken` — `steam-<steamid64>`.
- * `options.force` — re-fetch every appid, ignore the TTLs.
- * `options.phases` — `details`/`spy`/`reviews`/`all` (default `details` here;
- *   the HTTP route passes `all`).
- * `options.recheckDays` — override the details re-check window.
- * `options.spyRecheckDays` / `reviewsRecheckDays` — per-phase overrides.
- * `options.budget` / `spyBudget` / `reviewsBudget` — per-phase budget (tests).
- * `options.client` / `spyClient` / `reviewsClient` — injected clients (tests).
- */
 function startEnrich(profileToken, options = {}) {
   const parsed = gameCache.parseProfileToken(profileToken);
   if (!parsed) {
@@ -982,7 +819,6 @@ function startEnrich(profileToken, options = {}) {
   return publicStatus(job);
 }
 
-/** Wait for the current enrich chain to settle (tests / shutdown). */
 function whenIdle() {
   return jobs.whenIdle();
 }

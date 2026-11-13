@@ -1,18 +1,3 @@
-/**
- * Pure helpers for the books "↻ Обновить профиль" flow.
- *
- * Kept in a separate DOM-free module so the before/after event-count maths can
- * be unit-tested with `node --test` (no browser, no jsdom). `books.js` owns the
- * network/job orchestration and only calls these functions for the toast.
- *
- * A profile is ONE source (single-profile contract), so there is no per-source
- * breakdown any more: the toast compares the profile's own event count.
- *
- * LiveLib no longer has a scrape refresh (28.10.2026): «Обновить» opens the
- * export-file upload, whose counts come straight from the 201 answer, so this
- * toast covers the Hardcover job only.
- */
-
 const SOURCE_TITLE = { hardcover: 'Hardcover', livelib: 'LiveLib' };
 
 function toCount(value) {
@@ -21,11 +6,6 @@ function toCount(value) {
   return Math.floor(number);
 }
 
-/**
- * Reduce a raw `/api/books/stats` payload to the numbers the refresh toast
- * compares. `undated` is reported separately: a deep scan that is still
- * running changes dates without changing the event count.
- */
 export function snapshotCounts(payload) {
   const summary = payload && typeof payload === 'object' ? payload.summary : null;
   return {
@@ -35,11 +15,6 @@ export function snapshotCounts(payload) {
   };
 }
 
-/**
- * Numeric before/after diff. `eventDelta` is `after - before` (negative when
- * the user deleted books from the source, which is exactly what the manual
- * refresh exists for).
- */
 export function diffRefresh(before, after) {
   const left = before && typeof before === 'object' ? before : snapshotCounts(null);
   const right = after && typeof after === 'object' ? after : snapshotCounts(null);
@@ -57,13 +32,6 @@ function deltaSuffix(diff) {
   return 'данных новых нет';
 }
 
-/**
- * Toast text for a finished (or partially failed) profile refresh.
- *
- * @param {{eventCount:number,datedCount:number,undatedCount:number}} before
- * @param {{eventCount:number,datedCount:number,undatedCount:number}} after
- * @param {{source?:string, failure?:string}} [options]
- */
 export function refreshToastMessage(before, after, options = {}) {
   const source = String(options.source || 'livelib').toLowerCase();
   const title = SOURCE_TITLE[source] || source;
@@ -76,10 +44,6 @@ export function refreshToastMessage(before, after, options = {}) {
   return `Профиль обновлён: ${title} ${count} (${deltaSuffix(diff)})`;
 }
 
-/* ------------------------------------------------------------------ */
-/* Metadata coverage badge                                            */
-/* ------------------------------------------------------------------ */
-
 function pluralBooks(count) {
   const n = Math.abs(toCount(count)) % 100;
   const n1 = n % 10;
@@ -89,16 +53,6 @@ function pluralBooks(count) {
   return 'книг ждут';
 }
 
-/**
- * Run a synchronous render and return the window scroll to where it was.
- *
- * The books dashboard re-renders its whole DOM while the metadata resolve is
- * polled (every ~5 s). Removing a tall container and building it again can
- * clamp/restore the window scroll, which the user sees as the page jumping to
- * the top (user report, 28.10.2026). `getY`/`setY` are injected so the rule is
- * unit-testable without a DOM: only a non-zero scroll is restored, and a
- * rendering that already preserved the position is left alone.
- */
 export function withPreservedScroll(getY, setY, render) {
   const read = typeof getY === 'function' ? getY : () => 0;
   const write = typeof setY === 'function' ? setY : () => {};
@@ -109,28 +63,11 @@ export function withPreservedScroll(getY, setY, render) {
     try {
       write(before);
     } catch {
-      /* a scroll restore must never break the render */
     }
   }
   return result;
 }
 
-/**
- * View model of the "Метадата: N%" badge, or `null` when it must be hidden.
- *
- * Hidden when there is nothing to load (legacy payload, empty profile) and at
- * `pending === 0` — a fully enriched profile needs no apology. `resolvable`
- * (server-side) is the pool minus works the providers were asked about and
- * answered nothing for (`hopeless`) and works with no resolve key at all
- * (`keyless`); both are reported in the hint instead of pinning the badge at
- * 99% forever. `linked`/`withDetails`/`unlinked` split the profile into
- * "canonical provider work", "details document only" and "no metadata yet" —
- * a file row with genres but no link is NOT counted as resolved any more.
- * `running` adds the «догружается…» suffix and the spinner; `budgetRemaining`
- * (Litres books for the current run) is only present while the job is alive.
- *
- * @param {{resolved:number,total:number,linked?:number,withDetails?:number,unlinked?:number,resolvable?:number,hopeless?:number,keyless?:number,percent:number,running:boolean,done?:boolean,budgetRemaining:?number}|null} meta
- */
 export function metadataBadge(meta) {
   if (!meta || typeof meta !== 'object') return null;
   const total = toCount(meta.total);
@@ -147,8 +84,6 @@ export function metadataBadge(meta) {
   const unlinked = meta.unlinked == null ? 0 : Math.max(0, toCount(meta.unlinked));
   const pending = Math.max(0, resolvable - resolved);
   const running = meta.running === true;
-  // Nothing left in the resolvable pool: no badge, whatever the raw total is
-  // (and even while a pass is still walking hopeless keys).
   if (pending === 0) return null;
   const percent = Math.max(0, Math.min(100, Math.round(Number(meta.percent))));
   if (!Number.isFinite(percent)) return null;

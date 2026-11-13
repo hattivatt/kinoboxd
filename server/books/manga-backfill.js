@@ -1,31 +1,5 @@
 'use strict';
 
-/**
- * Manga/comics signal backfill for details documents that are weak on their
- * own (mostly Hardcover-only works: genres `[]`, publisher `null`, no tags).
- *
- * It is a *targeted* enrichment, not a full metadata refresh:
- *   - candidates are volume-like works whose effective flag is not `true`
- *     (title/series contains Vol/Book/Tome/N volumes/Single Issues), or explicit
- *     ids passed on the command line;
- *   - one title lookup per provider (Open Library, then Google Books) by ISBN
- *     with a base-title retry (`Crossed, Vol. 14: Badlands` -> `Crossed`);
- *   - provider genres/subjects/publisher are merged into `details.mangaTexts`,
- *     re-detected locally and persisted atomically; provider pages are not
- *     copied into `links` and `metadataSources` is left untouched;
- *   - the LiveLib/card never enters this path, so there is no scraping risk.
- *
- * Usage:
- *   node server/books/manga-backfill.js --dry-run --limit 10
- *   node server/books/manga-backfill.js --ids hc:1874719,hc:473173 --dry-run
- *   node server/books/manga-backfill.js --ids hc:1874719,hc:473173
- *
- * Respect:
- *   - `--limit` defaults to 20 (0 = no cap);
- *   - `--pause` ms between provider lookups (default 600);
- *   - Google Books is skipped while its 429 breaker is open.
- */
-
 const bookCache = require('./book-cache');
 const googlebooks = require('./providers/googlebooks');
 const openlibrary = require('./providers/openlibrary');
@@ -36,7 +10,6 @@ const fsStore = require('../core/fs-store');
 const DEFAULT_LIMIT = 20;
 const DEFAULT_PAUSE_MS = 600;
 
-/** "Crossed, Vol. 14: Badlands" -> "Crossed"; "Old Boy, Vol. 8" -> "Old Boy". */
 function baseTitle(title) {
   return String(title == null ? '' : title)
     .replace(/\s*[,:]\s*(?:vol(?:ume)?\.?|book|tome|том|часть|книга)\s*(?:\d+|[a-z]+)\b.*$/iu, '')
@@ -44,7 +17,6 @@ function baseTitle(title) {
     .trim();
 }
 
-/** "Trigun (3 volumes)" -> "Trigun"; "Crossed (Single Issues)" -> "Crossed". */
 function seriesBase(name) {
   return String(name == null ? '' : name)
     .replace(/\s*\([^)]*\)\s*$/u, '')
@@ -79,7 +51,6 @@ function detailDocs() {
   return docs;
 }
 
-/** Current effective flag of a details doc (no manual override involved). */
 function detectDoc(doc) {
   return detectManga({
     genres: doc.genres,
@@ -113,10 +84,6 @@ function collectTexts(doc, results) {
   return out;
 }
 
-/**
- * Enrich one details document with provider detection text.
- * Returns `{changed, mangaComics, texts, results}`.
- */
 async function enrichDoc(doc, options = {}) {
   const pause = options.pause == null ? DEFAULT_PAUSE_MS : Number(options.pause);
   const sleep = options.sleep || defaultSleep;
@@ -148,8 +115,6 @@ async function enrichDoc(doc, options = {}) {
         result = null;
       }
       if (result) results.push(result);
-      // A provider that already proves comics is enough; otherwise try the
-      // next one (OL subjects and GB categories cover different editions).
       if (result && result.mangaComics === true) break;
     }
     if (results.some((result) => result.mangaComics === true)) break;

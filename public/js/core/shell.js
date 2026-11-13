@@ -1,37 +1,5 @@
-/* One application shell for the three tabs (U15, P8).
- *
- * The topbar, the profile chips, the source cards and the import-progress
- * rows were painted by three independent controllers (`switcher.js`,
- * `books.js`, `games.js`). They are one component now: a domain passes a
- * descriptor `{ domain, title, sources[], journal{} }` and the shell paints
- * it. Domains keep their own *content* — payload normalization, wording of
- * stage labels, fetch calls, toasts and error texts — and only hand the shell
- * a model.
- *
- * The shell deliberately knows nothing about films/books/games: no domain
- * imports, no domain wording. Everything domain-specific arrives in the
- * descriptor.
- *
- * Markup contract (pinned by `test/shell.test.js` and the domain UI tests):
- *   - a source card is always `article.book-source-card[data-source=<id>]`
- *     with `.book-source-head` / `.book-source-logo` / `.book-source-title` /
- *     `.book-source-hint`; the role hint is `.book-source-role`;
- *   - a profile chip is either a `.profile-item` row with `.profile-pick`
- *     (films, books) or a flat `.games-profile-chip` button (games) — the
- *     class names are part of the descriptor, the model and the loop are one;
- *   - a progress row is `.books-job-row` (kept from the books round) plus the
- *     neutral `.shell-job-row` alias.
- *
- * Static markup stays in `index.html`: the shell *adopts* an existing card by
- * `data-source` and fills the parts the descriptor owns (role, status,
- * actions), and creates the card only when the markup does not exist. That is
- * what keeps the DOM diff of this round small while the card list has one
- * source of truth.
- */
-
 import { el, clear } from '../ui.js';
 
-/** Profile-bar class names (per-variant parts come from the descriptor). */
 export const PROFILE = {
   item: 'profile-item',
   pick: 'profile-pick',
@@ -47,7 +15,6 @@ export const PROFILE = {
   count: 'games-profile-count',
 };
 
-/** Source-card class names (the marker of a card is always `book-source-card`). */
 export const SOURCE_CARD = {
   card: 'book-source-card',
   head: 'book-source-head',
@@ -60,7 +27,6 @@ export const SOURCE_CARD = {
   actions: 'books-source-actions',
 };
 
-/** Progress-row class names. `books-job-*` is the stylesheet contract. */
 export const JOB = {
   row: 'books-job-row',
   head: 'books-job-head',
@@ -74,7 +40,6 @@ export const JOB = {
   alias: 'shell-job-row',
 };
 
-/** Role wording of a source inside one owner's profile. */
 export const SOURCE_ROLE_LABEL = {
   journal: 'журнал',
   enricher: 'обогащение',
@@ -84,14 +49,6 @@ export const SOURCE_ROLE_LABEL = {
 
 export const SCREEN_HEADER_CLASS = 'topbar-screen';
 
-/* =========================================================
-   descriptor
-   ========================================================= */
-
-/**
- * Validate a domain descriptor. Every tab declares the same three things:
- * the domain, the sources of its profile and the shape of its journal.
- */
 export function defineShellDomain(spec = {}) {
   const sources = (Array.isArray(spec.sources) ? spec.sources : [])
     .filter((source) => source && typeof source === 'object' && source.id)
@@ -116,10 +73,6 @@ export function defineShellDomain(spec = {}) {
     journal,
   };
 }
-
-/* =========================================================
-   tiny DOM helpers (children only — the headless shim has no selectors)
-   ========================================================= */
 
 function childrenOf(node) {
   if (!node || !node.children) return [];
@@ -165,23 +118,6 @@ function ensureChild(parent, test, factory) {
   return created;
 }
 
-/* =========================================================
-   profile bar — one component for the three tabs
-   ========================================================= */
-
-/**
- * Paint a profile bar.
- *
- * spec = {
- *   list, add, items[], variant: 'row' | 'flat',
- *   itemClass, pickClass, delClass, emptyText, emptyClass,
- *   maxReached, onSelect(id), onDelete(id)
- * }
- *
- * `items` is the domain model: `{ id, label, meta, title, active, badgeHtml,
- * badgeClass, count, deletable }`. The shell owns the loop, the active state,
- * the aria attributes and the callbacks; the domain owns the wording.
- */
 export function renderProfileBar(spec = {}) {
   const list = spec.list;
   if (!list) return [];
@@ -267,20 +203,6 @@ function buildFlatChip(item, spec) {
   return chip;
 }
 
-/* =========================================================
-   source cards — one screen for «Подключения» and the import flows
-   ========================================================= */
-
-/**
- * Paint the source cards of a domain.
- *
- * spec = { grid, sources[], onAction(sourceId, actionId) }
- *
- * A card that already exists in `index.html` (`data-source`) is adopted: the
- * shell fills only the parts the descriptor owns and never touches the
- * domain form inside it. A declared source without markup is created from the
- * descriptor, so the card list has one source of truth.
- */
 export function renderSourceCards(spec = {}) {
   const grid = spec.grid;
   if (!grid) return [];
@@ -364,7 +286,6 @@ function actionButtonClass(kind) {
   return 'btn btn-primary books-source-submit';
 }
 
-/** Fill role/status on an adopted card; never rewrite the domain form. */
 function decorateSourceCard(card, source) {
   const head = findByClass(card, SOURCE_CARD.head);
   if (head && source.role && !findByClass(head, SOURCE_CARD.role)) {
@@ -379,8 +300,6 @@ function decorateSourceCard(card, source) {
   const status = (source.status.id ? findById(card, source.status.id) : null)
     || findByClass(card, SOURCE_CARD.status);
   if (!status) {
-    // A source that had no status line gets one from the descriptor, right
-    // after the head (before the form).
     const node = el('p', {
       class: `${SOURCE_CARD.status}${source.status.className ? ` ${source.status.className}` : ''}`,
       text: source.status.text || '',
@@ -399,23 +318,6 @@ function decorateSourceCard(card, source) {
   if (source.status.title) status.title = source.status.title;
 }
 
-/* =========================================================
-   connections screen — one chrome for every domain
-   ========================================================= */
-
-/**
- * Mount the one «Подключения» screen.
- *
- * spec = {
- *   screen, hero: { kicker, title, sub }, back: { id, label },
- *   grid, sources[], onAction(sourceId, actionId)
- * }
- *
- * The shell owns the screen chrome (kicker/title/subtitle, the way back) and
- * the card list. It never binds domain actions itself: a controller keeps its
- * listeners on its own ids, and `onAction` is only used for cards the shell
- * creates (i.e. sources that have no static markup yet).
- */
 export function mountConnectionsScreen(spec = {}) {
   const screen = spec.screen;
   if (!screen) return null;
@@ -426,8 +328,6 @@ export function mountConnectionsScreen(spec = {}) {
 }
 
 function ensureHero(screen, heroSpec) {
-  // The hero lives inside the screen's `.dash` container, after the screen
-  // header — never above the back button.
   const dash = findByClass(screen, 'dash');
   const host = dash || screen;
   let hero = findByClass(host, 'dash-hero');
@@ -468,21 +368,6 @@ function ensureBack(screen, backSpec) {
   return button;
 }
 
-/* =========================================================
-   import progress — one row renderer for every domain
-   ========================================================= */
-
-/**
- * Paint the progress rows of the journal.
- *
- * spec = { host, jobs[] }, job = {
- *   source, mark, title, account, stage, percent, meta, failed, done
- * }
- *
- * Books have one row per source; games have one row (a single Steam journal).
- * The percent itself is computed by the domain (`core/progress.js`) so this
- * renderer never guesses a stage weight twice.
- */
 export function renderJobRows(spec = {}) {
   const host = spec.host;
   if (!host) return [];

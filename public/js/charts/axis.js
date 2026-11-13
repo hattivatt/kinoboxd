@@ -1,5 +1,3 @@
-/* Horizontal value grid and the x-axis label row shared by the bar charts. */
-
 import { fmtInt } from '../ui.js';
 import { svgEl } from '../core/charts.js';
 

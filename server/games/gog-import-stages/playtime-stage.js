@@ -4,23 +4,15 @@ const gogCache = require('../gog-cache');
 const gog = require('../gog');
 const { round1 } = require('../../core/stats');
 
-/** How many raw `sessions` answers one run keeps in `cache-games/debug/gog/`. */
 const DEBUG_DUMP_LIMIT = 3;
 const DEFAULT_RECHECK_ZERO_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Zero-hour rows are re-checked instead of being skipped forever: a 404 or a
- * wrong `{uid}` used to freeze «0 ч» permanently (01.11.2026). Bounded by the
- * same per-run budget, at most once per window.
- */
 function recheckZeroMs() {
   const raw = Number(process.env.GAMES_GOG_RECHECK_ZERO_MS);
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_RECHECK_ZERO_MS;
 }
 
 function playtimeTargets(products) {
-  // Movies and DLC have no gameplay sessions; `category` is absent on some
-  // rows, so unknown rows are kept (a 404 is a real zero).
   return (products || []).filter((product) => {
     if (!product || !product.gogGameId) return false;
     if (product.isMovie === true) return false;
@@ -40,13 +32,7 @@ async function runPlaytimeStage(job, { tokenApi, tokenDoc, userKey, library, pro
   const priorEntries =
     prior && prior.entries && typeof prior.entries === 'object' ? prior.entries : {};
   const targets = playtimeTargets(products);
-  // The uid this run will use: a snapshot written with a different one has
-  // untrustworthy zeros and is re-checked immediately.
   const currentUidSource = gog.gameplayUserId(tokenDoc).source;
-  // Every id the token can offer, with its source: the decisive diagnostic
-  // for a persisting «0.0 ч» (same number in `token:user_id` and
-  // `userData:userId`, different `userData:galaxyUserId` → the order is the
-  // remaining bug, not a missing field).
   const uidCandidates = gog.gameplayUserIdCandidates(tokenDoc);
   const minutes = job.force ? {} : { ...priorMinutes };
   const entries = job.force ? {} : { ...priorEntries };
@@ -60,8 +46,6 @@ async function runPlaytimeStage(job, { tokenApi, tokenDoc, userKey, library, pro
     errors: 0,
     fields: {},
     uidSource: null,
-    // Which numeric ids the token carries and which one the run used. Ids are
-    // account labels, not secrets; no token value is included.
     uidCandidates,
     dump: [],
   };
@@ -70,17 +54,9 @@ async function runPlaytimeStage(job, { tokenApi, tokenDoc, userKey, library, pro
   let pending = 0;
   for (const product of targets) {
     const cached = Object.prototype.hasOwnProperty.call(priorMinutes, product.gogGameId);
-    // A cached **zero** is not a final answer: a 404 or a wrong `{uid}` wrote
-    // it and the 01.11.2026 fix would never reach those rows. Zero-hour games
-    // are re-checked (bounded by the same budget), positive ones are reused.
     const cachedPositive = cached && Number(priorMinutes[product.gogGameId]) > 0;
     if (!job.force && cachedPositive) continue;
     if (!job.force && cached && Number(priorMinutes[product.gogGameId]) === 0) {
-      // Re-check immediately when the previous snapshot is not trustworthy:
-      //   - it was written with a different `{uid}` (the identity fix), or
-      //   - the answer did not parse (`unparsed`).
-      // Otherwise at most once per `GAMES_GOG_RECHECK_ZERO_MS` (24 h) so a
-      // normal import does not hammer the endpoint with dozens of 404s.
       const entry = entries[product.gogGameId] || null;
       const identityChanged = Boolean(prior.uidSource) && prior.uidSource !== currentUidSource;
       const staleAnswer = !entry || entry.status === 'unparsed';
@@ -103,8 +79,6 @@ async function runPlaytimeStage(job, { tokenApi, tokenDoc, userKey, library, pro
       stats.requests++;
       stats.uidSource = stats.uidSource || session.uidSource || null;
       if (session.field) stats.fields[session.field] = (stats.fields[session.field] || 0) + 1;
-      // A client that predates the `status` field (or a fake in a test) is
-      // read through the old `found` boolean: `found:false` was a 404.
       const status =
         session.status || (session.found === false ? 'not_found' : 'ok');
       if (status === 'ok' && session.minutes != null) {
@@ -127,7 +101,6 @@ async function runPlaytimeStage(job, { tokenApi, tokenDoc, userKey, library, pro
           at: new Date().toISOString(),
         };
       } else {
-        // 200 without a recognizable field: keep it pending, never a zero.
         stats.unparsed++;
         delete minutes[product.gogGameId];
         entries[product.gogGameId] = {
@@ -150,7 +123,6 @@ async function runPlaytimeStage(job, { tokenApi, tokenDoc, userKey, library, pro
           status: session.status,
           field: session.field || null,
           minutes: session.minutes,
-          // The token is never part of the dump: only the answer shape.
           urlShape: `gameplay.gog.com/games/{gogGameId}/users/{uid}/sessions`,
           raw: session.raw || null,
         };
@@ -191,8 +163,6 @@ async function runPlaytimeStage(job, { tokenApi, tokenDoc, userKey, library, pro
     targets: targets.length,
     cached: Object.keys(minutes).length,
     pending,
-    // `sample` is the first five works of this run: name + hours, so the job
-    // summary answers «часы вообще пришли?» without opening the cache.
     sample,
   };
   gogCache.savePlaytime(userKey, {

@@ -1,17 +1,5 @@
 'use strict';
 
-/**
- * Visible-work selection of the games payload: `minHours` on the display
- * total, the secondary-only works that join every aggregate, one
- * `chartWorks` row per work (Steam + GOG + Epic hours), and the headline
- * counters (game/played/unplayed, Pareto, median/mean, recent 2-week, last
- * played).
- *
- * S1 «распил god-функции»: split out of `context.js` so the preprocessor and
- * every builder stay under the 300-line target. Pure over the canonical works
- * and the secondary union.
- */
-
 const { hoursFilterPass } = require('./filters');
 const { round1, round2, round3, median } = require('./numeric');
 
@@ -21,8 +9,6 @@ function buildVisible({ union, allWorks, minHours, games }) {
   const visibleWorks = [];
   const excludedWorks = [];
   for (const work of allWorks) {
-    // M6c: one work = one hours number. A Steam work that was never played on
-    // Steam but has GOG/Epic hours passes the filter on the display total.
     const entry = unionOf(work);
     const minutes = entry ? entry.displayMinutes : work.minutes;
     if (hoursFilterPass(minutes, minHours)) visibleWorks.push(work);
@@ -38,18 +24,6 @@ function buildVisible({ union, allWorks, minHours, games }) {
   }
   const excludedByHours = excludedWorks.length;
 
-  /* ---------------- M6c: secondary-only works join every aggregate -------- */
-  // A work that exists only in GOG/Epic is a real owned game: it must be
-  // counted in `gameCount`, contribute its hours to `totalHours` and appear in
-  // years/decades/genres/histogram/backlog. It is NOT given a Steam identity it
-  // does not have (`primaryAppid: null`, no achievements, no `lastPlayed`).
-  //
-  // `minHours` semantics for a secondary-only work:
-  //   - hours known and > 0 → the same filter as a Steam work;
-  //   - hours known and 0    → dropped by `minHours=0` exactly like Steam;
-  //   - hours **unknown** (playtime never received: budget/404/Epic gap) →
-  //     never dropped, marked `hoursUnknown` + `hoursStatus`, so a failed
-  //     playtime phase cannot silently erase a game from the library.
   const secondaryVisible = [];
   const secondaryExcludedByHours = [];
   for (const entry of union.secondaryOnly) {
@@ -61,11 +35,6 @@ function buildVisible({ union, allWorks, minHours, games }) {
     else secondaryExcludedByHours.push(entry);
   }
 
-  /**
-   * One row per work for every chart: a Steam work carries its display hours
-   * (Steam + secondary of the same work), a secondary-only entry is a row of
-   * its own with `games: []` so every Steam-only helper stays empty and honest.
-   */
   const chartWorks = [
     ...visibleWorks.map((work) => {
       const entry = unionOf(work);
@@ -103,13 +72,10 @@ function buildVisible({ union, allWorks, minHours, games }) {
   const minutesList = visibleGames.map((game) => Number(game.playtime_forever) || 0);
   const ownedCount = games.length;
   const steamWorkCount = visibleWorks.length;
-  // One canonical work per game **across the owner's stores** (M6c).
   const gameCount = chartWorks.length;
   const totalMinutes = minutesList.reduce((sum, minutes) => sum + minutes, 0);
   const rawTotalHours = totalMinutes / 60;
-  // Steam journal hours (the number `hoursBySource.steam` reports) — unchanged.
   const totalHours = round1(rawTotalHours);
-  // Display total: Steam + GOG + Epic of the visible works (M6c decision).
   const totalMinutesAll = chartWorks.reduce((sum, work) => sum + (Number(work.minutes) || 0), 0);
   const rawTotalHoursAll = totalMinutesAll / 60;
   const totalHoursAll = round1(rawTotalHoursAll);
@@ -118,9 +84,6 @@ function buildVisible({ union, allWorks, minHours, games }) {
     0
   );
   const playedCount = chartWorks.filter((work) => work.minutes > 0).length;
-  // A work whose hours the store never answered for is neither «played» nor
-  // «backlog»: it is an honest third bucket (`hoursUnknown`), so the backlog
-  // count never claims a game was not played when nobody knows.
   const hoursUnknownCount = chartWorks.filter(
     (work) => work.union && work.union.hoursUnknown
   ).length;
@@ -128,7 +91,6 @@ function buildVisible({ union, allWorks, minHours, games }) {
     (work) => work.minutes === 0 && !(work.union && work.union.hoursUnknown)
   ).length;
 
-  // Pareto: the share of hours held by the top 10% of works (by hours).
   const sortedWorkMinutes = chartWorks
     .map((work) => work.minutes)
     .sort((a, b) => b - a);

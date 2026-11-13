@@ -1,41 +1,5 @@
 'use strict';
 
-/**
- * Steam client for the games tab (M1).
- *
- * Two access paths, both live in this module so callers never have to know
- * which host answers which question:
- *
- *   - **Web API** (`api.steampowered.com`, `STEAM_API_KEY`): the ONLY source of
- *     the owned-games library with per-game playtime (`GetOwnedGames`, the whole
- *     library in one response, no pagination — §2.1.3), plus summaries and
- *     `GetRecentlyPlayedGames` (the two-week window / launch source when a
- *     library answers `rtime_last_played: 0` everywhere).
- *   - **Community XML** (`steamcommunity.com`, no key): vanity → steamid64 and
- *     profile metadata (`id/<vanity>/?xml=1`), achievements with
- *     `unlockTimestamp` (`profiles/<id64>/stats/<appid>?tab=achievements&xml=1`).
- *     `.../games?tab=all` is login-gated and is deliberately NOT implemented:
- *     the library comes from the Web API only.
- *   - **Global achievement percentages** (`ISteamUserStats/...`, no key): the
- *     official, stable endpoint; the HTML `percentages{}` payload is not used.
- *
- * Politeness (AGENTS.md §1, ИГРЫ §10.1):
- *   - community requests are spaced by `GAMES_STEAM_COMMUNITY_PAUSE_MS`
- *     (default 2000 ms);
- *   - `403`/`429`/Cloudflare trip a 30-minute breaker for that host; the
- *     breaker state is persisted under the games state dir so a restart does
- *     not hammer a blocked host;
- *   - network/DNS/TLS failures are `steam_unreachable` (deferred: the caller
- *     must not cache a negative result);
- *   - the API key never appears in an error message, log line or job status:
- *     URLs are masked (`key=***`) before they leave this module.
- *
- * No IP is ever hardcoded. When the local resolver returns TLS-dead edge IPs
- * (verified network issue, §2.1/§2.6), set `GAMES_STEAM_DNS_SERVERS=8.8.8.8`
- * (comma-separated) and this client resolves Steam hosts through that DNS
- * server instead of the system resolver.
- */
-
 const dns = require('dns');
 const crypto = require('crypto');
 const { URL } = require('url');
@@ -56,7 +20,6 @@ const DEFAULT_BREAKER_MS = sources.breakerMs('steam');
 const MAX_REDIRECTS = 3;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 
-/** Every games error carries a stable `code` the routes map to HTTP status. */
 class SteamError extends Error {
   constructor(message, code, details = {}) {
     super(message);
@@ -68,22 +31,9 @@ class SteamError extends Error {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Secrets                                                             */
-/* ------------------------------------------------------------------ */
-
-/**
- * Remove the API key (and any other `key=` query value) from a URL or text so
- * it can be logged/put into an error message. The key must never be echoed,
- * not even partially.
- */
 function maskSecrets(value) {
   return String(value == null ? '' : value).replace(/([?&]key=)[^&\s"']+/gi, '$1***');
 }
-
-/* ------------------------------------------------------------------ */
-/* HTTP layer (no dependency; configurable DNS + redirects)            */
-/* ------------------------------------------------------------------ */
 
 function envInt(name, fallback) {
   const raw = Number(process.env[name]);
@@ -94,11 +44,6 @@ function sleepDefault(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Build a `lookup` function for `https.request`. Without
- * `GAMES_STEAM_DNS_SERVERS` the system resolver is used (undefined → default).
- * With it, the listed DNS servers are used for Steam hosts only.
- */
 function buildLookup(dnsServers) {
   const servers = (dnsServers || process.env.GAMES_STEAM_DNS_SERVERS || '')
     .split(',')
@@ -153,12 +98,6 @@ function networkError(err, target) {
   );
 }
 
-/**
- * GET a URL and buffer the body. Redirects are followed (Steam sends a plain
- * 302 for vanity/canonical URLs); the body size is capped. The socket work
- * lives in `core/http.nodeRequest`; this wrapper only maps transport failures
- * to the stable `SteamError` codes the routes know.
- */
 function httpGet(target, options = {}) {
   const timeoutMs = options.timeoutMs || envInt('GAMES_STEAM_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
   const redirectsLeft = options.redirectsLeft == null ? MAX_REDIRECTS : options.redirectsLeft;
@@ -191,10 +130,6 @@ function httpGet(target, options = {}) {
     throw networkError(err, target);
   });
 }
-
-/* ------------------------------------------------------------------ */
-/* Parsers (pure; fixtures cover all three sources)                    */
-/* ------------------------------------------------------------------ */
 
 function numOrNull(value) {
   if (value == null || value === '') return null;
@@ -229,10 +164,6 @@ const MONTHS = {
   december: 11,
 };
 
-/**
- * `memberSince` is a display string ("February 19, 2011"), not epoch. Parse it
- * as UTC so the payload does not shift with the server timezone.
- */
 function parseMemberSince(value) {
   const text = String(value == null ? '' : value).trim();
   const match = /^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})$/.exec(text);
@@ -246,14 +177,6 @@ function parseMemberSince(value) {
   return Number.isFinite(parsed) ? parsed : NaN;
 }
 
-/**
- * Parse `id/<vanity>/?xml=1` / `profiles/<id64>/?xml=1`.
- *
- * Gives the steamid64 (so `ResolveVanityURL` is not needed), the public
- * privacy state, persona name, avatars, `memberSince` (string → ISO), and the
- * three most-recent games. `hoursPlayed2Wk` is deliberately NOT used for
- * aggregation: the XML field is stale (verified 01.11: 0.0 vs API 3.30 h).
- */
 function parseProfileXml(xml) {
   const $ = cheerio.load(String(xml || ''), { xmlMode: true });
   const mostPlayedGames = [];
@@ -292,11 +215,6 @@ function parseProfileXml(xml) {
   };
 }
 
-/**
- * Normalize one `GetOwnedGames` item. Missing optional fields stay `null`
- * ("unknown"), never `false`/`0` — §2.1.3 rule 2. `playtime_forever` stays in
- * MINUTES (the raw unit); stats converts to hours.
- */
 function normalizeOwnedGame(raw) {
   const game = raw && typeof raw === 'object' ? raw : {};
   const appid = Number(game.appid);
@@ -304,7 +222,6 @@ function normalizeOwnedGame(raw) {
     appid: Number.isFinite(appid) ? appid : null,
     name: game.name == null ? null : String(game.name),
     playtime_forever: numOrNull(game.playtime_forever) || 0,
-    // `playtime_2weeks` is present only when > 0: absence = no activity.
     playtime_2weeks: numOrNull(game.playtime_2weeks),
     rtime_last_played: numOrNull(game.rtime_last_played) || 0,
     img_icon_url: game.img_icon_url == null ? null : String(game.img_icon_url),
@@ -318,8 +235,6 @@ function normalizeOwnedGame(raw) {
     playtime_mac_forever: numOrNull(game.playtime_mac_forever) || 0,
     playtime_linux_forever: numOrNull(game.playtime_linux_forever) || 0,
     playtime_deck_forever: numOrNull(game.playtime_deck_forever) || 0,
-    // Minutes played without a Steam connection. Reference only: summing this
-    // into the hours would double-count.
     playtime_disconnected: numOrNull(game.playtime_disconnected) || 0,
     content_descriptorids: Array.isArray(game.content_descriptorids)
       ? game.content_descriptorids.map(Number).filter(Number.isFinite)
@@ -327,11 +242,6 @@ function normalizeOwnedGame(raw) {
   };
 }
 
-/**
- * Fingerprint of a library snapshot: `sha1(game_count + Σ playtime_forever +
- * max rtime_last_played)` (§3.3). A re-import with identical numbers is a
- * no-op for every derived file.
- */
 function libraryFingerprint(games, gameCount) {
   const list = Array.isArray(games) ? games : [];
   const totalMinutes = list.reduce((sum, game) => sum + (Number(game.playtime_forever) || 0), 0);
@@ -346,17 +256,6 @@ function libraryFingerprint(games, gameCount) {
     .digest('hex');
 }
 
-/**
- * Parse `IPlayerService/GetRecentlyPlayedGames` (the last two weeks).
- *
- * This is the canonical "was launched lately" source and the only Steam answer
- * some profiles expose: a library can carry `rtime_last_played: 0` on every
- * row while this endpoint still reports the two-week playtime (verified
- * 03.11.2026: 226 owned games with rtime=0, 6 recently-played rows). The rows
- * use the same field names as `GetOwnedGames`, so the same normalizer applies;
- * a missing/empty `response` (or `total_count: 0`) is a valid "nothing played",
- * never an error — the caller only merges what it gets.
- */
 function parseRecentlyPlayedResponse(json) {
   const response = json && typeof json === 'object' ? json.response : null;
   if (!response || typeof response !== 'object' || !Array.isArray(response.games)) {
@@ -376,11 +275,6 @@ function parseRecentlyPlayedResponse(json) {
   };
 }
 
-/**
- * Parse `IPlayerService/GetOwnedGames`. A missing/empty `response` means the
- * profile is private (or the steamid is not the key owner) — the caller turns
- * that into `library_private`, not "0 games".
- */
 function parseOwnedGamesResponse(json) {
   const response = json && typeof json === 'object' ? json.response : null;
   if (!response || typeof response !== 'object' || !Array.isArray(response.games)) {
@@ -400,13 +294,6 @@ function parseOwnedGamesResponse(json) {
   };
 }
 
-/**
- * Parse `profiles/<id64>/stats/<appid>?tab=achievements&xml=1`.
- *
- * `closed="1"` + `unlockTimestamp` = unlocked; `closed="0"` never carries a
- * timestamp. `<stats><hoursPlayed>` is NOT the full playtime (5.0 vs 13.8 h on
- * the same game) and is kept as `statsHoursPlayed` reference only.
- */
 function parseAchievementsXml(xml) {
   const $ = cheerio.load(String(xml || ''), { xmlMode: true });
   const achievements = [];
@@ -460,7 +347,6 @@ function parseAchievementsXml(xml) {
   };
 }
 
-/** Parse `GetGlobalAchievementPercentagesForApp` (official, no key). */
 function parseGlobalPercentages(json, appid) {
   const list =
     (json && json.achievementpercentages && json.achievementpercentages.achievements) || [];
@@ -483,18 +369,9 @@ function parseGlobalPercentages(json, appid) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Target normalization                                                */
-/* ------------------------------------------------------------------ */
-
 const ID64_RE = /^\d{17}$/;
 const VANITY_RE = /^[\w.-]{1,64}$/;
 
-/**
- * Accept a steamid64, a vanity name, or a profile URL
- * (`steamcommunity.com/id/<vanity>` / `/profiles/<id64>`). Returns
- * `{ id64 }` or `{ vanity }`; throws `invalid_steamid` otherwise.
- */
 function normalizeTarget(raw) {
   const value = String(raw == null ? '' : raw).trim();
   if (!value) {
@@ -540,10 +417,6 @@ function profileKeyOf(steamId64) {
   return `steam-${steamId64}`;
 }
 
-/* ------------------------------------------------------------------ */
-/* Client                                                              */
-/* ------------------------------------------------------------------ */
-
 function defaultBreakerStore() {
   return {
     read() {
@@ -555,18 +428,6 @@ function defaultBreakerStore() {
   };
 }
 
-/**
- * Create a Steam client.
- *
- * Options (all optional; tests use them to stay offline):
- *   request      — `(url, opts) => { status, headers, body }`
- *   sleep        — `(ms) => Promise`
- *   now          — `() => epoch ms`
- *   pauseMs      — community pause (default env / 2000)
- *   breakerMs    — breaker window (default 30 min)
- *   breakerStore — { read(), write(state) } (default: state dir JSON)
- *   keyProvider  — `() => { key, source }` (default: server/config.js)
- */
 function createClient(options = {}) {
   const request = options.request || httpGet;
   const sleep = options.sleep || sleepDefault;
@@ -699,12 +560,6 @@ function createClient(options = {}) {
     return json;
   }
 
-  /* -------------------------- public API -------------------------- */
-
-  /**
-   * Profile XML: vanity → steamid64, privacy, persona, avatars, three most
-   * recent games. One community request.
-   */
   async function getProfile(target) {
     const normalized = typeof target === 'string' ? normalizeTarget(target) : target;
     const url = normalized.id64
@@ -737,7 +592,6 @@ function createClient(options = {}) {
     return profile;
   }
 
-  /** Player summaries (key): persona, avatar, timecreated, lastlogoff. */
   async function getPlayerSummaries(steamId64, keyOverride) {
     const info = keyOverride ? { key: keyOverride, source: 'test' } : apiKeyOrThrow();
     const url =
@@ -763,10 +617,6 @@ function createClient(options = {}) {
     };
   }
 
-  /**
-   * Owned games (key): the whole library in one response, no pagination.
-   * Returns `{ empty, gameCount, games, totalMinutes, fingerprint }`.
-   */
   async function getOwnedGames(steamId64, keyOverride) {
     const info = keyOverride ? { key: keyOverride, source: 'test' } : apiKeyOrThrow();
     const url =
@@ -777,12 +627,6 @@ function createClient(options = {}) {
     return parseOwnedGamesResponse(json);
   }
 
-  /**
-   * Recently played (key): the games launched in the last two weeks, with
-   * `playtime_2weeks` and — when the owner exposes it — `rtime_last_played`.
-   * One request, same host/breaker/retry path as `GetOwnedGames`. An empty
-   * list is a valid answer ("nothing played"), not an error.
-   */
   async function getRecentlyPlayedGames(steamId64, keyOverride) {
     const info = keyOverride ? { key: keyOverride, source: 'test' } : apiKeyOrThrow();
     const url =
@@ -792,7 +636,6 @@ function createClient(options = {}) {
     return parseRecentlyPlayedResponse(json);
   }
 
-  /** Achievements XML for one game (community, no key). */
   async function getAchievements(steamId64, appid) {
     const url =
       `https://${COMMUNITY_HOST}/profiles/${encodeURIComponent(steamId64)}` +
@@ -829,7 +672,6 @@ function createClient(options = {}) {
     return parsed;
   }
 
-  /** Global achievement percentages (official endpoint, no key). */
   async function getGlobalPercentages(appid) {
     const url =
       `https://${API_HOST}/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/` +
@@ -849,7 +691,6 @@ function createClient(options = {}) {
     assertNotBlocked,
     tripBreaker,
     breakerFor,
-    // Exposed for tests/diagnostics only.
     _keyProvider: keyProvider,
   };
 }

@@ -1,20 +1,5 @@
 'use strict';
 
-/**
- * Background import jobs for the books tab (film-enrich job model).
- *
- *   POST /api/books/import/livelib  { username }  -> job
- *   POST /api/books/import/hardcover { userId }   -> job
- *   GET  /api/books/import/status?id=...          -> { stage, page, pageTotal, ... }
- *
- * Stages: livelib-bulk -> livelib-rsc -> resolve -> done (or failed).
- *          hardcover-journal -> resolve -> done.
- *
- * Jobs are serialized through one chain: two source imports never scrape/
- * write the resolve caches concurrently. A repeat request for a source that is
- * already running coalesces into the existing job.
- */
-
 const config = require('../config');
 const { createJobs } = require('../core/jobs');
 const bookCache = require('./book-cache');
@@ -26,12 +11,6 @@ const resolve = require('./resolve');
 const resolveLock = require('./resolve-lock');
 const scheduledResolve = require('./scheduled-resolve');
 
-/**
- * Job registry (core/jobs): single-flight per `(source, userKey)`, one
- * serialization chain for every book import, and the ring of the last 20 jobs.
- * The domain keeps its own status shape (`publicStatus`) and its stage-driven
- * `done` semantics — a failed import is `stage: 'failed'`, `done: false`.
- */
 const jobs = createJobs({
   name: 'books-import',
   idPrefix: 'books',
@@ -39,23 +18,16 @@ const jobs = createJobs({
   keyOf: (job) => `${job.source}:${String(job.userKey == null ? '' : job.userKey)}`,
 });
 
-// A cached LiveLib profile is considered current for 12 hours: repeat clicks
-// reuse it instead of re-scraping the whole profile (LiveLib politeness).
 const LIVELIB_REIMPORT_TTL_MS = Number(process.env.KINOBOXD_LIVELIB_REIMPORT_TTL_MS) > 0
   ? Number(process.env.KINOBOXD_LIVELIB_REIMPORT_TTL_MS)
   : 12 * 60 * 60 * 1000;
 
-/** True when `importedAt` is a valid timestamp within the reuse window. */
 function isFreshImport(importedAt) {
   const ts = Date.parse(String(importedAt || ''));
   if (!Number.isFinite(ts)) return false;
   const age = Date.now() - ts;
   return age >= 0 && age < LIVELIB_REIMPORT_TTL_MS;
 }
-
-/* ------------------------------------------------------------------ */
-/* Job bookkeeping                                                     */
-/* ------------------------------------------------------------------ */
 
 function newJobId(source, userKey) {
   return jobs.newId(userKey, source);
@@ -69,12 +41,6 @@ function findRunningJob(source, userKey) {
   return jobs.findRunning(`${source}:${String(userKey == null ? '' : userKey)}`);
 }
 
-/**
- * Hardcover coalescing is slightly looser than LiveLib: `me` and the resolved
- * numeric owner id name the same profile, so a click on the books refresh
- * button (numeric userId) joins an import started from the import screen
- * (`me`) instead of queueing a second journal fetch.
- */
 function findRunningHardcoverJob(requested) {
   const direct = findRunningJob('hardcover', requested);
   if (direct) return direct;
@@ -93,8 +59,6 @@ function enqueue(job, task) {
         self.stage = 'failed';
         self.error = message;
       }
-      // A blocked source is a first-class state for the UI: it decides whether
-      // to offer the cookie paste form ("plan B") or just a retry.
       if (err && err.code === 'livelib_blocked') {
         self.code = 'livelib_blocked';
         self.blocked = {
@@ -105,9 +69,6 @@ function enqueue(job, task) {
       }
       console.error(`[books-import ${self.id}] ${message}`);
     },
-    // The books job is stage-driven: `done` is false for a failed import (the
-    // UI keeps the progress screen and shows the error), so the default
-    // status/done finalizer is replaced, not extended.
     finish: false,
     onFinish: (self) => {
       self.finishedAt = Date.now();
@@ -117,8 +78,6 @@ function enqueue(job, task) {
       self.done = self.stage === 'done';
       if (self.done) self.percent = 100;
       self.elapsedMs = self.finishedAt - self.startedAt;
-      // Unified status field (core/jobs snapshot); nothing in the legacy shape
-      // reads it, it only makes `getStatus` comparable across domains.
       self.status = self.stage === 'failed' ? 'failed' : self.done ? 'done' : self.status;
       console.log(
         `[books-import ${self.id}] ${self.stage} after ${self.elapsedMs}ms ` +
@@ -128,15 +87,6 @@ function enqueue(job, task) {
   });
 }
 
-/* ------------------------------------------------------------------ */
-/* Resolution pass                                                     */
-/* ------------------------------------------------------------------ */
-
-/**
- * Re-run the LiveLib -> Hardcover resolve for every cached LiveLib profile
- * (unmatched positives are never cached, so a new Hardcover import can
- * improve the picture). Positive links are reused unless `force` is set.
- */
 async function resolveAllLivelibProfiles(job, options = {}) {
   const reports = [];
   const profiles = bookCache.listProfiles().filter((profile) => profile.source === 'livelib');
@@ -146,17 +96,10 @@ async function resolveAllLivelibProfiles(job, options = {}) {
   job.page = 0;
   job.pageTotal = profiles.length;
   job.setProgress(job.page, job.pageTotal);
-  // Live budget snapshot for the metadata badge: the object is mutated in
-  // place by the resolve chain, so refresh the copy after every profile.
   job.liveBudget = {
     litres: { limit: litresBudget.limit, used: litresBudget.used, remaining: litresBudget.remaining },
     card: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
   };
-  // One resolve pass at a time across processes: the scheduled
-  // `kinoboxd-resolve-books` oneshot takes the same `cache-book/resolve.lock`.
-  // Both spend the Литрес budget and write links/details, so running them in
-  // parallel would double the politeness debt and race the cache. An import
-  // waits a bounded time, then skips this pass (the next import retries).
   const lockWaitMs = Number(process.env.BOOKS_RESOLVE_LOCK_WAIT_MS);
   const lock = await resolveLock.acquireLock({
     owner: `import:${job.id}`,
@@ -179,12 +122,7 @@ async function resolveAllLivelibProfiles(job, options = {}) {
         force: Boolean(options.force),
         cardBudget,
         litresBudget,
-        // Same anonymous session for the card pages: with plan-B cookies the
-        // enrichment must not fall back to a cold, blockable IP.
         jar: options.jar,
-        // A file-import-triggered pass must not scrape livelib.ru (§9): only a
-        // scrape import (which already has a bootstrapped session) may use the
-        // LiveLib card provider.
         allowLivelibCard: options.allowLivelibCard !== false,
         onProgress: (progress) => {
           job.resolved = progress.resolved;
@@ -196,11 +134,6 @@ async function resolveAllLivelibProfiles(job, options = {}) {
         card: { limit: cardBudget.limit, used: cardBudget.used, remaining: cardBudget.remaining },
       };
       reports.push({ userKey: meta.userKey, ...report });
-      // Persist the pass outcome for the metadata badge: which event keys the
-      // providers were asked about and answered nothing, plus the cumulative
-      // asked set. Shared with the scheduled resolve so `attempted` stays an
-      // honest number (file-keyed rows included). Best-effort — a read-only
-      // cache must not turn a successful enrich into a failed job.
       try {
         await scheduledResolve.mergeResolveState(data, report);
       } catch (err) {
@@ -262,34 +195,6 @@ async function resolveAllLivelibProfiles(job, options = {}) {
   return job.resolve;
 }
 
-/* ------------------------------------------------------------------ */
-/* LiveLib import                                                      */
-/* ------------------------------------------------------------------ */
-
-/**
- * LiveLib import job.
- *
- * `options.cookieHeader` is "plan B" for a DDoS-Guard-flagged host: the user
- * pastes the `Cookie:` value from a browser where the profile opens. The header
- * is validated synchronously (a malformed paste is a 400, not a failed job),
- * persisted to `cache-book/cookies/livelib-{username}.json` (0600), and used to
- * seed the anonymous jar for the bootstrap, the scrape AND the card resolve.
- * Only a masked `{ provided, stored, present, savedAt }` block ever reaches the
- * job status — never the value.
- *
- * A supplied header also disables the 12 h reuse window: the user is
- * explicitly retrying because the cached state did not work.
- *
- * `options.deep`:
- *   - `false` (default) — light only: bulk + RSC page 1, ~3 requests;
- *   - `true` — light (unless a fresh profile is reused) + a full RSC deep scan;
- *   - `'auto'` — light, then deep only when the profile still has undated
- *     events (what «Обновить профиль» asks for: fast re-check first, exact
- *     dates in the background when the history is incomplete).
- *
- * The deep phase does not block the dashboard: the profile file is rewritten
- * every 5 pages and `/api/books/stats` revalidates its fingerprint per read.
- */
 function startLivelibImport(username, options = {}) {
   const cleanUsername = String(username == null ? '' : username).trim().replace(/^@/, '');
   if (!/^[\w.-]{1,64}$/.test(cleanUsername)) {
@@ -299,7 +204,6 @@ function startLivelibImport(username, options = {}) {
     );
   }
 
-  // Validate the paste before anything is queued or written.
   const providedHeader =
     options.cookieHeader == null || String(options.cookieHeader).trim() === ''
       ? null
@@ -310,9 +214,6 @@ function startLivelibImport(username, options = {}) {
 
   const running = findRunningJob('livelib', cleanUsername);
   if (running) {
-    // A paste during a running scrape cannot be applied to that job; silently
-    // dropping it would look like "cookies saved" in the UI. 409 asks for a
-    // retry after the current import finishes.
     if (providedHeader) {
       throw new livelib.LivelibError(
         'Импорт этого профиля уже выполняется — дождитесь завершения и повторите вставку cookie.',
@@ -322,11 +223,6 @@ function startLivelibImport(username, options = {}) {
     return publicStatus(running);
   }
 
-  // Repeat-import guard (politeness + cheap UI): a cached profile younger than
-  // LIVELIB_REIMPORT_TTL_MS is reused instead of re-scraping the bulk pass. An
-  // explicit { force: true }, an expired profile or a fresh cookie paste still
-  // performs a light import. A cached profile also means a deep request can run
-  // without touching the bulk endpoint again.
   const force = Boolean(options.force) || Boolean(providedHeader);
   const cached = bookCache.getProfile('livelib', cleanUsername);
   const cachedFresh = Boolean(cached && isFreshImport(cached.importedAt));
@@ -375,8 +271,6 @@ function startLivelibImport(username, options = {}) {
     return publicStatus(reused);
   }
 
-  // A fresh profile + a deep request needs no bulk re-scrape: the deep scan
-  // only adds dates to events that are already stored.
   const skipLight = Boolean(cached && cachedFresh && !force && wantDeep);
 
   const job = {
@@ -443,9 +337,6 @@ function startLivelibImport(username, options = {}) {
       });
 
       profile = result.profile;
-      // A scrape rebuilds the document from the «Прочитал» page only. Keep the
-      // plan/abandoned shelves a file import contributed (they are never
-      // scraped) and the file-import audit trail.
       const carried = livelibFile.preserveFileState(cached, profile);
       if (carried.preserved > 0) {
         profile = carried.profile;
@@ -480,13 +371,9 @@ function startLivelibImport(username, options = {}) {
       job.undatedEventCount = undatedCached;
     }
 
-    // Deep phase: fill exact dates on the already imported events. `auto`
-    // skips it when the history is already fully dated.
     const undated = profile.events.filter((event) => !event.finishedAt).length;
     const deepDone = Boolean(profile.deepScan && profile.deepScan.done === true);
     if (deepMode === true && deepDone) {
-      // An explicit `deep: true` is a full re-scan request: re-read the pages
-      // instead of returning "already complete". Dates/months are idempotent.
       profile.deepScan = { ...profile.deepScan, done: false, lastPage: 1 };
     }
     const shouldDeep =
@@ -508,8 +395,6 @@ function startLivelibImport(username, options = {}) {
           job.deep = deepSummary(profile.deepScan, profile.events, progress);
         },
         onBatch: async (draft, progress) => {
-          // Write the profile every N pages: stats read it by fingerprint, so
-          // the dashboard gains dated events while the job is still running.
           await bookCache.saveProfile('livelib', cleanUsername, draft);
           job.percent = percentOf(progress.page, progress.pageTotal);
           job.deep = deepSummary(draft.deepScan, profile.events, progress);
@@ -536,11 +421,6 @@ function startLivelibImport(username, options = {}) {
   return publicStatus(job);
 }
 
-/**
- * Metadata resolve is enrichment, not part of the import contract: a provider
- * outage (LiveLib card / Litres / Hardcover) must not turn a successfully
- * scraped profile into a failed job. The error is reported as a warning.
- */
 async function resolveQuietly(job, options = {}) {
   try {
     await resolveAllLivelibProfiles(job, options);
@@ -552,7 +432,6 @@ async function resolveQuietly(job, options = {}) {
   }
 }
 
-/** Events with neither an exact day nor a month: the honest "undated" count. */
 function undatedCount(events) {
   const list = Array.isArray(events) ? events : [];
   return list.filter(
@@ -577,7 +456,6 @@ function percentProgressOf(progress) {
   return percentOf(progress && progress.page, progress && progress.pageTotal);
 }
 
-/** Masked deep-scan state for the job status: page numbers and counts only. */
 function deepSummary(deep, events, progress) {
   const list = Array.isArray(events) ? events : [];
   const dated = list.filter((event) => event && event.finishedAt).length;
@@ -599,7 +477,6 @@ function deepSummary(deep, events, progress) {
   };
 }
 
-/** Bootstrap diagnostics for the job status: statuses/counts, never values. */
 function maskSession(session) {
   if (!session) return null;
   return {
@@ -617,31 +494,8 @@ function maskSession(session) {
     cookiesUsed: session.cookieCount || 0,
   };
 }
-/* ------------------------------------------------------------------ */
-/* Hardcover import                                                    */
-/* ------------------------------------------------------------------ */
 
-/**
- * Hardcover import.
- *
- * Default is an INCREMENTAL refresh: `user_books.updated_at > lastSyncAt` is
- * one page for the usual "one book added" case (user report, 28.10.2026: a
- * single new book took minutes because every click re-read all 656 rows plus
- * a full LiveLib metadata pass). A full paginated pass stays the fallback:
- *
- *   - no `sync` cursor in the cached profile (old document / first import),
- *   - `{ force: true }` — the explicit "Полная перепроверка" option,
- *   - the journal shrank: a deleted user_book is invisible to `updated_at`,
- *     so a lower aggregate count asks for the full pass.
- *
- * The job finishes as soon as the journal is on disk. The LiveLib metadata
- * re-resolve that a changed journal can improve is queued as a SEPARATE job
- * (the import chain keeps them serialized), so the progress screen never
- * waits for the Litres 2 s/book budget.
- */
 function startHardcoverImport(userId, options = {}) {
-  // Fail before creating a job when the token is absent: the UI needs a clear
-  // "token not configured" state, not a failed background job.
   try {
     config.getHardcoverToken();
   } catch (err) {
@@ -669,8 +523,6 @@ function startHardcoverImport(userId, options = {}) {
     events: 0,
     done: false,
     reused: false,
-    // `force` means "read the whole journal", not "reuse nothing": the default
-    // click is an incremental diff.
     force,
     percent: 0,
     sync: null,
@@ -739,8 +591,6 @@ function startHardcoverImport(userId, options = {}) {
       journal = await hardcover.fetchJournal(owner.id, { onProgress });
     }
 
-    // Incremental rows replace their cached events; a full pass is the
-    // document as-is (same semantics as before this round).
     const events =
       journal.mode === 'incremental' && cachedProfile
         ? hardcover.mergeJournalEvents(cachedProfile.events, journal)
@@ -804,10 +654,6 @@ function startHardcoverImport(userId, options = {}) {
         `requests=${job.requests}, skipped=${journal.statusFilter.skippedNonFinished}`
     );
 
-    // A journal change can improve the LiveLib -> Hardcover match, but the
-    // resolve pass is budgeted (Litres 2 s/book) and must not hold the
-    // progress screen. Queue it behind this job; an unchanged journal has
-    // nothing new for the matcher, so it is skipped entirely.
     const changedRows = journal.mode === 'incremental' ? journal.totals.changedRows || 0 : null;
     const shouldResolve = journal.mode === 'full' || changedRows > 0;
     if (shouldResolve) {
@@ -822,27 +668,6 @@ function startHardcoverImport(userId, options = {}) {
   return publicStatus(job);
 }
 
-/* ------------------------------------------------------------------ */
-/* Resolve-only job (file import enrichment)                           */
-/* ------------------------------------------------------------------ */
-
-/**
- * Metadata enrichment job for LiveLib profiles.
- *
- * The regular resolve stage of a scraped import does the same work, so a
- * resolve-only job reuses `resolveAllLivelibProfiles` and the regular job
- * bookkeeping (`getResolveState` drives the «Метадата: N%» badge while it runs).
- *
- * A `livelib-file` import starts this job BY DEFAULT (§3.3.2): the export file
- * is reading history first and bibliographic columns second, and a profile that
- * was just merged must not wait for a manual click to get pages/series/editions.
- *
- * `options.coalesce` (default true) joins an already-running resolve stage —
- * that is what a duplicate click wants. A file import passes `false`: it has
- * just written new events, so it needs a *later* pass over the merged profile,
- * not the pass that may have already walked it. The import chain still
- * serializes the jobs, so the second pass starts right after the first.
- */
 function startResolveJob(options = {}) {
   const coalesce = options.coalesce !== false;
   if (coalesce) {
@@ -879,14 +704,8 @@ function startResolveJob(options = {}) {
   return publicStatus(job);
 }
 
-/* ------------------------------------------------------------------ */
-/* Status                                                              */
-/* ------------------------------------------------------------------ */
-
 function publicStatus(job) {
   return {
-    // Unified job view (id/status/stage/progress/startedAt/finishedAt/error/
-    // partial). The legacy fields below keep their exact values.
     ...jobs.snapshot(job),
     id: job.id,
     source: job.source,
@@ -894,7 +713,6 @@ function publicStatus(job) {
     stage: job.stage,
     page: job.page,
     pageTotal: job.pageTotal,
-    // Overall job progress, 0..100 (the progress screen uses it).
     percent: job.percent == null ? null : Number(job.percent),
     events: job.events,
     done: Boolean(job.done),
@@ -902,14 +720,8 @@ function publicStatus(job) {
     force: Boolean(job.force),
     deepRequested: job.deepRequested === undefined ? false : job.deepRequested,
     skipLight: Boolean(job.skipLight),
-    // Deep scan progress of the profile: the "Обновить профиль" button renders
-    // `deep.percent` as «История 45%», and stats stay usable meanwhile.
     deep: job.deep || null,
-    // Hardcover journal sync mode (`incremental`/`full`) + changed row count;
-    // the progress screen says «проверяем новинки» instead of «читаем журнал».
     sync: job.sync || null,
-    // The metadata pass that a changed journal queued behind this job (id only;
-    // it may already be done — this is diagnostics, not a handle to poll).
     resolveQueued: job.resolveQueued || null,
     deepSkipped: Boolean(job.deepSkipped),
     undatedEventCount: job.undatedEventCount == null ? null : Number(job.undatedEventCount),
@@ -922,10 +734,7 @@ function publicStatus(job) {
     requests: job.requests || null,
     totals: job.totals || null,
     resolve: job.resolve || null,
-    // Live resolve budget while the stage is running (masked data only).
     resolveBudget: job.stage === 'resolve' ? job.liveBudget || null : null,
-    // Masked only: `present`/`savedAt`/counts. The header value never leaves
-    // the cookie store.
     cookies: job.cookies || null,
     session: job.session || null,
     blocked: job.blocked || null,
@@ -938,35 +747,15 @@ function getStatus(id) {
   return publicStatus(job);
 }
 
-/** Test helper: wait for the whole import chain to drain. */
 function idle() {
   return jobs.whenIdle();
 }
 
-/**
- * Is the metadata resolve stage running for THIS profile, and how much of the
- * Litres budget is left?
- *
- * The resolve pass always walks every cached LiveLib profile, whichever import
- * triggered it (a LiveLib re-import or a fresh Hardcover journal — enrichment
- * of LiveLib dates/metadata is the same pass). So a LiveLib profile is
- * "loading" while any job sits in stage `resolve`. A Hardcover profile is not:
- * its bibliographic metadata arrives with the journal itself.
- */
-/**
- * Pure core of `getResolveState`: pick a live resolve job out of an iterable.
- * Exported so the mapping (which stage counts, which source counts, how the
- * budget is read) is unit-tested without starting a network import.
- */
 function resolveStateFromJobs(jobList, source) {
   const idle = { running: false, jobId: null, budgetRemaining: null };
   if (source !== 'livelib') return idle;
   for (const job of jobList) {
     if (!job || job.done) continue;
-    // A resolve-only job is `queued` for a moment before its stage opens (the
-    // import chain may still be draining). The badge must say "догружается"
-    // from the first refresh after a file import, not only once the network
-    // stage literally starts.
     const queuedResolve = job.stage === 'queued' && String(job.id || '').startsWith('resolve-');
     if (job.stage !== 'resolve' && !queuedResolve) continue;
     const litres = job.liveBudget && job.liveBudget.litres;
@@ -1000,7 +789,6 @@ module.exports = {
   resolveAllLivelibProfiles,
   resolveStateFromJobs,
   getResolveState,
-  /** True when an import for this `(source, userKey)` is still in flight. */
   isRunning(source, userKey) {
     return Boolean(findRunningJob(source, String(userKey == null ? '' : userKey).trim()));
   },

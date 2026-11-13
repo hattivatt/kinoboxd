@@ -1,22 +1,5 @@
 'use strict';
 
-/**
- * Wikidata bridge for author names the transliteration rule cannot connect
- * (Кристи → Christie, Моэм → Maugham, Лавкрафт → Lovecraft …).
- *
- * This module is the *transport*: it knows how to ask WDQS and how to merge two
- * spellings that share a QID. The *policy* (when to ask, which names are still
- * unresolved, cooldown, persistence) lives in `authors-bridge.js`, which runs
- * automatically after a stats build and only pays for names the offline rule
- * could not connect. `/api/books/stats` never waits for WDQS: the bridge is
- * fire-and-forget and its result lands in `cache-book/authors.json`, so the
- * next payload applies it.
- *
- * Politeness: batches of ≤450 values, one query per batch, `sleep` between
- * requests, respect `429`/`Retry-After` by giving up (a missed merge is cheap;
- * hammering WDQS is not). Tests inject `fetchImpl` and never touch the network.
- */
-
 const { normalizeAuthorName, hasCyrillic, hasLatin, groupAuthors } = require('./authors');
 const { fetchOnce, responseFacade, defaultSleep } = require('../core/http');
 
@@ -30,9 +13,6 @@ function sparql(query, options = {}) {
   if (!fetchImpl && typeof globalThis.fetch !== 'function') {
     return Promise.reject(new Error('fetch is not available'));
   }
-  // POST, not GET: a batch of 450 labels does not fit an URL (WDQS answers
-  // `414 URI Too Long` around ~8 KB). The endpoint accepts a form-encoded
-  // `query=` body for exactly this case.
   return fetchOnce(options.endpoint || process.env.KINOBOXD_WDQS_ENDPOINT || WDQS, {
     fetchImpl,
     method: 'POST',
@@ -42,18 +22,12 @@ function sparql(query, options = {}) {
       'user-agent': USER_AGENT,
     },
     body: new URLSearchParams({ query, format: 'json' }).toString(),
-    // WDQS regularly takes longer than the shared 15 s default on a 450-label
-    // batch. The pre-P2 client had no deadline at all; `0` restores that
-    // contract (`undefined` would silently re-introduce the 15 s cut-off and
-    // turn a slow answer into a cooldown).
     timeoutMs: 0,
     label: 'authors-wikidata',
   }).then(responseFacade);
 }
 
 function valuesClause(names) {
-  // A Cyrillic spelling lives on the RU label; a Latin one usually lives on the
-  // EN label, so asking `@ru` for «Maugham» would only waste the row budget.
   return names
     .map((name) => {
       const clean = String(name).replace(/["\\]/g, '');
@@ -101,7 +75,6 @@ async function fetchNameQids(names, options = {}) {
   return out;
 }
 
-/** All RU/EN labels and aliases of the candidate items. */
 async function fetchItemNames(qids, options = {}) {
   const out = new Map();
   if (!qids.length) return out;
@@ -124,19 +97,6 @@ async function fetchItemNames(qids, options = {}) {
   return out;
 }
 
-/**
- * Merge author spellings through shared Wikidata QIDs.
- *
- * @param {Array<{name:string,id?:string|null,workId?:string}>} entries
- * @param {{persisted?:object, fetchImpl?:Function, sleep?:Function,
- *          pauseMs?:number, limit?:number, names?:string[]}} options
- *        `names` restricts the query to the spellings the offline rule could
- *        not connect (the bridge passes exactly those); omitted = all names.
- * @returns {Promise<{canonical: object, merged: Array, queries: number,
- *                    checked: string[], skipped?: string}>}
- *        `checked` is every spelling actually asked from WDQS, so the caller can
- *        remember them and never pay for the same name twice.
- */
 async function resolveWikidataAliases(entries, options = {}) {
   const pauseMs = options.pauseMs == null ? DEFAULT_PAUSE_MS : Number(options.pauseMs);
   const sleep = options.sleep || defaultSleep;
@@ -162,10 +122,7 @@ async function resolveWikidataAliases(entries, options = {}) {
       checked.push(...batch);
       for (const [name, qids] of found) nameToQids.set(name, qids);
     } catch (err) {
-      // A blocked/quota-hit WDQS must degrade to the translit result.
       if (err && (err.status === 429 || err.status === 403)) {
-        // The names in the failed batch were NOT answered: do not remember them
-        // as checked, otherwise a transient block would freeze the merge set.
         return {
           canonical: {},
           merged: [],
@@ -180,8 +137,6 @@ async function resolveWikidataAliases(entries, options = {}) {
     if (pauseMs > 0 && i + BATCH_SIZE < candidates.length) await sleep(pauseMs);
   }
 
-  // A label shared by two people proves nothing: drop the label entirely (not
-  // just its lookup) instead of guessing which QID the corpus meant.
   const ambiguous = new Set();
   for (const [name, set] of [...nameToQids]) {
     if (set.size > 1) {
@@ -215,7 +170,6 @@ async function resolveWikidataAliases(entries, options = {}) {
     if (pauseMs > 0 && i + BATCH_SIZE < qids.length) await sleep(pauseMs);
   }
 
-  // Union by QID: every author name that is a label/alias of the same person.
   const qidToNames = new Map();
   const normalizedNames = new Set(names.map(normalizeAuthorName));
   for (const [qid, set] of itemNames) {
@@ -242,7 +196,6 @@ async function resolveWikidataAliases(entries, options = {}) {
   for (const [qid, set] of qidToNames) {
     const list = [...set];
     if (list.length < 2) continue;
-    // Reuse the base grouping's display name when it already knows this name.
     const display = list
       .map((name) => base.canonicalOf.get(name))
       .filter(Boolean)
