@@ -9,7 +9,7 @@ const links = require('./links');
 const seriesOverrides = require('./series-overrides');
 const audit = require('./audit');
 const { eventLinkKeyOf } = require('./stats/events');
-const { resolveProfileTokenOrThrow } = require('./routes');
+const { resolveProfileTokenOrThrow } = require('./profile-scope');
 
 const { MAX_SERIES, MAX_SERIES_NAME, MAX_WORK_ID, nameKeyOf } = seriesOverrides;
 const MAX_BOOK_ID = 200;

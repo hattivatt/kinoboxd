@@ -13,46 +13,22 @@ const express = require('express');
 const multer = require('multer');
 
 const { HttpError, mapDomainError } = require('../core/errors');
-const { assertOnlyParams } = require('../core/params');
 const config = require('../config');
 const bookCache = require('./book-cache');
-const authorsBridge = require('./authors-bridge');
 const importJobs = require('./import');
 const livelibFile = require('./livelib-file');
 const {
   buildBooksStats,
-  listUnmatched,
   profileSummary,
-  resolveProfileScope,
   PROFILE_SOURCES,
 } = require('./stats');
 const livelibCookies = require('./livelib-cookies');
-const { HardcoverError } = require('./hardcover');
-const { LivelibError } = require('./livelib');
 const profileRegistry = require('../core/profile');
+const { resolveProfileTokenOrThrow } = require('./profile-scope');
+const { BOOKS_ERROR_PROFILE } = require('./route-errors');
+const statsRouter = require('./routes-stats');
 
 const router = express.Router();
-
-const LIVELIB_ERROR_STATUS = {
-  livelib_invalid_username: 400,
-  livelib_import_running: 409,
-  livelib_blocked: 429,
-  livelib_bulk_error: 404,
-};
-
-const HARDCOVER_ERROR_STATUS = {
-  hardcover_token_missing: 400,
-  hardcover_foreign_user: 400,
-};
-
-const BOOKS_ERROR_PROFILE = {
-  rules: [
-    { is: livelibCookies.CookieError, defaultStatus: 400 },
-    { is: livelibFile.LivelibFileError, defaultStatus: 400 },
-    { is: LivelibError, statuses: LIVELIB_ERROR_STATUS, defaultStatus: 502 },
-    { is: HardcoverError, statuses: HARDCOVER_ERROR_STATUS, defaultStatus: 502 },
-  ],
-};
 
 function hardcoverTokenInfo() {
   try {
@@ -597,110 +573,6 @@ router.get('/import/status', (req, res, next) => {
 });
 
 /**
- * Validate the single `?profile=` parameter strictly and return the resolved
- * scope.
- *
- * A missing parameter, a repeated/CSV parameter, a malformed token or a token
- * that names no cached profile is a 400 — silently widening the scope to
- * "everything" (the old union behaviour) is exactly what this contract
- * removes. `?profiles=` is NOT an alias any more: it is an unexpected
- * parameter (400 `unexpected_parameter`).
- */
-function resolveProfileTokenOrThrow(token, label = 'Profile') {
-  const scope = resolveProfileScope(token);
-  const available = scope.availableProfileKeys;
-  const availableText = available.length ? available.join(', ') : '(none)';
-  if (!scope.explicit || scope.empty) {
-    throw new HttpError(
-      400,
-      `${label} is required: exactly one source-userKey token ` +
-        `(${PROFILE_SOURCES.join('|')}). Available: ${availableText}.`,
-      'profile_required'
-    );
-  }
-  if (scope.multi) {
-    throw new HttpError(
-      400,
-      `${label} accepts exactly ONE profile (source-userKey); ` +
-        `a books profile is one source + one account. Available: ${availableText}.`,
-      'invalid_profile'
-    );
-  }
-  if (scope.malformed.length > 0) {
-    throw new HttpError(
-      400,
-      `${label}: expected "source-userKey" tokens ` +
-        `(${PROFILE_SOURCES.join('|')}), got: ${scope.malformed.join(', ')}.`,
-      'invalid_profile'
-    );
-  }
-  if (scope.unknown.length > 0) {
-    throw new HttpError(
-      400,
-      `${label}: not a cached profile: ${scope.unknown.join(', ')}. ` +
-        `Available: ${availableText}.`,
-      'unknown_profile'
-    );
-  }
-  if (scope.selected.length !== 1) {
-    throw new HttpError(
-      400,
-      `${label} must name one cached profile. Available: ${availableText}.`,
-      'invalid_profile'
-    );
-  }
-  return scope;
-}
-
-function resolveProfileScopeOrThrow(req) {
-  return resolveProfileTokenOrThrow(req.query.profile, 'Query parameter "profile"');
-}
-
-
-/**
- * GET /api/books/stats?profile=livelib-Margaret&includeMangaComics=0|1
- *
- * `profile` is mandatory and single: the payload is built from that profile's
- * events only (no union with another account/service). Any other query
- * parameter — including the retired `?sources=` and `?profiles=` — is a 400
- * `unexpected_parameter`; there is no compatibility echo any more.
- */
-router.get('/stats', (req, res, next) => {
-  try {
-    assertOnlyParams(req, ['profile', 'includeMangaComics'], 'GET /api/books/stats');
-    const scope = resolveProfileScopeOrThrow(req);
-
-    const includeMangaRaw = req.query.includeMangaComics;
-    let includeMangaComics = false;
-    if (includeMangaRaw != null && String(includeMangaRaw).trim() !== '') {
-      const value = String(includeMangaRaw).trim().toLowerCase();
-      if (['1', 'true', 'yes', 'on'].includes(value)) includeMangaComics = true;
-      else if (!['0', 'false', 'no', 'off'].includes(value)) {
-        throw new HttpError(
-          400,
-          'Query parameter "includeMangaComics" must be 0 or 1 (default 0).',
-          'invalid_include_manga'
-        );
-      }
-    }
-    const selected = scope.selected[0];
-    const stats = buildBooksStats({
-      profileScope: scope,
-      includeMangaComics,
-      resolveState: importJobs.getResolveState(selected.source, selected.userKey),
-      // Default-on author bridge: a fresh deployment stops showing duplicated
-      // authors after the first payload, without a manual backfill
-      // (`authors-bridge.js`; never blocks this response).
-      authorBridge: authorsBridge.kickAuthorsWikidata,
-    });
-    res.set('X-Books-Build-Ms', String(stats.meta.buildMs));
-    res.status(200).json(stats);
-  } catch (err) {
-    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
-  }
-});
-
-/**
  * POST /api/books/work/flag { workId, mangaComics }
  * Upsert the per-work manual manga/comics override. The body is intentionally
  * strict: `true` = hide as manga/comics, `false` = show again.
@@ -829,16 +701,6 @@ router.post('/year-override', async (req, res, next) => {
   }
 });
 
-/** GET /api/books/unmatched?profile=livelib-Margaret (single profile). */
-router.get('/unmatched', (req, res, next) => {
-  try {
-    assertOnlyParams(req, ['profile'], 'GET /api/books/unmatched');
-    const scope = resolveProfileScopeOrThrow(req);
-    res.status(200).json(listUnmatched({ profileScope: scope }));
-  } catch (err) {
-    next(mapDomainError(err, BOOKS_ERROR_PROFILE));
-  }
-});
+router.use(statsRouter);
 
 module.exports = router;
-module.exports.resolveProfileTokenOrThrow = resolveProfileTokenOrThrow;
