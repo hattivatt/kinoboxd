@@ -9,7 +9,7 @@ const BIG_MODULE_LINES = 800;
 const BIG_FUNCTION_LINES = 300;
 
 const MODULE_ALLOWLIST = {
-  'public/js/books.js': 4294,
+  'public/js/books.js': 3834,
   'public/js/games-view.js': 2017,
   'public/js/games.js': 3465,
   'public/js/widgets.js': 1971,
@@ -29,21 +29,22 @@ const MODULE_ALLOWLIST = {
   'server/books/book-cache.js': 927,
   'server/wikidata.js': 918,
   'server/games/steam.js': 876,
-  'server/books/routes.js': 844,
 };
 
 const FUNCTION_ALLOWLIST = {};
 
 const HELPER_BASELINE = {
   mapError: 0,
-  round2: 6,
-  dayNumber: 3,
-  computeStreaks: 2,
+  round2: 1,
+  dayNumber: 2,
+  computeStreaks: 1,
   profileSummary: 3,
-  safeKey: 3,
-  normalizeStreaks: 2,
+  safeKey: 1,
+  normalizeStreaks: 0,
   pad2: 2,
 };
+
+const COMMENT_LINES_BASELINE = 14359;
 
 const DEAD_MODULE_ALLOWLIST = new Set(['server/core/store.js']);
 
@@ -158,4 +159,35 @@ test('census walks only the app tree and skips cache and dependency dirs', () =>
   );
   assert.deepEqual(leaking, [], `census file walk leaks: ${leaking.join(', ')}`);
   assert.ok(files.length > 100, `server scan found ${files.length} files`);
+});
+
+test('census tells an alias of a core helper from a copy', () => {
+  const sites = census.helperDefinitions(['safeKey']).safeKey;
+  const own = sites.filter((site) => site.kind === 'definition').map((site) => site.file);
+  assert.deepEqual(own, ['server/core/fs-store.js']);
+  assert.ok(sites.some((site) => site.kind === 'alias'), 'the domain aliases are still listed');
+});
+
+test('census counts full-line and trailing comments, not strings, URLs or directives', () => {
+  const text = [
+    '#!/usr/bin/env node',
+    "'use strict';",
+    '// a note',
+    '/**',
+    ' * doc',
+    ' */',
+    "const url = 'https://example.com'; // trailing",
+    'const re = /\\/\\//;',
+    '// eslint-disable-next-line no-console',
+    'const tpl = `/* not a comment */`;',
+  ].join('\n');
+  assert.equal(census.commentLinesInText(text), 5);
+});
+
+test(`comment-line ratchet (AGENTS §13.8): at most ${COMMENT_LINES_BASELINE} comment lines, only ever fewer`, () => {
+  const total = census.commentLines().reduce((sum, entry) => sum + entry.lines, 0);
+  assert.ok(
+    total <= COMMENT_LINES_BASELINE,
+    `${total} comment lines in .js sources, baseline ${COMMENT_LINES_BASELINE}: delete comments, never add them`,
+  );
 });

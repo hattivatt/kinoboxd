@@ -316,6 +316,14 @@ function helperPatterns(name) {
   ];
 }
 
+const ALIAS_PATTERN_INDEX = 3;
+
+function delegatesInOneLine(text, index) {
+  const end = text.indexOf('\n', index);
+  const line = text.slice(index, end === -1 ? text.length : end);
+  return /=>\s*[A-Za-z_$][A-Za-z0-9_$.]*\(.*\);\s*$/.test(line);
+}
+
 function helperDefinitions(names = HELPERS, dirs = HELPER_SCAN_DIRS) {
   const files = scanFiles(dirs);
   const sources = new Map(files.map((file) => [file, readSource(file)]));
@@ -324,12 +332,13 @@ function helperDefinitions(names = HELPERS, dirs = HELPER_SCAN_DIRS) {
     const sites = [];
     for (const file of files) {
       const text = sources.get(file);
-      for (const pattern of helperPatterns(name)) {
+      helperPatterns(name).forEach((pattern, patternIndex) => {
         for (const match of text.matchAll(pattern)) {
           if (match.index !== 0 && text[match.index - 1] !== '\n') continue;
-          sites.push({ file, line: lineAt(lineIndex(text), match.index) });
+          const alias = patternIndex === ALIAS_PATTERN_INDEX || delegatesInOneLine(text, match.index);
+          sites.push({ file, line: lineAt(lineIndex(text), match.index), kind: alias ? 'alias' : 'definition' });
         }
-      }
+      });
     }
     sites.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
     result[name] = sites;
@@ -340,8 +349,43 @@ function helperDefinitions(names = HELPERS, dirs = HELPER_SCAN_DIRS) {
 function helperCounts(names = HELPERS, dirs = HELPER_SCAN_DIRS) {
   const definitions = helperDefinitions(names, dirs);
   const counts = {};
-  for (const name of names) counts[name] = definitions[name].length;
+  for (const name of names) {
+    counts[name] = definitions[name].filter((site) => site.kind === 'definition').length;
+  }
   return counts;
+}
+
+const DIRECTIVE_COMMENT = /^(?:\/\/\s*(?:eslint-|@ts-|shellcheck)|\/\*\s*(?:global|eslint)\b)/;
+
+function commentLinesInText(text) {
+  const masked = maskSource(text);
+  const original = text.split('\n');
+  const blanked = masked.split('\n');
+  let count = 0;
+  for (let row = 0; row < original.length; row++) {
+    const line = original[row];
+    const mask = blanked[row] || '';
+    if (line.startsWith('#!')) continue;
+    if (/^\s*\*/.test(line) && mask.trim() === '') {
+      count++;
+      continue;
+    }
+    for (let column = 0; column < line.length; column++) {
+      if (line[column] === mask[column]) continue;
+      const rest = line.slice(column);
+      if ((rest.startsWith('//') || rest.startsWith('/*')) && !DIRECTIVE_COMMENT.test(rest)) count++;
+      if (rest.startsWith('//') || rest.startsWith('/*')) break;
+      while (column + 1 < line.length && line[column + 1] !== mask[column + 1]) column++;
+    }
+  }
+  return count;
+}
+
+function commentLines(dirs = SCAN_DIRS) {
+  return scanFiles(dirs)
+    .map((file) => ({ file, lines: commentLinesInText(readSource(file)) }))
+    .filter((entry) => entry.lines > 0)
+    .sort((a, b) => b.lines - a.lines || a.file.localeCompare(b.file));
 }
 
 function scriptEntryTokens() {
@@ -556,10 +600,20 @@ function formatCensus() {
   const helperLines = [];
   for (const name of HELPERS) {
     const sites = definitions[name];
-    helperLines.push(`${pad(sites.length, 2)}  ${name}`);
-    for (const site of sites) helperLines.push(`      ${site.file}:${site.line}`);
+    const own = sites.filter((site) => site.kind === 'definition').length;
+    helperLines.push(`${pad(own, 2)}  ${name}`);
+    for (const site of sites) {
+      helperLines.push(`      ${site.file}:${site.line}${site.kind === 'alias' ? '  (alias)' : ''}`);
+    }
   }
   lines.push(...reportSection('helper definition sites:', helperLines));
+
+  const comments = commentLines();
+  const commentTotal = comments.reduce((sum, entry) => sum + entry.lines, 0);
+  lines.push(...reportSection(
+    `comment lines: ${commentTotal} in ${comments.length} files (AGENTS §13.8)`,
+    comments.slice(0, 10).map((entry) => `${pad(entry.lines, 5)}  ${entry.file}`),
+  ));
 
   const report = deadModuleReport();
   const deadLines = report.dead.length
@@ -610,6 +664,8 @@ module.exports = {
   BIG_MODULE_LINES,
   HELPERS,
   SCAN_DIRS,
+  commentLines,
+  commentLinesInText,
   countLines,
   deadModuleReport,
   deadModules,

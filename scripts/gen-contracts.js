@@ -226,34 +226,31 @@ const MOUNTED_ROUTE_FILES = [
   'server/games/routes-epic.js',
   'server/games/routes-franchise.js',
   'server/games/personnel/routes-personnel.js',
-].concat(['server/books/routes-manual.js']);
+].concat(['server/books/routes-stats.js', 'server/books/routes-manual.js']);
 
 const ROUTE_BODY_DIRS = [
   { file: 'server/games/routes.js', dir: 'server/games/endpoints' },
   { file: 'server/games/routes-epic.js', dir: 'server/games/endpoints/epic' },
 ];
 
-/**
- * `app.use('/prefix', someRouter)` in index.js -> { file: [prefixes] }.
- * Only router-shaped targets are considered (`*Router` or `x.router`), so
- * `app.use('/api', auth.requireAuth)` does not claim the whole namespace.
- */
+function requireMap(text) {
+  return new Map([...text.matchAll(/const\s+(\w+)\s*=\s*require\('(\.\/[^']+)'\);/g)].map((m) => [m[1], m[2]]));
+}
+
 function discoverMounts() {
   const text = readRel('server/index.js');
-  const requires = new Map();
-  for (const m of text.matchAll(/const\s+(\w+)\s*=\s*require\('(\.\/[^']+)'\);/g)) {
-    requires.set(m[1], m[2]);
-  }
+  const requires = requireMap(text);
   const mounts = new Map();
+  const addMount = (file, prefixes) => mounts.set(file, new Set([...(mounts.get(file) || []), ...prefixes]));
   for (const m of text.matchAll(/app\.use\(\s*'([^']+)'\s*,\s*([\w.]+)\s*\)/g)) {
-    const target = m[2];
-    if (!/(Router$|\.router$)/.test(target)) continue;
-    const root = target.split('.')[0];
-    const mod = requires.get(root);
-    if (!mod) continue;
-    const file = `${path.posix.normalize(path.posix.join('server', mod))}.js`;
-    if (!mounts.has(file)) mounts.set(file, new Set());
-    mounts.get(file).add(m[1]);
+    const mod = /(Router$|\.router$)/.test(m[2]) && requires.get(m[2].split('.')[0]);
+    if (mod) addMount(`${path.posix.normalize(path.posix.join('server', mod))}.js`, [m[1]]);
+  }
+  for (const [file, prefixes] of [...mounts]) {
+    for (const m of readRel(file).matchAll(/router\.use\(\s*(\w+Router)\s*\)/g)) {
+      const mod = requireMap(readRel(file)).get(m[1]);
+      if (mod) addMount(`${path.posix.join(path.posix.dirname(file), mod)}.js`, prefixes);
+    }
   }
   return mounts;
 }
@@ -326,7 +323,10 @@ function extractBlockErrors(block) {
     const key = `${parsed.status}:${parsed.code}`;
     if (!found.has(key)) found.set(key, parsed);
   }
-  // Literal `res.status(4xx).json({ ..., code: '...' })` branches.
+  for (const call of findCalls(block, 'parseBoolean(')) {
+    const code = /code:\s*'([^']+)'/.exec(call.args);
+    if (code) found.set(`400:${code[1]}`, { status: '400', code: code[1], message: 'must be 0 or 1.' });
+  }
   const literalRe = /res\.status\((4\d\d|5\d\d)\)\.json\(\{([\s\S]{0,500}?)\}\)/g;
   for (const m of block.matchAll(literalRe)) {
     const codeMatch = /code:\s*'([^']+)'/.exec(m[2]);
