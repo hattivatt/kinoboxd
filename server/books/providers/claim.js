@@ -52,7 +52,9 @@ function isPrintClaimSource(value) {
 
 function canOverrideClaim(result) {
   const match = result && result.match;
-  return Boolean(match && match.authorHit === true && match.wholeWork !== true);
+  return Boolean(
+    match && match.authorHit === true && match.wholeWork !== true && match.fuzzy !== true
+  );
 }
 
 function isChallengeableClaim(claim) {

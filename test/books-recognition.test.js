@@ -455,6 +455,86 @@ describe('books-recognition', () => {
     });
   });
 
+  describe('author works channel', () => {
+    const authorWorks = require('../server/books/providers/wikidata-author-works');
+
+    function routedFetch(routes) {
+      const calls = [];
+      const fetchImpl = async (url, init) => {
+        const query = new URLSearchParams(String(init.body)).get('query') || '';
+        calls.push(query);
+        const route = routes.find((item) => query.includes(item.marker));
+        return jsonResponse({ head: { vars: [] }, results: { bindings: route ? route.rows : [] } });
+      };
+      fetchImpl.calls = calls;
+      return fetchImpl;
+    }
+
+    const christie = [
+      { marker: 'FILTER EXISTS { ?anyWork', rows: [
+        sparqlRow({ name: 'Агата Кристи', human: 'http://www.wikidata.org/entity/Q35064', sitelinks: 150 }),
+      ] },
+      { marker: 'VALUES ?human', rows: [
+        sparqlRow({ human: 'http://www.wikidata.org/entity/Q35064', humanBirth: '1890-09-15T00:00:00Z', work: 'http://www.wikidata.org/entity/Q1247314', label: 'Багдадские встречи', p577: '1951-03-05T00:00:00Z', p577Prec: 11 }),
+        sparqlRow({ human: 'http://www.wikidata.org/entity/Q35064', humanBirth: '1890-09-15T00:00:00Z', work: 'http://www.wikidata.org/entity/Q752432', label: 'Тринадцать Сотрапезников', p577: '1933-01-01T00:00:00Z', p577Prec: 9 }),
+        sparqlRow({ human: 'http://www.wikidata.org/entity/Q35064', humanBirth: '1890-09-15T00:00:00Z', work: 'http://www.wikidata.org/entity/Q1', label: 'Цыганка', p577: '1850-01-01T00:00:00Z', p577Prec: 9 }),
+      ] },
+    ];
+
+    test('title similarity ignores case, ё and word endings', () => {
+      assert.equal(authorWorks.titleSimilarity('Багдадская встреча', 'Багдадские встречи'), 1);
+      assert.equal(authorWorks.titleSimilarity('Тринадцать сотрапезников', 'Тринадцать Сотрапезников'), 1);
+      assert.ok(authorWorks.titleSimilarity('Коробка шоколада', 'Коробка конфет') < 0.75);
+    });
+
+    test('a label miss is found among the author works, fuzzy and fill-only', async () => {
+      wikidata.resetBreaker();
+      const fetchImpl = routedFetch(christie);
+      const found = await wikidata.lookupTitles(
+        [
+          { key: 'a', title: 'Багдадская встреча', authors: ['Агата Кристи'] },
+          { key: 'b', title: 'Тринадцать сотрапезников', authors: ['Агата Кристи'] },
+          { key: 'c', title: 'Цыганка', authors: ['Агата Кристи'] },
+          { key: 'd', title: 'Коробка шоколада', authors: ['Агата Кристи'] },
+        ],
+        { fetchImpl, sleep: noSleep, pauseMs: 0 }
+      );
+      const baghdad = found.byKey.get('a');
+      assert.equal(baghdad.firstPublishedYear, 1951);
+      assert.equal(baghdad.match.method, 'author-works');
+      assert.equal(baghdad.wikidataWorkId, 'Q1247314');
+      assert.deepEqual(baghdad.wikidataAuthorIds, [{ name: 'Агата Кристи', qid: 'Q35064' }]);
+      assert.equal(baghdad.match.fuzzy, false);
+      assert.equal(found.byKey.get('b').firstPublishedYear, 1933);
+      assert.equal(found.byKey.get('c'), null);
+      assert.equal(found.byKey.get('d'), null);
+      assert.equal(found.asked.has('d'), true);
+    });
+
+    test('a fuzzy author-works match never overrides a stored claim', () => {
+      assert.equal(canOverrideClaim({ match: { authorHit: true, fuzzy: true } }), false);
+      assert.equal(canOverrideClaim({ match: { authorHit: true, fuzzy: false } }), true);
+    });
+
+    test('a failed author pass leaves its titles unasked', async () => {
+      wikidata.resetBreaker();
+      let call = 0;
+      const fetchImpl = async () => {
+        call++;
+        if (call === 1) return jsonResponse({ head: { vars: [] }, results: { bindings: [] } });
+        return jsonResponse({}, 503);
+      };
+      const found = await wikidata.lookupTitles(
+        [{ key: 'a', title: 'Багдадская встреча', authors: ['Агата Кристи'] }],
+        { fetchImpl, sleep: noSleep, pauseMs: 0 }
+      );
+      assert.equal(found.asked.has('a'), false);
+      assert.ok(!found.byKey.get('a'));
+      assert.equal(found.skipped, 'breaker');
+      wikidata.resetBreaker();
+    });
+  });
+
   describe('stale link lifecycle', () => {
     const { persistLinks } = require('../server/books/resolve-stages/persist');
     const { tryProvider } = require('../server/books/resolve-stages/chain');

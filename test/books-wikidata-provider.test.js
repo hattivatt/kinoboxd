@@ -299,7 +299,7 @@ describe('books-wikidata-provider', () => {
 
       await lookupTitles(
         [{ key: 'k1', title: 'Сёгун', authors: ['Джеймс Клавелл'] }],
-        { fetchImpl, sleep: noSleep, pauseMs: 0 }
+        { fetchImpl, sleep: noSleep, pauseMs: 0, authorWorks: false }
       );
 
       // The search query plus the VALUES-bound canonical follow-up.

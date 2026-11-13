@@ -7,6 +7,7 @@ const { surnameSimilarity, FUZZY_SURNAME_SIM, FUZZY_SURNAME_MIN_LEN } = require(
 const { wikidataEnabled } = require('../wikidata-flag');
 const { firstYearOf, saneFirstYearClaim } = require('./claim');
 const { titleVariants, partVariants } = require('./title-variants');
+const { lookupByAuthorWorks } = require('./wikidata-author-works');
 
 const NAME = 'wikidata';
 const SOURCE_ID = 'wikidataBooks';
@@ -508,7 +509,91 @@ async function lookupTitles(entries, options = {}) {
       options.onProgress({ batch: index + 1, batches: batches.length });
     }
   }
+  if (options.authorWorks !== false) await fillFromAuthorWorks(taken, result, options);
   return result;
+}
+
+async function fillFromAuthorWorks(taken, result, options) {
+  const misses = taken
+    .filter((entry) => !result.byKey.get(String(entry.key)))
+    .map((entry) => ({ key: entry.key, title: entry.title, authors: authorNamesOf(entry) }))
+    .filter((entry) => entry.authors.length);
+  if (!misses.length) return;
+  const pause = options.pauseMs == null ? DEFAULT_PAUSE_MS : Number(options.pauseMs);
+  const sleep = sleepOf(options);
+  const deps = {
+    qidOf,
+    timeYear: coreTimeToYear,
+    precisionOf: precisionLabelOf,
+    async query(text) {
+      if (pause > 0) await sleep(pause);
+      result.queries++;
+      const payload = await sparql(text, options);
+      return payload && payload.results && Array.isArray(payload.results.bindings)
+        ? payload.results.bindings
+        : [];
+    },
+  };
+  let found;
+  try {
+    found = await lookupByAuthorWorks(misses, deps);
+  } catch (err) {
+    for (const entry of misses) result.asked.delete(String(entry.key));
+    result.skipped = result.skipped || 'breaker';
+    return;
+  }
+  for (const entry of misses) {
+    const best = found.get(String(entry.key));
+    const claimed = best ? authorWorkResult(entry, best) : null;
+    if (claimed) result.byKey.set(String(entry.key), claimed);
+  }
+}
+
+function authorWorkResult(entry, best) {
+  const { work } = best;
+  const claim = saneFirstYearClaim(
+    { ...work.claim, source: NAME },
+    { authorBirthYear: work.authorBirthYear }
+  );
+  if (!claim) return null;
+  const wholeWork = best.tier === 2;
+  const exact = best.tier === 0 && best.similarity === 1;
+  return {
+    source: NAME,
+    sourceId: work.work,
+    workId: `wd:${work.work}`,
+    title: entry.title,
+    authors: entry.authors.slice(0, 1),
+    year: null,
+    firstPublishedYear: claim.year,
+    firstPublishedYearPrecision: claim.precision,
+    firstPublishedYearKind: claim.kind,
+    publisher: null,
+    series: null,
+    seriesAll: [],
+    wikidataWorkId: wholeWork ? null : work.work,
+    wikidataAuthorIds: [{ name: entry.authors[0], qid: work.human }],
+    genres: [],
+    pages: null,
+    isbn13: null,
+    isbn10: null,
+    cover: null,
+    links: { pageUrl: `https://www.wikidata.org/wiki/${work.work}` },
+    language: null,
+    confidence: 0.55,
+    match: {
+      method: 'author-works',
+      titleSim: best.similarity,
+      exact,
+      authorHit: true,
+      wholeWork,
+      fuzzy: !exact,
+      label: work.label,
+    },
+    mangaComics: null,
+    mangaTexts: [],
+    authorBirthYear: work.authorBirthYear,
+  };
 }
 
 async function getWork(input = {}, options = {}) {
