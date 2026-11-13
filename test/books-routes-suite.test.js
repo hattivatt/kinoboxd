@@ -2840,8 +2840,8 @@ describe('books-stats-manga', () => {
     );
   });
 
-  test('litres works are metadata-resolved and outrank Google/OL in dedupe', async () => {
-    const { workMetadata, mergeWorkGroup } = require('../server/books/stats');
+  test('litres works are metadata-resolved', async () => {
+    const { workMetadata } = require('../server/books/stats');
     await details('lr:500', {
       title: 'Игрок',
       authors: [{ name: 'Фёдор Достоевский' }],
@@ -2872,10 +2872,6 @@ describe('books-stats-manga', () => {
     assert.equal(meta.links.litres, 'https://www.litres.ru/book/igrok-500/');
     assert.equal(meta.mangaComics, false);
     assert.equal(meta.pages, 256);
-
-    const gb = { workId: 'gb:1', title: 'Игрок', authors: ['Фёдор Достоевский'], unresolved: false };
-    const lr = { workId: 'lr:500', title: 'Игрок', authors: ['Фёдор Достоевский'], unresolved: false };
-    assert.equal(mergeWorkGroup([gb, lr]).workId, 'lr:500');
   });
 
   test('payload schema stays compatible: single-profile fields keep their place', () => {

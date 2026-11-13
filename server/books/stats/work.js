@@ -280,135 +280,11 @@ function workMetadata(workId, events, options = {}) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Cross-source work dedupe                                            */
-/* ------------------------------------------------------------------ */
-
-const SOURCE_PRIORITY = { hc: 4, lr: 3.5, gb: 3, ol: 2, ll: 1 };
-
-function workPrefix(workId) {
-  return String(workId || '').split(':')[0];
-}
-
-/**
- * Stable dedupe key: normalized title + author surnames. LiveLib (RU title)
- * and Google Books (same RU edition) can otherwise produce two works for one
- * book, double-counting it in authors/genres widgets.
- */
 function canonicalKeyOf(work) {
   const title = strictTitleKey(work.title || work.titleRu || '');
   const authors = [...new Set((work.authors || []).map((name) => surnameOf(name)).filter(Boolean))].sort();
   if (!title || authors.length === 0) return null;
   return `${title}|${authors.join(',')}`;
-}
-
-function unionBy(list, keyOf) {
-  const seen = new Map();
-  for (const entry of list) {
-    if (!entry) continue;
-    const key = keyOf(entry);
-    if (key == null) continue;
-    if (!seen.has(key)) seen.set(key, entry);
-  }
-  return [...seen.values()];
-}
-
-function mergeWorkGroup(list) {
-  const rank = (work) => (work.unresolved ? 0 : 10) + (SOURCE_PRIORITY[workPrefix(work.workId)] || 0);
-  const ordered = [...list].sort((a, b) => {
-    const delta = rank(b) - rank(a);
-    if (delta !== 0) return delta;
-    return String(a.workId) < String(b.workId) ? -1 : 1;
-  });
-  const primary = ordered[0];
-  const pick = (field) => {
-    for (const work of ordered) {
-      if (work[field] != null && work[field] !== '') return work[field];
-    }
-    return null;
-  };
-  const titles = [...new Set(ordered.map((work) => work.title).filter(Boolean))];
-  const authors = unionBy(ordered.flatMap((work) => work.authors || []), (name) => name);
-  const genres = unionBy(ordered.flatMap((work) => work.genres || []), (name) => name);
-  const series = unionBy(
-    ordered.flatMap((work) => work.series || []),
-    (entry) => `${entry.hcId == null ? '' : entry.hcId}|${entry.name || ''}`
-  );
-  const metadataSources = [
-    ...new Set(ordered.flatMap((work) => work.metadataSources || [])),
-  ];
-  const links = {};
-  for (const work of [...ordered].reverse()) Object.assign(links, work.links || {});
-  const mangaValues = ordered.map((work) => work.mangaComics);
-  const mangaComics = mangaValues.includes(true)
-    ? true
-    : mangaValues.includes(false)
-    ? false
-    : null;
-  const finishedDates = ordered.map((work) => work.finishedDate).filter(Boolean).sort();
-  // Year priority across merged ids: the user's correction, then the work's
-  // first publication, then an edition fallback. A later provider claim must
-  // not override an older honest one.
-  const yearRank = { manual: 3, first: 2, edition: 1 };
-  const yearWork = ordered
-    .filter((work) => Number.isFinite(work.year))
-    .sort((a, b) => (yearRank[b.yearSource] || 0) - (yearRank[a.yearSource] || 0))[0] || null;
-
-  return {
-    ...primary,
-    workId: primary.workId,
-    mergedWorkIds: ordered.map((work) => work.workId),
-    title: pick('title'),
-    titleRu: titles.find((title) => title !== primary.title) || primary.title || pick('titleRu'),
-    authors,
-    genres,
-    series,
-    publisher: pick('publisher'),
-    year: yearWork ? yearWork.year : null,
-    yearSource: yearWork ? yearWork.yearSource : null,
-    yearOverride: yearWork ? yearWork.yearOverride : null,
-    firstPublishedYear: yearWork ? yearWork.firstPublishedYear : null,
-    firstPublishedYearSource: yearWork ? yearWork.firstPublishedYearSource : null,
-    firstPublishedYearPrecision: yearWork ? yearWork.firstPublishedYearPrecision || null : null,
-    firstPublishedYearKind: yearWork ? yearWork.firstPublishedYearKind || null : null,
-    editionYear: pick('editionYear'),
-    editionYearSource: yearWork ? yearWork.editionYearSource || null : null,
-    pages: pick('pages'),
-    coverUrl: pick('coverUrl'),
-    isbn13: pick('isbn13'),
-    isbn10: pick('isbn10'),
-    metadataSources,
-    mangaComics,
-    links,
-    finishedDate: finishedDates.length ? finishedDates[finishedDates.length - 1] : null,
-    rating10: pick('rating10'),
-    sources: [...new Set(ordered.flatMap((work) => work.sources || []))].sort(),
-    unresolved: primary.unresolved,
-    details: primary.details,
-  };
-}
-
-/** Merge works that share a canonical title+authors key; return the remap. */
-function dedupeWorks(works) {
-  const groups = new Map();
-  for (const work of works.values()) {
-    const key = canonicalKeyOf(work);
-    if (!key) continue;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(work);
-  }
-  const merged = new Map(works);
-  const remap = new Map();
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    const combined = mergeWorkGroup(group);
-    for (const work of group) {
-      remap.set(work.workId, combined.workId);
-      if (work.workId !== combined.workId) merged.delete(work.workId);
-    }
-    merged.set(combined.workId, combined);
-  }
-  return { works: merged, remap };
 }
 
 module.exports = {
@@ -417,6 +293,4 @@ module.exports = {
   mergeGenreLists,
   mangaOfDetails,
   canonicalKeyOf,
-  dedupeWorks,
-  mergeWorkGroup,
 };

@@ -56,8 +56,6 @@ const {
 const {
   workMetadata,
   canonicalKeyOf,
-  dedupeWorks,
-  mergeWorkGroup,
 } = require('./stats/work');
 const { resolveWorkYear, yearOverrideKeysOf } = require('./stats/years');
 const {
@@ -116,7 +114,6 @@ function buildBooksStats(options = {}) {
     selectProfiles,
     prepareEvents,
     workMetadata,
-    dedupeWorks,
     propagateSeriesManga,
     applyManualMangaFlags,
     eventLinkKeyOf,
@@ -293,8 +290,6 @@ module.exports = {
   resolveWorkYear,
   yearOverrideKeysOf,
   canonicalKeyOf,
-  dedupeWorks,
-  mergeWorkGroup,
   dedupeSeriesSubsets,
   propagateSeriesManga,
   applyManualMangaFlags,
