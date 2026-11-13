@@ -179,7 +179,7 @@ async function byIsbn(isbn, input, options) {
         sleep: options.sleep,
         label: `${NAME} work`,
       });
-      const firstYear = yearOf(work && work.first_publish_year);
+      const firstYear = yearOf(work && (work.first_publish_year || work.first_publish_date));
       if (firstYear != null) result.firstPublishedYear = firstYear;
     } catch (err) {
     }

@@ -50,6 +50,11 @@ function isPrintClaimSource(value) {
   return PRINT_CLAIM_SOURCES.includes(String(value == null ? '' : value));
 }
 
+function isChallengeableClaim(claim) {
+  if (!claim) return false;
+  return claim.source == null || isPrintClaimSource(claim.source);
+}
+
 function storedFirstClaim(doc) {
   const year = firstYearOf(doc && doc.firstPublishedYear);
   if (year == null) return null;
@@ -124,6 +129,7 @@ module.exports = {
   kindOf,
   storedFirstClaim,
   isPrintClaimSource,
+  isChallengeableClaim,
   PRECISIONS,
   PRECISION_RANK,
   KINDS,

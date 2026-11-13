@@ -1,6 +1,6 @@
 'use strict';
 
-const { storedFirstClaim, isPrintClaimSource } = require('./providers/claim');
+const { storedFirstClaim, isChallengeableClaim } = require('./providers/claim');
 
 function workIdOf(doc) {
   if (!doc) return null;
@@ -9,7 +9,7 @@ function workIdOf(doc) {
 
 function storedPrintClaim(doc) {
   const claim = storedFirstClaim(doc);
-  if (!claim || !isPrintClaimSource(claim.source)) return null;
+  if (!isChallengeableClaim(claim)) return null;
   if (String((doc && doc.yearSource) || '') === 'manual') return null;
   return claim;
 }

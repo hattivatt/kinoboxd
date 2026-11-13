@@ -3,7 +3,7 @@
 const wikidata = require('../providers/wikidata');
 const {
   claimOf,
-  isPrintClaimSource,
+  isChallengeableClaim,
   PRECISION_RANK,
   saneFirstYearClaim,
   storedFirstClaim,
@@ -26,8 +26,7 @@ function eventTitles(ctx) {
 function isChallengeable(details, claim) {
   if (!claim) return true;
   if (String((details && details.yearSource) || '') === 'manual') return false;
-  if (claim.source == null) return true;
-  return isPrintClaimSource(claim.source);
+  return isChallengeableClaim(claim);
 }
 
 function yearTargets(ctx) {

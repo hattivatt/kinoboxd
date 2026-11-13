@@ -47,7 +47,7 @@ function precisionLabelOf(value) {
 }
 
 const SEARCH_QUERY = `
-SELECT ?label ?item ?itemLabel ?author ?authorLabel ?sitelinks
+SELECT ?label ?item ?itemLabel ?author ?authorLabel ?authorBirth ?sitelinks
        ?p577 ?p577Prec ?p571 ?p571Prec ?seriesLabel ?ordinal
 WHERE {
   VALUES ?label { __LABELS__ }
@@ -292,7 +292,10 @@ function candidatesFor(rows, canonicalRows, entry) {
       if (!existing.authors.includes(row.authorLabel)) existing.authors.push(row.authorLabel);
       if (row.author) existing.authorIds.set(row.authorLabel, row.author);
     }
-    if (existing.authorBirthYear == null && row.authorBirthYear != null) {
+    if (
+      row.authorBirthYear != null &&
+      (existing.authorBirthYear == null || row.authorBirthYear < existing.authorBirthYear)
+    ) {
       existing.authorBirthYear = row.authorBirthYear;
     }
     existing.sitelinks = Math.max(existing.sitelinks, row.sitelinks || 0);

@@ -14,7 +14,7 @@ const { usedOf, budgetRefused } = require('../core/budget');
 const fsStore = require('../core/fs-store');
 const sources = require('../core/sources');
 const wikidata = require('./providers/wikidata');
-const { storedFirstClaim, isPrintClaimSource } = require('./providers/claim');
+const { storedFirstClaim, isChallengeableClaim } = require('./providers/claim');
 const {
   workIdOf,
   storedPrintClaim,
@@ -159,7 +159,7 @@ async function firstYearForDoc(doc, options = {}) {
   };
 
   const stored = storedFirstClaim(doc);
-  if (stored && isPrintClaimSource(stored.source)) {
+  if (isChallengeableClaim(stored)) {
     push(
       {
         firstPublishedYear: stored.year,

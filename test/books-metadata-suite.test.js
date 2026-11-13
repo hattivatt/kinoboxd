@@ -620,6 +620,7 @@ describe('books-first-year', () => {
       title: 'Король Лир',
       publicationYear: 2006,
       firstPublishedYear: 1608,
+      firstPublishedYearSource: 'wikidata',
     });
     const fakeOl = fakeProvider('openlibrary', {
       source: 'openlibrary',
@@ -636,10 +637,9 @@ describe('books-first-year', () => {
     });
     const entry = skipped.resolved.find((item) => item.workId === 'lr:9200');
     assert.equal(entry, undefined);
-    assert.equal(
-      fakeOl.calls.some((input) => input.title === 'Король Лир'),
-      false
-    );
+    const kept = bookCache.getWorkDetails('lr:9200');
+    assert.equal(kept.firstPublishedYear, 1608);
+    assert.equal(kept.firstPublishedYearCheckedAt, undefined);
 
     await bookCache.saveDetails(bookCache.detailsKeyForWork('lr:9300'), {
       schemaVersion: 2,
