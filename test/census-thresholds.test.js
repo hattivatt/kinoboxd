@@ -9,19 +9,18 @@ const BIG_MODULE_LINES = 800;
 const BIG_FUNCTION_LINES = 300;
 
 const MODULE_ALLOWLIST = {
-  'public/js/books.js': 3834,
+  'public/js/books.js': 3427,
   'public/js/games.js': 3133,
   'public/js/widgets.js': 1843,
-  'public/js/main.js': 1819,
   'public/js/games-view.js': 1691,
-  'scripts/gen-contracts.js': 1343,
+  'public/js/main.js': 1679,
   'server/books/livelib.js': 1256,
   'server/games/franchise.js': 1230,
   'public/js/games-modal.js': 1224,
-  'server/tmdb.js': 1187,
+  'scripts/gen-contracts.js': 1223,
   'server/kp.js': 1159,
   'server/books/livelib-file.js': 1026,
-  'server/books/book-cache.js': 927,
+  'server/tmdb.js': 994,
   'public/js/modal.js': 877,
   'server/games/enrich.js': 841,
   'server/books/hardcover.js': 827,
@@ -41,7 +40,7 @@ const HELPER_BASELINE = {
   pad2: 2,
 };
 
-const COMMENT_LINES_BASELINE = 1780;
+const COMMENT_LINES_BASELINE = 0;
 
 const DEAD_MODULE_ALLOWLIST = new Set(['server/core/store.js']);
 
