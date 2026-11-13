@@ -1,22 +1,10 @@
 'use strict';
 
-/**
- * Optional password protection.
- *
- *   KINOBOXD_PASSWORD unset/empty  -> auth is disabled, every route is open
- *                                     (the default for local development).
- *   KINOBOXD_PASSWORD set          -> every /api route except /api/auth/*
- *                                     requires a session cookie.
- *
- * Sessions live in memory only: restarting the process (or changing the
- * password and restarting) invalidates all of them.
- */
-
 const crypto = require('crypto');
 const express = require('express');
 
 const COOKIE_NAME = 'kinoboxd_session';
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const PASSWORD =
   typeof process.env.KINOBOXD_PASSWORD === 'string' ? process.env.KINOBOXD_PASSWORD : '';
@@ -26,8 +14,6 @@ function sha256(value) {
   return crypto.createHash('sha256').update(String(value), 'utf8').digest();
 }
 
-// Hashing both sides makes the buffers the same length, so timingSafeEqual
-// never throws and does not leak the password length.
 const passwordHash = authRequired ? sha256(PASSWORD) : null;
 
 function verifyPassword(candidate) {
@@ -35,10 +21,6 @@ function verifyPassword(candidate) {
   if (typeof candidate !== 'string' || candidate.length === 0) return false;
   return crypto.timingSafeEqual(sha256(candidate), passwordHash);
 }
-
-/* ------------------------------------------------------------------ */
-/* Cookies (manual parse — no extra dependency)                        */
-/* ------------------------------------------------------------------ */
 
 function parseCookies(header) {
   const out = Object.create(null);
@@ -55,7 +37,6 @@ function parseCookies(header) {
     try {
       value = decodeURIComponent(value);
     } catch (err) {
-      // keep the raw value
     }
     out[name] = value;
   }
@@ -66,10 +47,6 @@ function attachCookies(req, res, next) {
   req.cookies = parseCookies(req.headers.cookie);
   next();
 }
-
-/* ------------------------------------------------------------------ */
-/* Sessions                                                            */
-/* ------------------------------------------------------------------ */
 
 const sessions = new Map();
 
@@ -169,10 +146,6 @@ function isAuthRoute(originalUrl) {
   return path === '/api/auth' || path.startsWith('/api/auth/');
 }
 
-/**
- * Gate for every API route. Registered before the routes and skipped for
- * /api/auth/* so that login/logout/session stay reachable.
- */
 function requireAuth(req, res, next) {
   if (!authRequired) return next();
   if (isAuthRoute(req.originalUrl)) return next();
@@ -180,15 +153,10 @@ function requireAuth(req, res, next) {
   return res.status(401).json({ error: 'auth_required', code: 'auth_required' });
 }
 
-/* ------------------------------------------------------------------ */
-/* Routes                                                              */
-/* ------------------------------------------------------------------ */
-
 const router = express.Router();
 
 router.post('/login', (req, res) => {
   if (!authRequired) {
-    // Auth disabled: nothing to log in to, but do not error out clients.
     return res.status(200).json({ ok: true, authRequired: false, authed: true });
   }
   const clientKey = req.ip || 'unknown';

@@ -1,5 +1,3 @@
-/* Entry point: boot → upload → enrich (poll) → dashboard. */
-
 import {
   getStats, startKinopoiskImport, getKinopoiskStatus, getAuthSession, getKpProfiles,
 } from './api.js';
@@ -32,7 +30,6 @@ const SESSION_KEY = 'kinoboxd.session.v1';
 const LEGACY_SESSION_KEY = 'boxdstats.session.v1';
 const TAB_KEY = 'kinoboxd.tab.v1';
 const POLL_INTERVAL = 1000;
-
 
 let lastRenderedUploadId = null;
 let activeTab = 'films';
@@ -69,10 +66,6 @@ const views = new Map(
   Array.from(document.querySelectorAll('.view[data-view]')).map((node) => [node.dataset.view, node]),
 );
 
-/* =========================================================
-   view switching + persistence
-   ========================================================= */
-
 function showView(name) {
   for (const [key, node] of views) node.hidden = key !== name;
   state.view = name;
@@ -82,10 +75,6 @@ function showView(name) {
   window.scrollTo(0, 0);
 }
 
-/* =========================================================
-   main tabs: films ↔ books ↔ games
-   ========================================================= */
-
 const TABS = ['films', 'books', 'games'];
 const TAB_TITLE = {
   films: 'kinoboxd — твоя киностатистика',
@@ -93,7 +82,6 @@ const TAB_TITLE = {
   games: 'kinoboxd — статистика по играм',
 };
 
-/** Any unknown/legacy `?tab=` value falls back to films (backward compatible). */
 function normalizeTab(value) {
   const tab = String(value == null ? '' : value).trim().toLowerCase();
   return TABS.includes(tab) ? tab : 'films';
@@ -104,7 +92,6 @@ function readTabFromUrl() {
     const params = new URLSearchParams(window.location.search);
     if (params.has('tab')) return normalizeTab(params.get('tab'));
   } catch {
-    /* ignore malformed URLs */
   }
   return null;
 }
@@ -125,7 +112,6 @@ function persistTab(tab) {
   try {
     window.localStorage.setItem(TAB_KEY, normalizeTab(tab));
   } catch {
-    /* private mode — the URL still carries the tab */
   }
 }
 
@@ -135,22 +121,17 @@ function writeTabUrl(tab, { push = true } = {}) {
     const url = new URL(window.location.href);
     if (next === 'films') url.searchParams.delete('tab');
     else url.searchParams.set('tab', next);
-    // `view` is the games sub-screen (`?tab=games&view=personnel`). It must not
-    // leak into films/books, and games.js owns it while the tab is active.
     if (next !== 'games') url.searchParams.delete('view');
     const href = `${url.pathname}${url.search}${url.hash}`;
     if (push) window.history.pushState({ tab: next }, '', href);
     else window.history.replaceState({ tab: next }, '', href);
   } catch {
-    /* history can be unavailable in exotic embeds */
   }
 }
 
 function paintTabs() {
   document.title = TAB_TITLE[activeTab] || TAB_TITLE.films;
 
-  // The shared topbar carries one action group per tab; only the active one
-  // is visible (the groups keep their ids, so every controller still binds).
   for (const group of document.querySelectorAll('.topbar-actions[data-actions]')) {
     group.hidden = group.dataset.actions !== activeTab;
   }  for (const button of document.querySelectorAll('.tab-btn[data-tab]')) {
@@ -165,7 +146,6 @@ function applyTabFromLocation() {
   paintTabs();
 }
 
-/** Deactivate the tab we are leaving (stops its pollers, hides its tooltip). */
 function leaveTab(tab) {
   if (tab === 'books') hideBooks();
   if (tab === 'games') hideGames();
@@ -226,7 +206,6 @@ function readSession() {
     const hasProfile = parsed && typeof parsed.profileId === 'string' && parsed.profileId;
     if (hasUpload || hasProfile) return parsed;
   } catch {
-    /* private mode / corrupted storage — ignore */
   }
   return null;
 }
@@ -252,7 +231,6 @@ function saveSession(profile = null) {
     window.localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
     window.localStorage.removeItem(LEGACY_SESSION_KEY);
   } catch {
-    /* storage can be unavailable; the page still works for this session */
   }
 }
 
@@ -263,18 +241,13 @@ function clearSession() {
     window.localStorage.removeItem(SESSION_KEY);
     window.localStorage.removeItem(LEGACY_SESSION_KEY);
   } catch {
-    /* ignore */
   }
 }
-
-/* =========================================================
-   flow cancellation (profile switches / recovery)
-   ========================================================= */
 
 function beginFlow() {
   stopPolling();
   if (state.flowAbort) {
-    try { state.flowAbort.abort(); } catch { /* ignore */ }
+    try { state.flowAbort.abort(); } catch { }
   }
   state.flowSeq += 1;
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -285,10 +258,6 @@ function beginFlow() {
 function isFlow(flow) {
   return Boolean(flow) && flow.token === state.flowSeq;
 }
-
-/* =========================================================
-   local registry helpers
-   ========================================================= */
 
 async function refreshProfiles() {
   try {
@@ -319,10 +288,6 @@ function renderProfiles() {
   setAttachAvailable(state.importSource === 'kinopoisk' && (Boolean(state.uploadId) || Boolean(activeKpUserId())));
 }
 
-/* =========================================================
-   profile comparison
-   ========================================================= */
-
 function activeKpUserId() {
   const record = activeProfileRecord();
   if (record && record.kpUserId) return String(record.kpUserId);
@@ -334,16 +299,11 @@ function openCompareScreen() {
   return openCompare({ activeUserId: activeKpUserId() });
 }
 
-/* =========================================================
-   «Обновить профиль» — delta refresh of the active KP profile
-   ========================================================= */
-
 function activeProfileRecord() {
   if (!state.profileId) return null;
   return state.profiles.find((profile) => profile.id === state.profileId) || null;
 }
 
-/** The button only exists for KinoPoisk profiles that still know their URL. */
 function updateProfileRefreshButton() {
   const button = $('profile-refresh');
   if (!button) return;
@@ -378,7 +338,6 @@ function statsFilmCount(stats) {
   return Number.isFinite(value) ? value : null;
 }
 
-/** Toast + busy reset once a profile refresh finished successfully. */
 function completeProfileRefresh(stats) {
   const ctx = state.refreshContext;
   state.refreshing = false;
@@ -400,7 +359,6 @@ function completeProfileRefresh(stats) {
   toast(message, 'success', { duration: 5200 });
 }
 
-/** Kick off the existing KinoPoisk import flow in delta-refresh mode. */
 async function refreshActiveProfile() {
   if (state.refreshing) return;
   const profile = activeProfileRecord()
@@ -430,8 +388,6 @@ async function ensureProfileForSession(saved) {
     if (existing && existing.type === 'kp') return existing;
   }
 
-  // Legacy Letterboxd profiles were deleted at boot; only a KinoPoisk
-  // identity can be restored from the localStorage session.
   if (saved.source !== 'kinopoisk') return null;
   const kpUserId = saved.kp && saved.kp.kpUserId ? String(saved.kp.kpUserId) : null;
   if (!kpUserId) return null;
@@ -456,13 +412,6 @@ async function ensureProfileForSession(saved) {
   return record;
 }
 
-/**
- * Registry record for a KinoPoisk stats source.
- *
- * One account = one record: the id is `kp:<userId>` unless a record with the
- * same `kpUserId` already exists (legacy ids). Re-importing an existing
- * profile therefore updates it in place instead of adding a duplicate row.
- */
 function kinopoiskProfileRecord(source, { uploadId = null, previous = null } = {}) {
   const kpUserId = source && source.kpUserId != null
     ? String(source.kpUserId)
@@ -486,7 +435,6 @@ function kinopoiskProfileRecord(source, { uploadId = null, previous = null } = {
   };
 }
 
-/** Local record of a KinoPoisk account (by kpUserId), active or not. */
 function knownKinopoiskProfile(kpUserId) {
   if (kpUserId == null) return null;
   return (state.profiles || []).find((item) => item
@@ -506,8 +454,6 @@ async function persistActiveProfile(stats) {
       : (state.kp && state.kp.kpUserId ? String(state.kp.kpUserId) : null);
     if (!kpUserId) return;
 
-    // A delta refresh of the active profile must update that registry record
-    // in place, even if its id predates the `kp:<userId>` convention.
     const known = knownKinopoiskProfile(kpUserId);
     const active = state.profileId ? await getProfile(state.profileId) : null;
     const previousRecord = active
@@ -532,13 +478,8 @@ async function persistActiveProfile(stats) {
     await saveStatsCache(record.id, stats);
     await refreshProfiles();
   } catch {
-    /* registry persistence must never break the dashboard */
   }
 }
-
-/* =========================================================
-   boot
-   ========================================================= */
 
 function setBootMode(mode, text) {
   const spinner = $('boot-spinner');
@@ -591,7 +532,6 @@ async function boot() {
   }
 
   await initProfiles();
-  // Soft migration: Letterboxd profiles and their cached payloads are gone.
   await migrateLetterboxdProfiles();
 
   await checkAuth();
@@ -601,10 +541,7 @@ async function boot() {
     return;
   }
 
-  // Tab routing: books and games own their own payloads/flows, so the film
-  // boot is skipped entirely when one of them is the active tab.
   applyTabFromLocation();
-  // Make the tab explicit in the URL so back/forward can always restore it.
   if (readTabFromUrl() === null) writeTabUrl(activeTab, { push: false });
   if (activeTab === 'books') {
     showView('books');
@@ -631,8 +568,6 @@ async function boot() {
     return;
   }
 
-  // Keep the old-session values visible to ensureProfileForSession()'s first
-  // session write (it may create and persist a migrated registry record).
   state.uploadId = saved.uploadId || null;
   state.uploadSummary = saved.summary || null;
   state.importSource = 'kinopoisk';
@@ -640,8 +575,6 @@ async function boot() {
   const profile = await ensureProfileForSession(saved);
   if (!isFlow(flow)) return;
   if (!profile) {
-    // Legacy Letterboxd session (or a KP profile without a KinoPoisk id):
-    // there is nothing to restore anymore.
     clearSession();
     state.uploadId = null;
     state.uploadSummary = null;
@@ -688,9 +621,8 @@ async function boot() {
     applyStats(stats);
   } catch (error) {
     if (!isFlow(flow) || (error && error.code === 'aborted')) return;
-    if (error && error.status === 401) return; // login view already opened by the auth event
+    if (error && error.status === 401) return;
     if (error && error.status === 400) {
-      // The import is still running on the server — resume its two-stage progress.
       showView('enrich');
       prepareKinopoiskProgress();
       setProgressStatus('Продолжаем импорт с Кинопоиска…');
@@ -698,8 +630,6 @@ async function boot() {
       return;
     }
     if (error && (error.status === 404 || error.status === 410)) {
-      // Server restarted and forgot the uploadId. Prefer the local stats cache,
-      // otherwise silently replay the import instead of showing an error.
       await handleUnknownUpload(profile, { flow });
       return;
     }
@@ -712,15 +642,12 @@ async function checkAuth() {
     const session = await getAuthSession();
     if (session && typeof session === 'object') {
       state.authRequired = Boolean(session.authRequired);
-      // When auth is disabled we are always "logged in".
       state.authed = state.authRequired ? Boolean(session.authed) : true;
     } else {
       state.authRequired = false;
       state.authed = true;
     }
   } catch {
-    // Old backend (404) or a transient network error: don't block the app.
-    // Any protected request will dispatch auth-required and show login.
     state.authRequired = false;
     state.authed = true;
   }
@@ -753,10 +680,6 @@ function handleAuthRequired() {
   showLoginScreen();
 }
 
-/* =========================================================
-   stats refresh (used after a manual TMDB match)
-   ========================================================= */
-
 const dashboardHooks = {
   getUploadId: () => state.uploadId,
   refreshStats: () => refreshStats(),
@@ -772,7 +695,7 @@ async function refreshStats() {
     void persistActiveProfile(stats);
     return stats;
   } catch (error) {
-    if (error && error.status === 401) return null; // auth-required flow takes over
+    if (error && error.status === 401) return null;
     toast('Фильм сматчен, но статистику обновить не удалось — обнови страницу.', 'error', { duration: 7000 });
     return null;
   }
@@ -809,7 +732,6 @@ async function resumeKinopoiskIfRunning() {
     startKinopoiskPolling();
     return true;
   } catch {
-    // No live import job (server restarted / cache hit) — let /api/stats decide.
     return false;
   }
 }
@@ -826,8 +748,6 @@ function applyStats(stats, { fromCache = false, profile = null } = {}) {
     bootError(new Error('Сервер вернул пустой ответ статистики.'));
     return;
   }
-  // A different dataset means the country and genre/style filters no longer
-  // apply. A stats refresh for the same upload (manual match) keeps both.
   if (lastRenderedUploadId && state.uploadId && state.uploadId !== lastRenderedUploadId) {
     resetYearBarsFilters();
   }
@@ -846,10 +766,6 @@ function applyStats(stats, { fromCache = false, profile = null } = {}) {
       kpNick: source.kpNick || (state.kp && state.kp.kpNick) || null,
     };
   }
-  // A finished import is the activation point: make the new/updated KinoPoisk
-  // profile active *before* the async registry write, so the switcher shows it
-  // immediately (and keeps it even if `/api/profiles` is slow). The persisted
-  // record reuses the same id, so this is idempotent on a re-import.
   if (!profile && source && source.type === 'kinopoisk' && source.kpUserId != null) {
     const provisional = kinopoiskProfileRecord(source, {
       uploadId: state.uploadId,
@@ -880,10 +796,6 @@ function applyStats(stats, { fromCache = false, profile = null } = {}) {
   renderProfiles();
   if (!fromCache) void persistActiveProfile(stats);
 }
-
-/* =========================================================
-   profile switching + recovery after a server restart
-   ========================================================= */
 
 function clearBootError() {
   const host = $('boot-error');
@@ -920,14 +832,10 @@ async function handleUnknownUpload(profile, { flow = null } = {}) {
     if (profile.uploadId) state.uploadId = profile.uploadId;
     state.profileId = profile.id;
     setActiveId(profile.id);
-    // Draw the local payload silently: the topbar already has an explicit
-    // «Обновить профиль» action, so a restart shows no banner and no toast.
     applyStats(cached.stats, { fromCache: true, profile });
     return;
   }
 
-  // No local payload yet: silently replay the import and show the normal
-  // processing screen instead of a scary 404.
   await recoverProfile(profile, { flow: current });
 }
 
@@ -1023,7 +931,6 @@ async function switchProfile(id) {
   }
   if (id === state.profileId && state.dashboardReady) return;
 
-  // A country/genre filter belongs to the profile it was picked on.
   resetYearBarsFilters();
 
   const flow = beginFlow();
@@ -1049,8 +956,6 @@ async function switchProfile(id) {
   if (!isFlow(flow)) return;
 
   if (cached && cached.stats) {
-    // Instant switch from the local payload; the fresh request below quietly
-    // replaces it when the server still knows this upload.
     applyStats(cached.stats, { fromCache: true, profile });
   } else {
     clearBootError();
@@ -1123,10 +1028,6 @@ async function deleteSavedProfile(id) {
   await refreshProfiles();
 }
 
-/* =========================================================
-   upload
-   ========================================================= */
-
 function pluralFilms(count) {
   const n = Math.abs(Math.round(toNum(count))) % 100;
   const last = n % 10;
@@ -1166,10 +1067,6 @@ function newUploadFromScratch() {
   renderProfiles();
 }
 
-/* =========================================================
-   enrich + polling
-   ========================================================= */
-
 function setProgress({ matched, total, failed, done } = {}) {
   const totalValue = Math.max(0, toNum(total));
   const matchedValue = Math.min(totalValue || Infinity, Math.max(0, toNum(matched)));
@@ -1195,10 +1092,6 @@ function setProgressStatus(text) {
   const node = $('enrich-status');
   if (node) node.textContent = text;
 }
-
-/* =========================================================
-   Kinopoisk import progress (two stages)
-   ========================================================= */
 
 function stageNode(name) {
   return document.querySelector(`.stage-step[data-stage="${name}"]`);
@@ -1246,7 +1139,6 @@ const STAGE_COPY = {
   enrich: { title: 'Матчинг', sub: 'TMDB' },
 };
 
-/** Update the label of the numbered step in the import stepper. */
 function setStageCopy(name, title, sub) {
   const node = stageNode(name);
   if (!node) return;
@@ -1303,12 +1195,6 @@ function prepareKinopoiskProgress() {
   setProgressStatus('Готовим запрос…');
 }
 
-/**
- * Delta refresh of an already cached KinoPoisk profile (stage 'refresh'):
- * only the newest page(s) are checked, so this is not a full scrape. The
- * import may still fall back to 'scrape' when the cache and KinoPoisk do not
- * overlap — the next poll then repaints this screen as a regular scrape.
- */
 function applyRefreshStage(status) {
   setStepper('scrape');
   state.importStage = 'refresh';
@@ -1360,8 +1246,6 @@ function applyRefreshStage(status) {
       bar.setAttribute('aria-valuenow', String(percent));
       fill.style.width = `${percent}%`;
     } else {
-      // One page is the normal case for a delta refresh — don't pretend to
-      // have a meaningful percentage.
       bar.classList.add('is-indeterminate');
       bar.setAttribute('aria-valuenow', '0');
       fill.style.width = '';
@@ -1475,7 +1359,6 @@ function importErrorMessage(error) {
 function showKinopoiskError(message, retry) {
   const host = $('enrich-error');
   if (!host) return;
-  // A failed refresh must leave the topbar button usable again.
   if (state.refreshing) resetProfileRefresh();
   dismissImportToast();
   setProgressFoot('Импорт остановлен. Можно повторить попытку или сменить профиль.');
@@ -1516,9 +1399,6 @@ async function handleKinopoiskImport({ url, kpUserId, refresh = false } = {}) {
     state.dashboardReady = false;
     state.attachedLb = null;
     if (!refresh) {
-      // A brand-new import registers itself through persistActiveProfile().
-      // A refresh keeps the active profile so the registry record is updated
-      // in place instead of being replaced by a duplicate.
       state.profileId = null;
       setActiveId(null);
     }
@@ -1575,8 +1455,6 @@ const poller = createPoller({
 
 function stopPolling() {
   poller.stop();
-  // `finishStats` retries the stats read on its own timer; stopping the
-  // import poller must cancel that retry too.
   if (state.pollTimer) {
     window.clearTimeout(state.pollTimer);
     state.pollTimer = 0;
@@ -1592,10 +1470,6 @@ function startKinopoiskPolling() {
   poller.start(0);
 }
 
-/**
- * One status tick. Returns `false` on a terminal state so the poller stops;
- * any other value schedules the next tick after `POLL_INTERVAL`.
- */
 async function pollKinopoiskOnce() {
   if (!state.uploadId || state.view !== 'enrich' || state.pollMode !== 'kinopoisk') return false;
 
@@ -1628,8 +1502,6 @@ async function pollKinopoiskOnce() {
       }
       setProgressStatus('Готово! Собираем статистику…');
       setProgressFoot('Импорт завершён — считаем статистику.');
-      // A delta refresh that could not reach KinoPoisk still succeeds using
-      // the cached data — surface that in a neutral (non-error) toast.
       const warning = status && typeof status.warning === 'string' ? status.warning.trim() : '';
       if (warning) toast(warning, 'info', { duration: 12000 });
       await finishStats(0);
@@ -1644,7 +1516,6 @@ async function pollKinopoiskOnce() {
   } catch (error) {
     if (state.view !== 'enrich' || state.pollMode !== 'kinopoisk') return false;
     if (error && (error.status === 404 || error.status === 410)) {
-      // A freshly started import can become visible a moment later.
       state.statusMisses += 1;
       if (state.statusMisses <= 4) {
         setProgressStatus('Ждём статус импорта…');
@@ -1701,10 +1572,6 @@ async function finishStats(attempt = 0) {
   }
 }
 
-/* =========================================================
-   wiring
-   ========================================================= */
-
 function bindUi() {
   initAuth({ onSuccess: boot, onLoggedOut: handleLoggedOut });
   window.addEventListener('kinoboxd:auth-required', handleAuthRequired);
@@ -1712,9 +1579,6 @@ function bindUi() {
   initBooks({ onActivate: () => showView('books') });
   initGames({ onActivate: () => showView('games') });
 
-  // Films: the Letterboxd archive is a connection of the current profile,
-  // so it lives on its own screen instead of the topbar. The screen chrome and
-  // the card list come from the domain descriptor (`core/shell.js`).
   const filmsConnectionsScreen = typeof document.querySelector === 'function'
     ? document.querySelector('.view[data-view="films-connections"]')
     : null;
@@ -1750,8 +1614,6 @@ function bindUi() {
 
   window.addEventListener('popstate', () => {
     const tab = readTabFromUrl() || (window.history.state && window.history.state.tab) || 'films';
-    // Games owns a sub-screen: dashboard ↔ personnel changes only the `view`
-    // parameter, so `switchTab` would early-return and never repaint.
     if (tab === 'games' && activeTab === 'games') {
       showGames();
       return;
@@ -1798,7 +1660,6 @@ function bindUi() {
     },
   });
 
-
   const refresh = $('profile-refresh');
   if (refresh) refresh.addEventListener('click', () => { refreshActiveProfile(); });
 
@@ -1810,7 +1671,6 @@ function bindUi() {
     });
   }
 
-  // Prevent the browser from opening a ZIP when dropped outside the dropzone.
   window.addEventListener('dragover', (event) => event.preventDefault());
   window.addEventListener('drop', (event) => event.preventDefault());
 }

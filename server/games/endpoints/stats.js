@@ -9,19 +9,6 @@ const { buildGamesStatsFromCache } = require('../stats');
 function register(router, ctx) {
   const { deps, errorProfile, resolveProfileOrThrow } = ctx;
 
-  /* --------------------------- stats -------------------------- */
-
-  /**
-   * `GET /api/games/secondary-details/status?profile=…` — the owner-facing
-   * diagnostic for «вне Steam» metadata (M6d). Answers only from the cache and
-   * the job/breaker state, never with a network request:
-   *
-   *   { resolved, total, running, bySource {gog, epic}, slugless[],
-   *     lastErrors[] (max 5), cooldownUntil, breakers, kick, lastRunAt }
-   *
-   * `resolved < total` means some store page is still missing; `slugless` names
-   * the Epic works the job could not even address (title probe failed).
-   */
   router.get('/secondary-details/status', (req, res, next) => {
     try {
       assertOnlyParams(
@@ -45,16 +32,12 @@ function register(router, ctx) {
       );
       const includeFree = parseBoolParam(req.query.includeFree, 'includeFree', true);
       const includeDlc = parseBoolParam(req.query.includeDlc, 'includeDlc', false);
-      // Default 0: only games the owner actually played (M5-B requirement).
-      // `minHours=-1` brings the 0-hour backlog back.
       const minHours = parseMinHours(req.query.minHours, 0);
       const scope = resolveProfileOrThrow(req.query.profile);
       const stats = buildGamesStatsFromCache(scope.parsed.key, {
         includeFree,
         includeDlc,
         minHours,
-        // The UI polls `summary.metadata.running`; the flag comes from the
-        // in-process enrich job registry (no extra cache read, no request).
         enrichRunning: enrichJobs.isRunning(scope.parsed.key),
       });
       if (!stats) {
@@ -64,11 +47,6 @@ function register(router, ctx) {
           'profile_not_imported'
         );
       }
-      // M6d lazy kick: the import-time kick alone is not enough — an Epic/GOG
-      // library imported **before** the details job existed never got one, and
-      // the «Вне Steam» card stayed empty forever. Coalesced (`kickGate`),
-      // fire-and-forget (the response is never blocked) and disable-able for
-      // tests. `running` is re-read so the very first answer already says so.
       if (deps.secondaryDetailsKick !== false) {
         try {
           secondaryDetails.kickFromStats(
@@ -82,7 +60,6 @@ function register(router, ctx) {
             );
           }
         } catch (err) {
-          // A kick must never break the stats answer.
         }
       }
       res.set('X-Games-Build-Ms', String(stats.meta.buildMs));

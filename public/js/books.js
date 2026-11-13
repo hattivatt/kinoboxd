@@ -1,27 +1,3 @@
-/* Books tab: import screen, import progress, dashboard and modals.
- *
- * One module owns the whole book namespace: `/api/books/*` payload
- * normalisation, the per-profile import flow (one source + one account per
- * profile — LiveLib and Hardcover statistics are never merged), every widget
- * and the book-specific link menu. Film code is not imported here except for
- * the generic primitives (donut, modal shell, toasts, icons).
- *
- * Design notes:
- *  - a profile is one source: `/api/books/stats?profile=livelib-Margaret`;
- *    the switcher changes the profile, and the payload is rebuilt from that
- *    profile's events only (no `?sources=` chip any more);
- *  - no IndexedDB cache for books in the MVP: a cold start either returns
- *    stats or opens the import screen;
- *  - a LiveLib profile is created and refreshed **from a livelib-backup export
- *    file** (28.10.2026 verdict): «Обновить» opens the file panel, and the merge
- *    → auto-resolve pipeline runs there with its own spinner/result. No scrape
- *    of livelib.ru is ever started from this module;
- *  - the payload is parsed tolerantly: the quick API contract (`score`,
- *    `finished`, `reReadCount`, `summary.sources: [names]`) and the fuller
- *    doc version (`rating`, `read`, `decades[].decade`, `sources.connected`)
- *    are both accepted.
- */
-
 import {
   getBooksStats, startBooksImportHardcover, getBooksImportStatus,
   getBooksProfiles, setBookMangaFlag, clearBookMangaFlag, importBooksLivelibFile,
@@ -58,10 +34,6 @@ import {
   normalizeSource, isValidLivelibUsername, isValidHardcoverUser,
   isLivelibBlocked,
 } from './books-profiles.js';
-
-/* =========================================================
-   constants
-   ========================================================= */
 
 const MANGA_STORAGE_KEY = 'kinoboxd.books.manga.v1';
 const AUTHORS_INITIAL = 20;
@@ -104,30 +76,26 @@ const STAGE_LABEL = {
   failed: 'Ошибка',
 };
 
-/* =========================================================
-   state
-   ========================================================= */
-
 const state = {
   active: false,
   loading: false,
   loaded: false,
-  view: 'import', // import | progress | dashboard
-  includeManga: false, // ?includeMangaComics=0|1, default off
+  view: 'import',
+  includeManga: false,
   data: null,
   error: null,
   seq: 0,
   selectedDecade: null,
-  jobs: {}, // source -> { jobId, status, failed, account, profileId }
-  refresh: null, // { before, source, failures, startedAt } while "Обновить профиль" runs
-  refreshStarting: false, // guards the profile fetch/baseline window before state.refresh exists
+  jobs: {},
+  refresh: null,
+  refreshStarting: false,
   starting: {},
   profiles: [],
   profilesReady: false,
-  profile: null, // active local profile record
+  profile: null,
   profileMenuOpen: false,
-  restoreCandidate: null, // server-side profiles adoptable (one per source)
-  fileImport: { busy: false, result: null }, // livelib-backup export upload = LiveLib refresh
+  restoreCandidate: null,
+  fileImport: { busy: false, result: null },
   metadataTimer: 0,
   mangaBusy: false,
   onActivate: null,
@@ -143,13 +111,7 @@ let openBookMenuClose = null;
 let bookModalSeq = 0;
 let inflightLoad = null;
 
-/* Authors widget paging/search. Kept outside the payload so a refetch (manga
- * toggle) does not silently drop the user's query. */
 const authorsState = { visible: AUTHORS_INITIAL, expanded: false, query: '' };
-
-/* =========================================================
-   small helpers
-   ========================================================= */
 
 function readJson(key, fallback) {
   const raw = safeStorageGet(key);
@@ -166,25 +128,6 @@ function sourceLabel(source) {
   return SOURCE_LABEL[source] || 'Источник';
 }
 
-/* =========================================================
-   payload normalisation
-   ========================================================= */
-
-/* =========================================================
-   view switching inside the books section
-   ========================================================= */
-
-/**
- * Topbar refresh button visibility/busy state.
- *
- * Visible only on the books tab (the whole section is hidden on Films anyway)
- * when the *active local profile* has at least one source, and during its own
- * progress screen so the user still sees the spinner they started.
- *
- * The button is the *Hardcover* job entry point: a LiveLib profile has no
- * server job for its refresh, so the click opens the export-file panel and the
- * upload form's own spinner takes over.
- */
 function updateRefreshButton() {
   const refresh = $('books-refresh');
   if (!refresh) return;
@@ -211,7 +154,6 @@ function updateRefreshButton() {
   if (reimport) reimport.hidden = state.view !== 'dashboard' || busy;
 }
 
-/** Honest tooltip for the scoped refresh (never promises the other source). */
 function sourceScopeTitle(sources) {
   const hardcover = sources.includes('hardcover');
   const livelib = sources.includes('livelib');
@@ -241,10 +183,6 @@ function showScreen(name) {
   updateRefreshButton();
   const back = $('books-progress-back');
   if (back) back.hidden = Boolean(state.refresh);
-  // `onActivate` is main.js's `showView('books')`, which ends with
-  // `window.scrollTo(0, 0)`. Calling it on every render made the metadata
-  // poller (every ~5 s) throw the user back to the top of the dashboard
-  // (user report, 28.10.2026). Only a real screen change may activate.
   if (previous !== name && state.active && state.onActivate) state.onActivate();
 }
 
@@ -271,20 +209,13 @@ function showError(error, options = {}) {
   host.hidden = false;
 }
 
-/* =========================================================
-   data loading
-   ========================================================= */
-
 async function loadStats({ force = false, silent = false } = {}) {
   if (state.loading) {
     if (!force) return;
-    // A forced reload (source chip / manga toggle) must not be swallowed by an
-    // in-flight request: wait for it, then re-run with the newest state.
     if (inflightLoad) {
       try {
         await inflightLoad;
       } catch {
-        /* the inner run reports its own errors */
       }
     }
   }
@@ -306,8 +237,6 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
   if (!silent && state.view !== 'dashboard') showLoading(true);
 
   if (!state.profile || !activeProfileSources().length) {
-    // No local profile → no scope. Never fall back to "everything the server
-    // has": that is exactly the cross-device leak this round removes.
     state.loading = false;
     state.loaded = false;
     state.data = null;
@@ -331,17 +260,12 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
     state.loaded = true;
     state.selectedDecade = null;
     if (!state.data.summary.eventCount && !state.data.connected.length) {
-      // Nothing imported (or every source is empty): the honest state is the
-      // two import cards, not a dashboard full of zeroes.
       state.loaded = false;
       showScreen('import');
       return;
     }
     hideJobs();
     showScreen('dashboard');
-    // A silent background re-render (metadata badge poller, deep scan finish)
-    // must not move the page: the dashboard is rebuilt wholesale, so restore
-    // the window scroll explicitly.
     if (silent) {
       withPreservedScroll(
         () => (typeof window !== 'undefined' ? window.scrollY || 0 : 0),
@@ -353,7 +277,7 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
     }
   } catch (error) {
     if (seq !== state.seq) return;
-    if (error && error.status === 401) return; // auth view takes over
+    if (error && error.status === 401) return;
     if (error && (error.status === 404 || error.status === 400)) {
       state.loaded = false;
       state.data = null;
@@ -367,7 +291,6 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
       return;
     }
     if (state.data) {
-      // Keep the last rendered dashboard but say the refresh failed.
       toast(shortErrorMessage(error), 'error', { duration: 7000 });
       return;
     }
@@ -381,11 +304,6 @@ async function loadStatsRun({ force = false, silent = false } = {}) {
   }
 }
 
-/* =========================================================
-   local profile registry (one book profile per browser context)
-   ========================================================= */
-
-/** Source account from the active profile ('' when the source is detached). */
 function profileAccount(source) {
   return sourceAccount(state.profile, source);
 }
@@ -417,10 +335,6 @@ function profileSavedLabel(savedAt) {
   return `сохранён ${date.getDate()}.${String(date.getMonth() + 1).padStart(2, '0')}.${date.getFullYear()}`;
 }
 
-/**
- * Fill the import inputs from the active profile. Empty profile → empty fields:
- * the old hardcoded `34748` / «Margaret» defaults are gone on purpose.
- */
 function applyProfileToForms() {
   const livelibFile = $('books-livelib-file-user');
   if (livelibFile) livelibFile.value = profileAccount('livelib');
@@ -521,13 +435,6 @@ function closeProfileMenu() {
   if (state.profileMenuOpen) setProfileMenuOpen(false);
 }
 
-/**
- * Load the local registry once per page (and re-read after create/delete).
- * First run migrates *real* remembered accounts from the old localStorage
- * blob (one profile per account); nothing is invented, and a server-only
- * install is offered as an explicit «Подключить серверные профили» action
- * instead of being adopted silently (a second laptop must stay empty).
- */
 async function ensureProfiles({ reload = false } = {}) {
   if (state.profilesReady && !reload) return;
   let snapshot = { profiles: [], active: null };
@@ -611,7 +518,7 @@ async function switchProfile(id) {
   state.data = null;
   state.loaded = false;
   state.selectedDecade = null;
-  state.seq += 1; // drop any in-flight payload of the previous profile
+  state.seq += 1;
   applyProfileToForms();
   renderProfileSwitcher();
   renderMetadataBadge(null);
@@ -658,36 +565,17 @@ function hasRunningJobs() {
     !(job.status && (job.status.done || job.status.stage === 'done')));
 }
 
-/**
- * Create the profile lazily from a single import card. This is the "first
- * import without a profile" path: the label is derived from the account that
- * the user actually typed, so no default owner is ever implied.
- */
-/**
- * Profile for an import: a profile is one source + one account, so this
- * returns the active profile when it already IS that account, and otherwise
- * creates (and activates) a separate profile. Importing Hardcover while a
- * LiveLib profile is active must never union the two.
- *
- * The label is derived from the account the user typed, so no default owner
- * is ever implied.
- */
 async function ensureProfileForImport(source, account) {
   const entry = normalizeSource(source, account);
   if (!entry) return null;
   const key = entry.source === 'livelib' ? `livelib-${entry.username}` : `hardcover-${entry.userId}`;
   if (state.profile && profileKey(state.profile) === key) {
-    // Re-import of the already active profile: keep it active (idempotent) and
-    // repaint the switcher, so a cleared active id is restored instead of
-    // leaving the import attached to an unhighlighted profile.
     setActiveBooksProfileId(state.profile.id);
     applyProfileToForms();
     renderProfileSwitcher();
     return state.profile;
   }
 
-  // Reuse an existing local profile for the same account instead of
-  // duplicating switcher entries.
   const existing = (state.profiles || []).find((profile) => profileKey(profile) === key);
   const record = existing || normalizeProfile({
     label: entry.source === 'livelib' ? `LiveLib @${entry.username}` : `Hardcover ${entry.userId}`,
@@ -704,10 +592,6 @@ async function ensureProfileForImport(source, account) {
   renderProfileSwitcher();
   return state.profile;
 }
-
-/* =========================================================
-   profile creation modal
-   ========================================================= */
 
 function openProfileModal(draft = {}) {
   closeProfileMenu();
@@ -836,8 +720,6 @@ function openProfileModal(draft = {}) {
       return;
     }
     if (!label) {
-      // Never invent a profile name: normalizeProfile falls back to the
-      // account itself (@name / id).
     }
     const record = normalizeProfile({ label, sources });
     submit.disabled = true;
@@ -854,9 +736,6 @@ function openProfileModal(draft = {}) {
       close();
       showScreen('import');
       toast(`Профиль «${record.label}» создан — запустите импорт источников`, 'success', { duration: 6000 });
-      // If the server already has these sources (old install, cleared
-      // localStorage), the dashboard can appear right away; otherwise the
-      // request answers 404 and the import screen stays.
       await loadStats({ force: true });
     } catch (err) {
       error.textContent = shortErrorMessage(err);
@@ -870,20 +749,8 @@ function openProfileModal(draft = {}) {
   return modal;
 }
 
-/* =========================================================
-   LiveLib export FILE import (livelib-backup, safe path)
-   ========================================================= */
-
-/* The LiveLib 403 → cookie panel and the scrape form are gone (28.10.2026):
- * a LiveLib profile is imported and refreshed from a `livelib-backup` export
- * file, so the browser never waits on a scrape and the server never touches
- * livelib.ru. The server keeps the scrape endpoint for the job tests and as the
- * documented plan-B escape hatch of §9, but nothing here calls it. */
-
-/** Same ceiling as the route's multer limit; the browser can refuse earlier. */
 const FILE_IMPORT_MAX_BYTES = 24 * 1024 * 1024;
 
-/** RU labels of the four exportable shelves. */
 const SHELF_LABEL = {
   read: 'Прочитал',
   dnf: 'Не дочитал',
@@ -958,14 +825,6 @@ function renderFileImportResult(result) {
   host.hidden = false;
 }
 
-/**
- * Upload one exported shelf. Multipart, one shot for the parse: the server
- * merges the file into `livelib-{username}` and answers 201 with the counts.
- * Nothing is scraped from livelib.ru, but the metadata chain (Hardcover /
- * Литрес / GB / OL) starts automatically after the merge — the same background
- * resolve job a scraped import runs. Its progress is the «Метадата: N%» badge,
- * and the stats poller re-renders quietly while it is alive.
- */
 async function submitFileImport() {
   if (state.fileImport.busy) return;
   const input = $('books-livelib-file');
@@ -1009,12 +868,9 @@ async function submitFileImport() {
       file,
       username,
       shelf: text(shelfInput && shelfInput.value),
-      // Default ON (the file import always enriches); the checkbox is the
-      // explicit opt-out for an offline import.
       resolve: !resolveInput || resolveInput.checked,
     });
     renderFileImportResult(result);
-    // The browser registry owns the switcher entry; the server owns the events.
     await ensureProfileForImport('livelib', username);
     if (input) input.value = '';
     const fileName = $('books-livelib-file-name');
@@ -1032,9 +888,6 @@ async function submitFileImport() {
     toast(parts.join(' · '), 'success', { duration: 6000 });
   } catch (error) {
     if (error && error.status === 401) return;
-    // `shortErrorMessage` turns *any* 400 into "данные не готовы", which is the
-    // film-payload wording. A file-import 400 is specific and useful (bad
-    // columns, empty file, unknown shelf), so the server text is shown as is.
     const message = error && error.name === 'ApiError' && text(error.message)
       ? text(error.message)
       : shortErrorMessage(error);
@@ -1044,10 +897,6 @@ async function submitFileImport() {
     setFileImportBusy(false);
   }
 }
-
-/* =========================================================
-   import jobs
-   ========================================================= */
 
 function jobList() {
   return Object.entries(state.jobs).filter(([, job]) => job && job.jobId);
@@ -1086,9 +935,6 @@ function hydrateJobs() {
       startedAt: Number(item.startedAt) || Date.now(),
     };
   }
-  // A job restored from localStorage belongs to the profile that started it.
-  // Keeping a foreign job would attach its progress (and its "done" reload) to
-  // whichever profile happens to be active after a reload.
   for (const [source, job] of Object.entries(state.jobs)) {
     if (job.profileId && (!state.profile || job.profileId !== state.profile.id)) {
       delete state.jobs[source];
@@ -1126,18 +972,6 @@ function setSourceError(source, message) {
   host.hidden = false;
 }
 
-/**
- * Start the Hardcover import *inside the active profile*.
- *
- * The account becomes the profile's only source (a profile is created or
- * activated lazily on the first import), so a fresh browser never imports into
- * "someone else's" record and the `profile=` scope keeps matching the request.
- *
- * LiveLib has no source-import job any more: its profile is created by the
- * export-file form (`submitFileImport`), which owns its own spinner/result.
- *
- * @returns {Promise<{ok:boolean}>}
- */
 async function startImport(source, account) {
   if (state.starting[source]) return { ok: false };
   setSourceError(source, '');
@@ -1149,7 +983,6 @@ async function startImport(source, account) {
     const jobId = text(response && (response.jobId || response.job_id || response.id || (response.job && response.job.id)));
 
     if (!jobId) {
-      // Some server versions can answer "already done" without a job id.
       if (response && (response.done || response.stage === 'done')) {
         hideJobs();
         await loadStats({ force: true });
@@ -1298,8 +1131,6 @@ function renderProgress() {
       done: Boolean(done),
     });
   }
-  // One row renderer for every domain (`core/shell.js`); the wording and the
-  // percent math stay book-side.
   renderJobRows({ host, jobs: rows });
 
   if (statusNode) {
@@ -1340,8 +1171,6 @@ function renderProgressError(jobs) {
     .map(([source, job]) => `${sourceLabel(source)}: ${job.failed || job.status.error}`)
     .join(' · ');
   if (state.refresh) {
-    // Refresh is best-effort per source: the flow finalises itself and the
-    // consolidated toast (success + failure) is the only action needed.
     host.append(errorBox({
       title: 'Часть источников не обновилась',
       message: `${message}. Остальные данные и статистика будут пересчитаны.`,
@@ -1392,16 +1221,10 @@ function stopPolling() {
 function startPolling() {
   poller.stop();
   if (state.view !== 'progress') return;
-  // A profile refresh keeps polling after the user switches to Films: the
-  // server job must not be abandoned just because the tab is hidden.
   if (!state.active && !state.refresh) return;
   poller.start(0);
 }
 
-/**
- * One polling tick. Returns `false` when the chain must stop (the poller
- * treats any other value as "schedule the next tick").
- */
 async function pollOnce() {
   const stillPolling = () => state.view === 'progress' &&
     (state.active || Boolean(state.refresh));
@@ -1444,13 +1267,11 @@ async function pollOnce() {
 
   const pending = jobList().filter(([, job]) => !job.failed && !(job.status && (job.status.done || job.status.stage === 'done')));
   const failed = jobList().some(([, job]) => job.failed);
-  // Manual refresh is best-effort per source: one failed source must not stop
-  // the stats reload of the other one. Imports still wait for a manual retry.
   if (!pending.length && (!failed || state.refresh)) {
     await finishImport();
     return false;
   }
-  if (!pending.length && failed) return false; // manual retry / show-stats buttons
+  if (!pending.length && failed) return false;
   return true;
 }
 
@@ -1475,10 +1296,6 @@ async function finishImport() {
   }
 }
 
-/* =========================================================
-   manual profile refresh (only the source of the active profile)
-   ========================================================= */
-
 function refreshJobId(response) {
   return text(response && (response.id || response.jobId || response.job_id || (response.job && response.job.id)));
 }
@@ -1486,8 +1303,6 @@ function refreshJobId(response) {
 function attachRefreshJob(source, response, account) {
   const jobId = refreshJobId(response);
   if (!jobId) {
-    // Hardcover always opens a job. A done-without-id answer here means a
-    // contract drift.
     if (response && (response.done || response.stage === 'done')) return;
     throw new Error('Сервер не вернул идентификатор задачи обновления.');
   }
@@ -1529,7 +1344,6 @@ async function finishRefresh(refresh) {
       includeMangaComics: state.includeManga,
     });
   } catch {
-    /* fall back to whatever loadStats renders below */
   }
   await loadStats({ force: true });
   state.refresh = null;
@@ -1543,16 +1357,6 @@ async function finishRefresh(refresh) {
   toast(message, hadFailure ? 'error' : 'success', { duration: hadFailure ? 10000 : 6000 });
 }
 
-/**
- * Open the LiveLib refresh = file upload flow.
- *
- * A LiveLib profile is refreshed by uploading a fresh `livelib-backup` export;
- * nothing is scraped (user verdict, 28.10.2026). The upload form owns its own
- * progress — the button spinner + the result panel — so there is no fake
- * spinner and no polling: `POST /api/books/import/livelib-file` answers 201 with
- * the counts, and the metadata chain continues in the background behind the
- * «Метадата: N%» badge.
- */
 function openFileRefresh() {
   if (state.fileImport.busy) {
     toast('Файл уже загружается — дождитесь ответа.', 'info', { duration: 5000 });
@@ -1566,7 +1370,6 @@ function openFileRefresh() {
       try {
         panel.scrollIntoView({ block: 'center', behavior: 'smooth' });
       } catch {
-        /* older engines: the panel is simply visible already */
       }
     }
   }
@@ -1578,8 +1381,6 @@ function openFileRefresh() {
   if (input) {
     setFileImportError('');
     renderFileImportResult(null);
-    // The click is a user gesture, so the picker opens right away. Cancelling
-    // it leaves the user on the highlighted panel with the instruction.
     try {
       input.click();
     } catch {
@@ -1590,19 +1391,6 @@ function openFileRefresh() {
   }
 }
 
-/**
- * "↻ Обновить профиль" for the ONE source of the active profile.
- *
- *  - Hardcover: `/api/books/import/hardcover` — incremental journal diff by
- *    default (one page, ~2 s); Shift+click = full re-read.
- *  - LiveLib: **no scrape**. The click opens the export-file upload panel; the
- *    merge → auto-resolve pipeline runs there with its own progress. A scrape
- *    refresh used to keep the button busy for the whole scan + resolve chain
- *    (minutes), which the user saw as a spinner that never ended.
- *
- * The Hardcover job runs on the server while the user may switch to Films;
- * polling keeps going.
- */
 async function refreshProfiles(options = {}) {
   const sources = activeProfileSources();
   const source = sources[0] || '';
@@ -1633,7 +1421,6 @@ async function runRefreshProfiles(options = {}) {
     return;
   }
 
-  // Baseline for the toast diff: the same profile scope.
   let baseline = null;
   try {
     baseline = await getBooksStats({
@@ -1641,7 +1428,6 @@ async function runRefreshProfiles(options = {}) {
       includeMangaComics: state.includeManga,
     });
   } catch {
-    /* state.data below is still a usable snapshot */
   }
 
   state.refresh = {
@@ -1658,7 +1444,6 @@ async function runRefreshProfiles(options = {}) {
   showScreen('progress');
   renderProgress();
 
-  // The profile owns the account: no token-owner fallback, no 34748.
   const userId = sourceAccount(profile, 'hardcover');
   if (!userId) {
     state.refresh.failures.hardcover = 'в профиле нет ID Hardcover';
@@ -1675,7 +1460,7 @@ async function runRefreshProfiles(options = {}) {
   }
   saveJobs();
 
-  if (!state.refresh) return; // 401 tore the view down
+  if (!state.refresh) return;
   if (!jobList().length) {
     await finishRefresh(state.refresh);
     return;
@@ -1683,10 +1468,6 @@ async function runRefreshProfiles(options = {}) {
   renderProgress();
   startPolling();
 }
-
-/* =========================================================
-   dashboard
-   ========================================================= */
 
 function metric(iconName, label, valueNode, sub = '', title = '', extraClass = '') {
   const node = el('div', { class: `metric${extraClass ? ` ${extraClass}` : ''}` });
@@ -1700,20 +1481,6 @@ function metric(iconName, label, valueNode, sub = '', title = '', extraClass = '
   return node;
 }
 
-/* ---------------- metadata coverage badge ---------------- */
-
-/**
- * Honest "metadata is still loading" badge.
- *
- * A LiveLib profile gets its genres/series/years from the resolve chain
- * (Litres → GB → OL → Hardcover → LiveLib card), which is budgeted (Litres:
- * 200 books per run) and therefore spreads over several profile refreshes.
- * Empty genres are not a bug there — the badge says how much is covered and
- * whether the resolve stage is running right now. 100% → no badge at all.
- * A Hardcover profile takes metadata from the journal, so it is ~100% and the
- * badge stays hidden too. The view model lives in `books-refresh.js` and is
- * unit-tested without a DOM.
- */
 function renderMetadataBadge(data = state.data) {
   const badge = $('books-metadata-badge');
   const textNode = $('books-metadata-text');
@@ -1738,11 +1505,6 @@ function renderMetadataBadge(data = state.data) {
   startMetadataPolling(meta);
 }
 
-/**
- * While the resolve stage is alive, re-read the stats every few seconds and
- * re-render quietly when it changes. The existing deep-scan poller does the
- * same for dates; both stop as soon as the server reports no running stage.
- */
 function startMetadataPolling(meta) {
   stopMetadataPolling();
   if (!meta || !meta.running) return;
@@ -1762,8 +1524,6 @@ async function pollMetadataOnce() {
   const meta = state.data && state.data.summary ? state.data.summary.metadata : null;
   if (!meta || !meta.running) return;
   try {
-    // Silent: a background enrichment must not flash the loading screen or
-    // steal focus; renderDashboardBooks re-evaluates the badge afterwards.
     await loadStats({ force: true, silent: true });
   } catch (error) {
     if (error && error.status === 401) return;
@@ -1787,8 +1547,6 @@ function renderDashboardBooks(data) {
 }
 
 function renderHead(data) {
-  // Scope = the profile's single source (the payload says which document it
-  // built). `connected` (everything cached) is only a fallback for old payloads.
   const scoped = Array.isArray(data.profileSources) && data.profileSources.length
     ? data.profileSources
     : data.connected.slice(0, 1);
@@ -1805,15 +1563,12 @@ function renderHead(data) {
     const reReads = data.summary.reReadCount > 0
       ? `, в том числе ${fmtInt(data.summary.reReadCount)} ${plural(data.summary.reReadCount, ['перечитка', 'перечитки', 'перечитываний'])}`
       : '';
-    // «Читаю сейчас» is shelf state, not a finished read: a separate sentence,
-    // never added to bookCount/eventCount.
     const readingNow = data.summary.readingNowCount > 0
       ? ` Сейчас читает ${fmtInt(data.summary.readingNowCount)} ${plural(data.summary.readingNowCount, ['книгу', 'книги', 'книг'])} (в статистику прочитанного не входят).`
       : '';
     const scopeNote = state.profile
       ? `Профиль «${state.profile.label}»: ${profileSummary(state.profile)}.`
       : '';
-    // A profile is one source; metadata may come from the resolve chain.
     const metadata = Array.isArray(data.booksIndex)
       ? []
       : [...new Set(Object.values(data.booksIndex)
@@ -1912,8 +1667,6 @@ function renderSourcesMetric(data) {
   labelNode.append(document.createTextNode('источник'));
   node.append(labelNode);
 
-  // One profile = one source. `connected` (every profile cached on the server)
-  // is only a fallback for an old payload.
   const sources = Array.isArray(data.profileSources) && data.profileSources.length
     ? data.profileSources
     : data.connected.slice(0, 1);
@@ -1930,14 +1683,9 @@ function renderSourcesMetric(data) {
   if (!sources.length) value.append(el('span', { class: 'src-empty', text: 'не подключён' }));
   node.append(value);
 
-  // Metadata providers of the works in THIS profile (resolve chain), not a
-  // second event source: LiveLib dates stay LiveLib dates.
   const metadata = [...new Set(Object.values(data.booksIndex)
     .flatMap((entry) => entry.metadataSources || [])
     .filter((source) => !sources.includes(source)))];
-  // A Hardcover profile imported before the journal schema carried
-  // `statusId`: the label fallback keeps the numbers honest, but a re-import
-  // refreshes the stored events (the import button always re-fetches HC).
   const staleHardcover = (Array.isArray(data.meta && data.meta.profiles) ? data.meta.profiles : [])
     .filter((profile) => profile && profile.source === 'hardcover' && profile.needsReimport);
   const subParts = [
@@ -1971,8 +1719,6 @@ function renderSourcesMetric(data) {
 function renderFilters(data) {
   const host = $('books-filters');
   if (!host) return;
-  // No source chips any more: the active profile IS the scope. The pill only
-  // names the source of the rendered payload.
   const sources = Array.isArray(data.profileSources) && data.profileSources.length
     ? data.profileSources
     : data.connected.slice(0, 1);
@@ -1990,7 +1736,6 @@ function renderFilters(data) {
   syncMangaToggle(data);
 }
 
-/** Keep the manga switch, its note and the request state in sync. */
 function syncMangaToggle(data = state.data) {
   const input = $('books-manga-toggle');
   if (input) input.checked = state.includeManga;
@@ -2034,8 +1779,6 @@ async function setIncludeManga(next) {
     if (host) host.classList.remove('is-busy');
   }
   if (!state.loaded) {
-    // A failed refetch keeps the old dashboard: put the switch back where the
-    // rendered payload actually is instead of lying about the scope.
     state.includeManga = previous;
   }
   if (state.data) renderFilters(state.data);
@@ -2043,12 +1786,8 @@ async function setIncludeManga(next) {
 }
 
 async function setSource(source) {
-  // Legacy hook: the source chip UI is gone (a profile is one source). Kept as
-  // a no-op so an old cached element handler cannot crash a stale page.
   return Boolean(source);
 }
-
-/* ---------------- recent strip ---------------- */
 
 function bookCover(url, title, extraClass = '') {
   const cls = `film-poster book-cover${extraClass ? ` ${extraClass}` : ''}`;
@@ -2091,7 +1830,6 @@ function sourceTags(sources) {
   return wrap;
 }
 
-/** One short badge for the bibliographic metadata provider of the work. */
 function metadataTag(sources) {
   const key = arr(sources).find((item) => METADATA_LABEL[item]);
   if (!key) return null;
@@ -2125,9 +1863,6 @@ function renderRecent(data) {
   if (!section || !host) return;
   clear(host);
 
-  // The strip is one row of 15: «Читаю сейчас» first, then the finished books.
-  // A reading card must never be crowded out by 15 finished ones, and the
-  // strip must not disappear when the profile only has a current read.
   const reading = data.recentlyReading.slice(0, 15);
   const items = [...reading, ...data.recentlyFinished].slice(0, 15);
   if (!items.length) {
@@ -2216,8 +1951,6 @@ function renderRecent(data) {
   }
 }
 
-/* ---------------- ratings ---------------- */
-
 function ratingFromEntry(entry) {
   return entry && entry.rating != null ? entry.rating : null;
 }
@@ -2300,8 +2033,6 @@ function openRatingModal(score) {
     defaultSort: score === 0 ? 'title' : 'rating',
   });
 }
-
-/* ---------------- ranked bars: genres / series / authors ---------------- */
 
 function renderBarRow(host, item, max, { kindLabel = 'жанр', rank = 0, onOpen = null } = {}) {
   const row = el('div', { class: `genre-row is-book-row${rank ? ' is-ranked' : ''}${onOpen ? ' is-clickable' : ''}` });
@@ -2440,8 +2171,6 @@ function renderSeries(data) {
   const section = $('books-series-widget');
   const items = data.series.filter((item) => item.count >= 2);
   if (section) section.hidden = items.length === 0;
-  // A hidden series card would leave the right half of the row empty. When
-  // there is nothing to show, the authors card takes the whole row instead.
   const authors = $('books-authors-widget');
   if (authors) authors.classList.toggle('is-wide', items.length === 0);
   renderBarList({
@@ -2485,8 +2214,6 @@ function renderAuthors(data) {
     }
   }
 
-  // Search is only worth the space on a long author list; below the threshold
-  // the top-20 list is already scannable and the note stays compact.
   if (searchWrap) searchWrap.hidden = all.length <= AUTHORS_SEARCH_MIN;
   if (search && search.value !== authorsState.query) search.value = authorsState.query;
 
@@ -2538,8 +2265,6 @@ function renderAuthors(data) {
   }
 }
 
-/* ---------------- decades / years ---------------- */
-
 function decadeHint(message) {
   const box = el('div', { class: 'years-empty' });
   box.append(el('div', { class: 'years-empty-ring', 'aria-hidden': 'true' }));
@@ -2550,15 +2275,6 @@ function decadeHint(message) {
   return box;
 }
 
-/**
- * «N книг без года» — the honest summary line of the year charts.
- *
- * Works with no year at all (no first publication, no edition year, no manual
- * correction) are NOT painted as a bar/slice: the pre-ef593a8 chart silently
- * dropped them, and the 29.10.2026 verdict is «make it look like before, but
- * say the number out loud». The count is a button that opens the drilldown
- * list, where every row has the «Исправить год» action (manual override).
- */
 function unknownYearsButton(count) {
   const btn = el('button', {
     type: 'button',
@@ -2570,7 +2286,6 @@ function unknownYearsButton(count) {
   return btn;
 }
 
-/** Why the year is missing — the honest reason, never a fake verdict. */
 function unknownYearsReason(backfill) {
   if (!backfill) return '';
   const fileColumn = backfill.fileColumn;
@@ -2581,8 +2296,6 @@ function unknownYearsReason(backfill) {
       `${backfill.unlinked > 0 ? ` (${fmtInt(backfill.unlinked)} ждут привязки к метаданным)` : ''}`
     );
   }
-  // The root cause of the 28.10.2026 regression: the export file itself had no
-  // «Год издания» column, so the legacy channel had nothing to read.
   if (fileColumn && fileColumn.rows > 0 && fileColumn.withYear === 0) {
     return (
       'в файле-выгрузке не было колонки «Год издания» — переэкспортируйте файл с ней, ' +
@@ -2602,16 +2315,6 @@ function unknownYearsReason(backfill) {
   return 'провайдеры не знают';
 }
 
-/**
- * Drilldown of the ancient bucket («до 1000 г.»).
- *
- * Shared by the decade donut slice and the year-chart column: both open this
- * list. The bucket has no year of its own, so the list is «every work older
- * than the bound», not an equality filter on `year`. Every row keeps the
- * «…» → «Исправить год» action; a manual correction moves the work out of the
- * bucket into its real decade/year on the next stats load (the server derives
- * both charts from `work.year`).
- */
 function openAncientYearModal(bucket) {
   const data = state.data || {};
   const beforeYear = Math.round(toNum(bucket && bucket.beforeYear)) || 1000;
@@ -2643,7 +2346,6 @@ function openAncientYearModal(bucket) {
   });
 }
 
-/** Drilldown of the year-less works; the row menu fixes a year manually. */
 function openUnknownYearModal() {
   const data = state.data || {};
   const books = Object.values(data.booksIndex || {}).filter((entry) => entry.year == null);
@@ -2676,16 +2378,11 @@ function renderDecades(data) {
   const note = $('books-decades-note');
   if (!donutHost || !legendHost) return;
 
-  // Works without any year are not a decade: the chart paints real decades
-  // only and the note carries the honest «…и N книг без года» line. That is
-  // the pre-ef593a8 chart shape, minus its silent drop.
   const all = data.decades.slice();
   const decades = all.filter((item) => !item.unknown);
   const unknown = all
     .filter((item) => item.unknown)
     .reduce((sum, item) => sum + item.count, 0);
-  // «до 1000 г.» is a bucket, not a decade: it is counted in the slices and
-  // in the centre, but the note must not call it a decade.
   const ancientItems = decades.filter((item) => item.ancient);
   const ancientTotal = ancientItems.reduce((sum, item) => sum + item.count, 0);
   const realDecades = decades.filter((item) => !item.ancient);
@@ -2719,8 +2416,6 @@ function renderDecades(data) {
   }
 
   const segments = decades.map((item, index) => ({
-    // The ancient bucket keeps the server's stable key (`before-1000`), so a
-    // click routes by data, never by the label or by `start === 0`.
     key: item.key || `decade-${item.start}`,
     label: item.editionCount > 0 ? `${item.label}*` : item.label,
     value: item.count,
@@ -2739,8 +2434,6 @@ function renderDecades(data) {
     secondary: (seg) => `${fmtPercent(seg.value, total)} всех книг с годом`,
     onSelect: (seg) => {
       if (seg.ancient) {
-        // No year to show inside this bucket: open the list itself, the same
-        // drilldown the year column uses.
         openAncientYearModal(seg);
         return;
       }
@@ -2845,16 +2538,6 @@ function openYearModal(year) {
   });
 }
 
-/* ---------------- publication-year bars (full width) ---------------- */
-
-/**
- * Full-width bar chart of read books by publication year.
- *
- * The data is the server-aggregated `years` array, so the source chips and the
- * manga toggle apply automatically: the payload arrives already filtered and
- * the frontend only paints it. films reuse the same chart primitive with the
- * film wording kept by default.
- */
 function renderYearBarsWidget(data) {
   const host = $('books-yearbars-chart');
   const note = $('books-yearbars-note');
@@ -2865,10 +2548,6 @@ function renderYearBarsWidget(data) {
     host._booksYearResize = null;
   }
 
-  // The ancient bucket («до 1000 г.») arrives as one `years[]` entry with
-  // `ancient: true` and no `year`: it is painted in its own slot on the left,
-  // so it never enters the year axis (one book from 300 AD must not stretch
-  // the axis back). Everything below separates it from the real years.
   const years = data.years.slice().sort((a, b) => {
     if (a.ancient || b.ancient) return a.ancient ? -1 : 1;
     return a.year - b.year;
@@ -2877,7 +2556,6 @@ function renderYearBarsWidget(data) {
   const ancientItem = years.find((item) => item.ancient) || null;
   const options = {
     onYearClick: openYearModal,
-    // Same list as the decade slice: the bucket is one drilldown, not two.
     onAncientClick: (bucket) => openAncientYearModal(bucket),
     unitForms: ['книга', 'книги', 'книг'],
     shareLabel: 'всех книг',
@@ -2885,8 +2563,6 @@ function renderYearBarsWidget(data) {
     ariaLabel: realYears.length
       ? `Книги по годам издания: ${realYears[0].year} — ${realYears[realYears.length - 1].year}`
       : 'Книги по годам издания',
-    // Honest tooltip: a year taken from the print run is marked, never called
-    // a first publication.
     yearNote: (year, item) =>
       item && item.editionCount > 0
         ? `${fmtInt(item.editionCount)} ${plural(item.editionCount, ['книга', 'книги', 'книг'])}: год издания`
@@ -2903,19 +2579,12 @@ function renderYearBarsWidget(data) {
     const editionCount = toNum(data.summary && data.summary.yearEditionCount);
     const manualCount = toNum(data.summary && data.summary.yearManualCount);
     const ancientNote = ancient > 0 ? ` · ${fmtInt(ancient)} ${plural(ancient, ['книга', 'книги', 'книг'])} до 1000 г.` : '';
-    // Edition fallback: an honest substitute for a first-publication year.
     const editionNote = editionCount > 0
       ? ` · ${fmtInt(editionCount)} ${plural(editionCount, ['книга', 'книги', 'книг'])}: год издания вместо первоиздания`
       : '';
     const manualNote = manualCount > 0
       ? ` · ${fmtInt(manualCount)} ${plural(manualCount, ['книга', 'книги', 'книг'])}: ручная правка`
       : '';
-    // «Год неизвестен» is three states in one bucket. While the year queue is
-    // open it is a backfill snapshot; once it drains, the remainder is either
-    // an honest «providers don't know» verdict, a work still waiting for the
-    // metadata link (the resolve chain) or — the 28.10.2026 root cause — an
-    // export file that simply had no «Год издания» column. Never call the whole
-    // bucket «провайдеры не знают» while unlinked works are still in it.
     const backfill = data.summary && data.summary.yearBackfill;
     const base = !realYears.length
       ? `${ancient > 0 ? `до 1000 г. · ${fmtInt(ancient)}` : 'нет данных'}${editionNote}${manualNote}`
@@ -2941,8 +2610,6 @@ function renderYearBarsWidget(data) {
     host._booksYearResize = observer;
   }
 }
-
-/* ---------------- timeline ---------------- */
 
 function openMonthModal(month) {
   const prefix = text(month);
@@ -3001,10 +2668,6 @@ function renderTimeline(data) {
     host._booksResize = observer;
   }
 }
-
-/* =========================================================
-   book list modal
-   ========================================================= */
 
 const BOOK_SORT_OPTIONS = [
   { key: 'rating', label: 'По оценке', hint: 'оценка ↓' },
@@ -3118,9 +2781,6 @@ function bookRow(entry) {
     info.append(el('div', { class: 'book-authors', text: entry.authors.join(', ') }));
   }
 
-  // Collection provenance: the work came out of an anthology/omnibus record.
-  // The parent record is not a work, so it is rendered as a line with a link
-  // to its own LiveLib page instead of a drilldown.
   if (entry.collection && entry.collection.parentTitle) {
     const line = el('div', { class: 'book-authors book-collection' });
     line.append(document.createTextNode('из сборника «'));
@@ -3162,11 +2822,6 @@ function bookRow(entry) {
   return row;
 }
 
-/**
- * Reusable book list modal (rating / genre / author / series / month / day).
- * Mirrors openFilmListModal: batched rows, sort selector, Escape/backdrop
- * handled by the shared modal shell.
- */
 function openBookListModal({
   title,
   kicker = '',
@@ -3247,22 +2902,12 @@ function openBookListModal({
   return openModal({ head, body, labelledBy: titleId, className: 'modal-films modal-books' });
 }
 
-/* =========================================================
-   book links menu (kebab)
-   ========================================================= */
-
 function closeBookMenu() {
   const close = openBookMenuClose;
   openBookMenuClose = null;
   if (close) close();
 }
 
-/**
- * Manual manga/comics override: hide a stubborn work or bring a wrongly
- * detected one back. The request is per workId, persists on the server in
- * `cache-book/flags/book-flags.json`, and the dashboard is refetched so every
- * widget (counts, timeline, authors) reflects the change at once.
- */
 async function setMangaOverride(book, mangaComics, message) {
   if (!book || !book.workId || state.mangaBusy) return;
   state.mangaBusy = true;
@@ -3318,13 +2963,6 @@ function bookYearSourceText(book) {
   return 'Год неизвестен';
 }
 
-/**
- * Manual year correction from the book card / a year bucket list.
- *
- * The server stores the edit per profile and it outranks every provider
- * (`manual > first > edition > unknown`); after saving the dashboard is
- * refetched silently, so the decade/year charts move at once.
- */
 function openYearEditModal(book) {
   if (!book || !book.workId) return;
   const profile = activeProfileKey();
@@ -3415,11 +3053,6 @@ function openYearEditModal(book) {
   input.select();
 }
 
-/**
- * Kebab menu with the known source links and the manual manga/comics toggle.
- * Books MVP has no manual re-match, so unlike renderFilmMenu() there is no
- * "Исправить матч" item at all.
- */
 export function renderBookMenu(book) {
   if (!book) return null;
   const items = [];
@@ -3436,8 +3069,6 @@ export function renderBookMenu(book) {
       label: 'Исправить год',
       action: () => openYearEditModal(book),
     });
-    // `mangaComics` is the effective flag (detector ∪ series ∪ manual);
-    // `mangaComicsOverride` is only the user's own decision.
     if (book.mangaComics !== true) {
       items.push({
         kind: 'action',
@@ -3504,7 +3135,6 @@ export function renderBookMenu(book) {
 
   function onKeyDown(event) {
     if (event.key !== 'Escape') return;
-    // Escape closes the menu layer only — the modal underneath stays open.
     event.preventDefault();
     event.stopPropagation();
     closeBookMenu();
@@ -3589,21 +3219,10 @@ export function renderBookMenu(book) {
   return wrap;
 }
 
-/* =========================================================
-   public API used by main.js
-   ========================================================= */
-
-/**
- * Bind the books UI once. `onActivate` is called whenever the books module
- * wants its section to be the visible view (async loads, progress screen).
- */
 export function initBooks({ onActivate } = {}) {
   state.onActivate = typeof onActivate === 'function' ? onActivate : null;
   state.includeManga = readJson(MANGA_STORAGE_KEY, false) === true;
 
-  // The one shell paints the source cards from the domain descriptor: an
-  // existing `book-source-card` is adopted, a missing one is created. The
-  // forms inside stay book-side (their ids are bound below).
   renderSourceCards({ grid: $('books-sources-grid'), sources: BOOKS_SHELL.sources });
 
   const hardcoverForm = $('books-hardcover-form');
@@ -3613,7 +3232,6 @@ export function initBooks({ onActivate } = {}) {
       const input = $('books-hardcover-userid');
       const raw = text(input && input.value);
       if (!raw) {
-        // No implicit token-owner default any more: the profile owns the id.
         setSourceError('hardcover', 'Введите числовой ID пользователя Hardcover.');
         if (input) input.focus();
         return;
@@ -3636,8 +3254,6 @@ export function initBooks({ onActivate } = {}) {
   }
   const fileInput = $('books-livelib-file');
   if (fileInput) {
-    // A new pick invalidates the previous result/error: the block always talks
-    // about the file the user is looking at.
     fileInput.addEventListener('change', () => {
       const name = $('books-livelib-file-name');
       if (name) {
@@ -3674,7 +3290,6 @@ export function initBooks({ onActivate } = {}) {
     metadataBadgeNode.addEventListener('pointerenter', show);
     metadataBadgeNode.addEventListener('pointermove', moveTooltip);
     metadataBadgeNode.addEventListener('pointerleave', hideTooltip);
-    // Touch/keyboard: a click shows the same hint (there is no hover).
     metadataBadgeNode.addEventListener('click', show);
   }
   document.addEventListener('click', (event) => {
@@ -3693,8 +3308,6 @@ export function initBooks({ onActivate } = {}) {
   const filters = $('books-filters');
   if (filters) {
     filters.addEventListener('click', (event) => {
-      // The source chips are gone; a profile is one source. Ignore any stale
-      // `.source-chip` markup instead of issuing a filtered request.
       const button = event.target.closest('.source-chip');
       if (button) event.preventDefault();
     });
@@ -3723,8 +3336,6 @@ export function initBooks({ onActivate } = {}) {
   if (refresh) {
     refresh.addEventListener('click', (event) => {
       event.preventDefault();
-      // Shift+click = full Hardcover journal re-read (the default is the
-      // incremental `updated_at` diff, which is one query for one new book).
       refreshProfiles({ force: Boolean(event.shiftKey) });
     });
   }
@@ -3741,27 +3352,17 @@ export function initBooks({ onActivate } = {}) {
   const back = $('books-progress-back');
   if (back) {
     back.addEventListener('click', () => {
-      // Keep the running job in state/localStorage: the import screen lets the
-      // user start the second source, and returning to progress resumes both.
       stopPolling();
       showScreen('import');
     });
   }
 }
 
-/**
- * Called by main.js when the books tab becomes active. Reuses the rendered
- * dashboard, resumes a pending import or loads the stats payload.
- */
 export async function showBooks() {
   state.active = true;
   if (state.active && state.onActivate) state.onActivate();
-  // The local registry is authoritative for scoping; load it before any
-  // request so `profile=` can never be missing on the first paint.
   await ensureProfiles();
   if (state.refresh) {
-    // The refresh keeps running while the user visits Films; returning to the
-    // tab must re-attach the progress view, not load stale stats.
     if (state.onActivate) state.onActivate();
     showScreen('progress');
     renderProgress();
@@ -3770,8 +3371,6 @@ export async function showBooks() {
   }
   if (state.view === 'dashboard' && state.data) {
     if (state.onActivate) state.onActivate();
-    // Resume the metadata badge poller after a tab switch (the payload may
-    // still report a running resolve stage).
     renderMetadataBadge(state.data);
     return;
   }
@@ -3795,18 +3394,14 @@ export async function showBooks() {
   await loadStats({ force: true });
 }
 
-/** Called by main.js when another tab takes over. */
 export function hideBooks() {
   state.active = false;
-  // A manual refresh continues on the server and in the background poller;
-  // only idle/import polling is paused while the tab is hidden.
   if (!state.refresh) stopPolling();
   stopMetadataPolling();
   closeBookMenu();
   closeProfileMenu();
 }
 
-/** Drop every in-memory book artefact (logout / different user session). */
 export function resetBooks() {
   stopPolling();
   stopMetadataPolling();
@@ -3818,8 +3413,6 @@ export function resetBooks() {
   state.refresh = null;
   state.refreshStarting = false;
   state.selectedDecade = null;
-  // The registry itself is device-scoped (IndexedDB), not session-scoped: a
-  // logout must not delete the user's book profiles, only the in-memory view.
   state.profilesReady = false;
   state.profile = null;
   state.profiles = [];
@@ -3827,7 +3420,7 @@ export function resetBooks() {
   authorsState.expanded = false;
   authorsState.query = '';
   state.view = 'import';
-  state.seq += 1; // abort any in-flight render
+  state.seq += 1;
   saveJobs();
   showScreen('import');
   renderProfileSwitcher();

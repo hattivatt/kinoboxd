@@ -1,46 +1,11 @@
 'use strict';
 
-/**
- * Contract generator (P9, план §3.5 / U14).
- *
- * WHY: `contracts/*.md` must not be written by hand — a hand-written table of
- * routes, env names or source limits drifts from the code on the first
- * refactor. This script reads the code and emits the documents, so the diff of
- * a code change includes the diff of the contract.
- *
- * Sources of truth:
- *   contracts/api.md    <- `app.get/router.get/post/...` declarations
- *                          (server/index.js, auth.js, films/routes.js,
- *                           books/routes.js, games/routes*.js,
- *                           games/personnel/routes-personnel.js)
- *   contracts/env.md    <- `process.env.*`, `core/sources.js` env fields,
- *                          `config.js` credential aliases
- *   contracts/limits.md <- `core/sources.js` SOURCES table
- *   contracts/cache.md  <- path constants in cache.js / book-cache.js /
- *                          game-cache.js / gog-cache.js / epic-cache.js /
- *                          secondary/store.js and their env roots
- *
- * No dependencies (fs/path only), no network, deterministic output: no
- * timestamps, everything sorted, so a second run produces byte-identical files.
- *
- * Usage (from `app/`):
- *
- *   node scripts/gen-contracts.js            # all four documents
- *   node scripts/gen-contracts.js api        # one document
- *   node scripts/gen-contracts.js --check    # exit 1 if contracts/ is stale
- *   node scripts/gen-contracts.js --out DIR  # write somewhere else (tests)
- */
-
 const fs = require('fs');
 const path = require('path');
 
 const APP_ROOT = path.join(__dirname, '..');
 const CONTRACTS_DIR = path.join(APP_ROOT, 'contracts');
 const MODES = ['api', 'env', 'limits', 'cache'];
-
-/* ------------------------------------------------------------------ */
-/* Generic helpers                                                     */
-/* ------------------------------------------------------------------ */
 
 function readRel(rel) {
   return fs.readFileSync(path.join(APP_ROOT, rel), 'utf8');
@@ -98,11 +63,10 @@ function formatMs(ms) {
   return `${value} ms`;
 }
 
-/** The comment block directly above `index`, flattened to one line. */
 function docBefore(text, index) {
   const before = text.slice(0, index);
   const rows = before.split('\n');
-  rows.pop(); // the line the match starts on
+  rows.pop();
   let i = rows.length - 1;
   while (i >= 0 && rows[i].trim() === '') i--;
   const collected = [];
@@ -129,7 +93,6 @@ function docBefore(text, index) {
   return flat || null;
 }
 
-/** Split a JS argument list on top-level commas (quotes/parens/brackets aware). */
 function splitTopLevel(text) {
   const parts = [];
   let current = '';
@@ -165,11 +128,6 @@ function splitTopLevel(text) {
   return parts.map((part) => part.trim());
 }
 
-/**
- * Index of the `)` that closes the call whose `(` is at `open`, or -1.
- * Quotes are honoured, so a `)` inside a string or a template literal does not
- * end the call.
- */
 function balancedEnd(text, open) {
   let depth = 0;
   let quote = null;
@@ -193,7 +151,6 @@ function balancedEnd(text, open) {
   return -1;
 }
 
-/** Balanced-paren argument lists for `needle(...)` occurrences in `text`. */
 function findCalls(text, needle) {
   const calls = [];
   let from = 0;
@@ -205,17 +162,13 @@ function findCalls(text, needle) {
       from = at + needle.length;
       continue;
     }
-    const open = at + needle.length - 1; // index of '('
+    const open = at + needle.length - 1;
     const end = balancedEnd(text, open);
     calls.push({ index: at, args: text.slice(open + 1, end === -1 ? text.length : end) });
     from = end === -1 ? text.length : end + 1;
   }
   return calls;
 }
-
-/* ------------------------------------------------------------------ */
-/* api.md                                                             */
-/* ------------------------------------------------------------------ */
 
 const MOUNTED_ROUTE_FILES = [
   'server/auth.js',
@@ -366,8 +319,6 @@ function collectRoutes() {
     const text = readRel(file);
     const decls = routeDeclarations(text);
     decls.forEach((decl) => {
-      // The handler is the whole `router.method(path, ...)` call; helpers
-      // declared between two routes are not part of either route's contract.
       const block = text.slice(decl.index, decl.close);
       const fullPath = joinPath(prefixes[0], decl.rawPath);
       routes.push({
@@ -466,10 +417,6 @@ function renderApi() {
   return lines.join('\n');
 }
 
-/* ------------------------------------------------------------------ */
-/* env.md                                                             */
-/* ------------------------------------------------------------------ */
-
 const ENV_LITERAL_CONTEXT =
   /(env|budget|ttl|pause|timeout|breaker|ENV_KEYS|envKeys|_ENV|_KEYS|KEY_FILE|fromEnv|envMs|envTtl|envInt)[\w$]*[=:(,\[\s]{0,8}$/i;
 
@@ -503,9 +450,6 @@ function collectCredentials() {
     });
   }
 
-  // Domain-local credential loaders (Moby) keep the same alias shape without
-  // going through `config.js`: `const KEY_ENV_KEYS = [...]`, `KEY_FILE`,
-  // `KEY_FILE_ENV`.
   for (const rel of walk('server', (file) => file.endsWith('.js'))) {
     if (rel === 'server/config.js') continue;
     const source = readRel(rel);
@@ -527,7 +471,7 @@ function collectCredentials() {
 }
 
 function collectEnvNames(texts) {
-  const names = new Map(); // name -> { file, line, snippet, purpose }
+  const names = new Map();
 
   function add(name, file, text, index) {
     if (names.has(name)) return;
@@ -546,12 +490,9 @@ function collectEnvNames(texts) {
     for (const m of text.matchAll(/process\.env\.([A-Z0-9_]+)/g)) {
       add(m[1], file, text, m.index);
     }
-    // `process.env['NAME']` / `process.env["NAME"]`
     for (const m of text.matchAll(/process\.env\[['"]([A-Z0-9_]+)['"]\]/g)) {
       add(m[1], file, text, m.index);
     }
-    // Env names passed as string literals to env/budget/ttl helpers, and
-    // `const X_ENV = 'NAME'` test hooks (e.g. KINOBOXD_MOBY_KEY_FILE).
     for (const m of text.matchAll(/'([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)'/g)) {
       const context = text.slice(Math.max(0, m.index - 80), m.index);
       if (!ENV_LITERAL_CONTEXT.test(context)) continue;
@@ -574,7 +515,7 @@ const SOURCE_ENV_FIELDS = [
 
 function sourceEnvIndex() {
   const { SOURCES } = require(path.join(APP_ROOT, 'server', 'core', 'sources.js'));
-  const index = new Map(); // env -> [{ id, defaultText }]
+  const index = new Map();
   for (const entry of Object.values(SOURCES)) {
     for (const [field, describe] of SOURCE_ENV_FIELDS) {
       const env = entry[field];
@@ -631,7 +572,6 @@ function defaultFromCode(texts, name) {
       const m = re.exec(text);
       if (!m) continue;
       const value = cleanDefault(m[1]);
-      // A captured condition (`(rateLimitHits === 1`) is not a default.
       if (!value || /[=!<>]=|\|\||\(/.test(value)) continue;
       const isBudget = i === 5 || /_BUDGET$/.test(name);
       const resolved = resolveIdentifierDefault(value, file, texts, { ms: !isBudget });
@@ -749,10 +689,6 @@ function renderEnv() {
   return lines.join('\n');
 }
 
-/* ------------------------------------------------------------------ */
-/* limits.md                                                          */
-/* ------------------------------------------------------------------ */
-
 const STANDARD_FIELDS = new Set([
   'id',
   'host',
@@ -782,11 +718,6 @@ function formatExtra(value) {
   return String(value);
 }
 
-/**
- * Numbers AGENTS.md §1 states that the SOURCES table does not carry (daily
- * caps, process rules, per-book request counts). Kept here — in the generated
- * document — with an exact origin, so the prose can point at one place.
- */
 const SPECIAL_LIMITS = [
   {
     source: 'hardcover',
@@ -956,10 +887,6 @@ function renderLimits() {
   return lines.join('\n');
 }
 
-/* ------------------------------------------------------------------ */
-/* cache.md                                                           */
-/* ------------------------------------------------------------------ */
-
 const CACHE_MODULES = [
   'server/cache.js',
   'server/books/book-cache.js',
@@ -972,16 +899,6 @@ const CACHE_MODULES = [
   'server/games/secondary/store.js',
 ];
 
-/** `path.join(__dirname, '..', 'cache')` in `fileRel` -> `cache` (app-relative). */
-/**
- * Resolve a `path.join(...)` argument list to an app-relative path.
- *
- *   path.join(__dirname, '..', 'cache')        -> `cache`
- *   path.join(gameCache.GAMES_CACHE_DIR, 'x')  -> `cache-games/x`
- *
- * `resolveRef` maps a plain or dotted identifier (`CACHE_DIR`,
- * `gameCache.STATE_DIR`) to a known app-relative path.
- */
 function resolveJoinArgs(argsText, fileRel, resolveRef) {
   const parts = splitTopLevel(argsText);
   if (!parts.length) return null;
@@ -1004,30 +921,12 @@ function resolveDirnameJoin(argsText, fileRel = '') {
   return resolveJoinArgs(argsText, fileRel, () => null);
 }
 
-/**
- * Resolve the `const NAME = ...` path constants of one cache module.
- * Handles the shapes the cache modules actually use:
- *   const NAME = process.env.ENV ? path.resolve(process.env.ENV) : path.join(...)
- *   const NAME = process.env.ENV ? path.join(path.resolve(process.env.ENV), 'x')
- *                                : path.join(PARENT, 'y')
- *   const NAME = path.join(PARENT, 'x', ...)
- *   const NAME = gameCache.SOME_NAME
- *
- * Map values are app-relative without the `app/` prefix (`cache-games/state`);
- * the renderer adds the prefix.
- */
 function resolveCacheModule(file, parents = {}) {
   const text = readRel(file);
   const map = new Map();
   const envRoots = [];
   const order = [];
 
-  /**
-   * Resolve a path reference: a local constant (`STATE_DIR`) or a constant of
-   * the parent cache module (`gameCache.GAMES_CACHE_DIR`). Parent maps are
-   * namespaced on purpose: a flat merge would let book-cache's PROFILES_DIR
-   * shadow the games one.
-   */
   function resolveRef(token) {
     if (!token) return null;
     const parts = String(token).split('.');
@@ -1038,7 +937,6 @@ function resolveCacheModule(file, parents = {}) {
     return map.has(parts[0]) ? map.get(parts[0]) : null;
   }
 
-  // 1) `process.env.X ? path.resolve(process.env.X) : path.join(...)`
   for (const m of text.matchAll(
     /const\s+([A-Z][A-Z0-9_]*)\s*=\s*process\.env\.([A-Z0-9_]+)\s*\?\s*path\.resolve\(process\.env\.\2\)\s*:\s*path\.join\(([^;]*?)\);/g
   )) {
@@ -1049,8 +947,6 @@ function resolveCacheModule(file, parents = {}) {
     order.push(m[1]);
   }
 
-  // 2) `process.env.X ? path.join(path.resolve(process.env.X), 'sub')
-  //                  : path.join(PARENT, 'default')`
   for (const m of text.matchAll(
     /const\s+([A-Z][A-Z0-9_]*)\s*=\s*process\.env\.([A-Z0-9_]+)\s*\?\s*path\.join\(path\.resolve\(process\.env\.\2\),\s*'([^']+)'\)\s*:\s*path\.join\((\w+),\s*'([^']+)'\);/g
   )) {
@@ -1067,7 +963,6 @@ function resolveCacheModule(file, parents = {}) {
     order.push(m[1]);
   }
 
-  // 3) aliases of the parent module: `const X = gameCache.Y;`
   for (const m of text.matchAll(
     /const\s+([A-Z][A-Z0-9_]*)\s*=\s*(gameCache|bookCache|filmCache)\.([A-Z][A-Z0-9_]*);/g
   )) {
@@ -1075,7 +970,6 @@ function resolveCacheModule(file, parents = {}) {
     if (parent != null) map.set(m[1], parent);
   }
 
-  // 4) plain joins: `const X = path.join(PARENT, 'a', 'b');`
   for (const m of text.matchAll(
     /const\s+([A-Z][A-Z0-9_]*)\s*=\s*path\.join\(([\w.]+),\s*((?:'[^']*'(?:,\s*)?)+)\);/g
   )) {
@@ -1087,7 +981,6 @@ function resolveCacheModule(file, parents = {}) {
     order.push(m[1]);
   }
 
-  // 5) `path: path.join(PARENT, LOCK_NAME)` inside an object literal.
   for (const m of text.matchAll(/path:\s*path\.join\(([\w.]+),\s*([A-Z][A-Z0-9_]*)\)/g)) {
     const parent = resolveRef(m[1]);
     const literal = new RegExp(`const\\s+${m[2]}\\s*=\\s*'([^']+)'`).exec(text);
@@ -1125,7 +1018,6 @@ function evaluateMs(raw, map) {
   }
   if (!/^[\d\s*+/().-]+$/.test(expression)) return null;
   try {
-    // Only digits and arithmetic reach this point (guarded by the regexp).
     const value = Function(`'use strict'; return (${expression});`)();
     return Number.isFinite(value) ? value : null;
   } catch (err) {
@@ -1222,10 +1114,6 @@ function renderCache() {
   return lines.join('\n');
 }
 
-/* ------------------------------------------------------------------ */
-/* CLI                                                                */
-/* ------------------------------------------------------------------ */
-
 const RENDERERS = {
   api: { file: 'api.md', render: renderApi },
   env: { file: 'env.md', render: renderEnv },
@@ -1233,10 +1121,6 @@ const RENDERERS = {
   cache: { file: 'cache.md', render: renderCache },
 };
 
-/**
- * Render the selected documents. Returns `[{ file, content }]`, sorted by file
- * name, without touching the disk.
- */
 function generate(modes = MODES) {
   const selected = modes.length ? modes : MODES;
   for (const mode of selected) {
@@ -1247,7 +1131,6 @@ function generate(modes = MODES) {
     .sort((a, b) => a.file.localeCompare(b.file));
 }
 
-/** Write the documents into `outDir` (default: app/contracts). */
 function writeContracts({ modes = MODES, outDir = CONTRACTS_DIR } = {}) {
   const docs = generate(modes);
   fs.mkdirSync(outDir, { recursive: true });
@@ -1260,7 +1143,6 @@ function writeContracts({ modes = MODES, outDir = CONTRACTS_DIR } = {}) {
   return written;
 }
 
-/** Compare rendered documents with what is on disk; returns stale file names. */
 function staleContracts({ modes = MODES, outDir = CONTRACTS_DIR } = {}) {
   const stale = [];
   for (const doc of generate(modes)) {
@@ -1335,8 +1217,6 @@ module.exports = {
   writeContracts,
   staleContracts,
   main,
-  // Exposed for the contract test: counts and path resolution are part of the
-  // contract, so the test asserts on them instead of parsing the markdown.
   collectRoutes,
   resolveCacheModule,
   collectEnvNames,

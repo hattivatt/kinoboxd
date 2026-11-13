@@ -1,13 +1,5 @@
 'use strict';
 
-/**
- * Application bootstrap (P7). Domain routes live in their own routers:
- * `books/routes.js`, `games/routes*.js`, `films/routes.js`. This file only
- * assembles the chain (gzip → JSON body → auth gate → routers → static →
- * SPA fallback → 404/error), listens and prints the LAN addresses. Mount order
- * is part of the contract: `/api/auth/*` precedes the password gate.
- */
-
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -38,45 +30,33 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 app.disable('x-powered-by');
 
-// One gzip layer for the whole app (U11): the prefix table in server/gzip.js
-// sets the threshold/level, `compression()` is gone, so nothing is gzipped twice.
 app.use(gzip());
 app.use(express.json({ limit: '1mb' }));
 
-// Password protection (KINOBOXD_PASSWORD). Without it the API stays open.
-// /api/auth/* is always reachable; everything else under /api is gated.
 app.use(auth.attachCookies);
 app.use('/api/auth', auth.router);
 app.use('/api', auth.requireAuth);
 
-// Books (cache-book/) and games (cache-games/) come first, exactly as before.
 app.use('/api/books', booksRouter);
 app.use('/api/books', booksManualRouter);
 
 app.use('/api/games', gamesRouter);
-// GOG (M6a): /api/games/gog/* — connect, status, import, logout.
 app.use('/api/games/gog', gamesGogRouter);
-// Personnel (M3): GET /api/games/personnel + POST /api/games/override.
 app.use('/api/games', gamesPersonnelRouter);
-// Franchises (M4-B): GET /api/games/franchises + POST /api/games/franchise-enrich.
 app.use('/api/games', gamesFranchiseRouter);
-// Epic secondary library (M6b): /api/games/epic/*.
 app.use('/api/games', gamesEpicRouter);
 
-// Films (P7): the 12 API endpoints that used to be inline here.
 app.use('/api', filmsRouter);
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, tmdb: config.hasTmdbToken() });
 });
 
-/* Static frontend + SPA fallback. */
 app.use(
   express.static(PUBLIC_DIR, {
     index: 'index.html',
     extensions: ['html'],
     setHeaders(res, filePath) {
-      // The HTML spec's current JS type (mime-types still says application/javascript).
       const ext = path.extname(filePath).toLowerCase();
       if (ext === '.js' || ext === '.mjs') {
         res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
@@ -94,15 +74,12 @@ app.get('*', (req, res, next) => {
     .json({ error: 'Frontend not built yet (app/public/index.html is missing).' });
 });
 
-/* Errors. */
-
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found.', code: 'not_found' });
 });
 
 app.use(errorMiddleware);
 
-// Non-internal IPv4 addresses, so the startup log shows the LAN URLs.
 function getLanAddresses() {
   const result = [];
   const interfaces = os.networkInterfaces();
@@ -138,7 +115,6 @@ server.on('error', (err) => {
   } else {
     console.error('[server] Failed to start:', err);
   }
-  // Nothing is listening: the loop drains and Node exits with this code.
   process.exitCode = 1;
 });
 

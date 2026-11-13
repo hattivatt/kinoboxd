@@ -1,31 +1,5 @@
 'use strict';
 
-/**
- * /api/books/stats payload (AGENTS.md §5.2).
- *
- * A books profile IS one source + one account: `livelib-Margaret` OR
- * `hardcover-34748`. Two readers never merge, and two services never merge
- * either — `/api/books/stats` requires exactly one `?profile=` token and every
- * widget is computed from that profile's events only.
- *
- * Consequences, all deliberate:
- *   - events are never merged across sources; a LiveLib event stays a LiveLib
- *     event even when its *metadata* was resolved through Hardcover/Litres/GB;
- *   - `booksIndex` keys are the LiveLib stub `ll:{sourceBookId}` or the resolved
- *     canonical work `hc:{books.id}` that the resolve chain linked *for this
- *     LiveLib book*; no cross-source title dedupe happens in stats;
- *   - there is no `ratings.bySource` / `sources.filter` / `?sources=` any more:
- *     the single-profile contract is strict, extra query parameters are a 400
- *     at the route (`unexpected_parameter`);
- *   - only events with `finishedAt` enter timeline/calendar/streaks;
- *     `summary.undatedEventCount` reports the rest honestly;
- *   - `summary.metadata` reports how much of the profile already has
- *     bibliographic metadata (`resolved/total/percent`) and whether the resolve
- *     stage is running for it right now (`running`, `budgetRemaining`);
- *   - `metadataSources` on a work says where the *bibliographic metadata* came
- *     from. That is a metadata chain, not an event union.
- */
-
 const {
   round2,
   mean,
@@ -78,35 +52,6 @@ const { buildTimeline, buildRecentlyFinished, buildRecentlyReading } = require('
 const { buildBooksIndex, buildUnmatched } = require('./stats/books-index');
 const { buildMeta } = require('./stats/meta');
 
-/* ------------------------------------------------------------------ */
-/* Payload                                                             */
-/* ------------------------------------------------------------------ */
-
-/**
- * Build the whole /api/books/stats payload for ONE profile.
- *
- * `options.profile` is the raw `?profile=` value (`livelib-Margaret`);
- * `options.profileScope` may carry an already-resolved scope (routes resolve it
- * to answer 400 with a good message). `options.resolveState` is the live
- * import-job view (`{ running, budgetRemaining }`) used for
- * `summary.metadata`; absent means "not running". `options.now` is injectable
- * for tests.
- *
- * S2 «распил god-функции»: this function is the assembly line only.
- * `stats/context.js` prepares the profile/events/work set, and every payload
- * section is built by its own module (`stats/summary.js`, `stats/coverage.js`,
- * `stats/widgets.js`, `stats/timeline.js`, `stats/books-index.js`,
- * `stats/meta.js`). The key order below is the payload contract — the golden
- * hash is byte-sensitive, so each section is slotted in exactly where its
- * value used to be built inline.
- *
- * R12 «god module» split: the helpers that used to live inline here are now
- * grouped by topic — `stats/scope.js` (profile selection), `stats/events.js`
- * (event preparation), `stats/work.js` (work metadata + work dedupe),
- * `stats/series.js` (series lists, file metadata, series manga) and
- * `stats/years.js` (year resolution). Every name is re-exported below, so the
- * module surface of `books/stats.js` is unchanged.
- */
 function buildBooksStats(options = {}) {
   const startedAt = process.hrtime.bigint();
   const ctx = buildContext(options, {
@@ -125,8 +70,6 @@ function buildBooksStats(options = {}) {
   const { decades, years: yearsList } = buildYearBuckets(ctx);
   const authorsList = buildAuthors(ctx);
   const series = buildSeries(ctx, { dedupeSeriesSubsets, seriesGroupsOf });
-  // The literal already created `seriesCount`; re-assigning keeps the key in
-  // place. The final number is post-`dedupeSeriesSubsets`, as before.
   summary.seriesCount = series.length;
   const pagesHistogram = buildPagesHistogram(ctx);
   const { timeline, readDays, streaks } = buildTimeline(ctx);
@@ -139,10 +82,6 @@ function buildBooksStats(options = {}) {
   const { connected, selected, profile, selection } = ctx;
 
   return {
-    // Which profile produced this payload, plus the catalog of profiles on the
-    // server. `selected` is always exactly one source: a profile is one account
-    // of one service. There is no `filter` block: the route rejects unknown
-    // query parameters instead of echoing an ignored filter.
     sources: {
       connected,
       selected,
@@ -150,8 +89,6 @@ function buildBooksStats(options = {}) {
         key: profileKeyOf(profile),
         source: profile.source,
         userKey: profile.userKey,
-        // How the profile was acquired: `livelib` (scrape) or `livelib-file`
-        // (livelib-backup export). Same key contract either way.
         origin: profile.origin || profile.source,
         importedAt: profile.importedAt || null,
         eventCount: profile.events.length,
@@ -181,19 +118,6 @@ function buildBooksStats(options = {}) {
   };
 }
 
-/**
- * Compact summary of ONE cached profile document, for `GET /api/books/profiles`
- * (switcher badges + docs). Reuses `prepareEvents`, so the Hardcover journal
- * status filter and re-read grouping behave exactly like in the stats build,
- * but no details/metadata files are read — the endpoint must stay cheap for a
- * 1245-event LiveLib profile.
- *
- * Deliberately *not* the stats payload: `bookCount` here is unique `workId`
- * before the cross-source title dedupe (live: 1211 vs 1210 for the same
- * profile) and no manga/comics filter is applied (live Hardcover: 653 events
- * here vs 131 in /stats, where the comics shelf is hidden by default). Use it
- * for badges/docs, never as a substitute for /api/books/stats.
- */
 function profileSummary(profile) {
   if (!profile || !Array.isArray(profile.events)) {
     return {
@@ -211,8 +135,6 @@ function profileSummary(profile) {
   }
   const prepared = prepareEvents([profile]);
   const events = prepared.events;
-  // A collection row is a host for its works: the badge count follows the same
-  // semantics as /stats (a host with no proven work still counts as one book).
   const workIds = new Set(
     events
       .filter((event) => !prepared.collectionHostIds.has(event.id))
@@ -257,7 +179,6 @@ function profileSummary(profile) {
   };
 }
 
-/** Unmatched list for GET /api/books/unmatched (one profile by contract). */
 function listUnmatched(options = {}) {
   const stats = buildBooksStats(options);
   return {

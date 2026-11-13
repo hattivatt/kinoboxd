@@ -10,7 +10,6 @@ const round4 = (value) => roundNumber4(value, 'numeric');
 
 const OVERRIDES_PATH = path.join(gameCache.GAMES_CACHE_DIR, 'personnel-overrides.json');
 
-/** Canonical roles accepted by `?role=` (§5.3). */
 const ROLES = [
   'developer',
   'publisher',
@@ -26,12 +25,6 @@ const ROLES = [
   'voice',
 ];
 
-/**
- * Backward-compatible spellings. `studio` was the M3 default before the
- * developer/publisher split (01.11.2026); it must keep answering, otherwise a
- * cached frontend would get a 400 after the deploy. Aliases resolve to the
- * canonical role and are echoed as `roleRequested`.
- */
 const ROLE_ALIASES = {
   studio: 'developer',
   studios: 'developer',
@@ -41,10 +34,8 @@ const ROLE_ALIASES = {
 
 const DEFAULT_ROLE = 'developer';
 
-/** Studio roles (people roles are everything else). */
 const STUDIO_ROLES = ['developer', 'publisher'];
 
-/** People roles in the order §7.1 shows them (studios are a separate block). */
 const PEOPLE_ROLES = [
   'composer',
   'designer',
@@ -70,7 +61,6 @@ class PersonnelError extends Error {
   }
 }
 
-/** NFKC, lowercase, «ё»→«е», ™/® stripped, punctuation → space (§4.2). */
 function normalizeName(value) {
   return String(value == null ? '' : value)
     .normalize('NFKC')
@@ -104,8 +94,6 @@ function asNameList(value) {
   const list = Array.isArray(value) ? value : [value];
   return list
     .map((entry) => {
-      // M2 writes plain strings (§3.6); an object with `name` is accepted so a
-      // richer details document cannot silently blank the studio block.
       if (entry && typeof entry === 'object') return cleanName(entry.name);
       return cleanName(entry);
     })
@@ -131,7 +119,6 @@ function normalizeRole(raw) {
   return value;
 }
 
-/** Canonical role + what the caller actually asked for (alias transparency). */
 function resolveRole(raw) {
   const requested = String(raw == null ? '' : raw).trim().toLowerCase() || null;
   const role = normalizeRole(raw);
@@ -154,7 +141,6 @@ function normalizeSort(raw) {
   return value;
 }
 
-/** Union-find over entry keys (same idea as `books/authors.js`). */
 function createUnion() {
   const parent = new Map();
   const find = (key) => {
@@ -184,13 +170,6 @@ function strongKey(entry) {
   return `name:${normalizeName(entry.name)}`;
 }
 
-/**
- * Legal-form tokens that are a company's *form*, not its name (§4.2 keeps
- * «Studio»/«Games»/«Interactive» — those are part of the name; «Inc.»/«Ltd»/
- * «GmbH» are not). Steam and Wikidata disagree exactly here: «Valve» vs
- * «Valve Corporation», «FromSoftware» vs «FromSoftware, Inc.», «Epic Games»
- * vs «Epic Games, Inc.» (round 01.11.2026: seven studios were shown twice).
- */
 const LEGAL_FORM_TOKENS = new Set([
   'inc',
   'incorporated',
@@ -223,7 +202,6 @@ const LEGAL_FORM_TOKENS = new Set([
   'doo',
 ]);
 
-/** Normalized name without trailing legal-form tokens (never empty). */
 function studioCoreKey(name) {
   const tokens = normalizeName(name).split(' ').filter(Boolean);
   while (tokens.length > 1 && LEGAL_FORM_TOKENS.has(tokens[tokens.length - 1])) tokens.pop();
@@ -278,7 +256,6 @@ function splitEntryKey(entry) {
   return `${entry.type || ''}|${entry.name || ''}`;
 }
 
-/** Deep-merge a patch into the current overrides; untouched keys survive. */
 function mergeOverrides(current, patch) {
   const base = normalizeOverrides(current);
   const next = normalizeOverrides(patch == null ? {} : patch);
@@ -314,12 +291,6 @@ async function saveOverrides(patch) {
   return { data: merged, fingerprint };
 }
 
-/**
- * `POST /api/games/override` backend (ИГРЫ §5.5).
- *
- * @param {{type:'person'|'studio', action:'merge'|'split'|'alias',
- *          from?:string, to?:string}} input
- */
 async function applyOverride(input) {
   const body = input && typeof input === 'object' ? input : {};
   const type = String(body.type == null ? '' : body.type).trim().toLowerCase();
@@ -342,8 +313,6 @@ async function applyOverride(input) {
 
   const at = new Date().toISOString();
   if (action === 'merge') {
-    // A merge is a statement about the future too: drop any split that named
-    // either side, otherwise the two instructions contradict each other.
     const patch = {
       manual: {
         merges: [{ type, action, from, to, at }],
@@ -363,7 +332,6 @@ async function applyOverride(input) {
         ),
       },
     };
-    // `mergeOverrides` unions arrays; removed splits need an explicit write.
     const merged = mergeOverrides(current, cleaned);
     merged.manual.splits = cleaned.manual.splits;
     const fingerprint = await gameCache.writeJsonAtomic(OVERRIDES_PATH, merged);
@@ -373,7 +341,6 @@ async function applyOverride(input) {
     const saved = await saveOverrides({ manual: { aliases: [{ type, name: to, alias: from, at }] } });
     return { ok: true, type, action, from, to, overrides: saved.data, fingerprint: saved.fingerprint };
   }
-  // split: forget any merge that named this spelling, remember the decision.
   const current = readOverrides();
   const merged = mergeOverrides(current, { manual: { splits: [{ type, name: from, at }] } });
   merged.manual.merges = current.manual.merges.filter(
