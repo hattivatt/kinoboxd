@@ -24,26 +24,6 @@ const {
   resolveBlacklist,
 } = require('./taxonomy-blacklist');
 
-/*
- * Keyword-based film taxonomy: the rules engine. The rule data (keywords,
- * aliases, Wikidata Q-ids) lives in `taxonomy-defs.js`, the per-film exclusion
- * lever in `taxonomy-blacklist.js`; both are re-exported below, so importers
- * keep seeing one module.
- *
- * TMDB keywords are not a controlled vocabulary: the same idea is spelled
- * "neo-noir", "neo noir" or "neonoir", and loose substring matching would
- * drag in unrelated tags ("musical number", "anime inspired", "tech noir").
- * Every rule therefore matches a NORMALIZED keyword name exactly.
- *
- * Wikidata signals (genres P136, color P462, movements P135, based-on P144)
- * are merged on top of the keyword rules for a small set of well-curated
- * buckets. See server/wikidata.js; raw Q-ids stay out of the API payload.
- */
-
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
-
 function isAnimationGenre(genres) {
   const list = Array.isArray(genres) ? genres : [];
   return list.some((genre) => {
@@ -73,10 +53,6 @@ function matchesAlias(keywordSet, aliases) {
   return false;
 }
 
-/**
- * Normalized view of one film's Wikidata tag (server/wikidata.js). Missing or
- * malformed data degrades to empty sets, so callers never need null checks.
- */
 function wdSets(wd) {
   const source = wd && typeof wd === 'object' ? wd : {};
   const toSet = (value) =>
@@ -93,20 +69,12 @@ function wdSets(wd) {
   };
 }
 
-/**
- * P144 source class from Wikidata. Only consulted when the TMDB keyword rules
- * produced "original"; the curated priority matches server/wikidata.js.
- */
 function wdOrigin(wdSet) {
   for (const key of ['remake', 'book', 'comic', 'play', 'video-game']) {
     if (wdSet.basedClasses.has(key)) return key;
   }
   return null;
 }
-
-/* ------------------------------------------------------------------ */
-/* Aggregation                                                         */
-/* ------------------------------------------------------------------ */
 
 function createBucket() {
   return { count: 0, ratingSum: 0, ratingCount: 0, films: [] };
@@ -137,20 +105,6 @@ function serializeBuckets(defs, buckets, order) {
   return out.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
 }
 
-/**
- * Classify one film.
- *
- * TMDB keyword rules always run first. Wikidata only widens a few curated
- * buckets; it never removes a keyword-derived classification. Origins stay
- * mutually exclusive: a keyword match wins, and P144 is used only when the
- * keyword rules said "original screenplay". Finally, curated director-based
- * rules widen the remaining movement periods (movie-only, see DIRECTOR_DEFS).
- *
- * @param {{slug:string, rating?:number|null, year?:number|null,
- *          genres?:Array, keywords?:Array, wd?:object,
- *          directors?:string[], countries?:string[], kind?:string}} film
- * @returns {{categories:string[], origin:string, periods:string[]}}
- */
 function classifyFilm(film) {
   const keywordSet = keywordSetOf(film && film.keywords);
   const wd = wdSets(film && film.wd);
@@ -163,9 +117,6 @@ function classifyFilm(film) {
     if (matchesAlias(keywordSet, rule.aliases)) categories.push(rule.def.key);
   }
 
-  // Wikidata genre additions for explicitly opted-in buckets. The keyword
-  // rules above stay authoritative; P136 can only widen a bucket, never add
-  // a keyword-only film to another category.
   for (const rule of CATEGORY_RULES) {
     if (!rule.def.wdGenre) continue;
     if (!categories.includes(rule.def.key) && wd.genres.has(rule.def.wdGenre)) {
@@ -173,9 +124,6 @@ function classifyFilm(film) {
     }
   }
 
-  // Wikidata additions. The black-and-white rule needs both signals: WDQS
-  // contains films tagged black-and-white AND color (e.g. a partly colorized
-  // print); naively trusting Q838368 adds ~35 false positives in the corpus.
   if (
     !categories.includes('black-and-white') &&
     wd.colors.has(WD.BLACK_AND_WHITE) &&
@@ -200,9 +148,6 @@ function classifyFilm(film) {
 
   const anime = categories.includes('anime');
   const animationGenre = isAnimationGenre(film && film.genres);
-  // "Мультфильмы" is the TMDB Animation genre minus anime. An anime title
-  // without the Animation genre still counts as anime above; it is never
-  // added here.
   if (animationGenre && !anime) categories.push('animation');
 
   let origin = ORIGINAL_DEF.key;
@@ -238,8 +183,6 @@ function classifyFilm(film) {
     }
   }
 
-  // Curated director heuristic. TV and animation are excluded by design; the
-  // period must also agree on release year and production country.
   const kind = String((film && film.kind) || 'movie').toLowerCase() === 'tv' ? 'tv' : 'movie';
   if (kind === 'movie' && !animationGenre && hasYear) {
     const directors = new Set(
@@ -277,20 +220,6 @@ function classifyFilm(film) {
   return { categories, origin, periods };
 }
 
-/**
- * Aggregate the taxonomy over every matched film.
- *
- * `options.blacklist` (a document or the output of `normalizeBlacklist`) drops
- * categories and periods of one slug only, after the rules ran: the rules stay
- * global, the exclusion is local. Origins are never blacklisted — they are
- * mutually exclusive and always sum to the film count.
- *
- * @param {Array<{slug:string, rating?:number|null, year?:number|null,
- *                genres?:Array, keywords?:Array, wd?:object,
- *                directors?:string[], countries?:string[], kind?:string}>} films
- * @param {{blacklist?: any}} [options]
- * @returns {{categories:Array, origins:Array, periods:Array}}
- */
 function buildTaxonomy(films, options = {}) {
   const blacklist = resolveBlacklist(options && options.blacklist);
   const categoryBuckets = new Map();
@@ -318,8 +247,6 @@ function buildTaxonomy(films, options = {}) {
 
   return {
     categories: serializeBuckets(CATEGORY_DEFS, categoryBuckets, 'count'),
-    // Origins keep the semantic priority order: the donut reads from
-    // "Оригинальный сценарий" through the specific adaptations.
     origins: serializeBuckets(
       [...ORIGIN_DEFS, ORIGINAL_DEF],
       originBuckets,

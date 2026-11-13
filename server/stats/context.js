@@ -1,18 +1,5 @@
 'use strict';
 
-/**
- * Context builder of the films stats payload (S3 split).
- *
- * One pass over `upload.films` fills every Map/array the section builders
- * read: ratings histogram, genres, decades, franchises, MCU membership,
- * persons, studios, filmsIndex, taxonomy entries, the viewing timeline and the
- * calendar. The maps are insertion-ordered by the film loop, which is why the
- * loop order is part of the payload contract.
- *
- * The builder is a pure read of the persistent caches (`cache.getDetails`,
- * `cache.getLbLink`, the Letterboxd attachment). No live source is called.
- */
-
 const cache = require('../cache');
 const attachmentStore = require('../attachment');
 const wikidata = require('../wikidata');
@@ -45,9 +32,6 @@ function emptyRatingCounts() {
 }
 
 function buildContext(upload, job) {
-  // Backfill / rematch run in separate processes; pick up their cache files
-  // without a server restart. Each check is one stat() per stats build (the
-  // accessors also self-check before returning memory-cached values).
   wikidata.reloadIfChanged();
   cache.refreshIndexIfChanged();
   cache.refreshLbLinksIfChanged();
@@ -58,14 +42,11 @@ function buildContext(upload, job) {
       : { type: 'letterboxd' };
   const isKpSource = source.type === 'kinopoisk';
 
-  // Letterboxd attachment: real watch dates, rewatches and watchlist. The
-  // file is read on every stats build so a restart, a re-attach or a new
-  // KinoPoisk import (which creates a new uploadId) is picked up instantly.
   const attachment = isKpSource && source.kpUserId
     ? attachmentStore.readAttachment(source.kpUserId)
     : null;
-  const attachmentDiaryByTmdb = new Map(); // tmdbId -> diary events (real dates)
-  const attachmentRewatchByTmdb = new Map(); // tmdbId -> rewatch=true event count
+  const attachmentDiaryByTmdb = new Map();
+  const attachmentRewatchByTmdb = new Map();
   let attachmentRewatchCount = 0;
   if (attachment) {
     for (const event of attachment.events || []) {
@@ -99,28 +80,24 @@ function buildContext(upload, job) {
     appliedRatedEventCount: 0,
     realDateFrom: null,
     realDateTo: null,
-    rewatchBySlug: new Map(), // KinoPoisk slug -> rewatch=true diary events
+    rewatchBySlug: new Map(),
     actors: new Map(),
     directors: new Map(),
     writers: new Map(),
     composers: new Map(),
     studios: new Map(),
     ratingCounts: emptyRatingCounts(),
-    genreMap: new Map(), // name -> { key, name, count, ratingSum, ratingCount, films }
+    genreMap: new Map(),
     decadeMap: new Map(),
-    decadeScoreMap: new Map(), // decade start -> counts[1..10]
-    franchiseMap: new Map(), // collection id -> { id, name, posterPath, films, rating… }
-    mcuFilms: new Map(), // slug -> { slug, year, title, rating } (parent franchise)
+    decadeScoreMap: new Map(),
+    franchiseMap: new Map(),
+    mcuFilms: new Map(),
     yearMap: new Map(),
     timelineMap: new Map(),
     filmsIndex: {},
     taxEntries: [],
-    // Day-level view of the same events that feed `timeline`. The sum of
-    // watchDays[].count is therefore always equal to sum timeline[].watched.
-    // `slugs` keeps one entry per viewing (rewatches repeat the slug) so the
-    // calendar can open the exact film list of a day without another endpoint.
-    watchDayMap: new Map(), // "YYYY-MM-DD" -> { date, count, rewatchCount, slugs }
-    watchEvents: [], // { date, slug, rewatch } — one per viewing
+    watchDayMap: new Map(),
+    watchEvents: [],
     ratedCount: 0,
     totalMinutes: 0,
     runtimeCount: 0,
@@ -141,20 +118,7 @@ function buildContext(upload, job) {
   return ctx;
 }
 
-/**
- * Real watch date + viewing timeline of one film.
- *
- * With an attached Letterboxd archive every diary event is one viewing, so
- * rewatches are counted and the month comes from Watched Date instead of the
- * KinoPoisk rating date. Films without a matched diary event keep the old
- * proxy: one viewing in the month of the KinoPoisk rating.
- */
 function collectTimeline(film, tmdbId, ctx) {
-  // ---- real watch date + viewing timeline (KinoPoisk + attachment) ----
-  // With an attached Letterboxd archive every diary event is one viewing,
-  // so rewatches are counted and the month comes from Watched Date instead
-  // of the KinoPoisk rating date. Films without a matched diary event keep
-  // the old proxy: one viewing in the month of the KinoPoisk rating.
   let effectiveWatchedDate = film.watchedDate || null;
   if (ctx.isKpSource) {
     const rated = film.rating !== null && film.rating !== undefined;
@@ -169,8 +133,6 @@ function collectTimeline(film, tmdbId, ctx) {
       let applied = 0;
       for (const event of diaryEvents) {
         const watchDate = event.watchDate ? String(event.watchDate).slice(0, 10) : null;
-        // A diary row without a usable Watched Date/Date cannot be placed
-        // on the timeline; it must not suppress the ratedAt proxy below.
         if (!watchDate || !/^\d{4}-\d{2}-\d{2}$/.test(watchDate)) continue;
         applied++;
         addTimelineEvent(ctx, watchDate, rated, {
@@ -180,8 +142,6 @@ function collectTimeline(film, tmdbId, ctx) {
         if (!latest || watchDate > latest) latest = watchDate;
       }
       if (latest) effectiveWatchedDate = latest;
-      // Diary exists but carries no usable date: fall back to the KinoPoisk
-      // proxy so watchedDate and the timeline stay consistent.
       if (applied === 0 && effectiveWatchedDate) {
         addTimelineEvent(ctx, effectiveWatchedDate, rated, {
           slug: film.slug,
@@ -194,9 +154,6 @@ function collectTimeline(film, tmdbId, ctx) {
       const rewatches = ctx.attachmentRewatchByTmdb.get(tmdbKey) || 0;
       if (rewatches > 0) ctx.rewatchBySlug.set(film.slug, rewatches);
     } else if (effectiveWatchedDate) {
-      // No diary event for this KinoPoisk film (or no attachment at all):
-      // count one proxy viewing on the rating date. There is no rewatch
-      // signal on KinoPoisk itself, so the flag stays null.
       addTimelineEvent(ctx, effectiveWatchedDate, rated, {
         slug: film.slug,
         rewatch: null,
@@ -207,11 +164,7 @@ function collectTimeline(film, tmdbId, ctx) {
   return effectiveWatchedDate;
 }
 
-/** Ratings/runtime/year/genres/persons/studios/index entry of one film. */
 function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate, ctx) {
-  // ---- ratings histogram ----
-  // Letterboxd ratings are half-stars (0.5-5, scaled x2). KinoPoisk is a
-  // native 1-10 scale and must not be doubled.
   if (film.rating !== null) {
     ctx.ratedCount++;
     const score = ctx.isKpSource ? Math.round(film.rating) : Math.round(film.rating * 2);
@@ -221,14 +174,12 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
     ctx.ratingCounts[0]++;
   }
 
-  // ---- runtime ----
   const runtime = details && Number.isFinite(details.runtime) ? details.runtime : 0;
   if (runtime > 0) {
     ctx.totalMinutes += runtime;
     ctx.runtimeCount++;
   }
 
-  // ---- year / decade ----
   const year = releaseYear(details && details.release_date, film.year);
   if (year != null) {
     ctx.yearMap.set(year, (ctx.yearMap.get(year) || 0) + 1);
@@ -236,9 +187,6 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
     ctx.decadeMap.set(start, (ctx.decadeMap.get(start) || 0) + 1);
   }
 
-  // ---- decade × score matrix ----
-  // Same score scale as the ratings widget: KinoPoisk is native 1-10,
-  // Letterboxd half-stars are doubled.
   if (year != null && film.rating !== null && film.rating !== undefined) {
     const score = ctx.isKpSource ? Math.round(film.rating) : Math.round(film.rating * 2);
     if (score >= 1 && score <= 10) {
@@ -252,10 +200,6 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
     }
   }
 
-  // ---- franchises (TMDB collections) ----
-  // Only TMDB movies carry belongs_to_collection. The localized (`ru-RU`)
-  // collection name and poster are stored as-is; grouping is by collection
-  // id, so two different collections with the same display name stay apart.
   const collection = details && details.belongs_to_collection;
   if (collection && collection.id != null) {
     const collectionId = Number(collection.id);
@@ -284,13 +228,6 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
     }
   }
 
-  // ---- MCU parent franchise ----
-  // Synthetic parent over the film-level Wikidata/static membership. It is
-  // deliberately independent of belongs_to_collection: the user can have
-  // films with no TMDB collection (Black Widow, Eternals, …) and the Sony
-  // sub-collections (Venom, Deadpool 1-2, Spider-Verse) must stay out. The
-  // sub-collection rows remain untouched; the same film can appear in both
-  // its sub-row and this parent row (that is the point of a parent).
   if (mcu.isMcuFilm({
     imdbId: details && details.imdb_id,
     tmdbId,
@@ -307,7 +244,6 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
     }
   }
 
-  // ---- genres ----
   if (details) {
     const keywordSet = new Set(
       (Array.isArray(details.keywords) ? details.keywords : [])
@@ -317,8 +253,6 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
     const isMusical = keywordSet.has(MUSICAL_KEYWORD);
     for (const genre of details.genres || []) {
       if (isHiddenGenre(genre)) continue;
-      // "Мюзикл" (keyword) and "Музыка" (TMDB genre) are mutually
-      // exclusive: a musical-tagged Music film is counted in Мюзикл only.
       if (isMusical && isMusicGenre(genre)) continue;
       const name = (genre.name || '').trim();
       if (!name) continue;
@@ -341,15 +275,9 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
         g.ratingCount++;
       }
     }
-    // Keyword-based categories / origins / periods are aggregated once,
-    // after the per-film loop (see buildTaxonomy below). The director
-    // heuristic additionally needs the media kind, credited directors and
-    // production-country ISO codes; statistics displayed elsewhere are
-    // unaffected.
     ctx.taxEntries.push({
       slug: film.slug,
       rating: film.rating,
-      // Same value as filmsIndex.year; period rules (film noir) need it.
       year,
       genres: details.genres || [],
       keywords: details.keywords || [],
@@ -360,11 +288,8 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
     });
   }
 
-  // ---- persons ----
   if (credits) {
     const cast = Array.isArray(credits.cast) ? credits.cast : [];
-    // Only the first half of the billed cast counts as a significant role.
-    // ceil(n / 2) keeps a single-billed-actor film counted (1, not 0).
     const threshold = Math.ceil(cast.length / 2);
     const animation = isAnimation(details);
 
@@ -372,8 +297,6 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
       const order = Number.isFinite(role.order) ? role.order : index;
       const isVoice = VOICE_RE.test(role.character || '');
       const counted = order < threshold && !isVoice && !animation;
-      // The backend knows the exact reason a role is not counted; the
-      // frontend must not guess from "character" anymore.
       let reason = null;
       if (!counted) {
         if (animation) reason = 'animation';
@@ -400,11 +323,6 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
     }
   }
 
-  // ---- studios ----
-  // Production companies are taken from the same cached details. They only
-  // exist for matched films and every appearance counts (one entry per film,
-  // duplicates inside a film are ignored). Older cache files may miss the
-  // optional field entirely — that is a silent skip, not an error.
   if (details) {
     const companies =
       Array.isArray(details.production_companies) ? details.production_companies : [];
@@ -427,10 +345,6 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
     }
   }
 
-  // ---- film index ----
-  // `kind` decides whether a TMDB link points at /movie/ or /tv/; the
-  // source-specific link (Letterboxd URI or KinoPoisk page) is only added
-  // for the matching import source.
   const filmEntry = {
     title: (details && details.title) || film.titleRu || film.title,
     year,
@@ -443,8 +357,6 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
     watchedDate: effectiveWatchedDate,
   };
   if (details) {
-    // Localized genre names in display form ("комедия" -> "Комедия"),
-    // deduplicated; the genres widget matches them case-insensitively.
     const genreNames = [];
     const seenGenres = new Set();
     for (const genre of details.genres || []) {
@@ -465,15 +377,9 @@ function collectFacts(film, kind, tmdbId, details, credits, effectiveWatchedDate
         ? `https://www.kinopoisk.ru/${kind === 'tv' ? 'series' : 'film'}/${film.kpId}/`
         : null);
     filmEntry.kpUrl = kpUrl || null;
-    // A KinoPoisk import has no Letterboxd URI of its own, but a previous
-    // Letterboxd export may have taught the server the TMDB <-> boxd.it
-    // pair for this very film. Letterboxd pages are public and per-film,
-    // so the link works across accounts/sources.
     const mappedLbUri = tmdbId != null ? cache.getLbLink(tmdbId, kind) : null;
     if (mappedLbUri) filmEntry.lbUri = mappedLbUri;
   } else {
-    // Own upload source always wins; the global mapping is only a fallback
-    // for films whose export did not provide a usable URI.
     filmEntry.lbUri = film.lbUri
       || (tmdbId != null ? cache.getLbLink(tmdbId, kind) : null)
       || null;

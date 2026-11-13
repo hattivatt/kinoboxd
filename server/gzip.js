@@ -1,31 +1,5 @@
 'use strict';
 
-/**
- * The single gzip layer of the server (U11).
- *
- * History: `compression()` was mounted app-wide and a second, hand-written
- * zlib middleware (`server/gzip.js`) covered only `/api/games` — with a
- * `skipPrefix` filter that had to keep the two away from each other. That is
- * now one middleware: `app.use(gzip())` compresses everything (heavy JSON,
- * static JS/CSS, the SPA HTML) and the per-prefix table below is the single
- * place where threshold/level are tuned. A response is compressed exactly
- * once because there is only one layer.
- *
- * How it works (`zlib.gzip`'s one-shot form; the payloads are fully buffered
- * by `res.json`, so streaming would only add complexity):
- *
- *   - only when the client sent `Accept-Encoding: gzip` (q-values honoured,
- *     `gzip;q=0` means no);
- *   - only for compressible bodies (JSON/text/svg) at least `threshold` bytes;
- *   - `HEAD`, `204`/`304`, `Cache-Control: no-transform`, an already-encoded
- *     response and empty bodies pass through untouched;
- *   - the identity body is buffered up to `maxBuffer` bytes; past that the
- *     middleware gives up and flushes the buffered bytes uncompressed (a huge
- *     response must never be lost or reordered);
- *   - sets `Content-Encoding: gzip`, `Vary: Accept-Encoding` and the
- *     compressed `Content-Length`; `ETag` (weak, Express default) stays.
- */
-
 const zlib = require('zlib');
 
 const COMPRESSIBLE = /^(?:application\/(?:json|javascript|x-ndjson)|text\/|image\/svg\+xml)/i;
@@ -33,14 +7,6 @@ const DEFAULT_THRESHOLD = 1024;
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
 const DEFAULT_LEVEL = 6;
 
-/**
- * Prefix → { threshold, level }. The first match wins, so a specific path
- * must come before its namespace (`/api/books/stats` before `/api/books`).
- *
- * All entries currently share the same numbers (that is the behaviour the
- * frozen smoke/golden numbers were measured with); the table exists so a
- * heavy payload can be tuned in one place instead of adding another layer.
- */
 const PREFIX_RULES = Object.freeze([
   Object.freeze({ prefix: '/api/stats', threshold: DEFAULT_THRESHOLD, level: DEFAULT_LEVEL }),
   Object.freeze({ prefix: '/api/books/stats', threshold: DEFAULT_THRESHOLD, level: DEFAULT_LEVEL }),
@@ -54,7 +20,6 @@ const DEFAULT_RULE = Object.freeze({
   level: DEFAULT_LEVEL,
 });
 
-/** Does `Accept-Encoding` allow gzip? `*` counts, `q=0` does not. */
 function acceptsGzip(header) {
   const value = String(header == null ? '' : header);
   if (!value) return false;
@@ -83,19 +48,16 @@ function appendVary(current, value) {
   return existing.join(', ');
 }
 
-/** Path of the request without the query string (`originalUrl` wins). */
 function requestPath(req) {
   const raw = String((req && req.originalUrl) || (req && req.url) || '');
   const query = raw.indexOf('?');
   return query === -1 ? raw : raw.slice(0, query);
 }
 
-/** `/api/stats` matches itself and its sub-paths, never `/api/statsfoo`. */
 function matchesPrefix(pathname, prefix) {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-/** The rule of the prefix table that applies to this request. */
 function ruleFor(req) {
   const pathname = requestPath(req);
   for (const rule of PREFIX_RULES) {
@@ -104,18 +66,11 @@ function ruleFor(req) {
   return DEFAULT_RULE;
 }
 
-/** `Cache-Control: no-transform` means "do not touch the body". */
 function noTransform(res) {
   const value = String(res.getHeader('Cache-Control') || '');
   return /(?:^|,)\s*no-transform\s*(?:,|$)/i.test(value);
 }
 
-/**
- * Create the middleware.
- *
- * `threshold`/`level` override the prefix table for every request (tests and
- * diagnostics); `maxBuffer` is the identity buffer limit.
- */
 function createGzipMiddleware(options = {}) {
   const hasThreshold = options.threshold !== undefined && Number(options.threshold) >= 0;
   const forcedThreshold = hasThreshold ? Number(options.threshold) : null;
@@ -147,8 +102,6 @@ function createGzipMiddleware(options = {}) {
       chunks.push(buffer);
       size += buffer.length;
       if (size > maxBuffer) {
-        // Too large to hold: replay what we have and stop intercepting. The
-        // headers are still unsent, so this is safe and ordered.
         res.write = originalWrite;
         res.end = originalEnd;
         buffering = false;
@@ -186,8 +139,6 @@ function createGzipMiddleware(options = {}) {
       if (!buffering) return originalEnd.call(res, body, enc, cb);
       collect(body, enc);
       if (!buffering) {
-        // `collect` hit `maxBuffer`: everything (including this final chunk)
-        // was already written uncompressed; just finish the response.
         res.write = originalWrite;
         res.end = originalEnd;
         return originalEnd.call(res, null, cb);
@@ -220,7 +171,6 @@ function createGzipMiddleware(options = {}) {
     };
 
     res.on('close', () => {
-      // Client went away before the body was flushed: drop the buffers.
       if (buffering) {
         chunks.length = 0;
         buffering = false;

@@ -1,21 +1,9 @@
 'use strict';
 
-/**
- * The `summary` block of the films payload (S3 split).
- *
- * Key order is the payload contract (the golden hash is byte-sensitive):
- * filmCount, ratedCount, viewCount, dateFrom, dateTo, totalMinutes,
- * avgRuntime, auteurIndex, source, unmatchedCount, then the optional
- * movieCount/tvCount and attachment fields.
- */
-
 const { round2 } = require('./numeric');
 const { round1 } = require('../core/stats');
 
 function buildAuteurIndex(persons, matchedFilmCount) {
-  // Auteur index: unique credited directors among the matched films. The
-  // director bucket is always counted (addRole(..., true)), but filter on
-  // counted >= 1 to be robust against older payloads.
   const creditedDirectors = persons.director.filter((person) => person.counted >= 1);
   const directorCount = creditedDirectors.length;
   const filmsPerDirector = directorCount > 0 ? matchedFilmCount / directorCount : null;
@@ -40,12 +28,7 @@ function buildSummary(ctx, options) {
   const summary = {
     filmCount: ctx.upload.films.length,
     ratedCount: ctx.ratedCount,
-    // One entry per viewing, so rewatches make this larger than filmCount when
-    // a Letterboxd attachment is present.
     viewCount,
-    // With an attachment the displayed period is derived from the real
-    // viewing dates that actually feed the timeline (including the ratedAt
-    // fallback for films without a diary event).
     dateFrom: ctx.isKpSource
       ? (ctx.realDateFrom || ctx.upload.summary.dateFrom)
       : ctx.upload.summary.dateFrom,

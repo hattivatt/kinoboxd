@@ -1,14 +1,5 @@
 'use strict';
 
-/**
- * Pure numeric helpers of the films stats payload (S3 split).
- *
- * `round2`/dayNumber/computeStreaks come from `core/stats` (R15); the payload
- * keeps the `plain` rounding and the `lastWatchDate` streak field name, both
- * pinned by `test/core-numeric.test.js`. `releaseYear` prefers the TMDB
- * release date and falls back to the upload year.
- */
-
 const { round2, dayNumber, computeStreaks } = require('../core/stats');
 
 function runtimeBucket(runtime) {

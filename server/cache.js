@@ -3,10 +3,6 @@
 const fs = require('fs');
 const path = require('path');
 
-// KINOBOXD_CACHE_DIR lets tests / alternative deployments point the whole
-// TMDB + KinoPoisk cache tree somewhere else. Defaults to app/cache so the
-// normal launcher (and the Nix wrapper, which copies server/ next to cache/)
-// keeps working unchanged.
 const CACHE_DIR = process.env.KINOBOXD_CACHE_DIR
   ? path.resolve(process.env.KINOBOXD_CACHE_DIR)
   : path.join(__dirname, '..', 'cache');
@@ -16,29 +12,8 @@ const DETAILS_DIR = path.join(CACHE_DIR, 'details');
 
 fs.mkdirSync(DETAILS_DIR, { recursive: true });
 
-/* ------------------------------------------------------------------ */
-/* Cross-process freshness                                             */
-/* ------------------------------------------------------------------ */
-
-/**
- * Cheap identity of one cache file: inode + size + mtime (nanoseconds).
- *
- * Cache files are always replaced atomically (tmp + rename) by the writer
- * processes, so the inode changes on every write; mtime catches in-place
- * edits and size catches truncation. A stat() costs microseconds and is
- * therefore affordable on every memory-cache read — that is what lets a
- * running server notice files written by a backfill/rematch process without
- * a restart.
- *
- * Returns null when the file does not exist (or cannot be stat'ed).
- */
-// One implementation for every domain: `server/core/fs-store.js`.
 const fsStore = require('./core/fs-store');
 const { fingerprintOf } = fsStore;
-
-/* ------------------------------------------------------------------ */
-/* Index: "normalized title|year" -> tmdbId (number) or false          */
-/* ------------------------------------------------------------------ */
 
 function normalizeTitle(title) {
   return String(title == null ? '' : title)
@@ -52,24 +27,13 @@ function makeKey(title, year) {
   return `${normalizeTitle(title)}|${y}`;
 }
 
-/**
- * Index key for a specific media kind. Movies keep the original unscoped
- * key so KinoPoisk entries can hit the existing Letterboxd cache; TV gets a
- * "tv|" prefix because TMDB movie and TV ids live in separate namespaces
- * and the same title/year can legitimately exist as both (e.g. a
- * making-of movie and the series itself).
- */
 function makeKindKey(title, year, kind) {
   const key = makeKey(title, year);
   return kind === 'tv' ? `tv|${key}` : key;
 }
 
 let index = {};
-// Fingerprint of the file version currently represented by `index`.
 let indexFingerprint = null;
-// Values written by this process that are not on disk yet. Needed to merge
-// local changes with an externally replaced index.json instead of losing
-// either side.
 const indexPending = new Map();
 
 try {
@@ -78,24 +42,12 @@ try {
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) index = parsed;
   indexFingerprint = fingerprintOf(INDEX_PATH);
 } catch (err) {
-  // Remember the broken/missing file's fingerprint so reads do not retry the
-  // same parse on every accessor call; a later external write changes it.
   indexFingerprint = fingerprintOf(INDEX_PATH);
   if (err.code !== 'ENOENT') {
     console.warn(`[cache] Could not read index.json (${err.message}); starting empty.`);
   }
 }
 
-/**
- * Parse one index value. Returns:
- *   undefined                    -> key absent / unusable value
- *   false                        -> definitively unmatched
- *   { id, kind: 'movie'|'tv'|null }
- *
- * Historically values are bare TMDB ids; a manual match stores
- * `{ id, kind }` so a TV series can be attached to a Letterboxd entry that
- * was originally searched as a movie.
- */
 function parseIndexEntry(value) {
   if (value === false) return false;
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -111,17 +63,6 @@ function parseIndexEntry(value) {
   return undefined;
 }
 
-/**
- * Pick up an index.json replaced by another process (backfill, rematch,
- * manual edit). One statSync on the hot path; the actual reload happens only
- * when the fingerprint moved.
- *
- * Local unsaved writes win over the loaded file; every other disk key is
- * accepted, so neither side loses data.
- *
- * Exported so a stats build can force one refresh up front; all accessors
- * also call it themselves, so no caller can accidentally read stale data.
- */
 function refreshIndexIfChanged() {
   const current = fingerprintOf(INDEX_PATH);
   if (current === indexFingerprint) return false;
@@ -136,8 +77,6 @@ function refreshIndexIfChanged() {
       }
       disk = parsed;
     } catch (err) {
-      // A corrupt/partially visible file must not wipe the in-memory cache;
-      // keep what we have and remember the version we refused to load.
       indexFingerprint = current;
       console.warn(`[cache] Could not reload index.json (${err.message}); keeping in-memory index.`);
       return false;
@@ -163,7 +102,6 @@ function getIndexEntry(key) {
   return parseIndexEntry(index[key]);
 }
 
-// Backwards-compatible accessor: id, false or undefined.
 function getIndexValue(key) {
   const entry = getIndexEntry(key);
   if (entry === undefined || entry === false) return entry;
@@ -175,23 +113,14 @@ function hasKey(key) {
   return Object.prototype.hasOwnProperty.call(index, key);
 }
 
-/* ------------------------------ saving ---------------------------- */
-
 let saveScheduled = false;
 let saving = Promise.resolve();
 let dirty = false;
 
 async function writeIndexNow() {
-  // Merge anything written externally since our last access before we
-  // replace the file; this keeps other processes' matches alive.
   refreshIndexIfChanged();
   dirty = false;
-  // One atomic-write implementation for the whole server (`core/fs-store`):
-  // a unique sibling tmp file, then rename; the return value is the new
-  // fingerprint of exactly the bytes that landed on disk.
   indexFingerprint = await fsStore.writeJsonAtomic(INDEX_PATH, index);
-  // Pending values that are still current are now on disk. Values changed
-  // during the await stay pending and keep `dirty` set for the next write.
   for (const [key, value] of indexPending) {
     if (index[key] === value) indexPending.delete(key);
   }
@@ -215,11 +144,7 @@ function persistIndex() {
 }
 
 function flushIndex() {
-  // Force a final synchronous write; used at the end of enrichment so that
-  // results are on disk even if the process exits right after.
   try {
-    // Merge a concurrently replaced file first so a flush never clobbers
-    // keys learned by another process while this job was running.
     refreshIndexIfChanged();
     indexFingerprint = fsStore.writeJsonAtomicSync(INDEX_PATH, index);
     dirty = false;
@@ -236,30 +161,6 @@ function setIndexValue(key, value) {
   persistIndex();
 }
 
-/* ------------------------------------------------------------------ */
-/* Letterboxd links: tmdbId -> boxd.it URI (global, cross-export)      */
-/* ------------------------------------------------------------------ */
-
-/*
- * Letterboxd deep links cannot be derived from a TMDB id, but every
- * Letterboxd export CSV carries the film's own `https://boxd.it/...` URI.
- * Whenever an enriched Letterboxd upload yields both ids for a film we
- * remember the pair here, so KinoPoisk (or any other) imports can link the
- * same film without ever seeing a Letterboxd export. Letterboxd film pages
- * are public and per-film, so the pairing is account-independent.
- *
- * File shape (cache/lb-links.json):
- *   { "27205": { "lbUri": "https://boxd.it/1pXh", "kind": "movie" } }
- *
- * `kind` keeps TMDB movie/TV ids apart (they share one numeric namespace).
- * Bare string values are accepted when reading; they have no kind and are
- * therefore used for either media kind.
- *
- * Disambiguation: the FIRST learned URI wins. Two different Letterboxd
- * exports may reference the same film with different short links (a per-user
- * diary link vs the canonical one); both open the same film, so stability is
- * preferable to churn on every upload.
- */
 let lbLinks = {};
 let lbFingerprint = null;
 const lbPending = new Map();
@@ -275,11 +176,6 @@ try {
   }
 }
 
-/**
- * Same cross-process contract as refreshIndexIfChanged: one statSync per
- * call, reload only when another process replaced the file. Locally learned
- * pairs that are not on disk yet are overlaid on the loaded file.
- */
 function refreshLbLinksIfChanged() {
   const current = fingerprintOf(LB_LINKS_PATH);
   if (current === lbFingerprint) return false;
@@ -327,10 +223,6 @@ function parseLbLink(value) {
   return null;
 }
 
-/**
- * Letterboxd page for a TMDB film, or null. `kind` is checked when both the
- * stored and the requested media kind are known.
- */
 function getLbLink(tmdbId, kind) {
   const n = Number(tmdbId);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -342,11 +234,6 @@ function getLbLink(tmdbId, kind) {
   return entry.lbUri;
 }
 
-/**
- * Remember one TMDB <-> Letterboxd pair. Existing mappings are never
- * overwritten (see the disambiguation note above).
- * Returns true when a new pair was stored.
- */
 function setLbLink(tmdbId, lbUri, kind) {
   const n = Number(tmdbId);
   if (!Number.isFinite(n) || n <= 0) return false;
@@ -365,12 +252,6 @@ function setLbLink(tmdbId, lbUri, kind) {
   return true;
 }
 
-/**
- * Harvest links from a finished enrichment job. Only films that carry both a
- * Letterboxd URI and a TMDB id can teach the mapping; KinoPoisk uploads have
- * no `lbUri` and are a no-op.
- * Returns { added, existing, candidates }.
- */
 function learnLbLinks(films, jobFilms) {
   const result = { added: 0, existing: 0, candidates: 0 };
   if (!Array.isArray(films) || !jobFilms || typeof jobFilms.get !== 'function') return result;
@@ -416,7 +297,6 @@ function persistLbLinks() {
   }, 300);
 }
 
-/** Force a synchronous write (used at the end of enrichment). */
 function flushLbLinks() {
   try {
     refreshLbLinksIfChanged();
@@ -433,10 +313,6 @@ function lbLinksStats() {
   return { keys: Object.keys(lbLinks).length };
 }
 
-/* ------------------------------------------------------------------ */
-/* Details: cache/details/{tmdbId}.json -> { kind, details, credits }   */
-/* ------------------------------------------------------------------ */
-
 const detailsMemory = new Map();
 
 function detailsPath(id) {
@@ -447,13 +323,6 @@ function tvCollisionPath(id) {
   return path.join(DETAILS_DIR, `tv-${id}.json`);
 }
 
-/**
- * Read one details file together with the fingerprint of the exact version
- * that was parsed. `readJsonWithFingerprint` already retries once when a
- * writer replaces the file mid-read, so the returned data and fingerprint
- * always describe the same bytes. Returns `{ data, fingerprint }` or null for
- * missing/corrupt files and for a document that is not a details entry.
- */
 function readDetailsFile(filePath) {
   const found = fsStore.readJsonWithFingerprint(filePath, { label: 'cache-details' });
   if (!found) return null;
@@ -462,12 +331,6 @@ function readDetailsFile(filePath) {
   return { data: parsed, fingerprint: found.fingerprint };
 }
 
-/**
- * Find cached details. Movie and TV ids come from separate TMDB namespaces,
- * so a numeric id can theoretically belong to both; TV data that would
- * overwrite an existing movie file is stored as tv-{id}.json instead.
- * Old cache entries have no `kind` and are treated as movies.
- */
 function findDetails(id, kind) {
   const n = Number(id);
   if (!Number.isFinite(n)) return null;
@@ -490,7 +353,6 @@ function detailsMemoryKey(id, kind) {
   return `${kind === 'tv' ? 'tv' : kind === 'movie' ? 'movie' : 'any'}:${id}`;
 }
 
-/** A memory entry is only valid while its source file still has the same fingerprint. */
 function memoryDetailsIsFresh(entry) {
   if (!entry || !entry.fingerprint) return false;
   return fingerprintOf(entry.path) === entry.fingerprint;
@@ -519,7 +381,6 @@ function getDetails(id, kind) {
   const cached = detailsMemory.get(memoryKey);
   if (cached) {
     if (memoryDetailsIsFresh(cached)) return cached.data;
-    // The file was replaced, truncated or removed by another process.
     detailsMemory.delete(memoryKey);
   }
   const entry = loadDetailsIntoMemory(memoryKey, n, kind);
@@ -545,7 +406,6 @@ async function saveDetails(id, data) {
 
   let target = detailsPath(n);
   if (kind === 'tv') {
-    // Never overwrite a movie that happens to share the numeric id.
     const existing = readDetailsFile(target);
     if (existing && existing.data.kind !== 'tv') {
       target = tvCollisionPath(n);
@@ -559,17 +419,12 @@ async function saveDetails(id, data) {
   if (kind === 'movie') detailsMemory.set(`any:${n}`, entry);
 }
 
-/**
- * Is the film already fully resolved by the cache?
- * false-entry => yes (known unmatched), id + matching details => yes.
- */
 function isFilmCached(title, year, kind) {
   const key = makeKindKey(title, year, kind);
   if (!hasKey(key)) return false;
   const entry = getIndexEntry(key);
   if (entry === false) return true;
   if (entry === undefined) return false;
-  // A manual match may point at the other media kind.
   return hasDetails(entry.id, entry.kind || kind);
 }
 

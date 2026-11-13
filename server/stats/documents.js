@@ -1,11 +1,5 @@
 'use strict';
 
-/**
- * TMDB document helpers of the films stats payload (S3 split): genre
- * classification, collection-name cleanup, localized country labels and the
- * director/animation heuristics.
- */
-
 const { normalizeKeyword } = require('../taxonomy');
 const {
   HIDDEN_GENRE_IDS,
@@ -26,14 +20,6 @@ function isHiddenGenre(genre) {
   return HIDDEN_GENRE_NAMES.has(String(genre.name || '').trim().toLowerCase());
 }
 
-
-/* TMDB localizes collection names as "Гарри Поттер (Коллекция)" (or
- * "(Collection)", "(Mcu Collect)", "(Сборник)"). The suffix is distribution
- * metadata, not part of the franchise title: strip one or more trailing
- * bracket groups that contain a collection word. The grouping key is the
- * collection id, so two collections that clean to the same display name stay
- * separate. Russian endings are spelled out so "(Коллекционер)" — a film
- * title, not a suffix — is left alone. */
 const COLLECTION_SUFFIX_RE = /\s*[\(\[\{][^\(\)\[\]\{\}]*(?:\bcollect(?:ion)?\b|коллекци[яиюей]|сборник[а-яё]*)[^\(\)\[\]\{\}]*[\)\]\}]\s*$/iu;
 const BARE_COLLECTION_SUFFIX_RE = /\s+(?:collection|collect|коллекци[яиюей]|сборник[а-яё]*)\s*$/iu;
 
@@ -45,9 +31,6 @@ function cleanCollectionName(name) {
     if (next === value) break;
     value = next;
   }
-  // Localized names also occur without brackets ("X Коллекция",
-  // "Шерлок Холмс (Роберт Дауни мл.) Коллекция"); the same word at the very
-  // end is distribution metadata too.
   value = value.replace(BARE_COLLECTION_SUFFIX_RE, '').trim();
   return value || original;
 }
@@ -187,7 +170,6 @@ function localizedCountryName(country) {
   return name || iso || null;
 }
 
-/** Deduped list of localized country names for a matched film. */
 function filmCountries(details) {
   const list =
     details && Array.isArray(details.production_countries)
@@ -206,11 +188,6 @@ function filmCountries(details) {
   return out;
 }
 
-/**
- * ISO-3166-1 codes from TMDB production_countries. Kept separate from the
- * localized `filmCountries` payload: the period heuristics need codes
- * (e.g. "SU" for Soviet films), while the dashboard displays Russian names.
- */
 function productionCountryCodes(details) {
   const list =
     details && Array.isArray(details.production_countries)
@@ -227,7 +204,6 @@ function productionCountryCodes(details) {
   return out;
 }
 
-/** Names of credited directors (TMDB crew job is exactly "Director"). */
 function crewDirectorNames(credits) {
   const list = credits && Array.isArray(credits.crew) ? credits.crew : [];
   const out = [];

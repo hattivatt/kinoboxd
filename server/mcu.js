@@ -1,26 +1,5 @@
 'use strict';
 
-/**
- * Marvel Cinematic Universe membership.
- *
- * TMDB has no single "Marvel Cinematic Universe" collection: the MCU is split
- * into many sub-collections (Avengers, Captain America, Thor, …) plus
- * standalone films. Sony's Venom / Spider-Verse films and the pre-MCU
- * Spider-Man trilogy live in their own collections and must NOT be folded into
- * the MCU row.
- *
- * The canonical list below is the released MCU filmography (Iron Man 2008 →
- * Spider-Man: Brand New Day 2026), validated against Wikidata: every member of
- * Q642878 (Marvel Cinematic Universe) via P179 (`part of the series`) that is a
- * film matches this list, and none of the Sony titles does. The static list is
- * the primary signal at request time: stats must stay deterministic and
- * offline, and a TMDB/Wikidata outage must not change the dashboard.
- *
- * `backfill:mcu` is the update path. It runs one WDQS query, writes
- * cache/mcu.json, and stats merges that file over the static list (union)
- * without a server restart. A missing/broken file is harmless.
- */
-
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -31,10 +10,6 @@ const MCU_ITEM = 'Q642878';
 const MCU_NAME = 'Marvel Cinematic Universe';
 const MCU_PATH = path.join(cache.CACHE_DIR, 'mcu.json');
 
-/* Released MCU films, chronological. `imdb` is the stable key (P345); `tmdb`
- * is kept as a fallback for cache entries where the IMDb backfill has not
- * run yet. Keep this list in sync with `npm run backfill:mcu` when a new MCU
- * film is released. */
 const STATIC_MEMBERS = [
   { imdb: 'tt0371746', tmdb: 1726, title: 'Iron Man', year: 2008 },
   { imdb: 'tt0800080', tmdb: 1724, title: 'The Incredible Hulk', year: 2008 },
@@ -79,8 +54,6 @@ const STATIC_MEMBERS = [
 const STATIC_IMDB = new Set(STATIC_MEMBERS.map((item) => item.imdb));
 const STATIC_TMDB = new Set(STATIC_MEMBERS.map((item) => item.tmdb));
 
-/* WDQS query used by `npm run backfill:mcu`. One request, no per-film
- * lookups: the full P179 membership of the MCU item. */
 const MCU_QUERY = `SELECT ?film ?filmLabel ?imdb ?tmdb WHERE {
   ?film wdt:P179 wd:${MCU_ITEM} .
   OPTIONAL { ?film wdt:P345 ?imdb . }
@@ -125,7 +98,6 @@ function replaceDynamic(payload) {
   dynamicTmdb = tmdb;
 }
 
-/** Pick up cache/mcu.json written by a backfill process. */
 function reloadIfChanged() {
   const fingerprint = fingerprintOf(MCU_PATH);
   if (fingerprint === dynamicFingerprint) return;
@@ -137,17 +109,11 @@ function reloadIfChanged() {
   try {
     replaceDynamic(JSON.parse(fs.readFileSync(MCU_PATH, 'utf8')));
   } catch (err) {
-    // A half-written/foreign file must never break /api/stats.
     console.warn(`[mcu] Could not read ${MCU_PATH} (${err.message})`);
     replaceDynamic(null);
   }
 }
 
-/**
- * True when a TMDB movie belongs to the MCU. `kind` defaults to movie; TV
- * entries never match. `imdbId` comes from the cached details, `tmdbId` from
- * the enrich job.
- */
 function isMcuFilm({ imdbId, tmdbId, kind } = {}) {
   if (kind && kind !== 'movie') return false;
   reloadIfChanged();
@@ -173,11 +139,6 @@ async function writeMembers(members) {
   return payload;
 }
 
-/**
- * Refresh cache/mcu.json from Wikidata. Filters the P179 membership down to
- * rows that carry an IMDb or TMDB id; TV entries are kept in the file (the
- * runtime accepts movies only) so a later enrichment can classify them.
- */
 async function backfill({ log = console.log } = {}) {
   const wikidata = require('./wikidata');
   const result = await wikidata.querySparql(MCU_QUERY, log);

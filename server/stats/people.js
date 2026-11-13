@@ -1,13 +1,5 @@
 'use strict';
 
-/**
- * People aggregation (actors, directors, writers, composers, studios).
- *
- * A bucket is a Map id → { id, name, profilePath, films: Map }. Every role is
- * recorded with its `counted` flag and the reason it is not counted, so the
- * frontend never guesses from the character string.
- */
-
 function bucketAdd(bucket, person) {
   let entry = bucket.get(person.id);
   if (!entry) {
@@ -64,7 +56,6 @@ function serializePeople(bucket, onlyCounted) {
   return list;
 }
 
-/** The five person buckets of the payload, in its key order. */
 function buildPersons(ctx) {
   return {
     actor: serializePeople(ctx.actors, true),
