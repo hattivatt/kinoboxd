@@ -1,13 +1,5 @@
 'use strict';
 
-/**
- * Work metadata of the books stats payload: authors/genres/series of one work,
- * the manga/comics flag, the year block, links and the cross-source work
- * dedupe that merges one book seen under several ids.
- *
- * R12 «god module» split: moved out of `books/stats.js` unchanged.
- */
-
 const bookCache = require('../book-cache');
 const { getSeriesOverrides, findSeriesOverride } = require('../series-overrides');
 const { filterBlacklistedSeries } = require('../series-blacklist');
@@ -33,16 +25,6 @@ function detailsAuthors(details) {
   return names;
 }
 
-/**
- * Union of the metadata chain's genres and the file columns' genres.
- *
- * They are not the same vocabulary: Литрес calls a book «Зарубежное фэнтези»,
- * the export says «фэнтези», Hardcover says «Fantasy». The previous rule
- * (`details.genres` wins, else file) silently dropped what the user's own
- * export said the moment the chain resolved the work. Union keeps both, deduped
- * by normalized name; the chain's labels come first, so a donut still has one
- * entry per concept when the labels match.
- */
 function mergeGenreLists(primary, extra) {
   const out = [];
   const seen = new Set();
@@ -58,25 +40,6 @@ function mergeGenreLists(primary, extra) {
   return out;
 }
 
-/**
- * Effective manga/comics flag for one work.
- *
- * The detector is re-run on every read over the full persisted corpus
- * (`mangaTexts`, `tags`) instead of trusting a stale `details.mangaComics`
- * boolean: a cache written before the detector learned new keywords/publishers
- * must start filtering without a full re-import. The stored boolean stays as an
- * additive `true` (a provider may have known a signal we cannot reconstruct)
- * and as the fallback when the current corpus has no classification fields.
- *
- * `fileMeta` (§3.3.2) is a second, independent signal source. A
- * `livelib-backup` file export carries «Жанры»/«Серия»/«Издатель» on the event
- * itself; without it a file-imported profile has no details document at all,
- * so the flag used to be `null` and manga/comics leaked into the statistics.
- * Both corpora are consulted (details *and* file) and `true` wins, because a
- * provider tag on one volume is as valid as a file genre on another: the
- * detector is deliberately greedy and the user can always restore a work with
- * a manual `false` (§5, `POST /api/books/work/flag`).
- */
 function mangaOfDetails(details, genres, series, publisher, fileMeta) {
   const sources = [{
     genres,
@@ -99,7 +62,6 @@ function mangaOfDetails(details, genres, series, publisher, fileMeta) {
     if (detected === true) return true;
     if (detected === false) clean = true;
   }
-  // A stored provider `true` is additive: it survives a clean re-detection.
   if (details && details.mangaComics === true) return true;
   if (clean) return false;
   return details && typeof details.mangaComics === 'boolean' ? details.mangaComics : null;
@@ -108,19 +70,13 @@ function mangaOfDetails(details, genres, series, publisher, fileMeta) {
 function workMetadata(workId, events, options = {}) {
   const hcEvents = events.filter((event) => event.source === 'hardcover');
   const llEvents = events.filter((event) => event.source === 'livelib');
-  // Volumes of one work share `metadataWorkId`; the book identity `workId` may
-  // carry a `#n` suffix that no details file knows about.
   const metadataWorkId = (events.find((event) => event.metadataWorkId) || {}).metadataWorkId || workId;
   const details = bookCache.getWorkDetails(metadataWorkId);
-  // Bibliographic columns of a `livelib-backup` file export (genres,
-  // publisher, series, language, ISBN) are already in the file, so a
-  // file-imported profile does not have to wait for the metadata chain.
   const fileMeta = fileMetadataOf(events);
 
   const latest = (list, field) =>
     list.reduce((best, event) => laterDate(best, event[field]), null);
 
-  // Hardcover priority for display fields; LiveLib is the fallback (§3.3.1).
   const hcWithRating = [...hcEvents]
     .filter((event) => event.rating10 != null)
     .sort((a, b) => String(b.finishedAt || '').localeCompare(String(a.finishedAt || '')))[0];
@@ -132,8 +88,6 @@ function workMetadata(workId, events, options = {}) {
   const detailTitle = details && details.title ? details.title : null;
   const hcTitle = detailTitle || (hcEvents[0] && hcEvents[0].title) || null;
   const llTitle = (llEvents.find((event) => event.title) || {}).title || null;
-  // A collection work remembers the record it came from, so the UI can say
-  // «из сборника «X»» and link the parent page (СБОРНИКИ-ЭВРИСТИКА §5.1).
   const collection = (events.find((event) => event && event.collectionParent) || {}).collectionParent
     || null;
 
@@ -176,10 +130,6 @@ function workMetadata(workId, events, options = {}) {
     filterDetailsSeries(details, fileMeta.series.map((entry) => entry.name)),
     fileMeta.series
   );
-  // Catalogue tags («Книга на все времена») are not series (series-blacklist.js).
-  // The filter runs on the merged list, *after* the file column has had its
-  // say, so a tag that the user's own export carries is still dropped — and it
-  // runs before counting/manga detection, so neither sees the tag.
   const seriesFilter = filterBlacklistedSeries(mergedSeries);
   const seriesOverride = findSeriesOverride(getSeriesOverrides(), overrideKeys);
   const series = seriesOverride
@@ -199,13 +149,8 @@ function workMetadata(workId, events, options = {}) {
     ? finishDates.sort()[finishDates.length - 1]
     : null;
 
-  // Link menu (§6.3): LiveLib is derivable for every work with an LL event or
-  // an LL link in links.json; provider page URLs come from the details doc.
   const links = {};
   const llSourceId = String(metadataWorkId).startsWith('ll:') ? String(metadataWorkId).slice(3) : null;
-  // Only a real LiveLib book id makes a LiveLib URL; a file-keyed stub
-  // (`ll:file:tk:<sha1>`) is an internal identity, not a page. A file row may
-  // know its own id even when the resolve link is a HardCover work.
   const llBookId = (events.find((event) => event.sourceBookId) || {}).sourceBookId || llSourceId;
   if (llBookId && /^\d+$/.test(String(llBookId))) {
     links.livelib = `https://www.livelib.ru/book/${llBookId}`;
@@ -230,9 +175,6 @@ function workMetadata(workId, events, options = {}) {
   }
 
   const metadataSources = metadataSourcesOf(details);
-  // Union, not either/or: a file-imported work keeps the «livelib-file»
-  // provenance after the chain adds litres/hardcover — the file is still where
-  // the event's own columns (genres/publisher/series) came from (§5).
   if (fileMeta.present && !metadataSources.includes(FILE_METADATA_SOURCE)) {
     metadataSources.push(FILE_METADATA_SOURCE);
   }
@@ -267,15 +209,8 @@ function workMetadata(workId, events, options = {}) {
     links,
     finishedDate,
     collection,
-    // Option A: Hardcover priority, LiveLib fallback. With one profile this is
-    // simply the rating of the profile's own event(s).
     rating10: hcWithRating ? hcWithRating.rating10 : llEvents.find((e) => e.rating10 != null)?.rating10 ?? null,
     sources: [...new Set(events.map((event) => event.source))].sort(),
-    // "Unresolved" means "no bibliographic metadata at all": a details
-    // document from the chain or the meaningful columns of a file export
-    // (genres/series/publisher/year) both count. A file row carrying only a
-    // title and a date is real reading history but not enrichment, so it stays
-    // unresolved and the «Метадата: N%» badge keeps telling the truth.
     unresolved: !details && !fileMeta.coverage,
   };
 }

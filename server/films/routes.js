@@ -1,34 +1,5 @@
 'use strict';
 
-/**
- * `/api/*` film routes (P7): the film vertical used to live inline in
- * `server/index.js` (671 lines of bootstrap + 13 endpoints). It is now a
- * domain router mounted under the same auth gate, exactly like
- * `books/routes.js` and `games/routes.js`.
- *
- *   POST /api/upload                      Letterboxd ZIP → in-memory upload
- *   POST /api/enrich                      start the TMDB enrichment job
- *   GET  /api/enrich/status?uploadId=…    enrichment progress
- *   POST /api/import/kinopoisk            start a KinoPoisk profile import
- *   GET  /api/import/kinopoisk/status     import progress
- *   POST /api/attach/lbzip                attach a Letterboxd ZIP to a KinoPoisk import
- *   GET  /api/stats?uploadId=…            the dashboard payload (buildStats)
- *   GET  /api/profiles                    cached KinoPoisk profiles (flat array)
- *   GET  /api/compare?a=…&b=…             two cached profiles side by side
- *   GET  /api/tmdb/search?q=…&kind=…      manual TMDB search
- *   POST /api/match                       attach a chosen TMDB id to a film
- *
- * The film domain deliberately keeps its own inline validation: unlike books
- * and games it never rejected unknown query parameters, and adding
- * `assertOnlyParams` here would be a contract change (a 400 on parameters that
- * are currently ignored), not a refactor. The shared `core/params` helpers are
- * used only where the semantics match exactly.
- *
- * The router is mounted at `/api` AFTER the books/games routers, so the mount
- * order of the whole app is unchanged: gzip → auth gate → books → games →
- * films → static → 404/error.
- */
-
 const express = require('express');
 const multer = require('multer');
 
@@ -47,14 +18,11 @@ const { normalizeUserId: normalizeCachedUserId, buildCachedProfileStats } = requ
 
 const router = express.Router();
 
-// Both ZIP endpoints accept one multipart field named "file", buffered in
-// memory (the archive is parsed synchronously and never hits the disk).
 const uploadMiddleware = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024, files: 1 },
 });
 
-/** The shared multer error shape of /api/upload and /api/attach/lbzip. */
 function singleFile(req, res, next) {
   uploadMiddleware.single('file')(req, res, (err) => {
     if (err) {
@@ -83,10 +51,6 @@ function requireTmdb(req, res, next) {
     )
   );
 }
-
-/* ------------------------------------------------------------------ */
-/* Letterboxd upload + enrichment                                      */
-/* ------------------------------------------------------------------ */
 
 router.post('/upload', singleFile, (req, res, next) => {
   try {
@@ -150,10 +114,6 @@ router.get('/enrich/status', (req, res, next) => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* KinoPoisk import                                                    */
-/* ------------------------------------------------------------------ */
-
 router.post('/import/kinopoisk', requireTmdb, (req, res, next) => {
   try {
     const url = req.body && req.body.url;
@@ -199,25 +159,6 @@ router.get('/import/kinopoisk/status', (req, res, next) => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* Letterboxd attachment on a KinoPoisk profile                        */
-/* ------------------------------------------------------------------ */
-
-/**
- * Attach a Letterboxd export to the active KinoPoisk import.
- *
- * multipart/form-data: field `file` (ZIP), `uploadId` query or body field.
- * The server resolves `kpUserId` from the KinoPoisk job, parses diary.csv /
- * watched.csv / watchlist.csv, matches every film through the shared TMDB
- * matcher and stores cache/profile-lb/{kpUserId}.json atomically. Repeating
- * the call replaces the whole attachment (idempotent) — no duplicate events.
- *
- * `kpUserId` is the persistent fallback of `uploadId`: the attachment belongs
- * to the owner (cache/profile-lb/{kpUserId}.json), not to the ephemeral
- * in-memory upload. After a server restart the browser still shows the cached
- * dashboard, so it sends the profile id together with the stale upload id and
- * the attach keeps working instead of answering 404.
- */
 router.post('/attach/lbzip', requireTmdb, singleFile, async (req, res, next) => {
   try {
     const uploadId = (req.body && req.body.uploadId) || req.query.uploadId;
@@ -232,10 +173,6 @@ router.post('/attach/lbzip', requireTmdb, singleFile, async (req, res, next) => 
     let kpUserId = job && job.userId ? String(job.userId) : null;
 
     if (!kpUserId) {
-      // A live upload/job is gone (server restart, 30-upload window), but the
-      // votes of the profile are persisted. Attaching to that profile is
-      // exactly as valid: the attachment is keyed by kpUserId and read on
-      // every stats build.
       const cachedId = normalizeCachedUserId(rawKpUserId);
       if (cachedId && kp.readKpCache(cachedId)) kpUserId = cachedId;
     }
@@ -272,8 +209,6 @@ router.post('/attach/lbzip', requireTmdb, singleFile, async (req, res, next) => 
     );
     await attachment.writeAttachment(kpUserId, built.attachment);
 
-    // Keep the in-memory job pointed at the fresh attachment; stats.js reads
-    // the persisted file, so this is only metadata for status responses.
     if (upload) upload.attachment = built.attachment;
     if (job) {
       job.attachment = {
@@ -301,10 +236,6 @@ router.post('/attach/lbzip', requireTmdb, singleFile, async (req, res, next) => 
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* Dashboard payload                                                   */
-/* ------------------------------------------------------------------ */
-
 router.get('/stats', (req, res, next) => {
   try {
     const uploadId = req.query.uploadId;
@@ -313,11 +244,6 @@ router.get('/stats', (req, res, next) => {
     }
     const upload = getUpload(uploadId);
     if (!upload) {
-      // The in-memory upload is gone after a restart (or was evicted from the
-      // 30-upload window), but the KinoPoisk profile and its Letterboxd
-      // attachment are on disk. The browser remembers the profile, so it can
-      // send `kpUserId` and keep the cached dashboard fresh instead of being
-      // stuck with a dead uploadId.
       const cachedStats = buildCachedProfileStats(req.query.kpUserId);
       if (cachedStats) return res.status(200).json(cachedStats);
       throw new HttpError(404, 'Unknown uploadId. Upload the ZIP again.', 'unknown_upload');
@@ -340,20 +266,6 @@ router.get('/stats', (req, res, next) => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* Cached profiles + comparison                                        */
-/* ------------------------------------------------------------------ */
-
-/**
- * Cached KinoPoisk profiles (one per cache/kp/{userId}.json). The list is
- * independent of the browser registry and survives server restarts, so the
- * comparison screen can always use it.
- *
- * The payload stays a flat array (the compare picker reads it as an array);
- * every entry also carries the unified owner fields of `core/profile`
- * (`id`/`label`/`primary`/`enrichers`/`metrics`). The domain registers itself
- * in `compare.js`, so the shape has one owner.
- */
 router.get('/profiles', (req, res, next) => {
   try {
     res.status(200).json(profileRegistry.listOwners('films'));
@@ -362,11 +274,6 @@ router.get('/profiles', (req, res, next) => {
   }
 });
 
-/**
- * Read-only comparison of two cached KinoPoisk profiles. All numbers come
- * from the persistent caches (profile + TMDB details + Letterboxd
- * attachment); no live KinoPoisk request is made.
- */
 router.get('/compare', (req, res, next) => {
   try {
     const startedAt = process.hrtime.bigint();
@@ -378,10 +285,6 @@ router.get('/compare', (req, res, next) => {
     next(err);
   }
 });
-
-/* ------------------------------------------------------------------ */
-/* Manual TMDB matching                                                */
-/* ------------------------------------------------------------------ */
 
 router.get('/tmdb/search', requireTmdb, async (req, res, next) => {
   try {
@@ -414,14 +317,6 @@ router.get('/tmdb/search', requireTmdb, async (req, res, next) => {
   }
 });
 
-/**
- * Attach a TMDB id chosen by the user to a film.
- *
- * - Unmatched film: creates the match.
- * - Matched film with the same id/kind: idempotent 200 `alreadyMatched`.
- * - Matched film with a different id/kind: re-match (details are fetched
- *   when missing, the cache index key and the job entry are rewritten).
- */
 router.post('/match', requireTmdb, async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -476,8 +371,6 @@ router.post('/match', requireTmdb, async (req, res, next) => {
     const previousKind = existing && existing.kind ? existing.kind : filmKind;
 
     if (alreadyMatched && existing.tmdbId === tmdbId && existingKind === kind) {
-      // Idempotent repeat of the same match. Finish a pending details fetch
-      // from an interrupted run so the response really is "ready".
       if (!cache.hasDetails(tmdbId, kind)) {
         const data =
           kind === 'tv' ? await tmdb.fetchTvData(tmdbId) : await tmdb.fetchMovieData(tmdbId);
@@ -496,7 +389,6 @@ router.post('/match', requireTmdb, async (req, res, next) => {
     const isRematch = alreadyMatched;
 
     if (!isRematch) {
-      // Only a genuinely unmatched film can receive its first manual match.
       const unmatched = listUnmatched(upload) || [];
       if (!unmatched.some((entry) => entry.slug === slug)) {
         if (existing && existing.tmdbId != null) {
@@ -514,23 +406,16 @@ router.post('/match', requireTmdb, async (req, res, next) => {
       }
     }
 
-    // 1. Details/credits: reuse the cache whenever possible; a re-match to a
-    //    new id/kind fetches and stores the missing entry first.
     if (!cache.hasDetails(tmdbId, kind)) {
       const data =
         kind === 'tv' ? await tmdb.fetchTvData(tmdbId) : await tmdb.fetchMovieData(tmdbId);
       await cache.saveDetails(tmdbId, data);
     }
 
-    // 2. Index key: exactly the key enrich used for this upload entry
-    //    ("normalized title|year", "tv|"-prefixed for TV entries). The value
-    //    becomes an object so the media kind of a manual match survives.
     const indexKey = cache.makeKindKey(film.title, film.year, filmKind);
     cache.setIndexValue(indexKey, { id: tmdbId, kind });
     cache.flushIndex();
 
-    // 3. Mark the job entry; buildStats() is computed on demand, so the next
-    //    /api/stats request already reflects the match (or re-match).
     job.films.set(slug, {
       tmdbId,
       matched: true,
@@ -545,16 +430,11 @@ router.post('/match', requireTmdb, async (req, res, next) => {
     job.matched = matched;
     job.failed = Math.max(0, job.total - matched);
 
-    // A manual (re)match on a Letterboxd upload is another chance to learn a
-    // global TMDB <-> boxd.it pair, e.g. when the automatic match failed.
     if (film.lbUri && cache.setLbLink(tmdbId, film.lbUri, kind)) {
       cache.flushLbLinks();
       console.log(`[match] learned TMDB<->Letterboxd link ${kind}:${tmdbId} -> ${film.lbUri}`);
     }
 
-    // Keep the KinoPoisk movie/TV counters consistent when a manual match
-    // changes the media kind. Compare against the previous effective kind, not
-    // the upload kind, so a re-match does not double-adjust the counters.
     if (
       previousKind !== kind &&
       upload.summary &&

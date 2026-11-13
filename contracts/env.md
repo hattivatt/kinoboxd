@@ -28,12 +28,12 @@
 | `BOOKS_LIVELIB_CARD_BUDGET` | budget = 300 (0 = off) (`livelib`) | `server/core/sources.js` (livelib) | const cardBudget = resolve.createCardBudget(process.env.BOOKS_LIVELIB_CARD_BUDGET); |
 | `BOOKS_RESOLVE_LOCK_WAIT_MS` | см. файл | `server/books/import.js:103` | const lockWaitMs = Number(process.env.BOOKS_RESOLVE_LOCK_WAIT_MS); |
 | `BOOKS_WIKIDATA_BUDGET` | budget = 300 (0 = off) (`wikidataBooks`) | `server/core/sources.js` (wikidataBooks) | budgetEnv: 'BOOKS_WIKIDATA_BUDGET', |
-| `DEBUG_BROAD` | см. файл | `server/tmdb.js:626` | if (process.env.DEBUG_BROAD) { |
+| `DEBUG_BROAD` | см. файл | `server/tmdb.js:529` | if (process.env.DEBUG_BROAD) { |
 | `DEBUG_REMATCH` | см. файл | `server/rematch.js:198` | if (process.env.DEBUG_REMATCH) { |
-| `DEBUG_RETRY` | см. файл | `server/tmdb.js:129` | if (process.env.DEBUG_RETRY) { |
+| `DEBUG_RETRY` | см. файл | `server/tmdb.js:109` | if (process.env.DEBUG_RETRY) { |
 | `EPIC_CLIENT_ID` | `process.env.GAMES_EPIC_CLIENT_ID` (server/games/epic.js) | `server/games/epic.js:83` | const envId = process.env.EPIC_CLIENT_ID \|\| process.env.GAMES_EPIC_CLIENT_ID; |
 | `EPIC_CLIENT_SECRET` | `process.env.GAMES_EPIC_CLIENT_SECRET` (server/games/epic.js) | `server/games/epic.js:84` | const envSecret = process.env.EPIC_CLIENT_SECRET \|\| process.env.GAMES_EPIC_CLIENT_SECRET; |
-| `GAMES_ACHIEVEMENTS_TTL_MS` | см. файл | `server/games/game-cache.js:192` | const raw = Number(process.env.GAMES_ACHIEVEMENTS_TTL_MS); |
+| `GAMES_ACHIEVEMENTS_TTL_MS` | см. файл | `server/games/game-cache.js:125` | const raw = Number(process.env.GAMES_ACHIEVEMENTS_TTL_MS); |
 | `GAMES_ART_TTL_MS` | ttlMs = 15552000000 ms (180 d) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | ttlEnv: 'GAMES_ART_TTL_MS', |
 | `GAMES_BASE_DETAILS_BUDGET` | `20 (DEFAULT_BASE_DETAILS_BUDGET)` (server/games/franchise.js) | `server/games/franchise.js:994` | return budgetLimitFromEnv('GAMES_BASE_DETAILS_BUDGET', DEFAULT_BASE_DETAILS_BUDGET); |
 | `GAMES_BROWSE_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`steamBrowse`) | `server/core/sources.js` (steamBrowse) | breakerEnv: 'GAMES_BROWSE_BREAKER_MS', |
@@ -58,7 +58,7 @@
 | `GAMES_EPIC_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`epic`) | `server/core/sources.js` (epic) | timeoutEnv: 'GAMES_EPIC_TIMEOUT_MS', |
 | `GAMES_FRANCHISE_BUDGET` | budget = 450 (0 = off) (`wikidataFranchise`) | `server/core/sources.js` (wikidataFranchise) | budgetEnv: 'GAMES_FRANCHISE_BUDGET', |
 | `GAMES_FRANCHISE_TTL_DAYS` | ttlMs = 7776000000 ms (90 d) (env in days) (`wikidataFranchise`) | `server/core/sources.js` (wikidataFranchise) | ttlEnv: 'GAMES_FRANCHISE_TTL_DAYS', |
-| `GAMES_GLOBAL_TTL_MS` | см. файл | `server/games/game-cache.js:197` | const raw = Number(process.env.GAMES_GLOBAL_TTL_MS); |
+| `GAMES_GLOBAL_TTL_MS` | см. файл | `server/games/game-cache.js:130` | const raw = Number(process.env.GAMES_GLOBAL_TTL_MS); |
 | `GAMES_GOG_BREAKER_MS` | breakerMs = 1800000 ms (30 min) (`gog`) | `server/core/sources.js` (gog) | breakerEnv: 'GAMES_GOG_BREAKER_MS', |
 | `GAMES_GOG_BUDGET` | budget = 200 (0 = off) (`gog`) | `server/core/sources.js` (gog) | budgetEnv: 'GAMES_GOG_BUDGET', |
 | `GAMES_GOG_LIBRARY_PAUSE_MS` | pauseMs = 400 ms (`gog`) | `server/core/sources.js` (gog) | pauseEnv: 'GAMES_GOG_LIBRARY_PAUSE_MS', |
@@ -68,7 +68,7 @@
 | `GAMES_GOG_RECHECK_ZERO_MS` | см. файл | `server/games/gog-import-stages/playtime-stage.js:11` | const raw = Number(process.env.GAMES_GOG_RECHECK_ZERO_MS); |
 | `GAMES_GOG_REFRESH_MARGIN_MS` | `300000 ms (5 min) (DEFAULT_REFRESH_MARGIN_MS)` (server/games/gog-cache.js) | `server/games/gog-cache.js:86` | return envMs('GAMES_GOG_REFRESH_MARGIN_MS', DEFAULT_REFRESH_MARGIN_MS); |
 | `GAMES_GOG_TIMEOUT_MS` | timeoutMs = 20000 ms (20 s) (`gog`) | `server/core/sources.js` (gog) | timeoutEnv: 'GAMES_GOG_TIMEOUT_MS', |
-| `GAMES_LIBRARY_TTL_MS` | см. файл | `server/games/game-cache.js:187` | const raw = Number(process.env.GAMES_LIBRARY_TTL_MS); |
+| `GAMES_LIBRARY_TTL_MS` | см. файл | `server/games/game-cache.js:120` | const raw = Number(process.env.GAMES_LIBRARY_TTL_MS); |
 | `GAMES_MOBY_BUDGET` | budget = 100 (0 = off) (`moby`) | `server/core/sources.js` (moby) | budgetEnv: 'GAMES_MOBY_BUDGET', |
 | `GAMES_MOBY_PAUSE_MS` | pauseMs = 1100 ms (`moby`) | `server/core/sources.js` (moby) | pauseEnv: 'GAMES_MOBY_PAUSE_MS', |
 | `GAMES_PERSONNEL_LOCK_WAIT_MS` | см. файл | `server/games/personnel/backfill.js:56` | const raw = Number(process.env.GAMES_PERSONNEL_LOCK_WAIT_MS); |
@@ -115,9 +115,9 @@
 | `HARDCOVER_API_TOKEN` | env или файл `config/hardcover-token` (значение не эхоится) | `server/config.js` (hardcover) | const HARDCOVER_ENV_KEYS = ['HARDCOVER_API_TOKEN', 'HARDCOVER_READ_TOKEN']; |
 | `KINOBOXD_BOOKS_PROFILE` | `''` (server/books/authors-backfill.js) | `server/books/authors-backfill.js:45` | const raw = options.profile \|\| process.env.KINOBOXD_BOOKS_PROFILE \|\| ''; |
 | `KINOBOXD_BOOKS_WIKIDATA` | `''` (server/books/wikidata-flag.js) | `server/books/wikidata-flag.js:6` | const raw = String(process.env.KINOBOXD_BOOKS_WIKIDATA \|\| '') |
-| `KINOBOXD_CACHE_BOOK_DIR` | см. файл | `server/books/book-cache.js:36` | const BOOK_CACHE_DIR = process.env.KINOBOXD_CACHE_BOOK_DIR |
+| `KINOBOXD_CACHE_BOOK_DIR` | см. файл | `server/books/book-cache.js:6` | const BOOK_CACHE_DIR = process.env.KINOBOXD_CACHE_BOOK_DIR |
 | `KINOBOXD_CACHE_DIR` | см. файл | `server/cache.js:6` | const CACHE_DIR = process.env.KINOBOXD_CACHE_DIR |
-| `KINOBOXD_CACHE_GAMES_DIR` | см. файл | `server/games/game-cache.js:50` | const GAMES_CACHE_DIR = process.env.KINOBOXD_CACHE_GAMES_DIR |
+| `KINOBOXD_CACHE_GAMES_DIR` | см. файл | `server/games/game-cache.js:7` | const GAMES_CACHE_DIR = process.env.KINOBOXD_CACHE_GAMES_DIR |
 | `KINOBOXD_EPIC_CLIENT_FILE` | см. файл | `server/games/epic.js:48` | const CLIENT_FILE_ENV = 'KINOBOXD_EPIC_CLIENT_FILE'; |
 | `KINOBOXD_EPIC_TOKENS_DIR` | см. файл | `server/games/epic-token-store.js:12` | const TOKENS_DIR = process.env.KINOBOXD_EPIC_TOKENS_DIR |
 | `KINOBOXD_GAMES_MOBY` | `''` (server/games/personnel/moby.js) | `server/games/personnel/moby.js:83` | const raw = String(process.env.KINOBOXD_GAMES_MOBY \|\| '').trim().toLowerCase(); |
@@ -125,19 +125,19 @@
 | `KINOBOXD_GOG_CLIENT_FILE` | см. файл | `server/games/sources/gog-requests.js:21` | const CLIENT_FILE_ENV = 'KINOBOXD_GOG_CLIENT_FILE'; |
 | `KINOBOXD_LIVELIB_REIMPORT_TTL_MS` | см. файл | `server/books/import.js:21` | const LIVELIB_REIMPORT_TTL_MS = Number(process.env.KINOBOXD_LIVELIB_REIMPORT_TTL_MS) > 0 |
 | `KINOBOXD_MOBY_KEY_FILE` | см. файл | `server/games/personnel/moby.js:14` | const KEY_FILE_ENV = 'KINOBOXD_MOBY_KEY_FILE'; |
-| `KINOBOXD_PASSWORD` | см. файл | `server/auth.js:22` | typeof process.env.KINOBOXD_PASSWORD === 'string' ? process.env.KINOBOXD_PASSWORD : ''; |
+| `KINOBOXD_PASSWORD` | см. файл | `server/auth.js:10` | typeof process.env.KINOBOXD_PASSWORD === 'string' ? process.env.KINOBOXD_PASSWORD : ''; |
 | `KINOBOXD_SEGMENTS_INCLUDE_MEDIUM` | `''` (server/books/stats/events.js) | `server/books/stats/events.js:110` | const raw = String(process.env.KINOBOXD_SEGMENTS_INCLUDE_MEDIUM \|\| '').trim().toLowerCase(); |
-| `KINOBOXD_STATE_DIR` | см. файл | `server/games/game-cache.js:54` | const STATE_DIR = process.env.KINOBOXD_STATE_DIR |
-| `KINOBOXD_STEAM_KEY_FILE` | см. файл | `server/config.js:41` | Tests point this at a non-existent file so the local dev fallback (`config/steam-token`, present in the main tree) cannot change their result. |
+| `KINOBOXD_STATE_DIR` | см. файл | `server/games/game-cache.js:11` | const STATE_DIR = process.env.KINOBOXD_STATE_DIR |
+| `KINOBOXD_STEAM_KEY_FILE` | см. файл | `server/config.js:18` | const STEAM_KEY_FILE_ENV = 'KINOBOXD_STEAM_KEY_FILE'; |
 | `KINOBOXD_WDQS_ENDPOINT` | `https://query.wikidata.org/sparql (WDQS)` (server/books/authors-wikidata.js) | `server/books/authors-wikidata.js:16` | return fetchOnce(options.endpoint \|\| process.env.KINOBOXD_WDQS_ENDPOINT \|\| WDQS, { |
 | `MOBYGAMES_API_KEY` | env или файл `app/config/moby-token` (значение не эхоится) | `server/config.js` (`server/games/personnel/moby.js` (key_ENV_KEYS)) | const KEY_ENV_KEYS = ['MOBYGAMES_API_KEY', 'MOBY_API_KEY']; |
-| `PORT` | `3000` (server/index.js) | `server/index.js:36` | const PORT = Number(process.env.PORT) \|\| 3000; |
+| `PORT` | `3000` (server/index.js) | `server/index.js:28` | const PORT = Number(process.env.PORT) \|\| 3000; |
 | `REMATCH_CONCURRENCY` | `8` (server/rematch.js) | `server/rematch.js:12` | Math.min(16, Number(process.env.REMATCH_CONCURRENCY) \|\| 8) |
 | `REMATCH_DRY_RUN` | см. файл | `server/rematch.js:14` | const DRY_RUN = process.env.REMATCH_DRY_RUN === '1'; |
 | `SMOKE_TMP` | см. файл | `scripts/smoke-preload.js:7` | const outDir = process.env.SMOKE_TMP; |
 | `STEAM_API_KEY` | env или файл `config/steam-token` (значение не эхоится) | `server/config.js` (steam) | const STEAM_ENV_KEYS = ['STEAM_API_KEY']; |
 | `STEAMGRIDDB_API_KEY` | env или файл `config/steamgriddb-token` (значение не эхоится) | `server/config.js` (steamgriddb) | const STEAMGRIDDB_ENV_KEYS = ['STEAMGRIDDB_API_KEY']; |
-| `TMDB_API_BASE` | `'https://api.themoviedb.org/3'` (server/tmdb.js) | `server/tmdb.js:11` | `TMDB_API_BASE` lets a local backfill use TMDB's alternate API host when the canonical `api.themoviedb.org` endpoint is blocked by the network. Production keeps the documented default. |
+| `TMDB_API_BASE` | `'https://api.themoviedb.org/3'` (server/tmdb.js) | `server/tmdb.js:8` | const API_BASE = String(process.env.TMDB_API_BASE \|\| 'https://api.themoviedb.org/3') |
 | `TMDB_API_TOKEN` | env или файл `config/tmdb-token` (значение не эхоится) | `server/config.js` (tmdb) | const ENV_KEYS = ['TMDB_API_TOKEN', 'TMDB_READ_ACCESS_TOKEN']; |
 | `WIKIDATA_REFRESH` | см. файл | `server/wikidata.js:625` | options.force === true \|\| String(process.env.WIKIDATA_REFRESH \|\| '') === '1'; |
 

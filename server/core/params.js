@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * Strict request parameter parsing.
- *
- * House rule (`AGENTS.md` §6): an unknown query parameter or an unparsable
- * value is a 400 with a stable code, never a silent ignore. These helpers were
- * duplicated in `books/routes.js` and `games/routes.js`; the messages and the
- * codes are kept identical to the originals so existing clients and tests do
- * not see a behaviour change.
- */
-
 const { HttpError } = require('./errors');
 
 const TRUE_VALUES = ['1', 'true', 'yes', 'on'];
@@ -19,12 +9,6 @@ function isBlank(raw) {
   return raw == null || String(raw).trim() === '';
 }
 
-/**
- * The endpoint accepts exactly the listed query parameters. Anything else is a
- * client bug (a stale build still sending a retired parameter, or a typo), and
- * silently ignoring it would make the payload look like it honoured a filter
- * it never applied.
- */
 function assertOnlyParams(req, allowed, endpoint) {
   const keys = Object.keys(req.query || {});
   const extra = keys.filter((key) => !allowed.includes(key));
@@ -38,10 +22,6 @@ function assertOnlyParams(req, allowed, endpoint) {
   );
 }
 
-/**
- * Parse a 0/1 flag. `fallback` is returned for a missing/empty value; an
- * unrecognised value is a 400, never the fallback.
- */
 function parseBoolean(raw, options = {}) {
   const name = options.name || 'flag';
   const fallback = options.fallback === undefined ? false : options.fallback;
@@ -54,21 +34,14 @@ function parseBoolean(raw, options = {}) {
   throw new HttpError(400, `${label} "${name}" must be 0 or 1.`, code);
 }
 
-/** Query-parameter form: `invalid_<name>` and "Query parameter ...". */
 function parseBoolParam(raw, name, fallback) {
   return parseBoolean(raw, { name, fallback, label: 'Query parameter' });
 }
 
-/** `force` as accepted by the import/refresh endpoints (body or query). */
 function parseForce(raw) {
   return parseBoolean(raw, { name: 'force', label: 'Parameter', code: 'invalid_force' });
 }
 
-/**
- * `minHours`: -1 = every game (0-hour backlog included), 0 = only played
- * works (the endpoint default), N>=1 = works with at least N hours. Anything
- * else (fraction, < -1, text) is a 400, never a silent ignore.
- */
 function parseMinHours(raw, fallback = 0) {
   if (isBlank(raw)) return fallback;
   const value = String(raw).trim();
@@ -82,10 +55,6 @@ function parseMinHours(raw, fallback = 0) {
   return parsed;
 }
 
-/**
- * Integer parameter with an explicit range. `fallback` (default `null`) is
- * returned for a missing/empty value.
- */
 function parseInteger(raw, options = {}) {
   const name = options.name || 'value';
   const code = options.code || `invalid_${name}`;
@@ -103,7 +72,6 @@ function parseInteger(raw, options = {}) {
   return parsed;
 }
 
-/** One of a fixed list of values (case-insensitive); anything else is a 400. */
 function parseEnum(raw, name, allowed, fallback = null) {
   if (isBlank(raw)) return fallback;
   const value = String(raw).trim().toLowerCase();

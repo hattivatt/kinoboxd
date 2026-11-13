@@ -1,26 +1,5 @@
 'use strict';
 
-/**
- * Runtime configuration.
- *
- * Every credential is resolved lazily: requiring this module never touches the
- * environment or the filesystem, and a missing credential does not affect
- * startup. The caller decides how to report it.
- *
- * Resolution order is env aliases first, then a local dev file:
- *   TMDB         TMDB_API_TOKEN / TMDB_READ_ACCESS_TOKEN      -> config/tmdb-token
- *   Hardcover    HARDCOVER_API_TOKEN / HARDCOVER_READ_TOKEN   -> config/hardcover-token
- *   Google Books GB_API_KEY / BOOKS_GOOGLE_API_KEY            -> config/gbooks-token
- *   Steam        STEAM_API_KEY                                -> config/steam-token
- *
- * A missing Google Books or Steam key is not an error: both providers work
- * anonymously (Google Books on a per-IP quota, Steam for profile/achievements/
- * global percentages) and the import degrades explicitly.
- *
- * Never log a token value: `*Source()` names the source (`GB_API_KEY`, `file`,
- * ...) and nothing else. `server/core/secrets.js` owns the loading itself.
- */
-
 const path = require('path');
 
 const { createSecret } = require('./core/secrets');
@@ -36,11 +15,7 @@ const GBOOKS_ENV_KEYS = ['GB_API_KEY', 'BOOKS_GOOGLE_API_KEY'];
 
 const STEAM_KEY_PATH = path.join(__dirname, '..', 'config', 'steam-token');
 const STEAM_ENV_KEYS = ['STEAM_API_KEY'];
-// Tests point this at a non-existent file so the local dev fallback
-// (`config/steam-token`, present in the main tree) cannot change their result.
 const STEAM_KEY_FILE_ENV = 'KINOBOXD_STEAM_KEY_FILE';
-// Optional community artwork fallback (vertical grids for SKUs Steam does not
-// publish). Missing key = provider skipped, never an error.
 const STEAMGRIDDB_KEY_PATH = path.join(__dirname, '..', 'config', 'steamgriddb-token');
 const STEAMGRIDDB_ENV_KEYS = ['STEAMGRIDDB_API_KEY'];
 
@@ -99,7 +74,6 @@ function tmdbTokenSource() {
   return tmdb.source();
 }
 
-/** Hardcover PAT; throws code HARDCOVER_TOKEN_MISSING when no source has it. */
 function loadHardcoverToken() {
   return hardcover.load();
 }
@@ -108,7 +82,6 @@ function hardcoverTokenSource() {
   return hardcover.source();
 }
 
-/** Google Books key, or null in anonymous mode. */
 function loadGbooksKey() {
   return gbooks.load();
 }
@@ -117,7 +90,6 @@ function gbooksKeySource() {
   return gbooks.source();
 }
 
-/** Steam Web API key, or null when only the no-key endpoints are available. */
 function loadSteamKey() {
   return steam.load();
 }
@@ -126,7 +98,6 @@ function steamKeySource() {
   return steam.source();
 }
 
-/** SteamGridDB key, or null when the optional provider is disabled. */
 function loadSteamgriddbKey() {
   return steamgriddb.load();
 }
@@ -135,7 +106,6 @@ function steamgriddbKeySource() {
   return steamgriddb.source();
 }
 
-/** Test helper: forget the cached key so the next call re-reads env/file. */
 function resetSteamKeyCache() {
   steam.reset();
 }

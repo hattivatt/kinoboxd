@@ -1,48 +1,5 @@
 'use strict';
 
-/**
- * Games cache (namespace: cache-games/).
- *
- * Same invariants as the film/book caches:
- *   - everything lives on disk; a read returns the parsed document together
- *     with the file fingerprint (`mtimeNs:size:ino`) so an external import is
- *     visible to a running server without a restart;
- *   - every write is atomic (tmp + rename);
- *   - every JSON file carries `schemaVersion`.
- *
- * Layout (ИГРЫ-АРХИТЕКТУРА.md §3.2, M1 subset):
- *
- *   cache-games/
- *     profiles/steam-<steamid64>.json     persona/avatar/privacy/importedAt
- *     library/steam-<steamid64>.json      raw GetOwnedGames snapshot + fingerprint
- *     details/<appid>.json                store appdetails (global, not per owner)
- *     details-base/<appid>.json           appdetails of the *base* version of a
- *                                         regional SKU (B6; the owner does not
- *                                         own it, so it never enters details/)
- *     spy/<appid>.json                    SteamSpy tags/owners/ccu (M4, global)
- *     reviews/<appid>.json                appreviews summary (M4, global)
- *     achievements/<steamid64>/<appid>.json  player achievements (unlockTimestamp)
- *     global/<appid>.json                 global achievement percentages
- *     editions.json                       canonical edition index (M5-B, profiles keyed)
- *     state/games-breaker.json            host breakers (30 min) — see §10.1
- *     state/enrich-state.json             details enrich progress/journal (resume)
- *     state/details-heal-state.json       one-time heal ledger for documents
- *                                         written before `headerImage` existed
- *     state/spy-state.json                SteamSpy phase progress/journal
- *     state/reviews-state.json            appreviews phase progress/journal
- *
- * Roots:
- *   - `KINOBOXD_CACHE_GAMES_DIR` moves the whole cache (tests point it at /tmp);
- *   - `KINOBOXD_STATE_DIR` moves mutable state (breaker) the same way; when it
- *     is set the state lives in `<STATE_DIR>/games`, otherwise under the cache.
- *
- * TTLs (library is 24 h here, §3.3 mentions 6 h for a manual refresh — the
- * import job accepts `force` to bypass either):
- *   profile 6 h · library 24 h · achievements 24 h · global 7 days ·
- *   details 180 days (`GAMES_STORE_TTL_MS`, re-check window `GAMES_STORE_RECHECK_DAYS`) ·
- *   spy/reviews 30 days (`GAMES_SPY_TTL_MS` / `GAMES_REVIEWS_TTL_MS`).
- */
-
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -58,10 +15,6 @@ const STATE_DIR = process.env.KINOBOXD_STATE_DIR
 const PROFILES_DIR = path.join(GAMES_CACHE_DIR, 'profiles');
 const LIBRARY_DIR = path.join(GAMES_CACHE_DIR, 'library');
 const DETAILS_DIR = path.join(GAMES_CACHE_DIR, 'details');
-// B6: appdetails of the **base** version of a regional SKU (`Dishonored RHCP`
-// → `Dishonored`). A separate directory on purpose: the owner does not own the
-// base card, so it must never enter `details/` (that directory is the library
-// enrichment progress and its TTL drives the enrich job).
 const DETAILS_BASE_DIR = path.join(GAMES_CACHE_DIR, 'details-base');
 const SPY_DIR = path.join(GAMES_CACHE_DIR, 'spy');
 const REVIEWS_DIR = path.join(GAMES_CACHE_DIR, 'reviews');
@@ -76,11 +29,7 @@ const REVIEWS_STATE_PATH = path.join(STATE_DIR, 'reviews-state.json');
 const LIBRARY_TTL_MS = 24 * 60 * 60 * 1000;
 const ACHIEVEMENTS_TTL_MS = 24 * 60 * 60 * 1000;
 const GLOBAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-// Store metadata is mostly static (genres/developers/categories), but release
-// dates and DLC lists change; the brief fixes the re-check window at 180 days.
 const DETAILS_TTL_MS = 180 * 24 * 60 * 60 * 1000;
-// SteamSpy owners/CCU float, tags do not; appreviews counters grow daily. Both
-// phases are re-checked monthly (brief M4; ИГРЫ §10.1 said 7 days for reviews).
 const SPY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const REVIEWS_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -98,12 +47,6 @@ for (const dir of [
   fs.mkdirSync(dir, { recursive: true });
 }
 
-/* ------------------------------------------------------------------ */
-/* Freshness + atomic writes                                           */
-/* ------------------------------------------------------------------ */
-
-// One implementation for every domain: `server/core/fs-store.js`. The local
-// names stay because the rest of this module (and its tests) calls them.
 const fsStore = require('../core/fs-store');
 const { round1 } = require('../core/stats');
 
@@ -122,10 +65,6 @@ function writeJsonAtomicSync(filePath, data) {
   return fsStore.writeJsonAtomicSync(filePath, data);
 }
 
-/* ------------------------------------------------------------------ */
-/* Paths                                                               */
-/* ------------------------------------------------------------------ */
-
 function profilePath(steamId64) {
   return path.join(PROFILES_DIR, `steam-${safeKey(steamId64)}.json`);
 }
@@ -138,7 +77,6 @@ function detailsPath(appid) {
   return path.join(DETAILS_DIR, `${safeKey(appid)}.json`);
 }
 
-/** `details-base/<appid>.json` — appdetails of a base version the owner does not own. */
 function detailsBasePath(appid) {
   return path.join(DETAILS_BASE_DIR, `${safeKey(appid)}.json`);
 }
@@ -163,10 +101,6 @@ function profileKeyOf(steamId64) {
   return `steam-${steamId64}`;
 }
 
-/**
- * Parse a `?profile=` token. Only `steam-<steamid64>` is a valid games profile
- * token; anything else is reported as malformed/unknown by the route.
- */
 function parseProfileToken(token) {
   const value = String(token == null ? '' : token).trim();
   const match = /^steam-(\d{17})$/i.exec(value);
@@ -174,7 +108,6 @@ function parseProfileToken(token) {
   return { source: 'steam', userKey: match[1], key: profileKeyOf(match[1]) };
 }
 
-/** True when `doc[field]` is a valid timestamp younger than `ttlMs`. */
 function isFresh(doc, ttlMs, field = 'fetchedAt') {
   if (!doc) return false;
   const ts = Date.parse(String(doc[field] || doc.importedAt || ''));
@@ -213,10 +146,6 @@ function reviewsTtlMs() {
   return Number.isFinite(raw) && raw > 0 ? raw : REVIEWS_TTL_MS;
 }
 
-/* ------------------------------------------------------------------ */
-/* Profiles                                                            */
-/* ------------------------------------------------------------------ */
-
 async function saveProfile(profile) {
   if (!profile || !profile.userKey) {
     throw new Error('saveProfile: profile.userKey (steamid64) is required');
@@ -242,11 +171,6 @@ function getProfileByKey(key) {
   return getProfile(parsed.userKey);
 }
 
-/**
- * All cached profiles, newest import first. Metadata is read from the
- * `library/` snapshot when present so the switcher can show game counts
- * without loading every game.
- */
 function listProfiles() {
   let names = [];
   try {
@@ -258,9 +182,6 @@ function listProfiles() {
   for (const name of names) {
     const hit = readJsonWithFingerprint(path.join(PROFILES_DIR, name));
     if (!hit || !hit.data || !hit.data.userKey) continue;
-    // `profiles/` is shared with the same-owner secondary libraries (M6a:
-    // `gog-<userId>.json`). Only Steam documents are owner profiles — a GOG
-    // account must never appear as a second Steam owner.
     if (hit.data.source && hit.data.source !== 'steam') continue;
     const library = getLibrary(hit.data.userKey);
     result.push({
@@ -268,10 +189,6 @@ function listProfiles() {
       userKey: hit.data.userKey,
       key: profileKeyOf(hit.data.userKey),
       personaName: hit.data.personaName || null,
-      // The human name typed at import (`ownerLabel`, ИГРЫ §5.4 `label`). Two
-      // owners of one Steam account (or a persona that does not say who it is)
-      // are told apart by this field in the switcher chips; it is additive and
-      // never replaces `personaName`.
       label: hit.data.ownerLabel || null,
       avatarUrl: hit.data.avatarUrl || null,
       privacy: hit.data.privacy || null,
@@ -290,10 +207,6 @@ function listProfiles() {
   return result;
 }
 
-/* ------------------------------------------------------------------ */
-/* Library                                                             */
-/* ------------------------------------------------------------------ */
-
 async function saveLibrary(steamId64, library) {
   const doc = {
     schemaVersion: 1,
@@ -309,10 +222,6 @@ function getLibrary(steamId64) {
   const hit = readJsonWithFingerprint(libraryPath(steamId64));
   return hit ? hit.data : null;
 }
-
-/* ------------------------------------------------------------------ */
-/* Details (store appdetails, global per appid — not per owner)         */
-/* ------------------------------------------------------------------ */
 
 async function saveDetails(appid, doc) {
   const payload = {
@@ -330,11 +239,6 @@ function getDetails(appid) {
   return hit ? hit.data : null;
 }
 
-/**
- * Read the details documents for the given appids. Returns a plain object
- * `{ [appid]: doc }`; missing/corrupt files are simply absent (the stats
- * payload then reports the game as «no details», never as a false negative).
- */
 function listDetails(appids) {
   const result = {};
   if (!Array.isArray(appids)) return result;
@@ -346,16 +250,6 @@ function listDetails(appids) {
   return result;
 }
 
-/* ------------------------------------------------------------------ */
-/* Base-version details (B6: canonical metadata of a regional SKU)      */
-/* ------------------------------------------------------------------ */
-
-/**
- * Store appdetails of the **base** card (`Dishonored` for `Dishonored RHCP`).
- * Same document shape as `details/`, same 180-day TTL, but a separate
- * directory: `details/` stays «what the owner owns» and its file count is the
- * enrich job's progress counter. Nothing here is owner-scoped.
- */
 async function saveDetailsBase(appid, doc) {
   const payload = {
     schemaVersion: 1,
@@ -373,7 +267,6 @@ function getDetailsBase(appid) {
   return hit ? hit.data : null;
 }
 
-/** `{ [appid]: doc }`; missing/corrupt files are simply absent. */
 function listDetailsBase(appids) {
   const result = {};
   if (!Array.isArray(appids)) return result;
@@ -386,10 +279,6 @@ function listDetailsBase(appids) {
   }
   return result;
 }
-
-/* ------------------------------------------------------------------ */
-/* SteamSpy tags (global per appid — metadata, not owner events)        */
-/* ------------------------------------------------------------------ */
 
 async function saveSpy(appid, doc) {
   const payload = {
@@ -407,7 +296,6 @@ function getSpy(appid) {
   return hit ? hit.data : null;
 }
 
-/** `{ [appid]: spyDoc }`; missing/corrupt files are simply absent. */
 function listSpy(appids) {
   const result = {};
   if (!Array.isArray(appids)) return result;
@@ -418,10 +306,6 @@ function listSpy(appids) {
   }
   return result;
 }
-
-/* ------------------------------------------------------------------ */
-/* Review summaries (global per appid)                                 */
-/* ------------------------------------------------------------------ */
 
 async function saveReviews(appid, doc) {
   const payload = {
@@ -450,11 +334,6 @@ function listReviews(appids) {
   return result;
 }
 
-/* ------------------------------------------------------------------ */
-/* Enrich progress (state dir)                                         */
-/* ------------------------------------------------------------------ */
-
-/** Generic resumable phase journal: `{schemaVersion, updatedAt, profiles, runs}`. */
 function readPhaseState(filePath) {
   const hit = readJsonWithFingerprint(filePath);
   if (!hit || !hit.data || typeof hit.data !== 'object') {
@@ -504,20 +383,6 @@ async function saveReviewsState(state) {
   return savePhaseState(REVIEWS_STATE_PATH, state);
 }
 
-/**
- * One-time heal ledger for `details` documents written **before** the store
- * parser started keeping `headerImage` (e5bc5b9, 02.11.2026). Those documents
- * are TTL-fresh, so the ordinary enrich pass skips them and the card never gets
- * a real header. The ledger is global (a details document is global per appid,
- * not owner-scoped) and keyed by appid:
- *
- *   { appids: { "<appid>": { at, appid, result } } }
- *
- * `result` is `healed` (the refetch produced a header), `no_artwork` (the store
- * answered without a header image — do not ask again) or `unavailable` (the
- * store said the item has no page). Any recorded appid is never a heal
- * candidate again; a fetch failure is NOT recorded, so the next run retries.
- */
 function readDetailsHealState() {
   const hit = readJsonWithFingerprint(DETAILS_HEAL_STATE_PATH);
   const doc = (hit && hit.data) || {};
@@ -538,18 +403,12 @@ async function saveDetailsHealState(state) {
   return { data: payload, fingerprint };
 }
 
-/* ------------------------------------------------------------------ */
-/* Achievements (per game) + global percentages                        */
-/* ------------------------------------------------------------------ */
-
 async function saveAchievements(steamId64, appid, doc) {
   const payload = {
     schemaVersion: 1,
     source: 'steam-community',
     userKey: String(steamId64),
     ...doc,
-    // The requested appid wins over the XML's `gameFriendlyName`, which is a
-    // slug ("Portal2"), not a number.
     appid: Number(appid),
   };
   const fingerprint = await writeJsonAtomic(achievementPath(steamId64, appid), payload);
@@ -561,7 +420,6 @@ function getAchievements(steamId64, appid) {
   return hit ? hit.data : null;
 }
 
-/** All cached achievement documents of one profile (M1 has no index file). */
 function listAchievements(steamId64) {
   const dir = path.join(ACHIEVEMENTS_DIR, safeKey(steamId64));
   let names = [];
@@ -593,10 +451,6 @@ function getGlobal(appid) {
   const hit = readJsonWithFingerprint(globalPath(appid));
   return hit ? hit.data : null;
 }
-
-/* ------------------------------------------------------------------ */
-/* Breaker state (state dir)                                           */
-/* ------------------------------------------------------------------ */
 
 function readBreaker() {
   const hit = readJsonWithFingerprint(BREAKER_PATH);

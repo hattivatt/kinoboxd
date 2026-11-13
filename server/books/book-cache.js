@@ -1,35 +1,5 @@
 'use strict';
 
-/**
- * Book cache (namespace: cache-book/).
- *
- * Mirrors the film cache invariants (server/cache.js):
- *   - everything lives on disk, memory entries carry the file fingerprint
- *     (`mtimeNs:size:ino`) and are revalidated with one stat() per read, so an
- *     external backfill/import process is visible to a running server without
- *     a restart;
- *   - every write is atomic (tmp + rename);
- *   - every JSON file carries `schemaVersion`.
- *
- * Layout (see AGENTS.md §5.2):
- *
- *   cache-book/
- *     profiles/{source}-{userKey}.json   reading events of one source
- *     details/{hcWorkId}.json            canonical work metadata
- *     links/{livelibBookId}.json         livelib -> hardcover resolve result
- *     index.json                         matching keys -> workId | false
- *     links.json                         workId -> per-site links
- *     flags/book-flags.json              workId -> manual manga/comics override
- *     year-overrides/{source}-{userKey}.json  workId -> manual publication year
- *     match-log.jsonl                    audit of broad matches (append-only)
- *     imports/{source}-{userKey}-{ts}.json  raw import payload (debug)
- *     resolve-state/{source}-{userKey}.json last completed metadata pass
- *
- * The root can be moved with KINOBOXD_CACHE_BOOK_DIR; by default it is
- * `app/cache-book`, a sibling of the film cache, so the two namespaces never
- * mix.
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -62,12 +32,6 @@ for (const dir of [
   fs.mkdirSync(dir, { recursive: true });
 }
 
-/* ------------------------------------------------------------------ */
-/* Freshness + atomic writes                                           */
-/* ------------------------------------------------------------------ */
-
-// One implementation for every domain: `server/core/fs-store.js`. The local
-// names stay because the rest of this module (and its tests) calls them.
 const fsStore = require('../core/fs-store');
 
 const fingerprintOf = fsStore.fingerprintOf;
@@ -85,14 +49,6 @@ function writeJsonAtomicSync(filePath, data) {
   return fsStore.writeJsonAtomicSync(filePath, data);
 }
 
-/**
- * Fingerprint-checked one-document-per-key cache.
- *
- * Every `get` revalidates the memory entry with one stat() (module header) and
- * falls back to a fresh read; every `save` writes atomically and refreshes the
- * entry. Profiles, details, links and resolve-state each carried the same loop
- * verbatim; `keyOf`/`pathOf`/`accept` are the only per-document parts.
- */
 function createDocCache({ keyOf, pathOf, accept }) {
   const memory = new Map();
   return {
@@ -120,10 +76,6 @@ function createDocCache({ keyOf, pathOf, accept }) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Profiles: one file per (source, userKey)                            */
-/* ------------------------------------------------------------------ */
-
 function profilePath(source, userKey) {
   return path.join(PROFILES_DIR, `${safeKey(source)}-${safeKey(userKey)}.json`);
 }
@@ -133,10 +85,6 @@ const profileDocs = createDocCache({
   pathOf: profilePath,
 });
 
-/**
- * Cached reading profile of one source. Returns the parsed document or null.
- * The memory entry is only trusted while its fingerprint still matches.
- */
 function getProfile(source, userKey) {
   return profileDocs.get(source, userKey);
 }
@@ -145,7 +93,6 @@ async function saveProfile(source, userKey, data) {
   return profileDocs.save(data, source, userKey);
 }
 
-/** All cached profiles, tolerant to individual broken files. */
 function listProfiles() {
   let names = [];
   try {
@@ -160,8 +107,6 @@ function listProfiles() {
     if (!found || !found.data || !found.data.source) continue;
     const data = found.data;
     const events = Array.isArray(data.events) ? data.events : [];
-    // Persisted profiles written before `statusId` was recorded cannot be
-    // re-filtered by the raw journal key; flag them for a Hardcover re-import.
     const missingStatusId =
       data.source === 'hardcover'
         ? events.filter((event) => event && event.statusId == null).length
@@ -169,14 +114,11 @@ function listProfiles() {
     result.push({
       source: data.source,
       userKey: data.userKey,
-      // Acquisition path of the document: `livelib` (scrape) or
-      // `livelib-file` (livelib-backup export). Same profile key either way.
       origin: data.origin || data.source,
       sourceUserId: data.sourceUserId == null ? null : data.sourceUserId,
       importedAt: data.importedAt || null,
       eventCount: events.length,
       finishedCount: events.filter((event) => event && event.finishedAt).length,
-      // Per-shelf counts of a file import (read/dnf/reading/wish).
       shelves: data.shelves || null,
       fileImports: Array.isArray(data.fileImports) ? data.fileImports.length : 0,
       missingStatusId,
@@ -187,20 +129,10 @@ function listProfiles() {
   return result;
 }
 
-/* ------------------------------------------------------------------ */
-/* Details: cache-book/details/{hcWorkId}.json                         */
-/* ------------------------------------------------------------------ */
-
 function detailsPath(hcWorkId) {
   return path.join(DETAILS_DIR, `${safeKey(hcWorkId)}.json`);
 }
 
-/**
- * File-key for a work id: Hardcover keeps the legacy bare numeric key
- * (`details/100.json`), other providers use the prefixed id (`gb-...`,
- * `ol-...`, `ll-...`) so a LiveLib card enrichment never overwrites the
- * canonical Hardcover document.
- */
 function detailsKeyForWork(workId) {
   const value = String(workId == null ? '' : workId);
   const hc = /^hc:(\d+)$/.exec(value);
@@ -229,10 +161,6 @@ async function saveDetails(hcWorkId, data) {
   return detailDocs.save(data, hcWorkId);
 }
 
-/* ------------------------------------------------------------------ */
-/* Cross-source links: cache-book/links/{livelibBookId}.json           */
-/* ------------------------------------------------------------------ */
-
 function linkPath(livelibBookId) {
   return path.join(LINKS_DIR, `${safeKey(livelibBookId)}.json`);
 }
@@ -250,10 +178,6 @@ async function saveLink(livelibBookId, data) {
   return linkDocs.save(data, livelibBookId);
 }
 
-/* ------------------------------------------------------------------ */
-/* index.json: matching keys -> hcWorkId (number) | false              */
-/* ------------------------------------------------------------------ */
-
 let index = {};
 let indexFingerprint = null;
 const indexPending = new Map();
@@ -268,10 +192,6 @@ try {
   indexFingerprint = fingerprintOf(INDEX_PATH);
 }
 
-/**
- * Reload index.json when another process replaced it. Locally pending writes
- * win over the loaded file, other disk keys are kept.
- */
 function refreshIndexIfChanged() {
   const current = fingerprintOf(INDEX_PATH);
   if (current === indexFingerprint) return false;
@@ -332,7 +252,6 @@ function persistIndex() {
   }, 300);
 }
 
-/** Force a synchronous flush (end of import / tests). */
 function flushIndex() {
   try {
     refreshIndexIfChanged();
@@ -342,10 +261,6 @@ function flushIndex() {
     console.error(`[book-cache] Failed to flush index.json: ${err.message}`);
   }
 }
-
-/* ------------------------------------------------------------------ */
-/* links.json: workId -> per-site links                                */
-/* ------------------------------------------------------------------ */
 
 let links = {};
 let linksFingerprint = null;
@@ -429,22 +344,6 @@ function flushLinks() {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* flags/book-flags.json: manual manga/comics override per workId       */
-/* ------------------------------------------------------------------ */
-
-/*
- * Flat document, one key per work:
- *   { "hc:123": { "mangaComics": true, "updatedAt": "2026-10-27T…" },
- *     "hc:456": { "mangaComics": false, "updatedAt": "…" } }
- *
- * The file is the user's decision, not provider metadata: the stats builder
- * applies it after provider detection and series propagation, and it wins even
- * against an explicit `true` (true -> false is a valid "show again" override).
- * Same freshness contract as links.json: one stat() per read, an external edit
- * is visible without a restart, writes are atomic and serialised per process.
- */
-
 let flags = {};
 let flagsFingerprint = null;
 let flagsSaving = Promise.resolve();
@@ -473,7 +372,6 @@ function sanitizeFlags(raw) {
   flagsFingerprint = fingerprintOf(FLAGS_PATH);
 }
 
-/** Reload the file when another process replaced it. */
 function refreshFlagsIfChanged() {
   const current = fingerprintOf(FLAGS_PATH);
   if (current === flagsFingerprint) return false;
@@ -488,27 +386,23 @@ function refreshFlagsIfChanged() {
   return true;
 }
 
-/** Whole override map (live copy; callers must not mutate). */
 function getMangaFlags() {
   refreshFlagsIfChanged();
   return flags;
 }
 
-/** One override entry or null. */
 function getMangaFlag(workId) {
   refreshFlagsIfChanged();
   const key = String(workId == null ? '' : workId);
   return Object.prototype.hasOwnProperty.call(flags, key) ? flags[key] : null;
 }
 
-/** Serialise writes so two concurrent toggles cannot lose each other. */
 function enqueueFlagsWrite(task) {
   const run = flagsSaving.then(task);
   flagsSaving = run.catch(() => {});
   return run;
 }
 
-/** Upsert `{ mangaComics: boolean, updatedAt }` for one work. */
 function setMangaFlag(workId, mangaComics) {
   const key = String(workId == null ? '' : workId).trim();
   if (!key) return Promise.reject(new Error('workId is required'));
@@ -526,7 +420,6 @@ function setMangaFlag(workId, mangaComics) {
   });
 }
 
-/** Remove an override (idempotent); resolves to true when something changed. */
 function clearMangaFlag(workId) {
   const key = String(workId == null ? '' : workId).trim();
   if (!key) return Promise.reject(new Error('workId is required'));
@@ -542,38 +435,9 @@ function clearMangaFlag(workId) {
   });
 }
 
-/* ------------------------------------------------------------------ */
-/* Manual publication-year overrides                                   */
-/* ------------------------------------------------------------------ */
-
-/**
- * Durable manual year of a work, scoped to ONE profile:
- *
- *   cache-book/year-overrides/{source}-{userKey}.json
- *   {
- *     schemaVersion: 1,
- *     profile: { source, userKey },
- *     overrides: { "<workId>": { year: 1564, updatedAt: "2026-10-29T…" } }
- *   }
- *
- * Why a separate file per profile instead of `details/{workId}.json`: the
- * details document belongs to the shared metadata chain and is rewritten by
- * resolve/backfill; the user's correction must survive those passes and the
- * file re-import of the same export. Same freshness contract as flags:
- * fingerprint revalidation on every read (an external edit is visible without a
- * restart), atomic writes, serialised per process.
- *
- * The key is the work identity the client saw (`booksIndex[workId]`). A work
- * that resolves later changes its `workId` (`ll:file:tk:<sha1>` ->
- * `hc:123`); stats.js matches the override against the work's current id AND
- * its stable event keys (`ll:<sourceBookId>`, `ll:file:tk:<sha1>`), so the
- * correction follows the work across a resolve. For `ll:file:tk:` rows the
- * hash is sha1(normalized title|first-author surname) and is stable between
- * re-imports of the same rows (livelib-file.js `titleHashOf`).
- */
 const YEAR_MIN = -3000;
 const YEAR_MAX = 2100;
-const yearOverridesMemory = new Map(); // `${source}:${userKey}` -> {data, path, fingerprint}
+const yearOverridesMemory = new Map();
 let yearOverridesSaving = Promise.resolve();
 
 function yearOverridesPath(source, userKey) {
@@ -615,7 +479,6 @@ function refreshYearOverridesIfChanged(source, userKey) {
   return true;
 }
 
-/** Whole override map of one profile (live copy; callers must not mutate). */
 function getYearOverrides(source, userKey) {
   refreshYearOverridesIfChanged(source, userKey);
   const cached = yearOverridesMemory.get(`${source}:${userKey}`);
@@ -628,7 +491,6 @@ function enqueueYearOverridesWrite(task) {
   return run;
 }
 
-/** Upsert `{ year, updatedAt }` for one work; resolves to the stored entry. */
 function setYearOverride(source, userKey, workId, year) {
   const key = String(workId == null ? '' : workId).trim();
   const value = Number(year);
@@ -657,7 +519,6 @@ function setYearOverride(source, userKey, workId, year) {
   });
 }
 
-/** Remove an override (idempotent); resolves to true when something changed. */
 function clearYearOverride(source, userKey, workId) {
   const key = String(workId == null ? '' : workId).trim();
   if (!key) return Promise.reject(new Error('workId is required'));
@@ -678,32 +539,6 @@ function clearYearOverride(source, userKey, workId) {
   });
 }
 
-/* ------------------------------------------------------------------ */
-/* Author alias table: cache-book/authors.json                         */
-/* ------------------------------------------------------------------ */
-
-/**
- * Durable author merge table. A false merge is expensive (two people become
- * one), a missed merge is cheap (two rows until the next resolve), so the file
- * is the place where a manual decision lives forever:
- *
- *   {
- *     schemaVersion: 2,
- *     fingerprint: "агата кристи|...",     // corpus that produced `canonical`
- *     canonical: { "нормализованное имя": "Отображаемое имя" },
- *     manual:    { "нормализованное имя": "Отображаемое имя" },
- *     wikidata: {
- *       checkedAt: "2026-10-28T…",         // last successful Wikidata pass
- *       checked: { "нормализованное имя": true },  // already asked from WDQS
- *       disabledUntil: null                // cooldown after 429/403/network
- *     }
- *   }
- *
- * `canonical` is applied on every stats build; `manual` is never overwritten
- * by an automatic rebuild. `wikidata.checked` is what makes the Wikidata bridge
- * default-on without hammering WDQS: a name is asked once, and a repeat stats
- * build with a full map issues zero requests.
- */
 let authorsMap = null;
 let authorsMapFingerprint = null;
 
@@ -768,13 +603,6 @@ function getAuthorsMap() {
   };
 }
 
-/**
- * Persist the table. `canonical` is merged over the stored one (an older
- * profile's aliases stay valid); `manual` is preserved unless passed
- * explicitly. `wikidata.checked` is unioned (a name asked once is never asked
- * again); `disabledUntil` is only written when passed. Resolves to the map that
- * is now effective.
- */
 async function saveAuthorsMap(next = {}) {
   refreshAuthorsMapIfChanged();
   const storedWikidata = normalizeWikidataState(authorsMap.wikidata);
@@ -791,8 +619,6 @@ async function saveAuthorsMap(next = {}) {
     wikidata: {
       checkedAt: nextWikidata.checkedAt,
       checked: { ...storedWikidata.checked, ...nextWikidata.checked },
-      // A cooldown is sticky until a later successful pass clears it: passing
-      // `wikidata.disabledUntil = null` explicitly is the clear.
       disabledUntil: next.wikidata && next.wikidata.disabledUntil !== undefined
         ? nextWikidata.disabledUntil
         : storedWikidata.disabledUntil,
@@ -804,10 +630,6 @@ async function saveAuthorsMap(next = {}) {
   return getAuthorsMap();
 }
 
-/* ------------------------------------------------------------------ */
-/* Import snapshots + match audit log                                  */
-/* ------------------------------------------------------------------ */
-
 async function saveRawImport(source, userKey, payload) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filePath = path.join(IMPORTS_DIR, `${safeKey(source)}-${safeKey(userKey)}-${stamp}.json`);
@@ -815,20 +637,6 @@ async function saveRawImport(source, userKey, payload) {
   return filePath;
 }
 
-/* ------------------------------------------------------------------ */
-/* Resolve audit state: cache-book/resolve-state/{source}-{key}.json   */
-/* ------------------------------------------------------------------ */
-
-/**
- * Last completed metadata-resolve pass of one LiveLib profile.
- *
- * `unmatchedKeys` is the honest "providers were asked and answered nothing"
- * set: an event key lands there only when at least one provider was really
- * called for it (no breaker/budget skip) and none returned a work. The stats
- * payload uses it to keep the «Метадата: N%» denominator on the resolvable
- * pool instead of counting books no provider knows forever (user report,
- * 28.10.2026: the badge sat at 99% and never reached 100).
- */
 function resolveStatePath(source, userKey) {
   return path.join(RESOLVE_STATE_DIR, `${safeKey(source)}-${safeKey(userKey)}.json`);
 }
@@ -847,7 +655,6 @@ async function saveResolveState(source, userKey, data) {
   return resolveStateDocs.save(data, source, userKey);
 }
 
-/** Append one broad-match audit record. Never throws into the job. */
 function appendMatchLog(entry) {
   try {
     fs.mkdirSync(path.dirname(MATCH_LOG_PATH), { recursive: true });
@@ -857,7 +664,6 @@ function appendMatchLog(entry) {
   }
 }
 
-/** Drop all memory caches (tests). Disk files are untouched. */
 function clearMemory() {
   profileDocs.clear();
   detailDocs.clear();

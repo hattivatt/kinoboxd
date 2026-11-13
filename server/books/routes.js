@@ -1,14 +1,5 @@
 'use strict';
 
-/**
- * /api/books/* router. Mounted under the existing auth gate in
- * server/index.js (`app.use('/api', auth.requireAuth)` runs first), so the
- * whole book namespace is password-protected exactly like the film API.
- *
- * The film payload (`/api/stats`) is not touched: books live in their own
- * namespace with their own cache directory.
- */
-
 const express = require('express');
 const multer = require('multer');
 
@@ -33,27 +24,12 @@ const router = express.Router();
 function hardcoverTokenInfo() {
   try {
     const source = config.getHardcoverToken() ? config.hardcoverTokenSource() : null;
-    // Only the *origin* of the token is exposed, never the value.
     return { configured: true, source: source === 'file' ? 'file' : 'env' };
   } catch (err) {
     return { configured: false, source: null };
   }
 }
 
-/**
- * Unified owner snapshot of the books domain (`core/profile`, U8).
- *
- * A books owner is ONE source + ONE account (§6): LiveLib-Margaret and
- * Hardcover-34748 are two different owners and their events never merge, so
- * every owner has exactly one `primary` and no `enrichers` — the Hardcover
- * metadata chain is a reference provider, not a second journal of the same
- * person.
- *
- * Additive on top of the legacy entry: `id` equals the `?profile=` token
- * (`key`), `label` is `null` (book labels live in the browser registry only),
- * `updatedAt` is the persisted `importedAt` of the profile document, and
- * `metrics` is the very object `summary` carries.
- */
 function listBookProfileOwners() {
   const profiles = bookCache.listProfiles().map((meta) => {
     const data = bookCache.getProfile(meta.source, meta.userKey);
@@ -63,7 +39,6 @@ function listBookProfileOwners() {
       key,
       sourceKey: `${meta.source}/${meta.userKey}`,
       summary,
-      // `/api/books/stats?profile=` tokens. One profile = one source.
       deepScan: (data && data.deepScan) || null,
       cookies:
         meta.source === 'livelib'
@@ -81,9 +56,6 @@ function listBookProfileOwners() {
       metrics: summary,
     });
   });
-  // Both sources can own a journal (`PROFILE_SOURCES`), so both are `primary`;
-  // a source that has no cached profile yet is advertised as `missing` so the
-  // connections screen can offer it.
   const sources = PROFILE_SOURCES.map((source) => {
     const connected = profiles.some((profile) => profile.source === source);
     return { id: source, role: 'primary', connected, state: connected ? 'ready' : 'missing' };
@@ -93,24 +65,11 @@ function listBookProfileOwners() {
 
 profileRegistry.registerDomainProfiles('books', listBookProfileOwners);
 
-/**
- * GET /api/books/profiles — cached source profiles for the switcher/badges.
- *
- * Each entry carries:
- *   - `key`       — the exact `?profile=` token (`livelib-Margaret`),
- *   - `sourceKey` — the minimal provider-qualified key for docs
- *                   (`livelib/Margaret`, `hardcover/34748`),
- *   - `summary`   — compact aggregates (books/events/dates/avgRating),
- *   - `cookies`   — masked cookie-store status (LiveLib only; `present`/`count`),
- * plus the unified owner fields of `core/profile` (`id`/`label`/`primary`/
- * `enrichers`/`metrics`). `sources` is the domain-level source table.
- */
 router.get('/profiles', (req, res) => {
   const { profiles, sources } = profileRegistry.snapshot('books');
   res.status(200).json({
     profiles,
     connected: [...new Set(profiles.map((profile) => profile.source))],
-    // Echoed for the frontend/docs: `?profile=` accepts one of these tokens.
     availableProfileKeys: profiles.map((profile) => profile.key),
     hardcoverToken: hardcoverTokenInfo(),
     cacheDir: bookCache.BOOK_CACHE_DIR,
@@ -118,11 +77,6 @@ router.get('/profiles', (req, res) => {
   });
 });
 
-/**
- * `force` for the LiveLib re-import is accepted either as a JSON boolean in
- * the body (`{ force: true }`) or as a query flag (`?force=1`). Anything else
- * is a client bug and must not silently turn into a full profile scrape.
- */
 function parseForce(bodyValue, queryValue) {
   if (bodyValue != null && typeof bodyValue !== 'boolean') {
     throw new HttpError(400, 'Body field "force" must be a boolean.', 'invalid_force');
@@ -156,28 +110,6 @@ function parseDeep(bodyValue, queryValue) {
   );
 }
 
-/**
- * POST /api/books/import/livelib { username, force?, deep?, cookieHeader? }
- *
- * LEGACY scrape path. It is no longer reachable from the UI (28.10.2026): a
- * LiveLib profile is created and refreshed from a `livelib-backup` export file
- * (`/import/livelib-file`), because scraping is rate-limited by DDoS-Guard and
- * its scan + resolve stages keep the browser waiting for many minutes. The
- * endpoint stays for compatibility, for the job tests, and as the documented
- * plan-B (cookie paste) escape hatch of §9; nothing in `public/` calls it.
- *
- * `deep` (task two-phase import):
- *   - false (default, ~3 requests): bulk + RSC page 1, dates for the newest 20;
- *   - true: also read every collection page (~63 polite requests) and fill the
- *     exact dates of the already imported events;
- *   - "auto": deep only when the stored profile still has undated events.
- *
- * `cookieHeader` is the plan-B escape hatch for a DDoS-Guard-flagged host: the
- * `Cookie:` value copied from a browser where the profile opens. Accepted as
- * `"Cookie: a=b; c=d"`, `"a=b; c=d"` or a pairs object. It is validated here
- * (400 `invalid_cookie_header`), stored 0600 in `cache-book/cookies/` and never
- * echoed — the job status only reports `cookies.present`.
- */
 router.post('/import/livelib', (req, res, next) => {
   try {
     const username = req.body && req.body.username;
@@ -188,7 +120,6 @@ router.post('/import/livelib', (req, res, next) => {
         'username_required'
       );
     }
-    // Accept a full profile URL as a convenience: /reader/Margaret or /users/50064.
     const nameMatch = String(username).match(/\/(?:reader|users)\/([^/?#]+)/);
     const value = nameMatch ? nameMatch[1] : username;
     const force = parseForce(req.body && req.body.force, req.query && req.query.force);
@@ -202,12 +133,9 @@ router.post('/import/livelib', (req, res, next) => {
   }
 });
 
-/** POST /api/books/import/hardcover { userId?, force? } — defaults to the token owner. */
 router.post('/import/hardcover', (req, res, next) => {
   try {
     const body = req.body || {};
-    // `force: true` = full journal re-read. The default click is incremental
-    // (`updated_at > lastSyncAt`); the UI sets force on Shift+click / retry.
     const force = parseForce(body.force, req.query && req.query.force);
     const job = importJobs.startHardcoverImport(body.userId, { force });
     res.status(202).json(job);
@@ -216,44 +144,14 @@ router.post('/import/hardcover', (req, res, next) => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* LiveLib export FILE import (livelib-backup)                         */
-/* ------------------------------------------------------------------ */
-
-/**
- * Multipart limits: one file. A `livelib-backup` export of 1 245 books with
- * every column ticked is ~2–4 MB of JSON, so 24 MB leaves plenty of room while
- * still refusing an accidental database dump.
- */
 const FILE_IMPORT_MAX_BYTES = 24 * 1024 * 1024;
 const fileUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: FILE_IMPORT_MAX_BYTES, files: 1 },
 });
 
-/**
- * Uploads currently being merged, one lock per profile key (lower-cased).
- *
- * A file refresh is the LiveLib update path (no scrape: the user re-uploads a
- * fresh export), so a double click — or a second tab — can overlap two merges
- * of the same profile. Both read `profiles/livelib-{key}.json`, merge and write
- * it back, so the slower write would silently drop the other upload's rows.
- * The merge itself is synchronous once the body is parsed; the lock only has to
- * cover the parse→save window. A conflicting upload gets an honest 409 (the UI
- * says «загрузка уже идёт») instead of a lost update.
- */
 const fileImportLocks = new Set();
 
-/**
- * Does this file import also run the metadata chain?
- *
- * Default is YES: a `livelib-backup` file is reading history first and
- * bibliographic columns second, and the user asked for the same enrichment a
- * scraped import gets (pages, editions/years, series position, canonical work
- * id). `resolve=0`/`false`/`no`/`off` in the multipart body **or** the query is
- * the explicit opt-out (offline/one-shot import). Anything unrecognised keeps
- * the default instead of silently disabling enrichment.
- */
 const RESOLVE_FALSE_TOKENS = new Set(['0', 'false', 'no', 'off', 'skip']);
 const RESOLVE_TRUE_TOKENS = new Set(['1', 'true', 'yes', 'on']);
 
@@ -276,7 +174,6 @@ function wantsResolve(req) {
   return true;
 }
 
-/** Accept `Margaret`, `@Margaret`, `/reader/Margaret` or `livelib-Margaret`. */
 function parseImportUserKey(body) {
   const raw = body && (body.username || body.userKey || body.profileKey);
   let value = typeof raw === 'string' ? raw.trim() : '';
@@ -289,43 +186,6 @@ function parseImportUserKey(body) {
   return value.trim();
 }
 
-/**
- * POST /api/books/import/livelib-file — multipart
- *
- *   file      required  JSON (or CSV) export of livelib-backup
- *   username  required when the profile is new; LiveLib reader name
- *             (aliases: `userKey`, `profileKey` = `livelib-<name>`)
- *   shelf     read|dnf|reading|wish (RU labels accepted); sniffed from the
- *             filename (`livelib-margaret-read-28.10.2026.json`) when omitted
- *   resolve   0 = skip the metadata chain (network); default is ON
- *             (aliases: `false|no|off`, or `?resolve=0` in the query)
- *
- * **This is the LiveLib update path.** «Обновить» on a LiveLib profile does not
- * scrape livelib.ru any more (user verdict, 28.10.2026): the reader exports a
- * fresh file with livelib-backup and uploads it here, and the server merges it
- * into the existing profile. A scrape could not be made honest — it is
- * rate-limited by DDoS-Guard, its deep phase takes minutes and its enricher
- * budget runs in the foreground, which is what the user saw as a spinner that
- * never ended.
- *
- * **No request ever leaves the server for livelib.ru**: this is the safe path
- * (see §9 «ban risk»). The parsed rows are merged into
- * `profiles/livelib-{userKey}.json` with `origin: 'livelib-file'`; an event
- * never loses a date it already had, and a shelf upload is additive, so the
- * four pages can be imported in any order and a repeated upload of the same
- * file is a no-op (`added: 0`, every row counted as `skipped`).
- *
- * The response is single-shot for the parse itself (counts, shelf tallies and
- * the parser warnings); the metadata chain then runs as the usual background
- * resolve job — the same one a scraped import runs, with the same budget and
- * the same «Метадата: N%» badge (`summary.metadata.running`). A file row is a
- * first-class resolve input (§3.3.2): its ISBN goes straight into the batched
- * Hardcover lookup, and its Cyrillic title makes Литрес the first matcher. The
- * pass runs with `allowLivelibCard: false`, so the chain still never touches
- * livelib.ru: Hardcover → Литрес → GB → OL only.
- * `resolve: 0` is the explicit opt-out for an offline "just show me the file"
- * import; it is a per-request choice, never a stored mode.
- */
 router.post('/import/livelib-file', (req, res, next) => {
   fileUpload.single('file')(req, res, (uploadError) => {
     if (uploadError) {
@@ -397,10 +257,6 @@ async function handleLivelibFileImport(req, res) {
     );
   }
 
-  // Two overlapping file refreshes of ONE profile would each read the document,
-  // merge their rows and write it back: the second write drops the first
-  // upload. The window is short (parse → save), so a 409 with a clear reason is
-  // cheaper and more honest than a queue nobody sees.
   const lockKey = userKey.toLowerCase();
   if (fileImportLocks.has(lockKey)) {
     throw new HttpError(
@@ -411,7 +267,6 @@ async function handleLivelibFileImport(req, res) {
   }
   fileImportLocks.add(lockKey);
   try {
-    // Pure parsing: `livelib-file.js` makes no network request.
     const parsed = livelibFile.parseExportFile(file.buffer, {
       filename: file.originalname,
       shelf,
@@ -448,16 +303,6 @@ async function handleLivelibFileImport(req, res) {
       importedAt: merged.profile.importedAt,
     });
 
-    // Metadata chain: ON unless the caller explicitly opts out. The file path
-    // used to depend on a checkbox nobody ticked, so a file profile stayed a
-    // list of titles with no pages/series/editions forever. `resolve=0`
-    // (body or query) keeps an offline import possible.
-    //
-    // This is also the LiveLib *refresh* path (see the route doc): the job
-    // keeps running after the 201 below, so the answer is immediate and the
-    // browser never waits on a 2 s/book Литрес budget. `coalesce: false` gives
-    // the freshly merged rows their own pass instead of joining one that may
-    // have already walked this profile.
     const resolveRequested = wantsResolve(req);
     const resolveJob = resolveRequested
       ? importJobs.startResolveJob({ coalesce: false, allowLivelibCard: false })
@@ -493,24 +338,6 @@ async function handleLivelibFileImport(req, res) {
   }
 }
 
-/**
- * DELETE /api/books/import/livelib/cookies?userKey=Margaret
- *
- * The counterpart of the cookie paste: the stored header is a secret the user
- * handed us for one retry, so it must be removable without shell access to the
- * cache directory. Semantics:
- *
- *   - `userKey` (alias `sourceUserKey`) is the LiveLib reader name, validated
- *     with the same shape the store uses (`[\w.-]{1,120}`) — no path tricks;
- *   - no stored header -> 404 `cookies_not_found` (the caller can tell "already
- *     gone" from "wrong userKey"); a successful delete -> 200 with the masked
- *     `{ present: false, savedAt: null, count: 0 }` block;
- *   - a delete during a running import of that profile is 409
- *     `livelib_import_running` — that job already holds its own copy of the
- *     header, and reporting "deleted" while the job still reports
- *     `cookies.present: true` would be a lie;
- *   - the response never echoes the header or its cookie names.
- */
 router.delete('/import/livelib/cookies', async (req, res, next) => {
   try {
     const raw = req.query.userKey != null ? req.query.userKey : req.query.sourceUserKey;
@@ -555,7 +382,6 @@ router.delete('/import/livelib/cookies', async (req, res, next) => {
   }
 });
 
-/** GET /api/books/import/status?id=... */
 router.get('/import/status', (req, res, next) => {
   try {
     const id = req.query.id;
@@ -572,11 +398,6 @@ router.get('/import/status', (req, res, next) => {
   }
 });
 
-/**
- * POST /api/books/work/flag { workId, mangaComics }
- * Upsert the per-work manual manga/comics override. The body is intentionally
- * strict: `true` = hide as manga/comics, `false` = show again.
- */
 router.post('/work/flag', async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -598,7 +419,6 @@ router.post('/work/flag', async (req, res, next) => {
   }
 });
 
-/** DELETE /api/books/work/flag?workId=… — remove the override (idempotent). */
 router.delete('/work/flag', async (req, res, next) => {
   try {
     const workId = typeof req.query.workId === 'string' ? req.query.workId.trim() : '';
@@ -612,21 +432,6 @@ router.delete('/work/flag', async (req, res, next) => {
   }
 });
 
-/**
- * POST /api/books/year-override
- *   body: { profile: "livelib-Margaret", workId: "hc:8101", year: 1564 }
- *
- * Manual publication-year correction. `year: null` (or omitted) removes the
- * override and lets the provider chain decide again. The edit is scoped to one
- * profile (`cache-book/year-overrides/<profile>.json`) and outranks every
- * provider source (`manual > first > edition > unknown`); it survives
- * resolve/backfill and a re-import of the same export.
- *
- * Validation: `year` must be an integer in the first-publication bounds
- * (-3000..2100, ancient works included); anything else is a 400 instead of a
- * silently ignored value. A `workId` that is not part of the profile is also a
- * 400 (`unknown_work`) — a typo must not create a ghost override.
- */
 const YEAR_OVERRIDE_MIN = -3000;
 const YEAR_OVERRIDE_MAX = 2100;
 
@@ -668,8 +473,6 @@ router.post('/year-override', async (req, res, next) => {
       return;
     }
 
-    // The work must exist in this profile's payload; otherwise the correction
-    // would be invisible forever.
     const stats = buildBooksStats({ profileScope: scope });
     const known = Boolean(stats.booksIndex[workId]) ||
       Object.values(stats.booksIndex).some(

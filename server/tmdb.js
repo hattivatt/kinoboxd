@@ -5,9 +5,6 @@ const { getTmdbToken } = require('./config');
 const { fetchOnce } = require('./core/http');
 const sources = require('./core/sources');
 
-// `TMDB_API_BASE` lets a local backfill use TMDB's alternate API host when
-// the canonical `api.themoviedb.org` endpoint is blocked by the network.
-// Production keeps the documented default.
 const API_BASE = String(process.env.TMDB_API_BASE || 'https://api.themoviedb.org/3')
   .replace(/\/+$/, '');
 const MAX_CONCURRENCY = sources.SOURCES.tmdb.concurrency;
@@ -18,10 +15,6 @@ const MAX_RATE_LIMIT_RETRIES = sources.SOURCES.tmdb.rateLimitRetries;
 function readToken() {
   return getTmdbToken();
 }
-
-/* ------------------------------------------------------------------ */
-/* Concurrency limiter                                                 */
-/* ------------------------------------------------------------------ */
 
 class Semaphore {
   constructor(limit) {
@@ -41,7 +34,6 @@ class Semaphore {
   release() {
     const next = this.queue.shift();
     if (next) {
-      // hand the slot over directly
       next();
     } else {
       this.active--;
@@ -80,18 +72,6 @@ function parseRetryAfter(value) {
   return null;
 }
 
-// The public TMDB endpoint occasionally resets connections in some networks
-// (`fetch failed`, ECONNRESET/ETIMEDOUT/EAI_*). Four retries with a 1/2/4/8 s
-// exponential backoff turn those transient failures into ordinary successes;
-// a persistent outage still fails fast enough for the caller to report it.
-// (The values live in `core/sources.js` — `tmdb`.)
-
-/**
- * GET a TMDB endpoint with Bearer auth, global 12-request limit, four
- * transport/5xx retries (1/2/4/8 s) and 429 handling (up to 5 retries,
- * Retry-After respected). Retry chatter is quiet unless DEBUG_RETRY is set;
- * callers print the aggregate `counters` at the end of a run instead.
- */
 async function tmdbGet(pathname, params) {
   const url = new URL(API_BASE + pathname);
   for (const [key, value] of Object.entries(params || {})) {
@@ -189,10 +169,6 @@ async function tmdbGet(pathname, params) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Matching                                                            */
-/* ------------------------------------------------------------------ */
-
 function releaseYear(movie) {
   const raw = movie && (movie.release_date || movie.first_air_date);
   if (!raw) return null;
@@ -214,11 +190,6 @@ function normalizedTvNames(show) {
   return [normalizeTitle(show.name), normalizeTitle(show.original_name)].filter(Boolean);
 }
 
-// Punctuation-insensitive comparison, used only as a fallback (e.g.
-// "The Mitchells vs the Machines" vs TMDB's "... vs. the Machines").
-// "ё" is folded to "е" because KinoPoisk often drops the diaeresis while
-// TMDB keeps it ("Слезы капали" vs "Слёзы капали"); otherwise the search
-// engine treats them as different strings.
 function looseTitle(value) {
   return String(value == null ? '' : value)
     .toLowerCase()
@@ -239,13 +210,6 @@ function titleWords(value) {
     .filter(Boolean);
 }
 
-/**
- * Tokens with a leading "Episode <roman/arabic>" marker removed. TMDB's
- * canonical titles routinely drop the episode number ("Star Wars: Episode
- * VIII - The Last Jedi" is stored as "Star Wars: The Last Jedi"), while
- * KinoPoisk keeps it. Only strip when at least three content tokens remain so
- * a literal "Star Wars: Episode VIII" cannot collapse to "Star Wars".
- */
 function titleTokens(value) {
   const tokens = titleWords(value);
   const stripped = [];
@@ -314,13 +278,6 @@ function isExactTvTitleLoose(show, title) {
     .includes(wanted);
 }
 
-/**
- * Strict-stage pick. Only an item whose (localized or original) title equals
- * the query after normalization — or after punctuation folding — is accepted.
- * The year filter alone must never decide a match: TMDB's year-scoped search
- * happily returns unrelated films ("Send Help" 2025 -> "POSH (Please only
- * Send help)").
- */
 function findExactTitle(items, title, isTv) {
   if (!Array.isArray(items) || items.length === 0) return null;
   const exact = isTv ? isExactTvTitle : isExactTitle;
@@ -343,23 +300,12 @@ function exactMatchRank(item, title, isTv) {
   return null;
 }
 
-/**
- * Collect exact-title candidates from several year-scoped/year-less searches
- * and pick the one closest to the requested year. This matters for remakes:
- * a year-less "Cinderella" search returns the 2015 film before the 1950 one,
- * while the correct entry for a 1949 KinoPoisk key is the 1950 classic.
- * Ties prefer the primary title over the localized fallback.
- */
 function pickExactCandidate(candidates, year) {
   if (!candidates || candidates.length === 0) return null;
   const ranked = candidates.map((candidate) => {
     const release = releaseYear(candidate.item);
     const yearDelta =
       year && release != null ? Math.abs(release - year) : Number.MAX_SAFE_INTEGER;
-    // Years 0/1 apart are equally plausible (festival vs wide release). A
-    // low-vote same-name short must not beat the real film just because its
-    // release_date happens to be one year closer ("The Witch" 2016 vs a
-    // 7-vote 2015 namesake).
     const yearBucket = yearDelta <= 1 ? 0 : yearDelta === 2 ? 1 : 2;
     return { ...candidate, yearDelta, yearBucket };
   });
@@ -386,25 +332,6 @@ function collectExactCandidates(list, items, title, isTv, priority) {
     });
   }
 }
-
-/* ------------------------------------------------------------------ */
-/* Broad fallback matching (only after the strict stage failed)        */
-/* ------------------------------------------------------------------ */
-
-/*
- * Some KinoPoisk titles do not match TMDB even with ±1 year because:
- *  - the release year differs by more than one (premiere vs wide release),
- *  - KinoPoisk transliterates the original title differently
- *    ("Geu nomida" vs "Geunomida", "Yongpari" vs "Yong Pal"),
- *  - KinoPoisk appends a subtitle after a colon that TMDB treats
- *    differently ("Ён-пхаль: Подпольный доктор" vs "Ён Паль. Подпольный
- *    доктор"),
- *  - KinoPoisk drops "ё" ("Слезы капали" vs "Слёзы капали").
- *
- * For those (and only those) titles we repeat the search WITHOUT a year and
- * rank the candidates: exact / near-exact normalized title first, then year
- * proximity (a bonus, not a hard filter), then vote_average/popularity.
- */
 
 function isCyrillic(value) {
   return /[\u0400-\u04FF]/.test(String(value || ''));
@@ -437,24 +364,6 @@ function diceSimilarity(a, b) {
   return (2 * common) / (left.length + right.length);
 }
 
-/**
- * Similarity of one candidate title to the *canonical* KinoPoisk titles.
- *
- * `query` is only a search-recall hint ("Star Wars", "Impossible" after the
- * colon expansion); a hit on such a fragment must not become a 1.0 title
- * match. `canonical` therefore holds the full title and its localized
- * fallback; the ranker scores the candidate against those only.
- *
- * Metric:
- *  - exact normalized token key -> 1.0;
- *  - one full string contains the other -> minLen/maxLen (so a fragment such
- *    as "impossible" inside "mission impossible dead reckoning" scores low);
- *  - otherwise token Jaccard (|intersection| / |union|), with a Dice
- *    bigram fallback for transliteration variants ("Yongpari" vs "Yong Pal",
- *    "Слезы" vs "Слёзы");
- *  - a candidate that starts with every canonical token and adds at most two
- *    suffix tokens ("... Part One", "(Целитель)") gets a near-exact boost.
- */
 function titleMatchScore(names, canonical) {
   const wanted = Array.isArray(canonical) ? canonical : [canonical];
   let best = 0;
@@ -532,7 +441,6 @@ function scoreCandidate(kind, item, canonical, year, resultCount) {
   };
 }
 
-/** Search variants that are cheap to derive from a KinoPoisk title. */
 function buildBroadQueries(title, options) {
   const opts = options || {};
   const primary = String(title || '').trim();
@@ -560,11 +468,9 @@ function buildBroadQueries(title, options) {
     };
     push(base);
 
-    // Romanized KinoPoisk titles are often split differently ("Geu nomida").
     const compact = String(base).replace(/[\s'’`".,!?():;\-–—]+/g, '');
     if (compact) push(compact);
 
-    // "Main title: subtitle" -> search each meaningful part separately.
     const parts = String(base)
       .split(/\s*[:–—]\s*|\s+-\s+/)
       .map((part) => part.trim())
@@ -573,7 +479,6 @@ function buildBroadQueries(title, options) {
       for (const part of parts) push(part);
     }
 
-    // KinoPoisk frequently writes "е" where TMDB stores "ё".
     if (!/[ёЁ]/.test(base) && /[еЕ]/.test(base)) {
       push(base.replace(/е/g, 'ё').replace(/Е/g, 'Ё'));
     }
@@ -596,8 +501,6 @@ async function broadSearch(kind, title, year, options) {
   const numericYear = Number(year) > 0 ? Number(year) : null;
   const pathname = kind === 'tv' ? '/search/tv' : '/search/movie';
   const queries = buildBroadQueries(title, opts);
-  // Score candidates against the real titles, never against a recall-only
-  // fragment produced by the "Main: subtitle" expansion.
   const canonical = [];
   for (const value of [title, opts.fallbackTitle]) {
     const text = String(value || '').trim();
@@ -636,15 +539,6 @@ async function broadSearch(kind, title, year, options) {
         numericYear,
         results.length
       );
-      // Guardrails per candidate:
-      //  - an exact title is accepted even when the year is off;
-      //  - a very close title (>=0.90, e.g. transliteration + sequel suffix)
-      //    needs a plausible year;
-      //  - a partial title (0.85-0.90) additionally needs real audience mass
-      //    (vote_count >= 200), so an obscure same-name short cannot win;
-      //  - a sole search hit needs a plausible title/year and audience mass.
-      // Candidates that do not pass never become the best match, even if
-      // another query ranks them higher.
       const yearOk = !numericYear || scored.yearScore >= 0.8;
       const exact = scored.titleScore >= 0.99;
       const close = scored.titleScore >= 0.9 && yearOk;
@@ -670,22 +564,6 @@ async function broadSearch(kind, title, year, options) {
   return best.item;
 }
 
-/**
- * Find a TMDB movie id for a title/year.
- *
- * Search is done with language=en-US by default: Letterboxd exports English
- * titles and TMDB's localized search ranking can bury the right film (e.g.
- * query "Flow" 2024 with ru-RU returns a 8-minute short first, while en-US
- * returns the 2024 animated feature). KinoPoisk entries without an English
- * title pass `language: 'ru-RU'` instead. Details are always requested with
- * language=ru-RU.
- *
- * Rule: first result whose release year is within ±1, preferring an exact
- * normalized title match; if nothing has a matching year, search without a
- * year and accept an exact title match. If the strict stage fails entirely,
- * broadSearch() repeats the query without a year using title variants
- * (transliteration spacing, "Main: subtitle", ё) and ranks candidates.
- */
 async function searchMovie(title, year, options) {
   const query = String(title || '').trim();
   if (!query) return null;
@@ -699,8 +577,6 @@ async function searchMovie(title, year, options) {
       ...params,
     });
     let results = (data && data.results) || [];
-    // Cyrillic/localized titles: retry with the other language if the first
-    // one found nothing.
     if (results.length === 0) {
       const otherLanguage = params.language === 'ru-RU' ? 'en-US' : 'ru-RU';
       const localized = await tmdbGet('/search/movie', {
@@ -730,24 +606,15 @@ async function searchMovie(title, year, options) {
     }
     const exact = pickExactCandidate(candidates, numericYear);
     if (exact) return exact;
-    // Without a year we accept an exact match only, otherwise report "not
-    // found" and let the cache hold false.
     return null;
   }
 
-  // A title that exactly matches inside the year window is the strongest
-  // possible signal; no need for more searches.
   const withinYear = firstResults.filter((movie) => matchesYear(movie, numericYear));
   const firstCandidates = [];
   collectExactCandidates(firstCandidates, withinYear, title, false, 0);
   const firstExact = pickExactCandidate(firstCandidates, numericYear);
   if (firstExact) return firstExact;
 
-  // Otherwise collect exact candidates from the localized year-scoped search
-  // and both year-less searches, then choose by year proximity. This keeps
-  // the 1965 "Красная борода" when a year-less "Akahige" search would return
-  // a 1997 namesake, and prefers the exact primary title over a localized
-  // namesake with the same year ("Deep Cover" vs "Под прикрытием").
   const candidates = [];
   if (hasFallback) {
     const fallbackYearResults = await search({
@@ -766,15 +633,9 @@ async function searchMovie(title, year, options) {
   const exact = pickExactCandidate(candidates, numericYear);
   if (exact) return exact;
 
-  // Strict matching failed: one broad, year-less pass with title variants.
   return broadSearch('movie', title, year, opts);
 }
 
-/**
- * Find a TMDB TV id. Same rules as searchMovie, but the year is compared
- * against first_air_date and `options.fallbackTitle` (usually the Russian
- * title when the primary query is English) is used for a year-less retry.
- */
 async function searchTv(title, year, options) {
   const query = String(title || '').trim();
   if (!query) return null;
@@ -814,8 +675,6 @@ async function searchTv(title, year, options) {
     collectExactCandidates(firstCandidates, withinYear, query, true, 0);
     const exact = pickExactCandidate(firstCandidates, numericYear);
     if (exact) return exact;
-    // No exact title in the year-scoped results: fall through to the
-    // year-less exact retries and finally broadSearch.
   } else {
     const candidates = [];
     collectExactCandidates(candidates, firstResults, query, true, 0);
@@ -826,8 +685,6 @@ async function searchTv(title, year, options) {
     return pickExactCandidate(candidates, numericYear);
   }
 
-  // Year-less retries: the localized (Russian) title and the primary query.
-  // Collect both, then choose the candidate closest to the requested year.
   const candidates = [];
   if (hasFallback) {
     const fallbackResults = await search({ query: fallbackTitle, language: 'ru-RU' });
@@ -838,14 +695,9 @@ async function searchTv(title, year, options) {
   const exact = pickExactCandidate(candidates, numericYear);
   if (exact) return exact;
 
-  // No lenient year-only fallback here: a same-year show with a different
-  // title is not a match. broadSearch ranks exact titles across years.
   return broadSearch('tv', title, year, opts);
 }
 
-/* Production metadata is kept for the country filter (filmsIndex.countries)
- * and the studios category (persons.studio). Both TMDB movie and TV payloads
- * expose the same two arrays, so they share this normalizer. */
 function normalizeCountries(list) {
   return Array.isArray(list)
     ? list
@@ -869,10 +721,6 @@ function normalizeCompanies(list) {
     : [];
 }
 
-/* TMDB keyword lists use `keywords` for movies and `results` for TV; the
- * cache stores both as a flat [{ id, name }] array. An empty array is
- * meaningful: it tells the backfill script the entry was already refreshed
- * (`Array.isArray` is the idempotency marker). */
 function normalizeKeywords(raw) {
   let list = [];
   if (Array.isArray(raw)) list = raw;
@@ -895,12 +743,6 @@ function normalizeImdbId(value) {
   return /^tt\d{5,}$/.test(id) ? id : null;
 }
 
-/**
- * TMDB's `belongs_to_collection` is localized by the request language (ru-RU
- * gives "Железный человек (Коллекция)"). `null` is stored explicitly for
- * standalone films: it is the idempotency marker for the `collections`
- * backfill target, just like `imdb_checked` for the `imdb` target.
- */
 function normalizeCollection(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const id = Number(raw.id);
@@ -957,10 +799,6 @@ function normalizeDetailsPayload(details, credits) {
   };
 }
 
-/**
- * Fetch movie details (ru-RU) and credits in parallel.
- * Throws on network/API failure so the caller does not cache a bad result.
- */
 async function fetchMovieData(tmdbId) {
   const [details, credits] = await Promise.all([
     tmdbGet(`/movie/${tmdbId}`, { language: 'ru-RU', append_to_response: 'keywords' }),
@@ -972,18 +810,6 @@ async function fetchMovieData(tmdbId) {
   return normalizeDetailsPayload(details, credits);
 }
 
-/* ------------------------------------------------------------------ */
-/* TV                                                                  */
-/* ------------------------------------------------------------------ */
-
-/**
- * Convert TMDB TV details + aggregate credits into the same shape the movie
- * pipeline uses, so stats.js does not need a separate code path.
- *
- * aggregate_credits returns cast with `roles[]` and crew with `jobs[]`; the
- * latter is flattened into one crew record per (person, job) so the job
- * categories in stats.js (Director / Writer / Composer) keep working.
- */
 function normalizeTvPayload(details, credits, externalIds) {
   const cast = Array.isArray(credits && credits.cast) ? credits.cast : [];
   const crew = Array.isArray(credits && credits.crew) ? credits.crew : [];
@@ -1040,7 +866,6 @@ function normalizeTvPayload(details, credits, externalIds) {
       original_title: details.original_name || '',
       release_date: details.first_air_date || null,
       runtime: episodeRunTime || 0,
-      // TV details do not carry imdb_id; it only comes from /external_ids.
       imdb_id:
         normalizeImdbId(externalIds && externalIds.imdb_id) ||
         normalizeImdbId(details.imdb_id) ||
@@ -1062,11 +887,6 @@ function normalizeTvPayload(details, credits, externalIds) {
   };
 }
 
-/**
- * Fetch TV details (ru-RU) and aggregate credits in parallel. If the
- * aggregate endpoint is unavailable, fall back to the regular credits
- * endpoint (which has `character`/`job` instead of `roles`/`jobs`).
- */
 async function fetchTvData(tmdbId) {
   const [details, aggregate, externalIds] = await Promise.all([
     tmdbGet(`/tv/${tmdbId}`, { language: 'ru-RU', append_to_response: 'keywords' }),
@@ -1085,10 +905,6 @@ async function fetchTvData(tmdbId) {
   }
   return normalizeTvPayload(details, credits, externalIds);
 }
-
-/* ------------------------------------------------------------------ */
-/* Catalog search (manual matching UI)                                 */
-/* ------------------------------------------------------------------ */
 
 function mapSearchItem(kind, item) {
   if (!item || item.id == null) return null;
@@ -1113,14 +929,6 @@ function mapSearchItem(kind, item) {
   };
 }
 
-/**
- * Search TMDB for the manual-match UI.
- *
- * `kind` is "movie", "tv" or undefined/"all" (both searches in parallel).
- * Results are deduplicated by (kind, id) and sorted by vote_average desc.
- * TMDB is queried with language=ru-RU so the title shown to the user matches
- * the localized details pages.
- */
 async function searchCatalog(query, kind) {
   const q = String(query == null ? '' : query).trim();
   if (!q) return { results: [] };
@@ -1178,7 +986,6 @@ module.exports = {
   fetchMovieData,
   fetchTvData,
   releaseYear,
-  // Exported for the matcher unit tests (pure functions, no network).
   titleMatchScore,
   titleKey,
   counters,
