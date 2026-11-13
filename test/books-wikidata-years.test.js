@@ -34,6 +34,7 @@ const assert = require('node:assert/strict');
 
 process.env.KINOBOXD_CACHE_BOOK_DIR = run.cacheBookDir;
 process.env.KINOBOXD_BOOKS_WIKIDATA = '1';
+process.env.KINOBOXD_BOOKS_FANTLAB = '0';
 
 const bookCache = require('../server/books/book-cache');
 const yearsBackfill = require('../server/books/years-backfill');

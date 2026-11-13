@@ -3,7 +3,7 @@
 
 Все имена переменных окружения, которые читает сервер (P9, план §3.5). Источник — `process.env.*`, поля `*Env` таблицы `server/core/sources.js` и алиасы `server/config.js`.
 
-Имён: **120**. Конвенция таблицы источников: `0` = «выключено», пустое/незаданное значение = значение по умолчанию (`server/core/sources.js`). Секреты не эхоятся: в отчётах только имя и источник.
+Имён: **122**. Конвенция таблицы источников: `0` = «выключено», пустое/незаданное значение = значение по умолчанию (`server/core/sources.js`). Секреты не эхоятся: в отчётах только имя и источник.
 
 ## Секреты и алиасы (`server/config.js`)
 
@@ -23,6 +23,7 @@
 | `BACKFILL_CONCURRENCY` | `8` (server/backfill.js) | `server/backfill.js:13` | Math.min(16, Number(process.env.BACKFILL_CONCURRENCY) \|\| 8) |
 | `BACKFILL_TARGET` | см. файл | `server/backfill.js:34` | const TARGET = normalizeTarget(process.argv[2] \|\| process.env.BACKFILL_TARGET); |
 | `BOOKS_BACKFILL_LIMIT` | см. файл | `server/books/stats/coverage.js:99` | const backfillLimit = Number(process.env.BOOKS_BACKFILL_LIMIT); |
+| `BOOKS_FANTLAB_BUDGET` | budget = 150 (0 = off) (`fantlab`) | `server/core/sources.js` (fantlab) | budgetEnv: 'BOOKS_FANTLAB_BUDGET', |
 | `BOOKS_GB_BUDGET` | budget = 300 (0 = off) (`googlebooks`) | `server/core/sources.js` (googlebooks) | const source = createSourceClient({ name: NAME, budgetEnv: 'BOOKS_GB_BUDGET' }); |
 | `BOOKS_LITRES_BUDGET` | budget = 200 (0 = off) (`litres`) | `server/core/sources.js` (litres) | const litresBudget = resolve.createLitresBudget(process.env.BOOKS_LITRES_BUDGET); |
 | `BOOKS_LIVELIB_CARD_BUDGET` | budget = 300 (0 = off) (`livelib`) | `server/core/sources.js` (livelib) | const cardBudget = resolve.createCardBudget(process.env.BOOKS_LIVELIB_CARD_BUDGET); |
@@ -113,6 +114,7 @@
 | `GOG_CLIENT_ID` | см. файл | `server/games/sources/gog-requests.js:49` | const envId = process.env.GOG_CLIENT_ID; |
 | `GOG_CLIENT_SECRET` | см. файл | `server/games/sources/gog-requests.js:50` | const envSecret = process.env.GOG_CLIENT_SECRET; |
 | `HARDCOVER_API_TOKEN` | env или файл `config/hardcover-token` (значение не эхоится) | `server/config.js` (hardcover) | const HARDCOVER_ENV_KEYS = ['HARDCOVER_API_TOKEN', 'HARDCOVER_READ_TOKEN']; |
+| `KINOBOXD_BOOKS_FANTLAB` | `''` (server/books/fantlab-flag.js) | `server/books/fantlab-flag.js:6` | const raw = String(process.env.KINOBOXD_BOOKS_FANTLAB \|\| '') |
 | `KINOBOXD_BOOKS_PROFILE` | `''` (server/books/authors-backfill.js) | `server/books/authors-backfill.js:45` | const raw = options.profile \|\| process.env.KINOBOXD_BOOKS_PROFILE \|\| ''; |
 | `KINOBOXD_BOOKS_WIKIDATA` | `''` (server/books/wikidata-flag.js) | `server/books/wikidata-flag.js:6` | const raw = String(process.env.KINOBOXD_BOOKS_WIKIDATA \|\| '') |
 | `KINOBOXD_CACHE_BOOK_DIR` | см. файл | `server/books/book-cache.js:6` | const BOOK_CACHE_DIR = process.env.KINOBOXD_CACHE_BOOK_DIR |

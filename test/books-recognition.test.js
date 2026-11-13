@@ -7,6 +7,7 @@ const env = require('./helpers/env');
 const run = env.makeTmpCache('books-recognition', { budgets: false });
 process.env.KINOBOXD_CACHE_BOOK_DIR = run.cacheBookDir;
 process.env.KINOBOXD_BOOKS_WIKIDATA = '1';
+process.env.KINOBOXD_BOOKS_FANTLAB = '0';
 
 after(() => env.cleanupTmpDirs());
 process.on('exit', () => env.cleanupTmpDirs());
@@ -565,6 +566,161 @@ describe('books-recognition', () => {
       assert.equal(await tryProvider(provider, { title: 'Атака на титанов. Том 6' }, ctx), null);
       const same = await tryProvider(provider, { title: 'Атака на титанов. Книга 1' }, ctx);
       assert.equal(same.title, 'Атака на титанов. Книга 1');
+    });
+  });
+
+  describe('fantlab', () => {
+    const fantlab = require('../server/books/providers/fantlab');
+
+    const box = {
+      work_id: 249627, rusname: 'Коробка конфет', name: 'The Chocolate Box', year: 1923, name_eng: 'shortstory',
+      altname: 'The Clue of the Chocolate Box; Коробка шоколада; Коробка с шоколадом',
+      all_autor_rusname: 'Агата Кристи', all_autor_name: 'Agatha Christie', markcount: 218,
+    };
+    const cycle = { ...box, work_id: 1, rusname: 'Эркюль Пуаро', name: 'Hercule Poirot', altname: 'Коробка шоколада', name_eng: 'cycle', year: 1920 };
+    const stranger = { ...box, work_id: 2, all_autor_rusname: 'Иван Тургенев', all_autor_name: 'Ivan Turgenev', year: 1850 };
+
+    function fetchOf(items, status = 200) {
+      const calls = [];
+      const fetchImpl = async (url) => {
+        calls.push(String(url));
+        return jsonResponse(items, status);
+      };
+      fetchImpl.calls = calls;
+      return fetchImpl;
+    }
+
+    test('an alternative Russian title with the author gives the work year', () => {
+      const picked = fantlab.pickItem({ title: 'Коробка шоколада', authors: ['Агата Кристи'] }, [stranger, cycle, box]);
+      assert.equal(picked.item.work_id, 249627);
+      assert.equal(picked.tier, 0);
+    });
+
+    test('a foreign author, a cycle or a zero year is never picked', () => {
+      assert.equal(fantlab.pickItem({ title: 'Коробка шоколада', authors: ['Агата Кристи'] }, [stranger, cycle]), null);
+      assert.equal(fantlab.pickItem({ title: 'Коробка шоколада', authors: ['Агата Кристи'] }, [{ ...box, year: 0 }]), null);
+    });
+
+    test('the query carries the title without markers and the author surname', () => {
+      assert.equal(fantlab.queryOf({ title: 'Записки юного врача (сборник)', authors: ['Михаил Булгаков'] }), 'Записки юного врача булгаков');
+    });
+
+    test('lookupTitles answers, counts and asks politely', async () => {
+      process.env.KINOBOXD_BOOKS_FANTLAB = '1';
+      fantlab.resetBreaker();
+      try {
+        const fetchImpl = fetchOf([box]);
+        const found = await fantlab.lookupTitles(
+          [{ key: 'k', title: 'Коробка шоколада', authors: ['Агата Кристи'] }],
+          { fetchImpl, sleep: noSleep, pauseMs: 0 }
+        );
+        const result = found.byKey.get('k');
+        assert.equal(result.source, 'fantlab');
+        assert.equal(result.firstPublishedYear, 1923);
+        assert.equal(result.fantlabWorkId, 249627);
+        assert.equal(result.originalTitle, 'The Chocolate Box');
+        assert.match(fetchImpl.calls[0], /^https:\/\/api\.fantlab\.ru\/search-works\?q=/);
+      } finally {
+        process.env.KINOBOXD_BOOKS_FANTLAB = '0';
+      }
+    });
+
+    test('a 429 trips the breaker and leaves the rest unasked', async () => {
+      process.env.KINOBOXD_BOOKS_FANTLAB = '1';
+      fantlab.resetBreaker();
+      try {
+        const found = await fantlab.lookupTitles(
+          [
+            { key: 'a', title: 'Коробка шоколада', authors: ['Агата Кристи'] },
+            { key: 'b', title: 'Лампа', authors: ['Агата Кристи'] },
+          ],
+          { fetchImpl: fetchOf({}, 429), sleep: noSleep, pauseMs: 0 }
+        );
+        assert.equal(found.asked.size, 0);
+        assert.equal(found.skipped, 'breaker');
+      } finally {
+        fantlab.resetBreaker();
+        process.env.KINOBOXD_BOOKS_FANTLAB = '0';
+      }
+    });
+
+    test('the kill switch asks nothing', async () => {
+      const found = await fantlab.lookupTitles([{ key: 'k', title: 'Лампа', authors: [] }], { fetchImpl: fetchOf([box]) });
+      assert.equal(found.skipped, 'disabled');
+    });
+
+    test('an unlinked work takes the earliest of Wikidata and FantLab', async () => {
+      await bookCache.saveProfile('livelib', 'Fantlab', {
+        schemaVersion: 1, source: 'livelib', userKey: 'Fantlab', importedAt: '2026-11-14T00:00:00.000Z',
+        events: [{ sourceBookId: '9901', title: 'Приключение Джонни Уэверли', authors: ['Агата Кристи'], status: 'read', shelf: 'read' }],
+        warnings: [],
+      });
+      const answer = (source, year, extra = {}) => ({
+        async lookupTitles(list) {
+          const byKey = new Map();
+          for (const entry of list) {
+            if (entry.key === '9901') {
+              byKey.set(entry.key, { source, firstPublishedYear: year, firstPublishedYearPrecision: 'year', firstPublishedYearKind: 'publication', seriesAll: [], match: { authorHit: true }, ...extra });
+            }
+          }
+          return { byKey, asked: new Set(list.map((entry) => entry.key)), skipped: null, queries: 1 };
+        },
+      });
+      process.env.KINOBOXD_BOOKS_FANTLAB = '1';
+      try {
+        const report = await unlinkedYears.backfillUnlinkedYears({
+          wikidataProvider: answer('wikidata', 1979, { wikidataWorkId: 'Q3203096' }),
+          fantlabProvider: answer('fantlab', 1923, { fantlabWorkId: 249628 }),
+          now: '2026-11-14T00:00:00.000Z',
+          sleep: noSleep,
+        });
+        const doc = bookCache.getWorkDetails('ll:9901');
+        assert.equal(doc.firstPublishedYear, 1923);
+        assert.equal(doc.firstPublishedYearSource, 'fantlab');
+        assert.equal(doc.firstPublishedYearCheckedBy, 'wikidata,fantlab');
+        assert.equal(doc.fantlabWorkId, 249628);
+        assert.equal(report.bySource.fantlab >= 1, true);
+      } finally {
+        process.env.KINOBOXD_BOOKS_FANTLAB = '0';
+      }
+    });
+
+    test('the document backfill lets an earlier FantLab year beat a print claim', async () => {
+      await bookCache.saveDetails(bookCache.detailsKeyForWork('lr:9902'), {
+        schemaVersion: 2, workId: 'lr:9902', title: 'Чайка по имени Джонатан', publicationYear: 2016,
+        firstPublishedYear: 2016, firstPublishedYearSource: 'litres',
+      });
+      const silent = (name) => ({ NAME: name, isBreakerOpen: () => false, async getWork() { return null; } });
+      const fl = {
+        async lookupTitles(list) {
+          const byKey = new Map(list.filter((entry) => entry.key === 'lr:9902').map((entry) => [entry.key, {
+            source: 'fantlab', firstPublishedYear: 1970, firstPublishedYearPrecision: 'year', firstPublishedYearKind: 'publication',
+            match: { authorHit: true, wholeWork: false, fuzzy: false },
+          }]));
+          return { byKey, asked: new Set(list.map((entry) => entry.key)), skipped: null, queries: list.length };
+        },
+      };
+      process.env.KINOBOXD_BOOKS_FANTLAB = '1';
+      try {
+        const report = await yearsBackfill.backfill({
+          ids: ['lr:9902'],
+          wikidataProvider: null,
+          fantlabProvider: fl,
+          litresProvider: silent('litres'),
+          hardcoverProvider: silent('hardcover'),
+          openlibraryProvider: silent('openlibrary'),
+          log: () => {},
+          sleep: noSleep,
+          pause: 0,
+          now: '2026-11-14T00:00:00.000Z',
+        });
+        assert.equal(report.resolved[0].source, 'fantlab');
+        const doc = bookCache.getWorkDetails('lr:9902');
+        assert.equal(doc.firstPublishedYear, 1970);
+        assert.equal(doc.firstPublishedYearPrevious, 2016);
+      } finally {
+        process.env.KINOBOXD_BOOKS_FANTLAB = '0';
+      }
     });
   });
 });

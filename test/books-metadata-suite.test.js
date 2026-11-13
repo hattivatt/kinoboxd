@@ -29,6 +29,7 @@ const { describe, after, before } = require('node:test');
 const env = require('./helpers/env');
 
 const run = env.makeTmpCache('books-metadata-suite', { budgets: false });
+process.env.KINOBOXD_BOOKS_FANTLAB = '0';
 
 after(() => {
   env.cleanupTmpDirs();

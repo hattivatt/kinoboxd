@@ -60,6 +60,7 @@
  * | GAMES_*_BUDGET=0              | no store/spy/reviews/secondary calls |
  * | KINOBOXD_GAMES_WD=0           | no WDQS requests for games           |
  * | KINOBOXD_BOOKS_WIKIDATA=0     | no WDQS requests for books           |
+ * | KINOBOXD_BOOKS_FANTLAB=0      | no FantLab requests for books        |
  * | KINOBOXD_STEAM_KEY_FILE=...   | point the dev Steam key at /dev/null |
  * | KINOBOXD_MOBY_KEY_FILE=...    | same for the Moby key                |
  *
@@ -288,6 +289,7 @@ function zeroBudgets() {
   for (const name of BUDGET_ENV) process.env[name] = '0';
   process.env.KINOBOXD_GAMES_WD = '0';
   process.env.KINOBOXD_BOOKS_WIKIDATA = '0';
+  process.env.KINOBOXD_BOOKS_FANTLAB = '0';
   process.env.KINOBOXD_GAMES_MOBY = '0';
   process.env.KINOBOXD_STEAM_KEY_FILE = '/dev/null';
   process.env.KINOBOXD_MOBY_KEY_FILE = '/dev/null';

@@ -15,6 +15,7 @@
 | Источник | Host | Pause | Timeout | Бюджет/прогон | Breaker | TTL | Env-ручки |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `epic` | `account-public-service-prod03.ol.epicgames.com` | 300 ms | 20000 ms (20 s) | — | 1800000 ms (30 min) | — | pause: `GAMES_EPIC_PAUSE_MS`<br>timeout: `GAMES_EPIC_TIMEOUT_MS`<br>breaker: `GAMES_EPIC_BREAKER_MS` |
+| `fantlab` | `api.fantlab.ru` | 1500 ms | 20000 ms (20 s) | `BOOKS_FANTLAB_BUDGET` = 150 | 1800000 ms (30 min) | — | — |
 | `gog` | `api.gog.com` | 400 ms | 20000 ms (20 s) | `GAMES_GOG_BUDGET` = 200 | 1800000 ms (30 min) | — | pause: `GAMES_GOG_LIBRARY_PAUSE_MS`<br>timeout: `GAMES_GOG_TIMEOUT_MS`<br>breaker: `GAMES_GOG_BREAKER_MS` |
 | `googlebooks` | `www.googleapis.com` | 400 ms | 15000 ms (15 s) | `BOOKS_GB_BUDGET` = 300 | 1800000 ms (30 min) | — | — |
 | `hardcover` | `api.hardcover.app` | 1100 ms | 30000 ms (30 s) | — | — | — | — |

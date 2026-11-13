@@ -161,6 +161,18 @@ const SOURCES = Object.freeze({
     userAgent: null,
     note: 'Public read-only API; 250 ms pause.',
   },
+  fantlab: {
+    id: 'fantlab',
+    host: 'api.fantlab.ru',
+    pauseMs: 1500,
+    timeoutMs: 20000,
+    budgetEnv: 'BOOKS_FANTLAB_BUDGET',
+    budgetDefault: 150,
+    breakerMs: BREAKER_30M,
+    ttlMs: null,
+    userAgent: 'kinoboxd/1.0 (books first-publication year; https://github.com/hattivatt/kinoboxd)',
+    note: 'Public FantLab API (test phase, no key): one search per title, 1.5 s pause, 403/429 -> 30 min breaker; KINOBOXD_BOOKS_FANTLAB=0 disables it.',
+  },
   wikidataBooks: {
     id: 'wikidataBooks',
     host: 'query.wikidata.org',

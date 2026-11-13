@@ -14,6 +14,7 @@ const { usedOf, budgetRefused } = require('../core/budget');
 const fsStore = require('../core/fs-store');
 const sources = require('../core/sources');
 const wikidata = require('./providers/wikidata');
+const fantlab = require('./providers/fantlab');
 const { isYearOnlyDetails } = require('./year-only');
 const { backfillUnlinkedYears } = require('./unlinked-years');
 const { storedFirstClaim, isChallengeableClaim, canOverrideClaim } = require('./providers/claim');
@@ -54,27 +55,33 @@ function applicableProviders(doc) {
   if (CYRILLIC_TITLE.test(String((doc && doc.title) || ''))) out.push('litres');
   out.push('openlibrary');
   if (doc && doc.title) out.push('wikidata');
+  if (doc && doc.title) out.push('fantlab');
   return out;
 }
 
-function markerCovers(doc) {
+function markerCovers(doc, expected) {
   const asked = String((doc && doc.firstPublishedYearCheckedBy) || '')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
   if (!asked.length || (asked.length === 1 && asked[0] === 'none')) return false;
   const set = new Set(asked);
-  return applicableProviders(doc).every((name) => set.has(name));
+  return (expected || applicableProviders(doc)).every((name) => set.has(name));
 }
 
 function askedProviders(doc, options = {}) {
   const list = applicableProviders(doc);
   const provider =
     options.wikidataProvider === undefined ? wikidata : options.wikidataProvider;
+  const flProvider = options.fantlabProvider === undefined ? fantlab : options.fantlabProvider;
+  const off = new Set();
   if (!provider || typeof provider.lookupTitles !== 'function' || wikidata.isDisabled()) {
-    return list.filter((name) => name !== 'wikidata');
+    off.add('wikidata');
   }
-  return list;
+  if (!flProvider || typeof flProvider.lookupTitles !== 'function' || fantlab.isDisabled()) {
+    off.add('fantlab');
+  }
+  return list.filter((name) => !off.has(name));
 }
 
 function profileTitles() {
@@ -236,6 +243,19 @@ async function firstYearForDoc(doc, options = {}) {
     else if (options.yearClaimsError) incomplete.push('wikidata-error');
   }
 
+  const fantlabFound =
+    options.fantlabClaims instanceof Map && workId ? options.fantlabClaims.get(workId) : null;
+  if (fantlabFound) {
+    if (!stored || canOverrideClaim(fantlabFound)) push(fantlabFound, 'fantlab');
+  } else if (
+    options.fantlabAsked instanceof Set &&
+    workId &&
+    !options.fantlabAsked.has(workId) &&
+    options.fantlabSkipped
+  ) {
+    incomplete.push(`fantlab-${options.fantlabSkipped}`);
+  }
+
   const rank = providers.PRECISION_RANK;
   let winner = null;
   for (const entry of candidates) {
@@ -259,11 +279,7 @@ async function firstYearForDoc(doc, options = {}) {
   };
 }
 
-async function prefetchWikidata(docs, options = {}) {
-  const provider = options.wikidataProvider === undefined ? wikidata : options.wikidataProvider;
-  if (!provider || typeof provider.lookupTitles !== "function") {
-    return { byWork: new Map(), asked: new Set(), skipped: null, requests: 0 };
-  }
+function titleEntries(docs, options = {}) {
   const titles = options.profileTitles instanceof Map ? options.profileTitles : profileTitles();
   const entries = [];
   for (const entry of docs) {
@@ -276,6 +292,37 @@ async function prefetchWikidata(docs, options = {}) {
       fromProfile && fromProfile.authors.length ? fromProfile.authors : authorsOf(entry.doc);
     entries.push({ key: workId, title, authors });
   }
+  return entries;
+}
+
+async function prefetchFantlab(docs, options = {}) {
+  const provider = options.fantlabProvider === undefined ? fantlab : options.fantlabProvider;
+  const empty = { byWork: new Map(), asked: new Set(), skipped: null, requests: 0 };
+  if (!provider || typeof provider.lookupTitles !== 'function' || fantlab.isDisabled()) return empty;
+  const entries = titleEntries(docs, options);
+  if (!entries.length) return empty;
+  let found;
+  try {
+    found = await provider.lookupTitles(entries, {
+      budget: options.fantlabBudget,
+      sleep: options.sleep,
+      fetchImpl: options.fetchImpl,
+      pauseMs: options.fantlabPauseMs,
+    });
+  } catch (err) {
+    return { ...empty, skipped: 'error' };
+  }
+  const byWork = new Map();
+  for (const [workId, result] of found.byKey) if (result) byWork.set(workId, result);
+  return { byWork, asked: found.asked, skipped: found.skipped, requests: found.queries || 0 };
+}
+
+async function prefetchWikidata(docs, options = {}) {
+  const provider = options.wikidataProvider === undefined ? wikidata : options.wikidataProvider;
+  if (!provider || typeof provider.lookupTitles !== "function") {
+    return { byWork: new Map(), asked: new Set(), skipped: null, requests: 0 };
+  }
+  const entries = titleEntries(docs, options);
   if (!entries.length) return { byWork: new Map(), asked: new Set(), skipped: null, requests: 0 };
   const budget =
     options.wikidataBudget === undefined ? wikidata.budgetFromEnv() : options.wikidataBudget;
@@ -371,7 +418,7 @@ async function backfill(options = {}) {
     needsYear: needsYearQuestion,
     needsSeries: (doc) => needsSeriesQuestion(doc, nowMs, recheckDays),
     checked: (doc) => recentlyChecked(doc, nowMs, recheckDays),
-    covers: markerCovers,
+    covers: (doc) => markerCovers(doc, askedProviders(doc, options)),
   };
   const { candidates, skippedChecked } = selectCandidates(docs, queueOptions);
 
@@ -428,6 +475,14 @@ async function backfill(options = {}) {
     profileTitleIndex,
     report,
   });
+  const fantlabBudget =
+    options.fantlabBudget === undefined ? fantlab.budgetFromEnv() : options.fantlabBudget;
+  const fantlabClaims = await prefetchFantlab(
+    selected.filter((entry) => Boolean(ids) || force === true || needsYearQuestion(entry.doc)),
+    { ...options, fantlabBudget, profileTitles: profileTitleIndex }
+  );
+  report.fantlabRequests = fantlabClaims.requests;
+  report.fantlabSkipped = fantlabClaims.skipped;
 
   for (const { key, doc, workId } of selected) {
     report.checked++;
@@ -469,6 +524,9 @@ async function backfill(options = {}) {
         yearClaimsAsked: yearClaims.asked,
         yearClaimsSkipped: yearClaims.skipped,
         yearClaimsError,
+        fantlabClaims: fantlabClaims.byWork,
+        fantlabAsked: fantlabClaims.asked,
+        fantlabSkipped: fantlabClaims.skipped,
       });
       if (found.year == null) {
         if (found.incomplete.length) {
@@ -563,6 +621,9 @@ async function backfill(options = {}) {
     : await backfillUnlinkedYears({
         wikidataProvider: options.wikidataProvider,
         budget: wikidataBudget,
+        fantlabProvider: options.fantlabProvider,
+        fantlabBudget,
+        fantlabPauseMs: options.fantlabPauseMs,
         sleep: options.sleep,
         fetchImpl: options.fetchImpl,
         pauseMs: options.wikidataPauseMs,
@@ -689,6 +750,7 @@ module.exports = {
   needsSeriesQuestion,
   firstYearForDoc,
   prefetchWikidata,
+  prefetchFantlab,
   prefetchHardcover,
   backfill,
   parseArgs,
