@@ -1,19 +1,5 @@
 'use strict';
 
-/**
- * Litres provider — the first matcher for Russian-titled LiveLib books.
- *
- * CWA's `litres.py` talks to the public foundation API (no key, no cookies):
- *   GET https://api.litres.ru/foundation/api/search?q=...&limit=...&types=text_book
- *   GET https://api.litres.ru/foundation/api/arts/{id}
- * Search returns the work card (title, persons, cover, rating, date), the art
- * endpoint adds ISBN, genres, tags, series and paper-book pages.
- *
- * Politeness: 2 s pause before every request, per-run book budget
- * (`BOOKS_LITRES_BUDGET`, default 200), 30 min breaker on 403/429. Logs never
- * include response bodies, only masked query/status/counters.
- */
-
 const { fetchJson, defaultSleep, createSourceClient } = require('./http');
 const sources = require('../../core/sources');
 const { detectManga, collectMangaTexts } = require('./manga');
@@ -40,10 +26,6 @@ const HEADERS = {
   'ui-language-code': 'ru',
 };
 
-/* ------------------------------------------------------------------ */
-/* Parsing                                                             */
-/* ------------------------------------------------------------------ */
-
 function absoluteUrl(value) {
   if (!value) return null;
   try {
@@ -53,7 +35,6 @@ function absoluteUrl(value) {
   }
 }
 
-/** Drop "(epub)", "(pdf)" and similar format suffixes from search titles. */
 function cleanTitle(value) {
   return String(value == null ? '' : value)
     .replace(/\s*\([^)]*(?:pdf|epub|fb2|mobi)[^)]*\)/gi, '')
@@ -85,14 +66,6 @@ function yearOf(...values) {
   return null;
 }
 
-/**
- * Publication year of a work, negative years included.
- *
- * Литрес stores an ancient work as e.g. `-0500-01-01` («Искусство войны» is
- * ~V century BC); a bare `/(\d{4})/` would read that as +500 and put Sun Tzu
- * into the 6th century AD. The year chart has an honest «до 1000 г.» bucket for
- * exactly this, so the sign has to survive the parse.
- */
 function firstYearOf(...values) {
   for (const value of values) {
     const text = String(value == null ? '' : value).trim();
@@ -157,7 +130,6 @@ function extractInstances(data) {
   return items;
 }
 
-/** Normalize a search item + optional art detail into the provider contract. */
 function normalizeLitres(item, detail, input, scored) {
   if (!item) return null;
   const id = item.id || item.uuid;
@@ -186,13 +158,6 @@ function normalizeLitres(item, detail, input, scored) {
     item.release_date,
     item.available_from
   );
-  // The work's first publication is what the year chart should show: the
-  // print date of the edition in hand must not move Sun Tzu into the 2020s.
-  // «Дата написания» (`date_written_at`) is the field that carries it, and the
-  // art detail is the authoritative copy — a search hit may omit it. A
-  // translation edition may still carry the translation's year (Гамлет, 1828);
-  // the merge takes the earliest claim across providers for that reason
-  // (providers/index.js `earliestFirstYear`).
   const firstPublishedYear = firstYearOf(
     detail && detail.date_written_at,
     item.date_written_at,
@@ -245,10 +210,6 @@ function normalizeLitres(item, detail, input, scored) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* HTTP                                                                */
-/* ------------------------------------------------------------------ */
-
 function searchUrl(query) {
   const url = new URL(`${API_BASE}/search`);
   url.searchParams.set('q', query);
@@ -269,10 +230,6 @@ function maskedLog(message) {
   console.log(`[litres] ${message}`);
 }
 
-/**
- * @param {{title?:string, authors?:string[], isbn13?:string, isbn10?:string}} input
- * @returns {Promise<object|null>} normalized work
- */
 async function getWork(input = {}, options = {}) {
   if (isBreakerOpen()) return null;
   const title = String(input.title || '').trim();
@@ -338,7 +295,6 @@ async function getWork(input = {}, options = {}) {
     detail = detailData && detailData.payload ? detailData.payload.data : null;
   } catch (err) {
     if (Number(err && err.status) === 403 || Number(err && err.status) === 429) tripBreaker();
-    // Search data is still usable; never echo the response body.
     maskedLog(`detail failed id=${best.item.id} code=${(err && err.code) || 'error'}`);
   }
 

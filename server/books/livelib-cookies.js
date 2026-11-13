@@ -1,31 +1,5 @@
 'use strict';
 
-/**
- * Stored browser cookies for the LiveLib scraper ("plan B").
- *
- * Background: LiveLib sits behind DDoS-Guard. On a clean IP the anonymous
- * bootstrap (`GET /reader/{username}/read` with a full browser header set)
- * hands out the `__ddg*` cookies and scraping works. On a flagged IP the same
- * request gets a JS challenge 403 within ~0.3 s, and no amount of server-side
- * work can solve it — only cookies minted by a real browser do.
- *
- * So the importer accepts a user-supplied `Cookie:` header, and this module is
- * its only storage:
- *
- *   cache-book/cookies/livelib-{userKey}.json   mode 0600, dir 0700
- *   { schemaVersion, source, userKey, cookieHeader, savedAt }
- *
- * Rules that must not be relaxed:
- *   - the header value is NEVER logged, echoed in an HTTP response, written to
- *     `imports/` snapshots or returned by the API — only `present`/`savedAt`/
- *     `count` may be reported;
- *   - the file is the single source of truth and is revalidated by fingerprint
- *     (`mtimeNs:size:ino`), so an external rotation is visible to a running
- *     server without a restart;
- *   - a cookie file is scoped to `(source, userKey)`: importing user B never
- *     reuses user A's cookies.
- */
-
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -52,21 +26,15 @@ function cookiePath(source, userKey) {
   );
 }
 
-/** Directory is created on first write: importing this module has no side effects. */
 async function ensureDir() {
   await fsp.mkdir(COOKIES_DIR, { recursive: true, mode: 0o700 });
   try {
     await fsp.chmod(COOKIES_DIR, 0o700);
   } catch (err) {
-    // Best effort: a shared cache dir may forbid chmod; the files are 0600.
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Storage (fingerprint-invalidated, 0600)                             */
-/* ------------------------------------------------------------------ */
-
-const memory = new Map(); // "source:userKey" -> { data, path, fingerprint }
+const memory = new Map();
 
 function memoryKey(source, userKey) {
   return `${source}:${userKey}`;
@@ -87,10 +55,6 @@ function readStored(source, userKey) {
   return entry;
 }
 
-/**
- * Persist a cookie header for one profile. Returns status metadata only —
- * callers may log the result, never the header itself.
- */
 async function saveCookies(source, userKey, rawHeader, options = {}) {
   if (!SUPPORTED_SOURCES.includes(source)) {
     throw new CookieError(
@@ -112,8 +76,6 @@ async function saveCookies(source, userKey, rawHeader, options = {}) {
   };
   const filePath = cookiePath(source, key);
   await ensureDir();
-  // 0600 file in a 0700 directory, tmp created with the final mode so the
-  // secret is never world-readable: `core/fs-store.writeSecretAtomicSync`.
   const fingerprint = fsStore.writeSecretAtomicSync(filePath, data);
   memory.set(memoryKey(source, key), { data, path: filePath, fingerprint });
   return {
@@ -124,7 +86,6 @@ async function saveCookies(source, userKey, rawHeader, options = {}) {
   };
 }
 
-/** Stored header for one profile, or null. Callers must not log the value. */
 function getCookies(source, userKey) {
   const entry = readStored(source, String(userKey == null ? '' : userKey).trim());
   if (!entry) return null;
@@ -135,18 +96,12 @@ function getCookies(source, userKey) {
   };
 }
 
-/**
- * Masked status for API responses: `{ present, savedAt, count }` — never the
- * header, never cookie names (a name alone is harmless, but "only a presence
- * flag" is a simpler rule to keep than "these names are fine").
- */
 function cookieStatus(source, userKey) {
   const stored = getCookies(source, userKey);
   if (!stored) return { present: false, savedAt: null, count: 0 };
   return { present: true, savedAt: stored.savedAt, count: stored.count };
 }
 
-/** Remove the stored header (idempotent). */
 async function clearCookies(source, userKey) {
   const key = String(userKey == null ? '' : userKey).trim();
   const filePath = cookiePath(source, key);
@@ -160,7 +115,6 @@ async function clearCookies(source, userKey) {
   }
 }
 
-/** Test helper: drop the memory cache (files stay on disk). */
 function clearMemory() {
   memory.clear();
 }

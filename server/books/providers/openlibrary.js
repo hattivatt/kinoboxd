@@ -1,16 +1,5 @@
 'use strict';
 
-/**
- * Open Library provider (anonymous, no key).
- *
- * ISBN path: /api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data — edition
- * record with title/authors/publishers/publish_date/pages/subjects/cover.
- * Fallback: /search.json?title=...&author=... for works whose ISBN is unknown.
- *
- * Fields are famously dirty: subjects are user tags (`Accessible book`,
- * `Protected DAISY`, ...), so a small stop-list keeps the genre widgets clean.
- */
-
 const { fetchJson, defaultSleep } = require('./http');
 const { detectManga, collectMangaTexts } = require('./manga');
 const { scoreCandidate } = require('./match');
@@ -84,7 +73,6 @@ function normalizeEdition(record, input) {
   if (!record || !record.title) return null;
   const key = record.key || null;
   const ids = isbnPair(record.identifiers);
-  // Display genres stay capped; detection reads every usable subject.
   const genres = subjectsOf(record.subjects);
   const allSubjects = subjectsOf(record.subjects, Number.POSITIVE_INFINITY);
   const publisher = namesOf(record.publishers)[0] || null;
@@ -126,12 +114,6 @@ function normalizeSearchDoc(doc, query) {
   const key = doc.key || null;
   const isbns = Array.isArray(doc.isbn) ? doc.isbn.map(normalizeIsbn).filter(Boolean) : [];
   const firstYear = yearOf(doc.first_publish_year);
-  // `first_publish_year` of a search hit is derived from the editions of *that
-  // OL work record*. A translation-only record is its own work in OL: the
-  // Russian «Искусство войны» (OL37431263W) has exactly one edition (2013) and
-  // `first_publish_year: 2013`, which is the print run, not the work. A record
-  // with one edition therefore proves nothing about the first publication and
-  // must not enter the year chart as if it did.
   const editionCount = Number.isFinite(Number(doc.edition_count)) ? Number(doc.edition_count) : null;
   const firstPublishedYear = editionCount != null && editionCount < 2 ? null : firstYear;
   const seriesAll = seriesOf(doc.series);
@@ -188,10 +170,6 @@ async function byIsbn(isbn, input, options) {
   if (!record) return null;
   const result = normalizeEdition(record, input);
   if (!result) return null;
-  // `publish_date` of an edition is not first publication: «Искусство войны»
-  // is an ancient work whose АСТ edition is from 2013. The work record knows
-  // `first_publish_year`; one extra request, only when the edition points at a
-  // work and the first-publish year is still unknown.
   const workKey = Array.isArray(record.works) && record.works[0] && record.works[0].key;
   if (workKey) {
     try {
@@ -204,7 +182,6 @@ async function byIsbn(isbn, input, options) {
       const firstYear = yearOf(work && work.first_publish_year);
       if (firstYear != null) result.firstPublishedYear = firstYear;
     } catch (err) {
-      // The edition is still usable without the work-level year.
     }
   }
   return result;
@@ -236,10 +213,6 @@ async function byTitle(input, options) {
   return results[0] || null;
 }
 
-/**
- * @param {{isbn13?:string, isbn10?:string, title?:string, authors?:string[]}} input
- * @returns {Promise<object|null>} normalized work
- */
 async function getWork(input = {}, options = {}) {
   const memo = options.negativeMemo instanceof Map ? options.negativeMemo : null;
   const isbn = normalizeIsbn(input.isbn13) || normalizeIsbn(input.isbn10);

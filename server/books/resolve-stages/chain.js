@@ -17,17 +17,12 @@ function providerOptionsFor(ctx, provider) {
   return {
     fetchImpl: options.fetchImpl,
     sleep: options.sleep,
-    // Anonymous LiveLib session cookies (bootstrap/plan B). Only the card
-    // provider talks to LiveLib.
     jar: provider.NAME === 'livelib-card' ? options.jar : undefined,
     negativeMemo:
       ctx.negativeMemo && ctx.negativeMemo[provider.NAME]
         ? ctx.negativeMemo[provider.NAME]
         : null,
     lookupIsbns: options.lookupIsbns,
-    // Each network provider has its own per-run allowance: Литрес books,
-    // Google Books books (BOOKS_GB_BUDGET), LiveLib cards. Sharing one counter
-    // would let a GB-only tail eat the card budget (and vice versa).
     budget: providerBudgetFor(ctx.budget, provider),
     cardPauseMs: options.cardPauseMs,
     litresPauseMs: options.litresPauseMs,
@@ -45,11 +40,6 @@ async function tryProvider(provider, input, ctx) {
     return null;
   }
   const options = ctx.options;
-  // "Providers were asked": recorded per event so the metadata badge can keep
-  // its denominator on the resolvable pool. A breaker/budget skip is NOT an
-  // answer, so those keys are removed again below. The key is the resolve-cache
-  // key (`sourceBookId` OR `file:<fileKey>`), not the scrape-only `llBookId`:
-  // a file row without «Ссылка на книгу» must be addressable too.
   const key = input ? input.eventKey || input.llBookId || null : null;
   const keyString = key == null ? null : String(key);
   const budget = providerBudgetFor(ctx.budget, provider);
@@ -67,8 +57,6 @@ async function tryProvider(provider, input, ctx) {
         options.attemptedKeys && options.attemptedKeys.delete(keyString);
       } else if (!budgetBlocked) {
         options.attemptedKeys && options.attemptedKeys.add(keyString);
-        // Per-candidate provenance for the scheduled resolve negative cache:
-        // which providers really answered "nothing" for this key.
         if (options.missedByKey instanceof Map) {
           if (!options.missedByKey.has(keyString)) options.missedByKey.set(keyString, new Set());
           options.missedByKey.get(keyString).add(provider.NAME);
@@ -93,9 +81,6 @@ async function tryProvider(provider, input, ctx) {
     if (keyString) {
       options.attemptedKeys && options.attemptedKeys.delete(keyString);
       options.providerErrorKeys && options.providerErrorKeys.add(keyString);
-      // Keep any real "answered nothing" provenance collected before the
-      // error: Литрес may already have answered for this Cyrillic title, and
-      // the scheduled resolve is allowed to remember that verdict.
     }
     if (typeof provider.noteError === 'function') provider.noteError(err);
     return null;
@@ -104,11 +89,6 @@ async function tryProvider(provider, input, ctx) {
 
 function prepareChain(ctx) {
   const { options } = ctx;
-  // `allowLivelibCard: false` drops the LiveLib card provider. A resolve pass
-  // that a `livelib-backup` file import triggered must never touch livelib.ru
-  // (the whole point of the safe path, §9 ban risk): the file rows are enriched
-  // by Hardcover/Литрес/GB/OL only, and a row that needs the card waits for a
-  // regular scrape import instead of silently scraping.
   const list = providers
     .selectProviders(options.providers)
     .filter((provider) => options.allowLivelibCard !== false || provider.NAME !== 'livelib-card');
@@ -141,7 +121,6 @@ function countResolution(report, result) {
   else if (result.source === 'litres') report.resolvedLitres++;
 }
 
-/** Fields of a first-publication claim; they survive a re-resolve. */
 const YEAR_CLAIM_FIELDS = [
   'firstPublishedYear',
   'firstPublishedYearSource',
@@ -153,15 +132,6 @@ const YEAR_CLAIM_FIELDS = [
   'firstPublishedYearPrevious',
 ];
 
-/**
- * Keep a year backfilled earlier when a fresh resolve knows nothing about it.
- *
- * `saveDetails` is a blind overwrite, and the chain rebuilds a document from
- * the provider answer alone: a Google Books hit that knows only the print year
- * would silently delete the first-publication claim `years-backfill` had just
- * written (and with it the 30-day marker). Content fields still follow the
- * fresh answer — only an *absent* claim is inherited.
- */
 function keepYearClaim(previous, next) {
   if (!next || next.firstPublishedYear != null || !previous) return next;
   const merged = { ...next };
@@ -201,9 +171,6 @@ function makeLink(bookId, merged, now) {
 
 async function saveCardMetadata(ctx, event, card) {
   const bookId = eventKeyOf(event);
-  // Only events with an identity reach this point (see the pending pool), so a
-  // null here means a caller bug, not a data shape: skip instead of writing a
-  // shared `ll:` details document for unrelated rows.
   if (!bookId) return null;
   const doc = providers.resultToDetails(
     {

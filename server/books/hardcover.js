@@ -1,35 +1,5 @@
 'use strict';
 
-/**
- * Hardcover GraphQL client + journal import.
- *
- * Endpoint: POST https://api.hardcover.app/v1/graphql with
- * `authorization: Bearer <HARDCOVER_API_TOKEN>`. The token comes from
- * server/config.js (env -> config/hardcover-token) and never appears in logs:
- * every log line here uses maskToken() for diagnostics.
- *
- * Free plan limits (confirmed by response headers):
- *   RateLimit-Policy: "Free";q=60;w=60;burst=10, "daily";q=5000;w=86400
- * The local gate therefore allows at most HARDCOVER_MAX_PER_MINUTE (55)
- * requests in a rolling minute and at least HARDCOVER_MIN_INTERVAL_MS (1100)
- * between two requests. 429 responses honour Retry-After, transport errors are
- * retried up to 3 times with backoff.
- *
- * Journal paging: user_books ordered by id asc, limit 100 + offset, until a
- * short page. 656 user_books = 7 pages. Each page joins book metadata
- * (authors via contributions, genres via taggings, series via book_series)
- * and the edition publisher/language in the same query — Hasura counts
- * top-level fields per request, not join depth, so one request per page is
- * enough.
- *
- * Incremental refresh (`fetchJournalIncremental`) reads only rows whose
- * `user_books.updated_at` is newer than the last successful sync — one page
- * for the usual "one book added" case. A full paginated pass stays the
- * fallback (no sync cursor yet, `force`, or a shrunk journal: a deleted row
- * cannot be detected through `updated_at`, so a lower row count asks for a
- * full re-read).
- */
-
 const config = require('../config');
 const bookCache = require('./book-cache');
 const { fetchOnce, defaultSleep } = require('../core/http');
@@ -44,7 +14,7 @@ const WINDOW_MS = sources.SOURCES.hardcover.windowMs;
 const MIN_INTERVAL_MS = sources.SOURCES.hardcover.minIntervalMs;
 const MAX_TRANSPORT_ATTEMPTS = sources.SOURCES.hardcover.maxTransportAttempts;
 
-const GENRE_TAG_CATEGORY_ID = 1; // Hardcover "Genre" tag category (confirmed live)
+const GENRE_TAG_CATEGORY_ID = 1;
 
 class HardcoverError extends Error {
   constructor(message, code) {
@@ -54,24 +24,12 @@ class HardcoverError extends Error {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Token masking                                                       */
-/* ------------------------------------------------------------------ */
-
-/**
- * `hc_pat_abcdef...` -> `hc_pat_***`; any other secret -> `***`.
- * Used in logs and in error messages; the raw value is never stored.
- */
 function maskToken(token) {
   const value = String(token == null ? '' : token);
   if (!value) return '(none)';
   const prefix = value.match(/^([a-z]{2,10}_[a-z]{2,12}_)/i);
   return prefix ? `${prefix[1]}***` : '***';
 }
-
-/* ------------------------------------------------------------------ */
-/* Local rate gate                                                     */
-/* ------------------------------------------------------------------ */
 
 const sleep = defaultSleep;
 
@@ -87,7 +45,6 @@ class RateGate {
     this.waits = 0;
   }
 
-  /** Wait until a new request is allowed by all three rules. */
   async acquire() {
     for (;;) {
       const now = Date.now();
@@ -116,7 +73,6 @@ class RateGate {
     }
   }
 
-  /** Called after a 429: block all subsequent requests for `seconds`. */
   blockFor(seconds) {
     const ms = Math.max(1, Number(seconds) || 0) * 1000;
     this.blockedUntil = Math.max(this.blockedUntil, Date.now() + ms);
@@ -128,10 +84,6 @@ class RateGate {
 }
 
 const gate = new RateGate();
-
-/* ------------------------------------------------------------------ */
-/* GraphQL transport                                                   */
-/* ------------------------------------------------------------------ */
 
 function tokenOrThrow() {
   try {
@@ -158,10 +110,6 @@ function parseRetryAfter(response) {
   return 5;
 }
 
-/**
- * One guarded GraphQL request. `query` is a document string, `variables` an
- * object. Returns `data` on success and throws HardcoverError otherwise.
- */
 async function graphql(query, variables, options = {}) {
   const token = tokenOrThrow();
   const label = options.label || 'query';
@@ -250,10 +198,6 @@ async function graphql(query, variables, options = {}) {
   throw lastError || new HardcoverError(`Hardcover request failed (${label}).`, 'hardcover_error');
 }
 
-/* ------------------------------------------------------------------ */
-/* Owner / user resolution                                             */
-/* ------------------------------------------------------------------ */
-
 let meCache = null;
 
 async function getMe() {
@@ -267,11 +211,6 @@ async function getMe() {
   return meCache;
 }
 
-/**
- * Resolve the journal owner. A PAT only reads its own journal, so a requested
- * username can only be verified, never substituted: `null` / "me" / the
- * owner's own id or username resolve to the owner; anything else is an error.
- */
 async function resolveUser(input) {
   const me = await getMe();
   const raw = input == null ? '' : String(input).trim();
@@ -292,14 +231,6 @@ async function resolveUser(input) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Journal                                                             */
-/* ------------------------------------------------------------------ */
-
-/**
- * `user_books.status_id` -> internal status. Mapping is the P0 spike reading
- * (AGENTS.md §5.2): 1 want, 2 reading, 3 read, 4 paused, 5 dnf.
- */
 const HARDCOVER_STATUS_LABELS = {
   1: 'wish',
   2: 'reading',
@@ -308,35 +239,18 @@ const HARDCOVER_STATUS_LABELS = {
   5: 'dnf',
 };
 
-/**
- * Statuses that belong to the *reading profile*: finished books (3) and books
- * the user abandoned (5, "did not finish"). `1`/`2`/`4` are shelf state, not
- * reading history — counting them as finished inflated bookCount with books
- * that were never read (user report, 27.10.2026). Status 2 is still *stored*
- * as a plan event for the strip (`HARDCOVER_READING_STATUS_IDS`), just never
- * counted here.
- */
 const HARDCOVER_KEEP_STATUS_IDS = [3, 5];
 
-/**
- * Status 2 ("currently reading") is persisted as a *plan-state* event so the
- * «Недавно читал» strip can show what is being read right now. It is not
- * reading history: `statusId` travels with the event, and the stats-level
- * filter (`HARDCOVER_PROFILE_STATUS_IDS = [3, 5]`) keeps it out of bookCount,
- * years, authors, timeline and streaks exactly like wish/paused.
- */
 const HARDCOVER_READING_STATUS_IDS = [2];
 
 function keepStatus(statusId) {
   return HARDCOVER_KEEP_STATUS_IDS.includes(Number(statusId));
 }
 
-/** Persist history statuses plus the "reading now" shelf state. */
 function storeStatus(statusId) {
   return HARDCOVER_READING_STATUS_IDS.includes(Number(statusId)) || keepStatus(statusId);
 }
 
-/** Fresh skip counter for one import pass: total + per-status breakdown. */
 function createStatusFilterCounter() {
   return { skippedNonFinished: 0, byStatus: {} };
 }
@@ -417,12 +331,6 @@ query JournalPage($userId: Int!, $limit: Int!, $offset: Int!, $withTotal: Boolea
   }
 }`;
 
-/**
- * Rows changed since the previous sync. `updated_at` is a real user_books
- * column (introspected live, 28.10.2026); ordering by it keeps pagination
- * stable while rows are being updated. `total` is read on the first page so a
- * shrunk journal (deleted book) can fall back to the full pass.
- */
 const INCREMENTAL_JOURNAL_PAGE_QUERY = `
 query IncrementalJournalPage($userId: Int!, $since: timestamptz!, $limit: Int!, $offset: Int!, $withTotal: Boolean!) {
   total: user_books_aggregate(where: { user_id: { _eq: $userId } }) @include(if: $withTotal) {
@@ -468,7 +376,6 @@ function imageUrl(value) {
   return null;
 }
 
-/** Author names from contributions; "Author" role first, all roles as fallback. */
 function authorsOf(book) {
   const contributions = Array.isArray(book && book.contributions) ? book.contributions : [];
   const seen = new Set();
@@ -503,11 +410,6 @@ function genresOf(book) {
   return genres;
 }
 
-/**
- * All tag names of a book, regardless of tag category. Hardcover keeps manga
- * and comics markers outside the Genre category often enough that the Genre
- * list alone produces `null` for an obvious comic.
- */
 function tagsOf(book) {
   const taggings = Array.isArray(book && book.taggings) ? book.taggings : [];
   const seen = new Set();
@@ -541,7 +443,6 @@ function seriesOf(book) {
   return series;
 }
 
-/** Build the canonical details document for one work (schemaVersion 1). */
 function detailsFromBook(book, edition, fetchedAt) {
   if (!book || !book.id) return null;
   const authors = authorsOf(book);
@@ -558,9 +459,6 @@ function detailsFromBook(book, edition, fetchedAt) {
     authors,
     series,
     genres,
-    // Full tag list + the flattened detection corpus. `genres` stays the clean
-    // display list; detection at stats-read time uses `tags`/`mangaTexts`, so
-    // a re-import is not required after the detector improves.
     tags,
     mangaTexts: collectMangaTexts({ genres, tags, series, publisher }),
     pages: Number.isFinite(Number(book.pages))
@@ -569,10 +467,6 @@ function detailsFromBook(book, edition, fetchedAt) {
       ? Number(edition.pages)
       : null,
     publicationYear: yearOf(book.release_year, book.release_date, edition && edition.release_year, edition && edition.release_date),
-    // Work-level first publication: both fields below live on the `books`
-    // record (Hardcover's canonical work entity), never on the print edition.
-    // Deliberately *not* the `publicationYear` fallback: an edition date must
-    // not become a first-publication claim.
     firstPublishedYear: yearOf(book.release_year, book.release_date),
     isbn13: (edition && edition.isbn_13) || null,
     isbn10: (edition && edition.isbn_10) || null,
@@ -588,18 +482,6 @@ function detailsFromBook(book, edition, fetchedAt) {
   };
 }
 
-/**
- * Convert one user_books row into profile events (one per user_book_read, plus
- * a synthetic undated event when a user_book has no reads at all).
- *
- * Rows whose `status_id` is neither reading history (3/5) nor "reading now"
- * (2) yield no events; when `counter` is passed, the skip is recorded there
- * (total + per status). A "reading now" row becomes one event with
- * `statusId: 2`, no `finishedAt` and `startedAt` from the journal, so it can
- * drive the strip without ever entering the finished-books aggregates.
- * "Did not finish" rows keep their event (it is part of the profile) but never
- * carry `finishedAt`: an abandoned book must not enter timeline/streaks.
- */
 function eventsFromRow(row, counter) {
   if (!row || !row.book) return [];
   const statusId = Number(row.status_id);
@@ -635,9 +517,6 @@ function eventsFromRow(row, counter) {
     ratingScale: 5,
     rating10: rating == null ? null : Math.round(rating * 2),
     status,
-    // Raw journal keys: stats re-applies the status filter to persisted
-    // profiles, so an event must carry enough data to be filtered again
-    // without a network call (`status` alone is a presentation label).
     statusId: Number.isFinite(statusId) ? statusId : null,
     userBookId: Number.isFinite(Number(row.id)) ? Number(row.id) : null,
     readCount: Number(row.read_count) || 0,
@@ -649,10 +528,6 @@ function eventsFromRow(row, counter) {
   };
 
   if (readingNow) {
-    // One user_book is being read once: collapse its reads into a single
-    // plan-state event instead of inventing several "current" reads. The start
-    // date is the last opened read, else the journal's date_added; if the
-    // source has neither, the event stays undated rather than faking a day.
     const readStarts = reads
       .map((read) => dateOnly(read.started_at))
       .filter(Boolean)
@@ -699,17 +574,9 @@ function eventsFromRow(row, counter) {
   }));
 }
 
-/**
- * Turn one GraphQL page into profile events + canonical works. Shared by the
- * full and the incremental journal pass so status filtering, metadata
- * persistence and event dedupe cannot drift between the two.
- */
 function ingestJournalRows(rows, state, fetchedAt) {
   let added = 0;
   for (const row of rows) {
-    // Metadata is independent of the journal role: a "want to read" work can
-    // still be the canonical Hardcover work for a LiveLib event, so details
-    // are persisted even when the row yields no events (status filter).
     const details = detailsFromBook(row.book, row.edition, fetchedAt);
     if (details && !state.works.has(details.hcWorkId)) {
       state.works.set(details.hcWorkId, details);
@@ -725,12 +592,6 @@ function ingestJournalRows(rows, state, fetchedAt) {
   return added;
 }
 
-/**
- * Fetch the whole journal and persist canonical work metadata.
- *
- * Returns { events, works, totals, eventsWithDate, statusFilter, keepStatusIds }.
- * `onProgress({page,pageTotal,events})` is called after every page.
- */
 async function fetchJournal(userId, options = {}) {
   const owner = await resolveUser(userId);
   const limit = Math.min(Math.max(Number(options.pageSize) || 100, 1), 100);
@@ -782,8 +643,6 @@ async function fetchJournal(userId, options = {}) {
     }
   }
 
-  // Metadata is only useful when it is on disk; writes are atomic, so a crash
-  // mid-import leaves a consistent (if incomplete) cache.
   for (const details of works.values()) {
     await bookCache.saveDetails(details.hcWorkId, details);
   }
@@ -809,19 +668,6 @@ async function fetchJournal(userId, options = {}) {
   };
 }
 
-/**
- * Incremental journal pass: only rows with `updated_at > since`.
- *
- * Returns the same shape as `fetchJournal` plus
- *   - `mode: 'incremental'`,
- *   - `changedUserBookIds` — rows whose events must replace the cached ones,
- *   - `needsFull` — the journal shrank (a deleted user_book is invisible to an
- *     `updated_at` filter) or the incremental query is unusable, so the caller
- *     must fall back to `fetchJournal`.
- *
- * One page is the normal case for "user added one book"; the page loop only
- * exists for a bulk change after a long pause.
- */
 async function fetchJournalIncremental(userId, since, options = {}) {
   const owner = await resolveUser(userId);
   const limit = Math.min(Math.max(Number(options.pageSize) || 100, 1), 100);
@@ -892,8 +738,6 @@ async function fetchJournalIncremental(userId, since, options = {}) {
     return left < right ? 1 : -1;
   });
 
-  // A lower row count means at least one user_book was deleted: updated_at
-  // cannot tell us which, so the caller re-reads the whole journal.
   const needsFull = knownTotal != null && total != null && total < knownTotal;
 
   return {
@@ -911,14 +755,6 @@ async function fetchJournalIncremental(userId, since, options = {}) {
   };
 }
 
-/**
- * Merge an incremental journal into the cached profile events.
- *
- * A changed user_book replaces *all* its cached events (a re-read count change
- * can turn one read into two), untouched books are kept verbatim. Event ids
- * are deduped and the list keeps the newest-finished-first order of
- * `fetchJournal` so the payload does not depend on the sync mode.
- */
 function mergeJournalEvents(previousEvents, journal) {
   const changed = journal.changedUserBookIds instanceof Set
     ? journal.changedUserBookIds
@@ -944,7 +780,6 @@ function mergeJournalEvents(previousEvents, journal) {
   return events;
 }
 
-/** Build the persisted profile document (schemaVersion 1, doc §3.3). */
 function buildProfile(owner, journal, warnings) {
   return {
     schemaVersion: 1,

@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * Timeline, reading calendar, streaks and the two "recently" strips.
- *
- * S2 «распил god-функции»: the month buckets come from finished events plus
- * month-only events (`readMonth`), the day buckets only from exact days — a
- * month is never invented into a day, because that would corrupt streaks.
- * `recentlyFinished`/`recentlyReading` are strips, not calendars, and are cut
- * to 15 rows here exactly as before the split.
- */
-
 const { computeStreaks } = require('./numeric');
 
 function buildTimeline(ctx) {
@@ -62,11 +52,6 @@ function buildTimeline(ctx) {
 
 function buildRecentlyFinished(ctx) {
   const { works, events } = ctx;
-  // "Recently read" is a strip of the last finished books, not a calendar:
-  // LiveLib's export often carries only a month («март 2023»), and hiding those
-  // events left the strip empty for a whole file profile. Month precision is
-  // rendered as a month (`precision: 'month'`), never invented into a day, so
-  // streaks/calendar stay untouched.
   const recentEvents = events
     .filter((event) => event.finishedAt || /^\d{4}-\d{2}$/.test(String(event.readMonth || '')))
     .map((event) => ({
@@ -97,10 +82,6 @@ function buildRecentlyFinished(ctx) {
 
 function buildRecentlyReading(ctx) {
   const { prepared } = ctx;
-  // «Читаю сейчас» goes FIRST in the strip (see public/js/books.js): the
-  // current book is the most useful state, and it must not be crowded out by
-  // 15 finished books. No finish date is invented; the start date is shown
-  // when the source has one, otherwise the card is undated.
   return prepared.readingEvents
     .map((event) => {
       const date = event.startedAt

@@ -1,14 +1,5 @@
 'use strict';
 
-/**
- * `booksIndex` (the drilldown map keyed by work id) and `unmatched` (works the
- * resolve chain could not link, for the «Не найдено» list).
- *
- * S2 «распил god-функции»: both are straight reads of the prepared work set.
- * `booksIndex` field order is the payload contract — the object is serialized
- * as-is, so conditional spreads keep the same positions they had inline.
- */
-
 function buildBooksIndex(ctx) {
   const { works } = ctx;
   const booksIndex = {};

@@ -1,45 +1,5 @@
 'use strict';
 
-/**
- * Scheduled metadata resolve for the unlinked tail of a LiveLib profile.
- *
- * Why this exists (round 29.10.2026): `resolveProfile` only ran as a stage of
- * an import — a `livelib-backup` file upload or a scraped import. A profile
- * imported once stayed with an unlinked tail forever (455 works in the prod
- * profile), and the metadata badge could not move because nothing re-asked the
- * providers on a schedule. This CLI is the body of the
- * `kinoboxd-resolve-books.service` oneshot (hourly timer, `Persistent`,
- * randomized delay) and walks one slice per run:
- *
- *   - candidates: works of one LiveLib profile with NO link (`links/…`) and NO
- *     `ll:` details document — exactly the `unlinked` tail the stats payload
- *     reports. Manga/comics works are skipped (stats already hides them; they
- *     must not spend the Литрес budget), plan shelves are skipped by
- *     `resolveProfile` itself;
- *   - keying: `eventKeyOf` (`sourceBookId` OR `file:<fileKey>`), so the 240
- *     file rows without «Ссылка на книгу» are addressable and their
- *     `attempted`/`unmatchedKeys` bookkeeping is complete;
- *   - providers: the regular chain with `allowLivelibCard: false` — the
- *     scheduled job must never touch livelib.ru (AGENTS.md §1). Cyrillic
- *     titles go Литрес-first, ISBN-bearing rows go through one batched
- *     Hardcover lookup, the rest GB → OL;
- *   - budgets: `BOOKS_LITRES_BUDGET` books per run (default 200; 2 requests and
- *     a 2 s pause per book), Hardcover through the shared gate (a run makes a
- *     handful of batched ISBN queries — at most ~4 for a 200-candidate slice),
- *     Open Library/Google Books at their own rate limits;
- *   - negative cache: a candidate that a provider really answered "nothing"
- *     for is not re-asked every hour. `resolve-candidates/<source>-<key>.json`
- *     keeps `{askedAt, providers}` per event key; the re-check window is
- *     `--recheck-days` (default 90). A budget/breaker/network skip is NOT an
- *     answer and stays a candidate for the next run;
- *   - empty pool → exit in milliseconds with zero network requests.
- *
- * Journal summary (one line per profile + one total line):
- *
- *   [scheduled-resolve] profile=livelib-Margaret pool=455 selected=200
- *     linked=137 misses=41 deferred=22 budget=200/200 hc=3 requests=... remaining=318 runsLeft=2
- */
-
 const path = require('path');
 
 const bookCache = require('./book-cache');
@@ -53,7 +13,7 @@ const sources = require('../core/sources');
 
 const DEFAULT_LIMIT = 200;
 const DEFAULT_RECHECK_DAYS = 90;
-const DEFAULT_PAUSE_MS = sources.pauseMs('litres'); // Литрес politeness (AGENTS.md)
+const DEFAULT_PAUSE_MS = sources.pauseMs('litres');
 const CANDIDATES_DIR_NAME = 'resolve-candidates';
 
 const PLAN_SHELVES = new Set(['reading', 'wish']);
@@ -88,19 +48,14 @@ function loadCandidateState(source, userKey) {
 
 function saveCandidateState(source, userKey, state) {
   const filePath = candidateStatePath(source, userKey);
-  // Same pretty layout the hand-written writer used (`space: 2`), so an
-  // operator diffing `cache-book/resolve-candidates/*.json` sees no churn.
   fsStore.writeJsonAtomicSync(filePath, state, { space: 2 });
   return filePath;
 }
 
-/** Timestamp of the last "providers answered nothing" verdict for a key. */
 function missedAtOf(state, resolveState, key) {
   const entry = state && state.candidates ? state.candidates[String(key)] : null;
   const direct = entry && Date.parse(String(entry.askedAt || ''));
   if (Number.isFinite(direct)) return direct;
-  // Seed from the import resolve-state: an import already asked this key and
-  // answered nothing, so the hourly job must not re-ask it immediately.
   const keys = Array.isArray(resolveState && resolveState.unmatchedKeys)
     ? resolveState.unmatchedKeys.map(String)
     : [];
@@ -123,7 +78,6 @@ function eventKeyOf(event) {
   return resolve.eventKeyOf(event);
 }
 
-/** Is this event's work still unlinked (no link and no `ll:` details)? */
 function isUnlinked(event) {
   const key = eventKeyOf(event);
   if (!key) return false;
@@ -133,22 +87,6 @@ function isUnlinked(event) {
   return true;
 }
 
-/**
- * Build the candidate pool of one profile.
- *
- * `allowedWorkIds` comes from the stats payload (post-manga/comics filter), so
- * the scheduled job resolves exactly the works the user sees. Without it the
- * hourly pass would spend the Литрес budget on the ~370 manga works stats
- * already hides.
- */
-/**
- * Profile records with collection rows replaced by their works.
- *
- * Shared by the candidate pool and the resolve-state bookkeeping, so a work of
- * a collection is a first-class candidate/key everywhere. The guard is the same
- * as in `stats`/`resolve`: a row already decided as one book (link, enrichment
- * document, manual year edit) is not expanded.
- */
 function expandedProfileEvents(profile) {
   const events = Array.isArray(profile && profile.events) ? profile.events : [];
   const source = (profile && profile.source) || 'livelib';
@@ -171,8 +109,6 @@ function expandedProfileEvents(profile) {
 
 function candidatePool(profile, options = {}) {
   const allowedWorkIds = options.allowedWorkIds || null;
-  // Collection rows are candidates through their works, not as a whole (the
-  // anthology itself is not a book the chain can find).
   const expanded = expandedProfileEvents(profile);
   const pool = [];
   for (const event of expanded) {
@@ -180,17 +116,8 @@ function candidatePool(profile, options = {}) {
     const key = eventKeyOf(event);
     if (!key) continue;
     if (!isUnlinked(event)) continue;
-    // `prepareEvents` gives an unlinked file row the work id `ll:<key>`
-    // (sourceBookId or `file:tk:…`, and `file:<fileKey>::seg:<key>` for a work
-    // of a collection row). A volume suffix (`#n`) only appears when works were
-    // merged by a canonical metadata id, which an unlinked row by definition
-    // has not.
     if (allowedWorkIds) {
       const workId = `ll:${key}`;
-      // A work of a collection row is not a visible work until it is proven, so
-      // it is absent from `booksIndex`. It stays a candidate while its HOST row
-      // is visible; a host hidden as manga/comics keeps its works out of the
-      // Литрес budget.
       const hostVisible = Boolean(
         event.collectionParentKey && allowedWorkIds.has(`ll:${event.collectionParentKey}`)
       );
@@ -208,14 +135,6 @@ function allowedWorkIdsOf(stats) {
   return new Set(Object.keys(index));
 }
 
-/**
- * Merge this pass into the persisted resolve-state.
- *
- * `unmatchedKeys` is the honest hopeless set (cumulative, pruned to keys that
- * are still unlinked). `askedKeys` makes `attempted` a real cumulative number
- * instead of "whatever the last pass happened to touch" — the file-keyed rows
- * were invisible before the keying fix.
- */
 async function mergeResolveState(profile, report, options = {}) {
   const source = profile.source || 'livelib';
   const userKey = profile.userKey;
@@ -229,15 +148,8 @@ async function mergeResolveState(profile, report, options = {}) {
     Array.isArray(previous.unmatchedKeys) ? previous.unmatchedKeys.map(String) : []
   );
   for (const key of report.unmatchedKeys || []) unmatched.add(String(key));
-  // The scheduled resolve may treat a Литрес "nothing found" verdict as final
-  // even when a supplementary provider (Google Books) was rate-limited. Those
-  // keys live in the per-candidate state; without this union the metadata
-  // badge would keep them in the resolvable pool for the whole re-check window
-  // and `done` could never be reached.
   for (const key of options.extraUnmatchedKeys || []) unmatched.add(String(key));
 
-  // A key that is no longer unlinked (linked now, or got `ll:` details) is not
-  // hopeless any more; keeping it would poison the metadata denominator.
   const events = expandedProfileEvents(profile);
   let resolved = 0;
   for (const event of events) {
@@ -282,12 +194,6 @@ function countRequests(report) {
   return requests;
 }
 
-/**
- * Run one scheduled slice for one profile.
- *
- * `options.fetchImpl`, `options.sleep`, `options.providers` are injected by
- * tests; production leaves them unset.
- */
 async function resolveOneProfile(profile, options = {}) {
   const source = profile.source || 'livelib';
   const userKey = profile.userKey;
@@ -372,15 +278,9 @@ async function resolveOneProfile(profile, options = {}) {
   report.hardcoverRequests = Number(pass.requests) || 0;
   report.breaker = typeof litres.isBreakerOpen === 'function' && litres.isBreakerOpen();
 
-  // What happened to each selected key: linked now, a real provider miss, or
-  // deferred (budget/breaker/error — stays a candidate for the next run).
   const missKeys = new Set((pass.unmatchedKeys || []).map(String));
   const askedKeys = new Set((pass.askedKeys || []).map(String));
   const providerErrors = new Set((pass.providerErrorKeys || []).map(String));
-  // A provider budget (Литрес books, Google Books books) that ran out before
-  // this key was asked is not a verdict. The pass names those keys explicitly;
-  // without this a GB-budget skip would still be written off as "nothing found"
-  // for the whole re-check window.
   const budgetPending = new Set((pass.budgetPendingKeys || []).map(String));
   const nowIso = options.nowIso || new Date(nowMs).toISOString();
   const newMissKeys = new Set();
@@ -396,12 +296,6 @@ async function resolveOneProfile(profile, options = {}) {
       report.deferred++;
       continue;
     }
-    // A strict miss (every provider answered nothing) is a verdict. For a
-    // Cyrillic title Литрес is the designated first matcher, so its "nothing
-    // found" is a verdict too — even if Google Books then rate-limits us
-    // (429 is an outage, not evidence that the book exists). That is the rule
-    // the brief asks for: «кандидат, которому литрес уже ответил „ничего не
-    // нашёл“, не пере-спрашивается каждый час».
     const providers = (pass.missedByKey && pass.missedByKey[key]) || [];
     const cyrillic = CYRILLIC_TITLE.test(String((entry.event && entry.event.title) || ''));
     const litresVerdict = cyrillic && providers.includes('litres');
@@ -416,15 +310,10 @@ async function resolveOneProfile(profile, options = {}) {
       };
       continue;
     }
-    // A key that was never asked (no provider applies) or whose question was
-    // deferred (budget/breaker/network) is not a verdict: no negative cache.
     report.deferred++;
     if (!askedKeys.has(key) && !providerErrors.has(key)) {
-      // keep the previous verdict if any; otherwise it stays a candidate
     }
   }
-  // Drop stale candidate entries for keys that are no longer in the pool
-  // (linked by an import or removed from the profile).
   const poolKeys = new Set(pool.map((entry) => String(entry.key)));
   for (const key of Object.keys(state.candidates)) {
     if (!poolKeys.has(key)) delete state.candidates[key];
@@ -439,8 +328,6 @@ async function resolveOneProfile(profile, options = {}) {
     }
   }
 
-  // Remaining queue: recompute the pool after the pass, then apply the same
-  // re-check window so `runsLeft` is the number of productive hourly runs.
   const afterPool = candidatePool(profile, { allowedWorkIds });
   const afterActive = force
     ? afterPool
@@ -467,9 +354,6 @@ function log(message) {
   console.log(message);
 }
 
-/**
- * CLI entry point. Profiles default to every cached LiveLib profile.
- */
 async function runScheduledResolve(options = {}) {
   const started = Date.now();
   const source = 'livelib';
@@ -511,8 +395,6 @@ async function runScheduledResolve(options = {}) {
     empty: false,
   };
 
-  // Cheap pre-scan: if every profile has an empty pool (or everything is in
-  // the re-check window), exit without even taking the lock.
   const prepared = [];
   for (const meta of profiles) {
     const data = bookCache.getProfile(source, meta.userKey);

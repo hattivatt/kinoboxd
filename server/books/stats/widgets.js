@@ -1,18 +1,5 @@
 'use strict';
 
-/**
- * Works-based payload sections: ratings, genres, decades/years, authors,
- * series, publishers, pages histogram.
- *
- * S2 «распил god-функции»: every builder is a pure read of `ctx.works` (plus
- * the author merge table for aliases) and returns exactly the sub-structure
- * the payload used to build inline. `pushWorks` is the shared accumulator —
- * it is the one place that decides what a `works[]` row looks like.
- *
- * Sorting rules are part of the contract (`localeCompare`, count desc) and
- * must not be "tidied": ICU collation decides the byte order of the payload.
- */
-
 const { round2, mean } = require('./numeric');
 const { PAGE_BUCKETS, ANCIENT_BEFORE_YEAR, ANCIENT_BUCKET_KEY } = require('./constants');
 
@@ -47,10 +34,6 @@ function pushWorks(map, key, payload, work, extra) {
   return entry;
 }
 
-/**
- * One profile = one rating scale. There is no per-source split on the wire:
- * `merged` IS the profile's distribution.
- */
 function buildRatings(ctx) {
   const { works } = ctx;
   function distribution(list) {
@@ -97,17 +80,10 @@ function buildYearBuckets(ctx) {
   const UNKNOWN_YEAR_LABEL = 'год неизвестен';
   for (const work of works.values()) {
     if (!Number.isFinite(work.year)) {
-      // No provider knows the work's first publication. The chart says so
-      // instead of painting the print run's year («Эксмо, 2026») as a first
-      // publication; the edition year survives on `work.editionYear`.
       pushWorks(decadeMap, 'unknown', { decade: null, label: UNKNOWN_YEAR_LABEL, unknown: true }, work);
       continue;
     }
     if (work.year < ANCIENT_BEFORE_YEAR) {
-      // Ancient works (Сунь Цзы, античные авторы) get one honest bucket instead
-      // of being silently dropped by the old `year > 0` filter. The bucket is
-      // addressable: `key`/`beforeYear` are the drilldown contract shared with
-      // the same bucket on `years[]`.
       pushWorks(decadeMap, 'ancient', {
         decade: 0,
         key: ANCIENT_BUCKET_KEY,
@@ -135,18 +111,11 @@ function buildYearBuckets(ctx) {
       manualCount: entry.yearSources.manual,
       avgRating: entry.rated ? round2(entry.sum / entry.rated) : null,
     }))
-    // Ancient first, real decades in order, «год неизвестен» last.
     .sort((a, b) => {
       if (a.unknown) return 1;
       if (b.unknown) return -1;
       return a.decade - b.decade;
     });
-  // The ancient bucket is a first-class column of the year chart, not a line in
-  // the note: it is painted in its own slot (never on the year axis) and opens
-  // the same list as the decade bucket. Its counters are taken from the decade
-  // bucket above, so the two charts and `summary.ancientBookCount` cannot drift
-  // apart. Ancient works are never pushed into `yearMap`, so the bucket is not
-  // a second copy of any year: `years` sum + `yearUnknownCount` = `bookCount`.
   const ancientDecade = decadeMap.get('ancient');
   const ancientYearBucket = ancientDecade
     ? {

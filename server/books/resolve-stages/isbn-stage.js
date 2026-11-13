@@ -38,15 +38,6 @@ async function lookupHardcoverByIsbn(ctx, isbns) {
   return byIsbn;
 }
 
-/**
- * ISBN bulk lookup (only events that have an ISBN and no cached link).
- *
- * A Hardcover outage (or a deployment without `HARDCOVER_API_TOKEN`) must not
- * abort the whole pass: ISBN is only the first, cheapest strategy, and Литрес/
- * GB/OL can still enrich the book. The failure is reported as
- * `report.lookupErrors` instead of throwing, so a resolve job started by a
- * file import does not die before trying the providers that need no token.
- */
 async function applyIsbnLinks(ctx) {
   const { plan, report, state, cache, now } = ctx;
   const isbnToBookIds = isbnIndex(plan.pending);
@@ -73,12 +64,9 @@ async function applyIsbnLinks(ctx) {
       report.resolvedIsbn++;
     }
   }
-  // Persist freshly discovered works once.
   for (const details of lookup.works.values()) {
     await cache.saveDetails(details.hcWorkId, details);
   }
-  // The batch is one network attempt for every ISBN-bearing event; a failed
-  // batch is not an answer (the event stays pending, never "hopeless").
   for (const bookIds of isbnToBookIds.values()) {
     for (const bookId of bookIds) {
       state.askedKeys.add(String(bookId));

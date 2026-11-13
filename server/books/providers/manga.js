@@ -1,47 +1,9 @@
 'use strict';
 
-/**
- * Manga/comics detection for the books payload (`?includeMangaComics=0|1`).
- *
- * The flag is deliberately tri-state:
- *   true  — at least one metadata signal names manga/comics/graphic novel;
- *   false — classification fields are known and none of them is manga/comics;
- *   null  — no classification-level signal (LiveLib bulk has no genres at all),
- *           so the book is never filtered. `null` survives every filter, which
- *           is the conscious choice from the brief: a missing signal must not
- *           hide a regular book.
- *
- * Signal extraction is intentionally greedy across providers, because no single
- * source is reliable enough:
- *   - LiveLib card: `ShortInfoGenres` + `td.genre-card`;
- *   - Google Books: all `categories` (split on " / ");
- *   - Open Library: *all* `subjects` (the display list is still capped at 25,
- *     but detection reads the full subject array);
- *   - Hardcover: every `taggings` tag (not only the Genre category), series
- *     names and publisher;
- *   - series names themselves ("Crossed (Single Issues)", "Trigun (3 volumes)")
- *     and publisher strings ("VIZ Media", "Image Comics", "Комильфо").
- */
-
-/**
- * Case-insensitive keyword set; Cyrillic prefixes cover all inflections.
- *
- * Russian columns of a `livelib-backup` export use human genre labels
- * («Манга», «Комиксы и манга», «Графический роман», «Сёнэн»), so the RU part
- * of the set is not optional: it is the only classification signal a
- * file-imported profile has (§3.3.2).
- */
 const MANGA_PATTERN =
   /(?:\bmanga\b|\bmanhwa\b|\bmanhua\b|\bcomics?\b|\bgraphic[\s-]?novels?\b|\bsingle[\s-]?issues?\b|\bcollected[\s-]?editions?\b|\bwebtoons?\b|\bshonen\b|\bshōnen\b|\bshoujo\b|\bshōjo\b|\bseinen\b|\bjosei\b|\banime\b|манга|манхва|манхуа|комикс|сёнэн|сёнен|сёдзё|сёдзе|сэйнэн|сэйнен|вебтун|веб-?комикс|додзинси|аниме|графическ[\p{L}]*\s+роман[\p{L}]*)/iu;
 
-/**
- * Publishers whose catalogue is comics/manga (a publisher hit is a strong
- * enough signal on its own). Deliberately excludes mixed prose houses — most
- * importantly `Эксмо`, `АСТ`, `Азбука`: they print both prose and comics, so a
- * publisher-only hit there would hide regular novels.
- */
 const MANGA_PUBLISHERS = [
-  // English-language comics/manga
   'viz media',
   'viz',
   'kodansha',
@@ -74,7 +36,6 @@ const MANGA_PUBLISHERS = [
   'archie comics',
   'valiant comics',
   'humanoids',
-  // French/Belgian comics & manga
   'glenat',
   'glénat',
   'pika edition',
@@ -93,7 +54,6 @@ const MANGA_PUBLISHERS = [
   'star comics',
   'j-pop',
   'jpop',
-  // Russian comics/manga
   'комильфо',
   'komilfo',
   'bubble',
@@ -145,11 +105,6 @@ function isMangaPublisher(value) {
   return MANGA_PUBLISHER_PATTERNS.some((pattern) => pattern.test(publisher));
 }
 
-/**
- * Collect the text fields that should be persisted with a details document, so
- * the stats read can re-detect manga/comics without another network request.
- * `detectManga` also accepts these arrays directly (`texts`).
- */
 function collectMangaTexts(input = {}) {
   const list = [];
   for (const value of [
@@ -167,13 +122,6 @@ function collectMangaTexts(input = {}) {
   return list;
 }
 
-/**
- * @param {{genres?: Array<string|object>, categories?: Array<string>,
- *          subjects?: Array<string>, tags?: Array<string>,
- *          texts?: Array<string>, series?: Array<string|object>,
- *          publisher?: string|null}} input
- * @returns {boolean|null}
- */
 function detectManga(input = {}) {
   const classifications = [
     ...namesOf(input.genres),
@@ -189,8 +137,6 @@ function detectManga(input = {}) {
     if (isMangaSignal(value)) return true;
   }
   if (isMangaSignal(publisher) || isMangaPublisher(publisher)) return true;
-  // Classification fields known and clean -> confidently not manga/comics.
-  // A clean publisher/series name alone is not enough to claim `false`.
   if (classifications.length > 0) return false;
   return null;
 }

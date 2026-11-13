@@ -1,12 +1,5 @@
 'use strict';
 
-/**
- * Hardcover provider: a thin normaliser over the existing ISBN lookup
- * (`hardcover-editions.lookupIsbns`, the same query the resolve job batches).
- * Hardcover remains the canonical work namespace (`hc:{id}`); the chain only
- * asks it for ISBNs, the title/author stage reuses the local details corpus.
- */
-
 const hardcover = require('../hardcover');
 const editions = require('../hardcover-editions');
 const { detectManga, collectMangaTexts } = require('./manga');
@@ -15,7 +8,6 @@ const { normalizeIsbn } = require('../normalize');
 
 const NAME = 'hardcover';
 
-/** Normalise a details document (journal/cache schema 1 or 2) to a provider result. */
 function normalizeDetails(details, editionId, options = {}) {
   if (!details) return null;
   const seriesAll = seriesEntriesOf(details.series);
@@ -44,16 +36,6 @@ function normalizeDetails(details, editionId, options = {}) {
     title: details.title || null,
     authors,
     year: details.publicationYear == null ? null : Number(details.publicationYear),
-    // Hardcover names the work (`books`), so `book.release_year` is the first
-    // publication (detailsFromBook stores it as `firstPublishedYear`). Legacy
-    // schema-1 documents have no such field; their `publicationYear` also
-    // prefers `book.release_year` over the edition, so it is the same value —
-    // used as a fallback only until the document is refreshed.
-    //
-    // `requireWorkClaim: true` is the strict mode the year backfill uses: the
-    // product rule is "first publication or «год неизвестен»", so a document
-    // that only has an edition year must contribute nothing at all instead of
-    // smuggling that edition year into the chart.
     firstPublishedYear:
       details.firstPublishedYear != null
         ? Number(details.firstPublishedYear)
@@ -98,10 +80,6 @@ function normalizeDetails(details, editionId, options = {}) {
   };
 }
 
-/**
- * @param {{isbn13?:string, isbn10?:string}} input
- * @returns {Promise<object|null>} normalized work
- */
 async function getWork(input = {}, options = {}) {
   const isbn = normalizeIsbn(input.isbn13) || normalizeIsbn(input.isbn10);
   if (!isbn) return null;

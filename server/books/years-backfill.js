@@ -31,8 +31,7 @@ const {
 } = require('./series-stage');
 
 const DEFAULT_LIMIT = 20;
-const DEFAULT_PAUSE_MS = sources.pauseMs('litres'); // Литрес politeness (AGENTS.md)
-/** Days a "nobody knows the year" verdict stays final before re-asking. */
+const DEFAULT_PAUSE_MS = sources.pauseMs('litres');
 const DEFAULT_RECHECK_DAYS = 30;
 
 const CYRILLIC_TITLE = /[а-яё]/i;
@@ -47,15 +46,6 @@ function earlierClaim(stored, found) {
   return rankNew > rankStored;
 }
 
-/**
- * Providers that can answer for this document.
- *
- * The negative-cache marker is only a verdict for the providers that were
- * actually asked. A document whose marker predates Wikidata must not stay
- * hidden for the rest of the recheck window: a Russian reprint (no Hardcover
- * ISBN match, no Open Library edition) is exactly the document a new provider
- * can still date.
- */
 function applicableProviders(doc) {
   const out = [];
   if (isbnOfDoc(doc)) out.push('hardcover');
@@ -65,12 +55,6 @@ function applicableProviders(doc) {
   return out;
 }
 
-/**
- * Does the stored marker name every applicable provider?
- *
- * `none` (the old shape for «nobody answered») and an empty marker never
- * cover: they say nothing about the provider that was added later.
- */
 function markerCovers(doc) {
   const asked = String((doc && doc.firstPublishedYearCheckedBy) || '')
     .split(',')
@@ -81,14 +65,6 @@ function markerCovers(doc) {
   return applicableProviders(doc).every((name) => set.has(name));
 }
 
-/**
- * The providers a run will really ask: `applicableProviders`, minus Wikidata
- * when the phase is off for this caller.
- *
- * The negative marker must name only what was actually asked. Writing
- * «wikidata» for a run that had the phase disabled would hide the document for
- * the whole recheck window after the phase is turned back on.
- */
 function askedProviders(doc, options = {}) {
   const list = applicableProviders(doc);
   const provider =
@@ -99,14 +75,6 @@ function askedProviders(doc, options = {}) {
   return list;
 }
 
-/**
- * The reader's own spelling of each work: `workId -> {title, authors}`.
- *
- * A work matched by Open Library keeps the provider's transliterated title
- * («Malenʹkie zhenshchiny zamuzhem»), and asking that spelling anywhere is a
- * wasted request. The profile event carries the title the user saw; the
- * resolve link names the work it belongs to.
- */
 function profileTitles() {
   const out = new Map();
   let profiles = [];
@@ -142,11 +110,9 @@ function profileTitles() {
   return out;
 }
 
-/** Details documents on disk (`cache-book/details/*.json`). */
 function detailDocs() {
   const out = [];
   for (const name of fsStore.listJsonFiles(bookCache.DETAILS_DIR)) {
-    // A half-written document is not a candidate; `readJson` returns null for it.
     const doc = fsStore.readJson(path.join(bookCache.DETAILS_DIR, name), {
       label: 'years-backfill',
     });
@@ -289,17 +255,7 @@ async function firstYearForDoc(doc, options = {}) {
   };
 }
 
-/**
- * Ask Wikidata for the whole slice in one batched pass.
- *
- * Returns `{byWork, asked, skipped, budget, requests}`; `byWork` only holds the
- * documents that got a claim, `asked` the ones the provider really saw. The
- * caller distinguishes «asked, no claim» from «never asked» with those two.
- */
 async function prefetchWikidata(docs, options = {}) {
-  // Injectable like every other provider: a test that does not want WDQS to be
-  // asked, and a caller that wants the whole phase off, pass their own object
-  // (or `null`).
   const provider = options.wikidataProvider === undefined ? wikidata : options.wikidataProvider;
   if (!provider || typeof provider.lookupTitles !== "function") {
     return { byWork: new Map(), asked: new Set(), skipped: null, requests: 0 };
@@ -332,22 +288,10 @@ async function prefetchWikidata(docs, options = {}) {
   return { byWork, asked: found.asked, skipped: found.skipped, budget, requests: found.queries || 0 };
 }
 
-/** Normalised ISBN of a details document, or null. */
 function isbnOfDoc(doc) {
   return normalizeIsbn(doc && doc.isbn13) || normalizeIsbn(doc && doc.isbn10);
 }
 
-/**
- * One batched Hardcover ISBN lookup for the whole selected slice.
- *
- * The chain's per-document Hardcover call would be one GraphQL request per
- * book; `lookupIsbns` takes 100 ISBNs per request, so a 200-document run costs
- * two requests instead of ~190. That is the difference between a bounded,
- * polite job and a rate-limit incident (AGENTS.md: Hardcover free plan counts
- * every top-level field as a query). Returns a Map<isbn,{details,editionId}>
- * or null when the slice has no ISBNs / the batch failed (then the providers
- * are still asked per document, and the error path marks them incomplete).
- */
 async function prefetchHardcover(docs, options = {}) {
   const lookup = options.lookupIsbns || editions.lookupIsbns;
   const isbns = new Set();
@@ -367,7 +311,6 @@ async function prefetchHardcover(docs, options = {}) {
   }
 }
 
-/** A `lookupIsbns` override that answers from the prefetched batch only. */
 function prefetchedLookup(index) {
   return async (isbns) => {
     const byIsbn = new Map();
@@ -380,13 +323,6 @@ function prefetchedLookup(index) {
   };
 }
 
-/**
- * Backfill loop.
- *
- * Options: `limit` (0 = no cap), `ids` (array), `force`, `dryRun`, `pause`,
- * `budget`, `sleep`, `now` (ISO string), `recheckDays`, provider overrides,
- * `log`.
- */
 async function askWikidata(selected, options, deps = {}) {
   const report = deps.report || {};
   const yearClaims = { byWork: new Map(), asked: new Set(), skipped: null };
@@ -448,9 +384,6 @@ async function backfill(options = {}) {
     yearCorrected: 0,
     seriesFilled: 0,
     seriesMissed: 0,
-    // Budget/breaker/network stopped the question before a provider could
-    // answer. These documents stay unchecked (no negative cache): the next
-    // run asks again instead of losing them for `DEFAULT_RECHECK_DAYS`.
     deferred: [],
     errors: [],
     byProvider: {},
@@ -469,9 +402,6 @@ async function backfill(options = {}) {
     runsLeft: 0,
   };
 
-  // One batched Hardcover lookup for the whole slice: 100 ISBNs per request,
-  // not one request per book. Fake providers in tests skip it (they assert the
-  // exact per-document calls), and an explicit `lookupIsbns` is respected.
   let hardcoverLookup = null;
   if (!options.hardcoverProvider && !options.dryRun) {
     hardcoverLookup = await prefetchHardcover(
@@ -486,11 +416,6 @@ async function backfill(options = {}) {
     : options.lookupIsbns;
   const hardcoverUnavailable = Boolean(hardcoverLookup && hardcoverLookup.error);
 
-  // One batched Wikidata pass for the whole slice. It runs even when Hardcover
-  // answered, because the earliest claim wins and Wikidata is the only source
-  // that knows the work behind a Russian reprint (see AGENTS.md §5.2).
-  // The pass is read-only, so `--dry-run` runs it too: the report must show
-  // what a real run would resolve, not a subset that ignores Wikidata.
   const profileTitleIndex =
     options.profileTitles instanceof Map ? options.profileTitles : profileTitles();
   const { yearClaims, yearClaimsError } = await askWikidata(selected, options, {
@@ -540,9 +465,6 @@ async function backfill(options = {}) {
         yearClaimsError,
       });
       if (found.year == null) {
-        // Only an answer from every applicable provider is a verdict. A
-        // budget-exhausted or failed question is a deferral: write nothing, so
-        // the next run sees the document as a candidate again.
         if (found.incomplete.length) {
           report.deferred.push({
             workId,
@@ -554,13 +476,9 @@ async function backfill(options = {}) {
           );
           continue;
         }
-        // Name every applicable provider, not only the one that answered: the
-        // next provider added to the chain must be able to re-open this verdict.
         const asked = askedProviders(doc, options).join(',');
         report.unknown.push({ workId, title: doc.title || null, asked });
         log(`— ${workId} ${doc.title || ''} :: no first-publication claim (${asked})`);
-        // Negative cache: the next run must not repeat these requests. This is
-        // only reached when every applicable provider really answered.
         if (!dryRun) {
           await bookCache.saveDetails(
             bookCache.detailsKeyForWork(workId),
@@ -634,17 +552,11 @@ async function backfill(options = {}) {
   }
   report.litresBudgetExhausted = report.litresBudgetRemaining === 0;
 
-  // Pending queue after the run: a fresh scan, so newly written years and the
-  // freshly written negative cache are both taken into account. This is the
-  // number the journal and the UI promise: «осталось ~K прогонов».
   const pending = countPending(detailDocs(), queueOptions);
   report.pending = pending;
   const perRun = limit > 0 ? limit : Math.max(pending, 1);
   report.runsLeft = pending > 0 ? Math.ceil(pending / perRun) : 0;
 
-  // «Честно неизвестные» grouped by who was asked: the journal line below
-  // names the providers that answered nothing, so an operator can tell a
-  // provider outage from a genuinely undocumented book.
   report.unknownByAsked = {};
   for (const entry of report.unknown) {
     report.unknownByAsked[entry.asked] = (report.unknownByAsked[entry.asked] || 0) + 1;

@@ -1,18 +1,5 @@
 'use strict';
 
-/**
- * Candidate guards shared by the Google Books / Open Library title fallbacks.
- * Mirrors the film-lesson rules: title similarity alone is never enough, the
- * author hit is mandatory when both sides expose authors.
- *
- * `fuzzyAuthor` exists for the cross-language case Google Books exposes: a
- * LiveLib row says «Агата Кристи», the volume says «Agatha Christie», and an
- * exact surname comparison can never match them. The fuzzy path transliterates
- * Cyrillic to Latin and accepts a close surname (similarity >= 0.6, surnames of
- * at least 4 letters). It is opt-in per provider so the strict title matchers
- * (Литрес, Open Library) keep their exact rule.
- */
-
 const { normalizeTitle, tokenJaccard, surnameOf } = require('../normalize');
 
 const STRICT_SIM = 0.6;
@@ -26,7 +13,6 @@ const TRANSLIT = {
   щ: 'shch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
 };
 
-/** Cyrillic -> Latin skeleton used only for surname comparison. */
 function transliterate(value) {
   let out = '';
   for (const char of String(value == null ? '' : value).toLowerCase()) {
@@ -35,7 +21,6 @@ function transliterate(value) {
   return out.replace(/[^a-z0-9]+/g, '');
 }
 
-/** Consonant skeleton: drops vowels and folds w/v (transliteration noise). */
 function surnameSkeleton(value) {
   return transliterate(value)
     .replace(/w/g, 'v')
@@ -60,13 +45,6 @@ function levenshtein(left, right) {
   return previous[b.length];
 }
 
-/** 0..1 similarity of two surnames after transliteration.
- *
- * Vowels and the w/v pair are dropped before comparing: Russian-to-Latin
- * transliterations disagree exactly there («Твен» -> tven vs «Twain» -> twain,
- * «Кристи» -> kristi vs «Christie» -> christie), while the consonant skeleton
- * stays stable. Short skeletons fall back to the full transliteration ratio.
- */
 function surnameSimilarity(left, right) {
   const aFull = transliterate(left);
   const bFull = transliterate(right);
@@ -99,7 +77,6 @@ function authorsOverlap(left, right) {
   return false;
 }
 
-/** Exact surname OR a transliterated near-match (see module header). */
 function authorsFuzzyOverlap(left, right) {
   if (authorsOverlap(left, right)) return true;
   const a = [...authorSurnames(left)];
@@ -112,11 +89,6 @@ function authorsFuzzyOverlap(left, right) {
   return false;
 }
 
-/**
- * Score a candidate against the query.
- * Returns { score, titleSim, exact, authorHit, authorFuzzy } or null when the
- * candidate is rejected (wrong author, too little title overlap).
- */
 function scoreCandidate(query, candidate, options = {}) {
   const queryTitle = query && query.title ? String(query.title) : '';
   const candidateTitle = candidate && candidate.title ? String(candidate.title) : '';
