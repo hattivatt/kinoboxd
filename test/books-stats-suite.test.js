@@ -1935,7 +1935,7 @@ describe('books-ui-dashboard', () => {
   });
 
   test('books controller drops the calendar/publishers render paths and view models', () => {
-    const js = readPublic('js/books.js');
+    const js = readPublic('js/books.js') + readPublic('js/books-normalize.js');
 
     assert.doesNotMatch(js, /renderCalendar\(/);
     assert.doesNotMatch(js, /renderPublishers\(/);
