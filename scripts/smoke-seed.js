@@ -1,16 +1,5 @@
 'use strict';
 
-/**
- * Smoke seeding: copy the golden fixtures into a tmp cache tree.
- *
- * Usage: node scripts/smoke-seed.js <tmp-root>
- *
- * The four cache roots are derived from <tmp-root> and set BEFORE the cache
- * modules are required (they bake the path in at load time). Books and games
- * are seeded here; films need an in-memory upload, which `smoke-preload.js`
- * creates inside the server process.
- */
-
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
