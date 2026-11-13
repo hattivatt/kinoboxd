@@ -34,6 +34,7 @@ const multer = require('multer');
 
 const { parseLetterboxdZip, createUpload, getUpload } = require('../upload');
 const { HttpError } = require('../core/errors');
+const { hasTmdbToken } = require('../config');
 const enrich = require('../enrich');
 const kp = require('../kp');
 const attachment = require('../attachment');
@@ -72,6 +73,17 @@ function singleFile(req, res, next) {
   });
 }
 
+function requireTmdb(req, res, next) {
+  if (hasTmdbToken()) return next();
+  return next(
+    new HttpError(
+      503,
+      'TMDB token is not configured: set TMDB_API_TOKEN to import and match films.',
+      'tmdb_token_missing'
+    )
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Letterboxd upload + enrichment                                      */
 /* ------------------------------------------------------------------ */
@@ -104,7 +116,7 @@ router.post('/upload', singleFile, (req, res, next) => {
   }
 });
 
-router.post('/enrich', (req, res, next) => {
+router.post('/enrich', requireTmdb, (req, res, next) => {
   try {
     const uploadId = req.body && req.body.uploadId;
     if (!uploadId || typeof uploadId !== 'string') {
@@ -142,7 +154,7 @@ router.get('/enrich/status', (req, res, next) => {
 /* KinoPoisk import                                                    */
 /* ------------------------------------------------------------------ */
 
-router.post('/import/kinopoisk', (req, res, next) => {
+router.post('/import/kinopoisk', requireTmdb, (req, res, next) => {
   try {
     const url = req.body && req.body.url;
     if (!url || typeof url !== 'string') {
@@ -206,7 +218,7 @@ router.get('/import/kinopoisk/status', (req, res, next) => {
  * dashboard, so it sends the profile id together with the stale upload id and
  * the attach keeps working instead of answering 404.
  */
-router.post('/attach/lbzip', singleFile, async (req, res, next) => {
+router.post('/attach/lbzip', requireTmdb, singleFile, async (req, res, next) => {
   try {
     const uploadId = (req.body && req.body.uploadId) || req.query.uploadId;
     const rawKpUserId = (req.body && req.body.kpUserId) || req.query.kpUserId;
@@ -371,7 +383,7 @@ router.get('/compare', (req, res, next) => {
 /* Manual TMDB matching                                                */
 /* ------------------------------------------------------------------ */
 
-router.get('/tmdb/search', async (req, res, next) => {
+router.get('/tmdb/search', requireTmdb, async (req, res, next) => {
   try {
     const q = req.query.q;
     if (!q || typeof q !== 'string' || !q.trim()) {
@@ -410,7 +422,7 @@ router.get('/tmdb/search', async (req, res, next) => {
  * - Matched film with a different id/kind: re-match (details are fetched
  *   when missing, the cache index key and the job entry are rewritten).
  */
-router.post('/match', async (req, res, next) => {
+router.post('/match', requireTmdb, async (req, res, next) => {
   try {
     const body = req.body || {};
     const uploadId = body.uploadId;

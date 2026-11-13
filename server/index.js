@@ -26,17 +26,10 @@ const gamesEpicRouter = require('./games/routes-epic');
 const filmsRouter = require('./films/routes');
 const config = require('./config');
 
-// Fail fast, before the HTTP server starts, if TMDB credentials are missing.
-// Missing config is an expected condition: print one clean line and exit 1
-// without a stack trace.
-try {
-  config.loadTmdbToken();
-} catch (err) {
-  if (err && err.code === 'TMDB_TOKEN_MISSING') {
-    console.error(`[server] ${err.message}`);
-    process.exit(1);
-  }
-  throw err;
+if (!config.hasTmdbToken()) {
+  console.warn(
+    '[server] TMDB-токен не найден: фильмы отдаются только из кэша, импорт и матчинг отвечают 503 tmdb_token_missing'
+  );
 }
 
 const app = express();
@@ -74,7 +67,7 @@ app.use('/api/games', gamesEpicRouter);
 app.use('/api', filmsRouter);
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, tmdb: config.hasTmdbToken() });
 });
 
 /* Static frontend + SPA fallback. */

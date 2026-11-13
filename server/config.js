@@ -82,9 +82,17 @@ const steamgriddb = createSecret({
   file: STEAMGRIDDB_KEY_PATH,
 });
 
-/** TMDB token; throws code TMDB_TOKEN_MISSING when no source has it. */
 function loadTmdbToken() {
   return tmdb.load();
+}
+
+function hasTmdbToken() {
+  try {
+    return Boolean(tmdb.load());
+  } catch (err) {
+    if (err && err.code === 'TMDB_TOKEN_MISSING') return false;
+    throw err;
+  }
 }
 
 function tmdbTokenSource() {
@@ -137,6 +145,7 @@ module.exports = {
   TOKEN_MISSING_MESSAGE,
   loadTmdbToken,
   getTmdbToken: loadTmdbToken,
+  hasTmdbToken,
   tmdbTokenSource,
   HARDCOVER_TOKEN_PATH,
   HARDCOVER_TOKEN_MISSING_MESSAGE,
