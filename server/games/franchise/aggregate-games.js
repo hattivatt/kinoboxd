@@ -3,10 +3,6 @@
 const { round1 } = require('./aggregate-rules');
 
 function resolveSecondaryWorks(options, parsed) {
-  // M6 follow-up (03.11.2026): works that exist only outside Steam (GOG/Epic
-  // exclusives) belong to the same franchises. The caller may pass them
-  // explicitly (tests/purity); production reads the cache through the union.
-  // Injected readers mean «pure unit test» — then no disk read happens.
   let secondaryWorks = options.secondaryWorks;
   if (secondaryWorks === undefined) {
     const injected = Boolean(
@@ -36,7 +32,6 @@ function collectLibraryGames(library, { readDetails, readLinks, ttlMs, nowMs }) 
     withReleaseYear: 0,
     fresh: 0,
   };
-  /** `qid: null` rows whose base version has not been looked up yet (B6). */
   let bridgePending = 0;
 
   for (const game of library.games || []) {
@@ -60,9 +55,6 @@ function collectLibraryGames(library, { readDetails, readLinks, ttlMs, nowMs }) 
         : Number.isFinite(linksAt) && nowMs - linksAt >= 0 && nowMs - linksAt < ttlMs);
     if (linksFresh) linksCoverage.fresh++;
 
-    // B6: a `qid: null` row is not «done» any more — the base-version bridge
-    // may still give the work an identity. `baseCheckedAt` is its own
-    // negative marker, inside the same 90-day window.
     if (links.resolved && !links.qid && !links.baseQid) {
       const baseAt = Date.parse(String(links.baseCheckedAt || ''));
       const baseFresh =
@@ -82,7 +74,6 @@ function collectLibraryGames(library, { readDetails, readLinks, ttlMs, nowMs }) 
       releaseSource = 'wikidata';
       release.fromWikidata++;
     } else if (Number.isInteger(Number(links.baseReleaseYear)) && Number(links.baseReleaseYear) > 0) {
-      // B6: the regional SKU has no P577 of its own; its work does.
       releaseYear = Number(links.baseReleaseYear);
       releaseSource = 'wikidata-base';
       release.fromBase++;
@@ -104,11 +95,8 @@ function collectLibraryGames(library, { readDetails, readLinks, ttlMs, nowMs }) 
           : releaseSource === 'wikidata'
             ? links.releasePrecision || null
             : null,
-      // Did Wikidata answer inside the TTL? (independent of whether P179/P577
-      // were found: a negative answer is still an answer).
       wdResolved: Boolean(links.resolved),
       wdFresh: linksFresh,
-      // WD assignment; the heuristic is applied below, after grouping.
       wdKey,
       wdFranchise: wdKey
         ? {
@@ -125,11 +113,6 @@ function collectLibraryGames(library, { readDetails, readLinks, ttlMs, nowMs }) 
 }
 
 function collectSecondaryGames(secondaryList) {
-  // ---- secondary-only works (GOG/Epic exclusives) ----
-  // They are owned works of the same owner, so they join the same franchise
-  // buckets by their P179 key. `appid` stays `null`; `workKey` is the identity
-  // the drilldown and the union card use. They never enter the title
-  // heuristic (a store title alone is not enough evidence).
   const games = [];
   let secondaryGames = 0;
   let secondaryWithFranchise = 0;
@@ -140,9 +123,6 @@ function collectSecondaryGames(secondaryList) {
     const series = work.franchise && work.franchise.key ? work.franchise : null;
     const wdKey = series ? series.key : null;
     if (wdKey) secondaryWithFranchise++;
-    // Only a work whose QID is known can be asked; a QID-less store exclusive
-    // is not «pending Wikidata» forever (the bridge may resolve it later, but
-    // that is the secondary-details pass, not this kick).
     if (work.qid && !work.franchiseChecked) secondaryFranchisePending++;
     const year = Number(work.releaseYear);
     games.push({
@@ -154,8 +134,6 @@ function collectSecondaryGames(secondaryList) {
       releaseYear: Number.isInteger(year) && year > 0 ? year : null,
       releaseSource: Number.isInteger(year) && year > 0 ? 'secondary-store' : null,
       releasePrecision: null,
-      // A secondary identity is answered by the bridge (QID) and the franchise
-      // cache; `franchiseChecked` is the TTL marker for `pending.secondary`.
       wdResolved: Boolean(work.qid || work.franchiseChecked),
       wdFresh: Boolean(work.franchiseChecked),
       wdKey,

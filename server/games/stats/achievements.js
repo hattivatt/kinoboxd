@@ -1,16 +1,5 @@
 'use strict';
 
-/**
- * Achievement documents of the games payload: one document per canonical work
- * (two editions must not double the counters), the per-appid completion map and
- * the rare-unlock counter.
- *
- * S1 «распил god-функции»: pure over the visible works and the cached
- * achievement/global documents. The calendar/timeline derivation stays in
- * `timeline.js`; this module only prepares the counters `summary` and
- * `gamesIndex` read.
- */
-
 const { round1 } = require('./numeric');
 const { RARE_PERCENT } = require('./constants');
 
@@ -29,8 +18,6 @@ function buildAchievements({ achievements, visibleGames, visibleWorks, globals }
     });
   }
 
-  // One achievement document per work: the effective primary's, otherwise the
-  // first edition that has stats. Two editions must not double the counters.
   const workAchievement = new Map();
   for (const work of visibleWorks) {
     let chosen = null;
@@ -56,9 +43,6 @@ function buildAchievements({ achievements, visibleGames, visibleWorks, globals }
   const unlockedTotal = chosenDocs.reduce((sum, doc) => sum + doc.unlockedCount, 0);
   const achievementsTotal = chosenDocs.reduce((sum, doc) => sum + doc.totalCount, 0);
 
-  // Rare = unlocked with a global percent below 5. Global percentages are
-  // matched case-insensitively (XML apiname is lowercase, the official API
-  // returns uppercase names).
   const globalByAppid = globals || new Map();
   let rareUnlocked = 0;
   for (const doc of chosenDocs) {

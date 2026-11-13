@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * GOG client transport: credential resolution, the GET helper and the
- * per-instance request pipeline (breaker, politeness pause, bearer header,
- * authenticated GET).
- *
- * Everything stateful lives in `createRequestPipeline`: one source gate (the
- * breaker) and the two `lastRequestAt` marks; the two pauses stay local, they
- * are independent full sleeps. No endpoint body lives here.
- */
-
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
@@ -30,10 +20,6 @@ const {
 
 const CLIENT_FILE_ENV = 'KINOBOXD_GOG_CLIENT_FILE';
 const CLIENT_FILE_PATH = path.join(__dirname, '..', '..', '..', 'config', 'gog-client.json');
-
-/* ------------------------------------------------------------------ */
-/* client credentials                                                  */
-/* ------------------------------------------------------------------ */
 
 let credentialsCache = null;
 
@@ -58,13 +44,6 @@ function readClientFile(filePath) {
   }
 }
 
-/**
- * Resolve the Galaxy client credentials once:
- *   env `GOG_CLIENT_ID`+`GOG_CLIENT_SECRET` → `config/gog-client.json` →
- *   the public built-in pair. Partial env (only one of the two) is ignored on
- *   purpose: a half-configured pair is a deployment mistake, and the public
- *   fallback still works.
- */
 function loadCredentials() {
   if (credentialsCache) return credentialsCache;
   const envId = process.env.GOG_CLIENT_ID;
@@ -90,19 +69,13 @@ function loadCredentials() {
   return credentialsCache;
 }
 
-/** `env` | `file` | `default` — never the value. */
 function clientSource() {
   return loadCredentials().source;
 }
 
-/** Test helper: forget the cached pair so the next call re-reads env/file. */
 function resetCredentialsCache() {
   credentialsCache = null;
 }
-
-/* ------------------------------------------------------------------ */
-/* HTTP                                                                */
-/* ------------------------------------------------------------------ */
 
 function networkError(err, target) {
   if (err instanceof GogError) return err;
@@ -120,12 +93,6 @@ function networkError(err, target) {
   );
 }
 
-/**
- * Minimal GET client (no dependency). Returns `{ status, headers, body }`.
- * Redirects are followed by default; `followRedirect: false` is used for the
- * authenticated endpoints so a `302 → /login` is reported as `auth_expired`
- * instead of being followed to an HTML page.
- */
 function httpGet(target, options = {}) {
   const timeoutMs = options.timeoutMs || envInt('GAMES_GOG_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
   const redirectsLeft = options.redirectsLeft == null ? MAX_REDIRECTS : options.redirectsLeft;
@@ -166,10 +133,6 @@ function parseJsonBody(response, url) {
     );
   }
 }
-
-/* ------------------------------------------------------------------ */
-/* request pipeline                                                    */
-/* ------------------------------------------------------------------ */
 
 function createRequestPipeline(context) {
   const {
@@ -247,8 +210,6 @@ function createRequestPipeline(context) {
       );
     }
     if (status === 401 || status === 403) {
-      // 401 = the token is not valid any more (reconnect); 403 = GOG is
-      // blocking automation → breaker. A 401 is not a host block.
       if (status === 403) tripBreaker(host, '403');
       throw new GogError(
         status === 401

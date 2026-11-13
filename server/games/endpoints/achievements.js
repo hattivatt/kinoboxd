@@ -7,8 +7,6 @@ const gameCache = require('../game-cache');
 function register(router, ctx) {
   const { client, errorProfile, resolveProfileOrThrow } = ctx;
 
-  /* ----------------------- achievements ----------------------- */
-
   function globalPercentFor(global, apiname) {
     if (!global || !global.byName || !apiname) return null;
     const direct = global.byName[apiname];

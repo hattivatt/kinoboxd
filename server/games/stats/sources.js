@@ -1,14 +1,5 @@
 'use strict';
 
-/**
- * `sources` of the games payload: which profile produced it, the profile
- * catalog, and the per-source state (`steam` journal, `gog`/`epic` same-owner
- * secondary libraries).
- *
- * S1 «распил god-функции»: the literal moved out of `buildGamesStats` without
- * a shape change. The key order is the payload contract.
- */
-
 function buildSources(ctx) {
   const {
     profileKey,
@@ -42,9 +33,6 @@ function buildSources(ctx) {
       gameCount: library.game_count == null ? ownedCount : library.game_count,
     },
     profiles: { connected: allProfileKeys, selected: [profileKey] },
-    // M6a: per-source state. `steam` is the journal (the only source of
-    // achievements and `totalHours`); `gog` is a same-owner secondary
-    // library. A missing token is `not_connected`/`auth_expired`, never 0.
     steam: {
       configured: keyConfigured,
       status: partial ? 'partial' : 'ok',
@@ -52,8 +40,6 @@ function buildSources(ctx) {
       gameCount: library.game_count == null ? ownedCount : library.game_count,
     },
     gog: gogSource,
-    // M6c: Epic read-model state. Same shape as `gog`, so the «Источники»
-    // widget and the «Подключения» screen render both through one contract.
     epic: epicSource,
   };
 }

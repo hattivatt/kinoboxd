@@ -8,13 +8,6 @@ const { assertOnlyParams, parseOwner } = require('./params');
 function register(router, ctx) {
   const { deps, store, auth, errorProfile } = ctx;
 
-  /* ------------------------ device auth ------------------------- */
-
-  /**
-   * Login URL for the authorization-code flow. No network call: the client id
-   * is public and the page is the official Epic login. The user copies the
-   * `code` from the redirect page and posts it to `/epic/connect`.
-   */
   router.get('/epic/auth-url', (req, res, next) => {
     try {
       assertOnlyParams(req, [], 'GET /api/games/epic/auth-url');
@@ -22,7 +15,6 @@ function register(router, ctx) {
       res.status(200).json({
         source: 'epic',
         url: api.authorizeUrl ? api.authorizeUrl() : epic.authorizeUrl(),
-        // Source only: the credentials themselves are never exposed.
         clientSource: epic.clientSource(),
         instructions:
           'Откройте ссылку, войдите в аккаунт Epic и скопируйте значение code ' +
@@ -101,8 +93,6 @@ function register(router, ctx) {
       if (!session) {
         throw new HttpError(404, 'Unknown Epic auth session.', 'unknown_auth');
       }
-      // The UI polls this endpoint; a pending session is polled here as well
-      // as by the background loop (epic-auth rate-limits to `intervalMs`).
       if (session.status === 'pending' && deps.pollOnStatus !== false) {
         session = (await auth.pollSession(req.params.authId)) || session;
       }

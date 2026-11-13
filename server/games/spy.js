@@ -1,30 +1,5 @@
 'use strict';
 
-/**
- * SteamSpy `appdetails` client (M4): the tags source of the games tab.
- *
- * `https://steamspy.com/api.php?request=appdetails&appid=<appid>` is the only
- * cheap source of Steam user tags (`tags{name: weight}`) plus `owners`, `ccu`,
- * `positive`/`negative` and `developer`/`publisher` (ИГРЫ-АРХИТЕКТУРА.md §2.5,
- * §6.3). It is an UNOFFICIAL endpoint, so the module is defensive:
- *
- *   - **one appid per request**; `GAMES_SPY_PAUSE_MS` (default **1100 ms**)
- *     before every request — SteamSpy asks for ≤1 request/second;
- *   - `403`/`429` trip a persisted 30-minute breaker (`GAMES_SPY_BREAKER_MS`)
- *     for `steamspy.com`, shared with no other host;
- *   - a network/DNS/TLS/5xx/HTML failure is thrown as `spy_unreachable` /
- *     `spy_http_error` and is NEVER written to the cache (deferred, no
- *     negative cache — AGENTS.md §1);
- *   - SteamSpy answers `200` with a *skeleton* (`name:null`, empty `tags`) for
- *     an appid it does not track. That IS an answer: it is returned as
- *     `{ success:false, unavailable:true }` so the phase records «no tags»
- *     honestly and does not ask again inside the TTL window.
- *
- * The response is cleaned to the fields the tab uses — no price, no languages,
- * no `userscore` — and `tags` becomes an array sorted by weight, because a JSON
- * object loses the order the UI needs and is awkward to aggregate.
- */
-
 const steam = require('./steam');
 const gameCache = require('./game-cache');
 const { createSourceGate } = require('../core/source-client');
@@ -37,7 +12,6 @@ const DEFAULT_BREAKER_MS = sources.breakerMs('steamSpy');
 const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_TAGS = 50;
 
-/** Every SteamSpy error carries a stable `code` the routes map to HTTP status. */
 class SpyError extends Error {
   constructor(message, code, details = {}) {
     super(message);
@@ -59,20 +33,14 @@ function sleepDefault(ms) {
 }
 
 function spyTtlMs() {
-  // Single source of truth lives in game-cache (it also owns the file TTLs).
   return gameCache.spyTtlMs();
 }
-
-/* ------------------------------------------------------------------ */
-/* Parsers (pure)                                                      */
-/* ------------------------------------------------------------------ */
 
 function nonNegativeInt(value) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? Math.floor(number) : null;
 }
 
-/** `{Open World: 12801, RPG: 10801}` → `[{name, weight}]`, heaviest first. */
 function parseTags(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
   const out = [];
@@ -86,15 +54,6 @@ function parseTags(value) {
   return out.slice(0, MAX_TAGS);
 }
 
-/**
- * Clean one SteamSpy `appdetails` object into the cache document.
- * `fetchedAt` is added by the caller (it owns the clock).
- *
- * SteamSpy's "I don't know this app" answer is a 200 skeleton:
- * `{appid, name:null, positive:0, negative:0, tags:[]}`. It is not an error,
- * but it is not metadata either — `success:false` keeps the stats payload from
- * pretending the game has zero tags because the player owns it.
- */
 function parseSpyDetails(data, appid) {
   const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
   const tags = parseTags(source.tags);
@@ -131,7 +90,6 @@ function parseSpyDetails(data, appid) {
   };
 }
 
-/** Is a cached spy document younger than the TTL? */
 function spyFresh(doc, ttlMs) {
   if (!doc || typeof doc !== 'object') return false;
   const ts = Date.parse(String(doc.fetchedAt || ''));
@@ -140,24 +98,10 @@ function spyFresh(doc, ttlMs) {
   return age >= 0 && age < (ttlMs == null ? spyTtlMs() : ttlMs);
 }
 
-/* ------------------------------------------------------------------ */
-/* Client                                                              */
-/* ------------------------------------------------------------------ */
-
 function spyUrl(appid) {
   return `${SPY_ENDPOINT}?request=appdetails&appid=${encodeURIComponent(String(appid))}`;
 }
 
-/**
- * Create a SteamSpy client.
- *
- * Options (tests use them to stay offline):
- *   request — `(url, opts) => { status, headers, body }` (default: steam.httpGet)
- *   sleep   — `(ms) => Promise`
- *   now     — `() => epoch ms`
- *   pauseMs — spacing between requests (default env / 1100)
- *   breakerMs — breaker window (default env / 30 min)
- */
 function createClient(options = {}) {
   const request = options.request || steam.httpGet;
   const sleep = options.sleep || sleepDefault;
@@ -211,10 +155,6 @@ function createClient(options = {}) {
     return gate.assertNotBlocked(SPY_HOST);
   }
 
-  /**
-   * Fetch one app's tags. Throws `SpyError` for network/5xx/429; returns
-   * `{ success:false, unavailable:true }` for SteamSpy's "unknown app" answer.
-   */
   async function getAppTags(rawAppid) {
     const appid = Number(rawAppid);
     if (!Number.isInteger(appid) || appid <= 0) {

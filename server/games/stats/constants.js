@@ -1,14 +1,5 @@
 'use strict';
 
-/**
- * Constants of the `/api/games/stats` payload.
- *
- * S1 «распил god-функции»: the literals `buildGamesStats` used to carry in its
- * own body. They are contract values (limits, Steam review levels, category
- * regexes, histogram buckets) and stay exported from `games/stats.js` under
- * the same names.
- */
-
 const RECENT_LIMIT = 10;
 const TOP_LIMIT = 20;
 const BACKLOG_LIMIT = 200;
@@ -18,11 +9,6 @@ const DLC_TOP_LIMIT = 10;
 const RARE_PERCENT = 5;
 const UNKNOWN_YEAR_LABEL = 'год неизвестен';
 
-/**
- * Steam's nine review-score levels (`review_score` 1..9 → the `desc` Steam
- * prints on the store page). The bucket label is the canonical English text so
- * the frontend can localize it instead of re-deriving it from a number.
- */
 const REVIEW_SCORE_LABELS = {
   1: 'Overwhelmingly Negative',
   2: 'Very Negative',
@@ -35,8 +21,6 @@ const REVIEW_SCORE_LABELS = {
   9: 'Overwhelmingly Positive',
 };
 
-// Steam category descriptions (`l=english`) → the mode counters of the
-// payload. Kept as regexes because Steam occasionally rewords a label.
 const MODE_TESTS = {
   single: /^single-player$/i,
   multi: /multi-player/i,

@@ -5,10 +5,6 @@ const gogCache = require('./gog-cache');
 const gog = require('./gog');
 const gogAuth = require('./gog-auth');
 
-/* ------------------------------------------------------------------ */
-/* connect                                                             */
-/* ------------------------------------------------------------------ */
-
 function resolveOwner(ownerProfile, { userKey, existing }) {
   const explicit = String(ownerProfile == null ? '' : ownerProfile).trim();
   if (explicit) {
@@ -54,10 +50,6 @@ function assertOwnerFree(ownerProfile, userKey) {
   }
 }
 
-/**
- * Exchange the one-time `code` for tokens, read the identity and persist both
- * the token (0600) and the public profile. Returns a sanitized view.
- */
 async function connect({ code, ownerProfile, profile, client }) {
   const api = client || gog.createClient();
   let tokens;
@@ -110,10 +102,6 @@ async function connect({ code, ownerProfile, profile, client }) {
   const nowIso = new Date().toISOString();
   const tokenDoc = {
     userKey,
-    // The two ids `gameplay.gog.com` may expect: the OAuth `user_id` (Heroic)
-    // and the `galaxyUserId` from `userData.json` (comet/unifideck). Both are
-    // stored so the playtime phase never falls back to `userData.json.userId`
-    // — that field is not the Galaxy id (01.11.2026 zero-hours bug).
     userId: tokens.userId || (existing && existing.userId) || null,
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken || (existing && existing.refreshToken) || null,
@@ -128,8 +116,6 @@ async function connect({ code, ownerProfile, profile, client }) {
     connectedAt: (existing && existing.connectedAt) || nowIso,
     obtainedAt: nowIso,
     refreshedAt: (existing && existing.refreshedAt) || null,
-    // A fresh connect is a clean slate: a stale refresh error from the previous
-    // token must not keep the account in «подключите GOG заново».
     lastRefreshError: null,
     lastError: null,
     sessionId: tokens.sessionId || null,
@@ -157,7 +143,6 @@ async function connect({ code, ownerProfile, profile, client }) {
   });
   return {
     account: gogCache.publicTokenView(gogCache.getToken(userKey)),
-    // Boolean only: the token value is never exposed.
     tokenStored: true,
   };
 }

@@ -1,22 +1,5 @@
 'use strict';
 
-/**
- * HTTP transport of the secondary-library sources (GOG v2 / Epic CMS).
- *
- * One place for the request shape (browser UA, `Accept`, byte cap, no
- * redirects), the status → `SecondaryDetailsError` mapping and the
- * `404 / 403 / 429 / 5xx` politeness rules:
- *
- *   - `404` — the product's own verdict (`secondary_details_not_found`,
- *     cached as a negative entry by the caller);
- *   - `403`/`429` — the host blocked us (`secondary_details_blocked`,
- *     deferred, trips the 30-minute breaker);
- *   - `5xx`/network — deferred: nothing is cached, the previous document stays.
- *
- * An injected `client` (`getJson(url)` or a plain function) replaces the
- * built-in request entirely — that is how every test stays hermetic.
- */
-
 const { URL } = require('url');
 
 const { nodeRequest } = require('../../core/http');
@@ -30,8 +13,6 @@ function timeoutMs() {
 }
 
 function httpGetJson(target, options = {}) {
-  // `0` is a real «no deadline» value now; only an absent option falls back
-  // to the table/env default.
   const timeout = options.timeoutMs == null ? timeoutMs() : Number(options.timeoutMs);
   const userAgent = options.userAgent || sources.userAgent('secondary');
   let host = null;
@@ -75,14 +56,6 @@ function parseJson(body, status) {
   }
 }
 
-/**
- * One product → normalized detail. The injected `client` (tests) may expose
- * `getJson(url)`; otherwise a minimal HTTPS GET is used. `client` is also
- * allowed to be a plain function `(url) => Promise<payload>`.
- *
- * `options.headers`/`options.userAgent` only affect the built-in HTTPS path —
- * an injected client owns its own request shape.
- */
 async function fetchJson(client, url, options = {}) {
   if (client && typeof client.getJson === 'function') return client.getJson(url);
   if (typeof client === 'function') return client(url);

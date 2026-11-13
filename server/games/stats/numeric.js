@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * Numeric primitives of the games payload: rounding, hours conversion, median,
- * ISO timestamps, artwork URLs and the hours histogram.
- *
- * S1 «распил god-функции»: these helpers are games-specific. The rounding
- * family comes from `core/stats` (R15, `plain` policy); `minutesToHours` keeps
- * its own `|| 0` guard, so an infinite minute count still becomes an infinite
- * hour count.
- */
-
 const { round1, round2, round3 } = require('../../core/stats');
 const { HISTOGRAM_BUCKETS } = require('./constants');
 
@@ -17,13 +7,6 @@ function minutesToHours(minutes) {
   return round1((Number(minutes) || 0) / 60);
 }
 
-/**
- * M6c payload contract (integration round, 01.11.2026): every
- * `hoursBySource` object the API returns is in **hours**, never minutes.
- * `null` stays `null` — an unknown answer is not a zero. The union itself
- * keeps minutes (`steamMinutes`/`displayMinutes`) for exact arithmetic; this
- * helper is the only place where a per-source number crosses into the payload.
- */
 function hoursBySourceOf(entry) {
   const source = entry && entry.hoursBySource && typeof entry.hoursBySource === 'object'
     ? entry.hoursBySource
@@ -58,11 +41,6 @@ function iconUrlOf(appid, hash) {
   );
 }
 
-/**
- * Store artwork URL from an `appdetails` cache document (M7). Only an absolute
- * http(s) string is accepted; a missing/unavailable document has no art, and
- * the card falls back to the old CDN chain instead of inventing a URL.
- */
 function headerImageOf(doc) {
   if (!doc || typeof doc !== 'object') return null;
   const url = doc.headerImage;
@@ -71,19 +49,6 @@ function headerImageOf(doc) {
 
 const STEAM_ART_PATH = '/api/games/steam-art';
 
-/**
- * Proxy URL of a resolved vertical capsule. The resolve document
- * (`cache-games/art/resolved/<appid>.json`, `server/games/art/resolve.js`) says
- * which schema answered:
- *
- *   library-hashed  -> `/api/games/steam-art/<library|library_capsule>/<appid>?h=<hash>`
- *   library-legacy  -> `/api/games/steam-art/library/<appid>`
- *   sgdb            -> the https SteamGridDB CDN URL as-is
- *   none            -> null
- *
- * Only the fields the resolver wrote are used, so a corrupt document can never
- * smuggle an arbitrary URL into the payload.
- */
 function verticalCapsuleUrlOf(doc) {
   if (!doc || typeof doc !== 'object') return null;
   if (doc.kind === 'sgdb') {
@@ -101,13 +66,6 @@ function verticalCapsuleUrlOf(doc) {
   return null;
 }
 
-/**
- * Additive artwork fields of one row. **No resolve document → `{}`**: an old
- * payload (or a game the enrich pass has not reached yet) keeps exactly its
- * previous shape and the client walks the legacy CDN chain. A resolved `none`
- * is explicit — `verticalCapsuleKnown: false` tells the client not to retry
- * the library paths for this SKU.
- */
 function artFieldsOf(doc) {
   if (!doc || typeof doc !== 'object' || !doc.kind) return {};
   const verticalCapsule = verticalCapsuleUrlOf(doc);
@@ -130,12 +88,10 @@ function hoursHistogram(hoursList) {
   return counts;
 }
 
-/** Sum `count`/`hours` into a decade/year bucket. */
 function pushBucket(map, key, hours, secondary = false) {
   const entry = map.get(key) || { count: 0, hours: 0, secondaryCount: 0 };
   entry.count++;
   entry.hours += hours;
-  // M6c contract: how many of this bucket's works exist only outside Steam.
   if (secondary) entry.secondaryCount++;
   map.set(key, entry);
 }

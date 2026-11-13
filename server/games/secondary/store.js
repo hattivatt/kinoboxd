@@ -1,29 +1,5 @@
 'use strict';
 
-/**
- * Storage of the secondary-library pipeline: detail documents, the Epic
- * catalog probe/ledger, the breaker and the owner-facing status ledger.
- *
- * **Paths and formats are unchanged** (AGENTS §2, план §11.B):
- *
- *   cache-games/secondary-details/<source>-<id>.json   detail, TTL 30 days
- *   cache-games/catalog-probe/<catalogItemId>.json     negative catalog memory
- *   cache-games/debug/epic/<slug>.json                 ≤2 KB CMS diagnostics
- *   cache-games/debug/epic/catalog-<id>.json           ≤2 KB catalog diagnostics
- *   state/secondary-details-breaker.json               ISO {until, at, code, status}
- *   state/secondary-details-status.json                last errors/kicks/skips
- *   state/catalog-state.json                           per-owner catalog ledger
- *
- * The breaker keeps the **ISO format this module has always written**;
- * `core/breaker` only supplies the logic (encode/decode hooks below), so a
- * state file written before the refactor stays readable and a deployed host
- * does not see a new `until` shape.
- *
- * A missing answer is never a verdict: only a real `404`/`empty` becomes a
- * negative cache entry (30 days, 7 days for a guessed slug), a network/5xx
- * answer is deferred and leaves the previous document in place.
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -46,15 +22,8 @@ const CACHE_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'secondary-details');
 const STATE_DIR = gameCache.STATE_DIR;
 const BREAKER_PATH = path.join(STATE_DIR, 'secondary-details-breaker.json');
 const STATUS_PATH = path.join(STATE_DIR, 'secondary-details-status.json');
-// Failed CMS answers kept for the owner to send back (diagnostics only).
 const DEBUG_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'debug', 'epic');
-// A stale Epic CMS page can only be completed from the catalog bulk (needs the
-// owner's token). A catalog answer that cannot help is remembered for 30 days
-// so a repeated kick does not spend a request on the same dead end.
 const CATALOG_PROBE_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'catalog-probe');
-// Per-owner catalog ledger (see `recordCatalogAttempt`): what the catalog
-// actually answered for every `catalogItemId`, so «resolved 1/1 with an empty
-// card» can be told apart from «the job never asked».
 const CATALOG_STATE_PATH = path.join(STATE_DIR, 'catalog-state.json');
 const MAX_CATALOG_ATTEMPTS = 5;
 const MAX_CATALOG_DEBUG_FILES = 5;
@@ -76,12 +45,7 @@ try {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.mkdirSync(CATALOG_PROBE_DIR, { recursive: true });
 } catch (err) {
-  /* read-only worktree: reading still works, writing will fail loudly */
 }
-
-/* ------------------------------------------------------------------ */
-/* env / time helpers                                                  */
-/* ------------------------------------------------------------------ */
 
 function ttlMs() {
   return sources.ttlMs('secondary');
@@ -91,15 +55,10 @@ function notFoundTtlMs() {
   return envMs('GAMES_SECONDARY_NOT_FOUND_TTL_MS', DEFAULT_NOT_FOUND_TTL_MS);
 }
 
-/** Shorter TTL for a *guessed* slug that 404s (the guess may become valid). */
 function probeTtlMs() {
   return envMs('GAMES_SECONDARY_PROBE_TTL_MS', DEFAULT_PROBE_TTL_MS);
 }
 
-/**
- * A failed catalog probe is a memory, not a verdict about the game: the same
- * `catalogItemId` is retried after 30 days or on an explicit forced import.
- */
 function catalogProbeTtlMs() {
   return envMs('GAMES_SECONDARY_CATALOG_PROBE_TTL_MS', DEFAULT_CATALOG_PROBE_TTL_MS);
 }
@@ -107,10 +66,6 @@ function catalogProbeTtlMs() {
 function breakerMs() {
   return sources.breakerMs('secondary');
 }
-
-/* ------------------------------------------------------------------ */
-/* detail cache                                                        */
-/* ------------------------------------------------------------------ */
 
 function cachePath(source, id) {
   return path.join(CACHE_DIR, `${safeKey(source)}-${safeKey(id)}.json`);
@@ -121,34 +76,21 @@ function isFresh(doc, atMs) {
   if (!Number.isFinite(fetchedAt)) return false;
   let ttl = ttlMs();
   if (doc.status === 'not_found') {
-    // A guessed slug is not a verdict about the product: shorter memory.
     ttl = doc.probe === true ? probeTtlMs() : notFoundTtlMs();
   }
   return atMs - fetchedAt < ttl;
 }
 
-/**
- * Cached detail document (`{status, data, fetchedAt}`) for one product.
- * `{doc, fresh}` — a stale document is still returned (`doc`), so callers can
- * decide whether to re-fetch or to serve it as a fallback.
- */
 function readDetail(source, id, options = {}) {
   if (!source || !id) return { doc: null, fresh: false };
   const hit = gameCache.readJsonWithFingerprint(cachePath(source, id));
   if (!hit || !hit.data) return { doc: null, fresh: false };
   const doc = hit.data;
-  // A document cached before a store bucket entered
-  // `EPIC_NON_GENRE_CATEGORIES` still carries it (`Alan Wake 2` →
-  // `genres: ["Public"]`). Sanitizing here makes every reader — the stats
-  // index, the heal path, coverage and the catalog ledger — see the filtered
-  // line without rewriting the file (AGENTS §2: the cache is not edited by
-  // hand). The object identity is preserved when nothing changes.
   const data = doc.data ? sanitizeDetailGenres(doc.data) : doc.data;
   const view = data === doc.data ? doc : { ...doc, data };
   return { doc: view, fresh: isFresh(doc, options.now == null ? nowMs() : options.now) };
 }
 
-/** Fresh, successfully resolved detail data (or null). */
 function writeDetail(source, id, status, data, extra = {}) {
   const doc = {
     schemaVersion: SCHEMA_VERSION,
@@ -163,17 +105,10 @@ function writeDetail(source, id, status, data, extra = {}) {
   return doc;
 }
 
-/* --------------------- Epic catalog probe cache -------------------- */
-
 function catalogProbePath(catalogItemId) {
   return path.join(CATALOG_PROBE_DIR, `${safeKey(catalogItemId)}.json`);
 }
 
-/**
- * `{doc, fresh}` for the negative catalog memory of one `catalogItemId`.
- * Only *negative* answers are stored here; a successful catalog document lives
- * in `cache-games/catalog/<id>.json` (180-day TTL) and is read by the caller.
- */
 function readCatalogProbe(catalogItemId, options = {}) {
   if (!catalogItemId) return { doc: null, fresh: false };
   const hit = gameCache.readJsonWithFingerprint(catalogProbePath(catalogItemId));
@@ -196,26 +131,10 @@ function writeCatalogProbe(catalogItemId, status, extra = {}) {
   try {
     gameCache.writeJsonAtomicSync(catalogProbePath(catalogItemId), doc);
   } catch (err) {
-    /* diagnostics/cache must never fail the job */
   }
   return doc;
 }
 
-/* -------------------- Epic catalog attempt ledger ------------------ */
-
-/**
- * Per-owner catalog ledger (`state/catalog-state.json`):
- *
- *   { schemaVersion, updatedAt, owners: { "<ownerKey>": {
- *       "<catalogItemId>": { catalogItemId, namespace, lastResult, lastAt,
- *                            attempts: [{ at, result, httpStatus, bytes,
- *                                         genresOk, yearHas }, … ≤5] } } } }
- *
- * The authoritative token is per owner, so the ledger is too — a shared
- * `catalog/` document is global, but «did *this* owner's token answer?» is not.
- * Results: `shape_ok` (date + genres), `ok` (only one of them), `empty` (no
- * item/no meta), `401`/`403`/`unavailable` (retryable), `budget` (not asked).
- */
 function readCatalogState() {
   const hit = gameCache.readJsonWithFingerprint(CATALOG_STATE_PATH);
   const doc = (hit && hit.data) || {};
@@ -234,7 +153,6 @@ function writeCatalogState(state) {
       owners: state && state.owners && typeof state.owners === 'object' ? state.owners : {},
     });
   } catch (err) {
-    /* diagnostics must never break the job */
   }
 }
 
@@ -248,7 +166,6 @@ function readCatalogAttempt(ownerKey, catalogItemId, state) {
   return entry && typeof entry === 'object' ? entry : null;
 }
 
-/** Append one attempt (ring of `MAX_CATALOG_ATTEMPTS`) and persist. */
 function recordCatalogAttempt(ownerKey, catalogItemId, entry = {}) {
   const key = String(ownerKey == null ? '' : ownerKey).trim();
   const id = String(catalogItemId == null ? '' : catalogItemId);
@@ -282,13 +199,6 @@ function recordCatalogAttempt(ownerKey, catalogItemId, entry = {}) {
   }
 }
 
-/**
- * Is another catalog attempt due for this owner/item? A successful `shape_ok`
- * is final; a retryable answer (`401`/`403`/`unavailable`/`budget`) is retried
- * on the next kick; a definitive negative (`empty`/`ok` partial) waits for the
- * same 30-day window as the negative probe. No ledger entry means the catalog
- * was never asked for this owner — due (a pre-deploy document, the heal case).
- */
 function catalogRetryDue(ownerKey, catalogItemId, options = {}) {
   const entry = readCatalogAttempt(ownerKey, catalogItemId, options.catalogState);
   if (!entry) return true;
@@ -303,17 +213,6 @@ function catalogRetryDue(ownerKey, catalogItemId, options = {}) {
   return now - at >= catalogProbeTtlMs();
 }
 
-/* ------------------- catalog completion guards --------------------- */
-
-/**
- * Should the job spend a catalog attempt on this cached detail? Yes for a
- * pre-catalog document (one-time heal), for a document whose catalog step was
- * deferred (retry on every kick until the token works), and for a document the
- * per-owner ledger says is due again (a definitive negative after its 30-day
- * window, or no attempt recorded at all — the pre-deploy heal). `options`
- * carries `ownerKey` + `catalogItemId`; without them the marker alone decides
- * (backward-compatible for the read model and the old tests).
- */
 function shouldAttemptCatalog(data, options = {}) {
   if (!detailNeedsCatalog(data)) return false;
   if (data.catalogPending === true) return true;
@@ -324,24 +223,12 @@ function shouldAttemptCatalog(data, options = {}) {
   return false;
 }
 
-/**
- * How complete is an Epic detail as far as the stores allow?
- *   - `complete`    — year **and** genres arrived;
- *   - `partial`     — only one of them (reported honestly, never invented);
- *   - `pending`     — an attempt is still due (deferred token, pre-catalog
- *                     document, or a negative answer whose TTL expired);
- *   - `unavailable` — settled: the store has no release info for this work
- *                     (an `empty` catalog, or no catalog at all / not
- *                     connected). «resolved 0/1» must not pretend otherwise.
- */
 function catalogCompletionState(data, options = {}) {
   if (!data || typeof data !== 'object') return 'unavailable';
   const flags = catalogMetaFlags(data);
   if (flags.metaStatus !== 'unavailable') return flags.metaStatus;
   if (data.catalogPending === true) return 'pending';
   if (data.catalogChecked !== true) return 'pending';
-  // «Not connected» is terminal while there is no token; a later connect makes
-  // the same document retryable again (the ledger has no attempt for it).
   if (data.catalogSkipped === 'not_connected') {
     return options.hasCatalogToken === true ? 'pending' : 'unavailable';
   }
@@ -362,18 +249,6 @@ function catalogIsFresh(catalog) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* debug dumps                                                         */
-/* ------------------------------------------------------------------ */
-
-/**
- * Keep a ≤2 KB diagnostic dump of a failed catalog attempt for the owner to
- * send back. Written for every result except `shape_ok` — including an `empty`
- * bulk answer, which used to leave no trace at all. The token is never part of
- * `info` (the client keeps it inside the Authorization header), and the item
- * JSON is masked + truncated just in case. The file name is the catalog id, so
- * a retry overwrites its own dump instead of growing the folder.
- */
 function dumpCatalogFailure(catalogItemId, info = {}) {
   try {
     const id = String(catalogItemId == null ? '' : catalogItemId);
@@ -420,7 +295,6 @@ function dumpCatalogFailure(catalogItemId, info = {}) {
   }
 }
 
-/** Owner-facing catalog ledger for the status endpoint (newest first). */
 function catalogAttemptsForOwner(ownerKey) {
   const key = String(ownerKey == null ? '' : ownerKey).trim();
   const state = readCatalogState();
@@ -450,19 +324,8 @@ function catalogAttemptsForOwner(ownerKey) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* read model index                                                    */
-/* ------------------------------------------------------------------ */
-
-/**
- * Sync index for `stats.js`: `{ 'gog:<id>': data, 'epic:<slug>': data }` of
- * fresh, successfully resolved entries only. Stale entries are excluded so a
- * 30-day-old poster cannot silently outlive the refresh window.
- */
 function readDetailsIndex({ gogIds = [], epicSlugs = [], now = nowMs() } = {}) {
   const index = {};
-  // One directory listing instead of one `stat` per library product: `/stats`
-  // is polled and a 340-game library must not do hundreds of failed reads.
   let present = null;
   try {
     present = new Set(fs.readdirSync(CACHE_DIR));
@@ -484,10 +347,6 @@ function readDetailsIndex({ gogIds = [], epicSlugs = [], now = nowMs() } = {}) {
   return index;
 }
 
-/* ------------------------------------------------------------------ */
-/* breaker                                                             */
-/* ------------------------------------------------------------------ */
-
 function readBreaker() {
   const hit = gameCache.readJsonWithFingerprint(BREAKER_PATH);
   return (hit && hit.data) || {};
@@ -497,10 +356,6 @@ function writeBreaker(state) {
   return gameCache.writeJsonAtomicSync(BREAKER_PATH, state || {});
 }
 
-/**
- * Breaker entries keep the ISO `{until, at, code, status}` format this module
- * has always written; `core/breaker` only supplies the logic.
- */
 const breakerGate = createSourceGate({
   now: () => nowMs(),
   breakerMs: () => breakerMs(),
@@ -527,7 +382,6 @@ const breakerGate = createSourceGate({
   },
 });
 
-/** `null` when the host may be queried; `{until, code}` when it is blocked. */
 function breakerBlock(source, now = nowMs()) {
   const entry = breakerGate.breakerFor(source, now);
   if (!entry) return null;
@@ -539,15 +393,6 @@ function tripBreaker(source, code, status) {
   return readBreaker()[source];
 }
 
-/* ------------------------------------------------------------------ */
-/* status state (diagnostics the owner can paste back)                 */
-/* ------------------------------------------------------------------ */
-
-/**
- * A small persisted ledger behind `GET /api/games/secondary-details/status`:
- * the last 5 failures (so a `cms_blocked` survives a restart) and the last 10
- * kicks. Never a token, never a response body — only codes, hosts, dates.
- */
 function readStatusState() {
   const hit = gameCache.readJsonWithFingerprint(STATUS_PATH);
   const doc = (hit && hit.data) || {};
@@ -556,8 +401,6 @@ function readStatusState() {
     lastErrors: Array.isArray(doc.lastErrors) ? doc.lastErrors.slice(-MAX_STATUS_ERRORS) : [],
     kicks: Array.isArray(doc.kicks) ? doc.kicks.slice(-MAX_KICK_HISTORY) : [],
     lastRunAt: doc.lastRunAt || null,
-    // Why the last catalog step exited without asking: `{ [owner]: { epic: { reason, at } } }`.
-    // This is the field that turns a silent no-op into a copy-paste diagnosis.
     skips: doc.skips && typeof doc.skips === 'object' ? doc.skips : {},
   };
 }
@@ -566,7 +409,6 @@ function writeStatusState(state) {
   try {
     gameCache.writeJsonAtomicSync(STATUS_PATH, { schemaVersion: SCHEMA_VERSION, ...state });
   } catch (err) {
-    /* diagnostics must never break the job */
   }
 }
 
@@ -577,7 +419,6 @@ function recordError(entry) {
     state.lastErrors = state.lastErrors.slice(-MAX_STATUS_ERRORS);
     writeStatusState(state);
   } catch (err) {
-    /* ignore */
   }
 }
 
@@ -588,22 +429,9 @@ function recordKick(entry) {
     state.kicks = state.kicks.slice(-MAX_KICK_HISTORY);
     writeStatusState(state);
   } catch (err) {
-    /* ignore */
   }
 }
 
-/**
- * Remember **why the catalog step did not ask** (fix 02.11.2026).
- *
- * Production symptom: a partial Epic detail was re-kicked every cooldown,
- * every job finished in ~1 s, and `/secondary-details/status` reported
- * `catalogAttempts.total: 0`, `lastErrors: []`, no breaker — a silent no-op.
- * Every early exit of the catalog step now lands here, so the answer is
- * `bySource.epic.lastSkip = { reason, at, … }`.
- *
- * Polled paths (`/stats` kick) can call this often; an identical reason within
- * a minute is not rewritten, so the state file is not churned by the poll.
- */
 function recordSkip(ownerKey, entry = {}) {
   const key = String(ownerKey == null ? '' : ownerKey).trim();
   if (!key) return null;
@@ -642,7 +470,6 @@ function recordRunFinished(job) {
     state.lastRunAt = job.finishedAt || isoOf(nowMs());
     writeStatusState(state);
   } catch (err) {
-    /* ignore */
   }
 }
 

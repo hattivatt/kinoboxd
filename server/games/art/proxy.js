@@ -1,37 +1,5 @@
 'use strict';
 
-/**
- * Steam art CDN proxy (ИГРЫ §8.2 artwork, fix-round 02.11.2026).
- *
- * The owner's client sits in Vietnam, where the Steam store/CDN hosts are
- * blocked at the ISP edge (`NS_ERROR_DOM_NETWORK_ERR` on
- * `media.steampowered.com` and `cdn.cloudflare.steampowered.com`), while the
- * kinoboxd server reaches them normally. The browser therefore asks this
- * server for the artwork instead of the CDN:
- *
- *   GET /api/games/steam-art/<type>/<appid>[?h=<hash>]
- *     type  header | capsule | library | library_capsule | small_capsule | icon
- *     h     community icon hash (`icon`), or the `store_item_assets` asset
- *           hash for the newer `shared.akamai.steamstatic.com` schema
- *
- * The upstream URL is **built here**, never passed in by the client, so the
- * route cannot be used as an open proxy. Only the hostnames in
- * `UPSTREAM_HOSTS` are ever requested; `appid` must be digits, `h` is
- * `[A-Za-z0-9]{1,64}` and an unknown query parameter is a 400. The route is
- * mounted under the global `/api` auth gate (`server/index.js`), exactly like
- * every other `/api/games/*` endpoint.
- *
- * Fallback: a 404/403/5xx/network failure on one host moves to the next one
- * in `upstreamCandidates()`. A 200 is relayed with its own content type and
- * `Cache-Control: public, max-age=604800` (7 days). Responses are cached on
- * disk in `cache-games/art/` by `./store`; the disk cache only saves the
- * upstream round-trip, the browser re-validates through the same proxy.
- *
- * Politeness: at most one upstream request per missing entry (plus a fallback
- * host only when the previous one failed). No cookies, no token, no
- * `Referer`; the Steam CDN endpoints are public and anonymous.
- */
-
 const { fetchBinary } = require('../../core/http');
 const { HttpError } = require('../../upload');
 
@@ -50,8 +18,6 @@ const {
 
 const FETCH_TIMEOUT_MS = 12 * 1000;
 const CACHE_CONTROL = 'public, max-age=604800';
-// Raster formats only. An edge error page can arrive with a misleading
-// `image/*` or `text/html` type; we never relay/cache anything else.
 const IMAGE_TYPES = new Set([
   'image/jpeg',
   'image/png',
@@ -60,9 +26,6 @@ const IMAGE_TYPES = new Set([
   'image/gif',
 ]);
 
-// Every host that may ever be requested. The list is an allowlist (tested):
-// the request URL is assembled from an appid/hash that already passed the
-// regex gate, so a client cannot turn this endpoint into an SSRF primitive.
 const UPSTREAM_HOSTS = [
   'cdn.cloudflare.steamstatic.com',
   'cdn.akamai.steamstatic.com',
@@ -72,13 +35,6 @@ const UPSTREAM_HOSTS = [
   'media.steampowered.com',
 ];
 
-/**
- * Upstream URLs for one art request, in fallback order. Legacy paths are
- * tried on the hosts that still serve them; `h` switches the newer
- * `store_item_assets/steam/apps/<appid>/<hash>/<file>` schema first (this is
- * what `appdetails.header_image`/`capsule_image` contain for post-2024 SKUs,
- * where the legacy path 404s).
- */
 function upstreamCandidates(type, appid, hash) {
   if (!TYPES.has(type)) return [];
   if (type === 'icon') {
@@ -99,7 +55,6 @@ function upstreamCandidates(type, appid, hash) {
   return urls;
 }
 
-/** Is this an absolute URL on one of the allowed Steam CDN hosts? */
 function isAllowedArtUrl(value) {
   let parsed;
   try {
@@ -114,18 +69,11 @@ function isAllowedArtUrl(value) {
 function contentTypeFor(url, headerValue) {
   const type = String(headerValue || '').split(';')[0].trim().toLowerCase();
   if (IMAGE_TYPES.has(type)) return type;
-  // Some CDN edges omit the type; fall back to the extension of a known art
-  // file. Anything else is rejected by the caller.
   if (/\.png$/i.test(String(url || ''))) return 'image/png';
   if (/\.(?:jpg|jpeg)$/i.test(String(url || ''))) return 'image/jpeg';
   return '';
 }
 
-/**
- * Ask the candidate hosts until one answers 200 with a usable body. A
- * 404/403/5xx/network error moves on; the last HTTP status is reported when
- * every host failed, so «not found» stays distinguishable from «unreachable».
- */
 async function fetchUpstream(candidates, options = {}) {
   const fetchImpl = options.fetch || (typeof globalThis.fetch === 'function' ? globalThis.fetch : null);
   if (!fetchImpl) return { ok: false, status: 0, error: 'fetch_unavailable', tried: [] };
@@ -144,11 +92,7 @@ async function fetchUpstream(candidates, options = {}) {
       response = await fetchBinary(url, {
         fetchImpl: options.fetch,
         headers: { Accept: 'image/avif,image/webp,image/jpeg,image/png,image/*' },
-        // `0` = no deadline (shared convention); an unset option keeps the
-        // 12 s default via `FETCH_TIMEOUT_MS`.
         timeoutMs: timeout,
-        // Cap 404/403/HTML bodies while streaming instead of buffering them
-        // whole and rejecting after the fact.
         maxBytes: MAX_ART_ENTRY_BYTES,
         label: 'steam-art',
       });
@@ -170,8 +114,6 @@ async function fetchUpstream(candidates, options = {}) {
           ? response.headers.get('content-type')
           : '';
       const contentType = contentTypeFor(url, headerType);
-      // A CDN error page can be HTML with status 200; never cache/relay it as
-      // an image.
       if (!contentType) {
         lastError = 'not_an_image';
         continue;
@@ -240,10 +182,6 @@ function sendEntry(res, entry, cacheState) {
   res.send(entry.buffer);
 }
 
-/**
- * Express handler factory. `options.fetch` is injectable for tests (no live
- * request); `options.maxFiles`/`maxBytes`/`timeoutMs` tune the cache/transport.
- */
 function createSteamArtHandler(options = {}) {
   return async function steamArtHandler(req, res, next) {
     try {
@@ -268,12 +206,10 @@ function createSteamArtHandler(options = {}) {
           writeEntry(key, fetched);
           pruneArtCache({ maxFiles: options.maxFiles, maxBytes: options.maxBytes });
         } catch (err) {
-          // A read-only cache must not break the relay.
         }
         sendEntry(res, fetched, 'miss');
         return;
       }
-      // A stale copy is still the right artwork: serve it instead of a 502.
       if (cached && cached.buffer.length) {
         sendEntry(res, cached, 'stale');
         return;

@@ -1,93 +1,5 @@
 'use strict';
 
-/**
- * Wikidata franchise / release-year pass for games (ИГРЫ-АРХИТЕКТУРА §2.5, §4.4).
- *
- * What it does — exactly two properties, no invention:
- *
- *   P1733  Steam application ID → the game item (`?game`) for a library appid;
- *   P179   «part of the series» → the franchise/series QID + en/ru labels;
- *   P577   «publication date»   → the release year (with the statement's
- *          precision: day / month / year / coarse), used to close the gaps the
- *          store could not answer (region-locked `success:false` documents and
- *          coarse Steam dates like «Q4 2026» / «September 2026»).
- *
- * One SPARQL query per ≤450 appids (the whole library fits one batch). The
- * batching/pause/breaker engine is **not** duplicated here: the personnel
- * provider (`personnel/wikidata.js`) is the single dispatcher, and this module
- * only injects its own query + parser. That keeps one WDQS politeness budget
- * for the whole games tab (429/403 → 30-minute persisted cooldown, one attempt
- * per minute while the breaker is half-open).
- *
- * The pass is the only writer of `cache-games/links/<appid>.json`:
- *
- *   {
- *     "appid": 292030,
- *     "wikidata": {
- *       "qid": "Q…",
- *       "franchise": { "qid": "Q…", "labelEn": "The Witcher", "labelRu": "Ведьмак" },
- *       "releaseYear": 2015,
- *       "releasePrecision": "day",
- *       "releaseDate": "2015-05-19",
- *       "resolved": true,
- *       "fetchedAt": "2026-11-01T…"
- *     },
- *     "franchiseKey": "wd:Q…",
- *     "sources": ["wikidata"],
- *     "fetchedAt": "2026-11-01T…"
- *   }
- *
- * A *miss* (no P1733 / no P179 / no P577) is written as `qid: null` with
- * `resolved: true`, i.e. a 90-day negative cache — the same policy as the
- * personnel pass. A network/5xx/breaker answer is NOT written: the next run
- * retries instead of pretending the game has no franchise.
- *
- * The existing document is merged, never replaced: `mobyId`, `igdbId` and a
- * legacy string `wikidata: "Q…"` survive a franchise refresh.
- *
- * B6 — **base-version bridge** (ИГРЫ §8.2.2 «издания», audit §4.5-A). A
- * regional SKU (`Dishonored RHCP` 217980, `Max Payne (RU)` 210350,
- * `Fallout: New Vegas PCR` 22490) has no `P1733` in Wikidata at all, so the
- * first pass honestly answers `qid: null` — and the store answers
- * `success:false` for it. The work therefore has no identity, no year, no
- * genres. The bridge adds a **second batch in the same pass** (same dispatcher,
- * same budget/breaker/lock): it looks up items by the exact label of the
- * stripped core title (`Dishonored`, `Max Payne`, `Fallout: New Vegas`),
- * requires `P1733` on the item and — the actual decision — an **exact
- * normalized title + numeric-signature match** against the SKU name, then
- * writes the base identity **next to** the SKU's own (absent) identity:
- *
- *   wikidata: {
- *     qid: null,                  // unchanged: the SKU is NOT the base game
- *     baseQid: "Q323264", baseAppid: 205100, baseName: "Dishonored",
- *     baseReleaseYear: 2012, baseReleasePrecision: "day",
- *     baseFranchise: { qid, labelEn, labelRu } | null,
- *     baseMatch: "label",         // provenance; never "qid"
- *     baseCheckedAt: "…",         // negative marker: «bridge ran, no base»
- *     resolved: true
- *   }
- *
- * `baseQid`/`baseAppid` are consumed by `editions.js` (merge the regional card
- * into the base work) and by `stats.js` (`workYear` fallback, canonical
- * name/genres/studios from `details-base/`). They never leak into
- * `wikidata.qid`, so the SKU card cannot pretend to be the base game.
- *
- * The bridge re-asks a `qid: null` document that has no `baseCheckedAt`
- * (i.e. every negative cache written before B6), which is how a deploy heals
- * the ~20 stale regionals without a `force` over the whole library.
- *
- * Kill switch: `KINOBOXD_GAMES_WD=off` (shared with the personnel provider).
- * Budget: `GAMES_FRANCHISE_BUDGET` appids per pass (default 450 = one batch).
- * TTL: `GAMES_FRANCHISE_TTL_DAYS` (default 90).
- *
- * `enrichBaseDetails()` is the companion store step (separate function, no WD
- * lock): for every `baseAppid` written by the bridge it fetches `appdetails`
- * **once** into `details-base/<baseAppid>.json` (budget
- * `GAMES_BASE_DETAILS_BUDGET`, default 20, the store client's own 1.7 s pause
- * and 30-minute breaker). The owner does not own that card, so it must not go
- * into `details/`.
- */
-
 const path = require('path');
 
 const editions = require('./editions');
@@ -99,13 +11,6 @@ const sources = require('../core/sources');
 
 const LINKS_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'links');
 const STATE_PATH = path.join(gameCache.STATE_DIR, 'franchise-state.json');
-/**
- * Franchise of works that exist only outside Steam (GOG/Epic exclusives such
- * as Alan Wake 2). Global metadata cache (no owner dimension), keyed both by
- * the store slug (`epic:alan_wake_2`) and by the Wikidata item (`qid:Q…`), so
- * the payload can answer from a slug it knows and the pass can reuse an answer
- * it already has for a QID. A miss is a settled negative for the TTL.
- */
 const SECONDARY_FRANCHISE_PATH = path.join(LINKS_DIR, 'secondary-franchise.json');
 
 const DEFAULT_BUDGET = 450;
@@ -115,7 +20,6 @@ const MAX_RUNS = 10;
 const YEAR_MIN = 1970;
 const YEAR_MAX = 2100;
 
-/** WD `wikibase:timePrecision` → the store's own precision vocabulary. */
 const PRECISION_BY_WD = { 11: 'day', 10: 'month', 9: 'year' };
 const PRECISION_RANK = { day: 4, month: 3, year: 2, coarse: 1 };
 
@@ -128,21 +32,15 @@ class FranchiseError extends Error {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Paths / links document                                              */
-/* ------------------------------------------------------------------ */
-
 function linksPath(appid) {
   return path.join(LINKS_DIR, `${gameCache.safeKey(appid)}.json`);
 }
 
-/** Read the raw `links/<appid>.json` (or null). */
 function readLinksDoc(appid) {
   const hit = gameCache.readJsonWithFingerprint(linksPath(appid));
   return hit && hit.data && typeof hit.data === 'object' ? hit.data : null;
 }
 
-/** Normalised view used by the aggregator: `{qid, franchise, releaseYear, …}`. */
 function readLinks(appid) {
   const doc = readLinksDoc(appid) || {};
   const wdRaw = doc.wikidata && typeof doc.wikidata === 'object' ? doc.wikidata : null;
@@ -177,8 +75,6 @@ function readLinks(appid) {
     resolved: Boolean(wdRaw && wdRaw.resolved === true),
     fetchedAt: (wdRaw && wdRaw.fetchedAt) || doc.fetchedAt || null,
     sources: Array.isArray(doc.sources) ? doc.sources : [],
-    // B6: base-version bridge (see the module header). `baseQid` is the
-    // identity of the *work*, `qid` above stays the identity of this SKU.
     baseQid,
     baseAppid: Number.isInteger(baseAppid) && baseAppid > 0 ? baseAppid : null,
     baseName: (wdRaw && wdRaw.baseName) || null,
@@ -196,11 +92,6 @@ function readLinks(appid) {
   };
 }
 
-/**
- * Bulk variant for the stats payload: `{ "<appid>": readLinks(appid) }` for
- * the appids that actually have a links document. One `stat`+`read` per appid
- * (the same primitive `readLinks` uses), no network.
- */
 function readLinksMap(appids) {
   const out = {};
   if (!Array.isArray(appids)) return out;
@@ -228,10 +119,6 @@ function uniqueList(values) {
   return out;
 }
 
-/**
- * Merge one patch into `links/<appid>.json`. Atomic, additive: nothing another
- * provider wrote (`mobyId`, `igdbId`, legacy `wikidata: "Q…"`) is dropped.
- */
 function writeLinksDoc(appid, patch) {
   const existing = readLinksDoc(appid) || {};
   const legacyQid =
@@ -255,15 +142,10 @@ function writeLinksDoc(appid, patch) {
   return doc;
 }
 
-/* ------------------------------------------------------------------ */
-/* Secondary-only works: franchise cache (slug/QID → P179)             */
-/* ------------------------------------------------------------------ */
-
 function emptySecondaryFranchise() {
   return { schemaVersion: 1, fetchedAt: null, entries: {} };
 }
 
-/** Read `links/secondary-franchise.json` (never throws, `{}` when absent). */
 function readSecondaryFranchise() {
   const hit = gameCache.readJsonWithFingerprint(SECONDARY_FRANCHISE_PATH);
   if (!hit || !hit.data || typeof hit.data !== 'object') return emptySecondaryFranchise();
@@ -275,10 +157,6 @@ function readSecondaryFranchise() {
   };
 }
 
-/**
- * Merge entries into the cache atomically. Additive: a slug/QID written by
- * another pass survives, and only the keys in `patch` are replaced.
- */
 function writeSecondaryFranchiseEntries(patch, options = {}) {
   const current = readSecondaryFranchise();
   const entries = { ...current.entries, ...(patch || {}) };
@@ -292,7 +170,6 @@ function writeSecondaryFranchiseEntries(patch, options = {}) {
   return doc;
 }
 
-/** Is this settled franchise answer inside the TTL window? */
 function isSecondaryFranchiseFresh(entry, ttlMs, nowMs) {
   if (!entry || typeof entry !== 'object' || entry.resolved !== true) return false;
   const at = Date.parse(String(entry.fetchedAt || ''));
@@ -301,10 +178,6 @@ function isSecondaryFranchiseFresh(entry, ttlMs, nowMs) {
   return nowMs - at >= 0 && nowMs - at < ttl;
 }
 
-/**
- * One cached answer for a secondary work, looked up by store slug first and
- * by QID second. Pure over the document handed in.
- */
 function secondaryFranchiseFrom(doc, { store, slug, qid } = {}) {
   const entries = doc && doc.entries && typeof doc.entries === 'object' ? doc.entries : {};
   const prefix = String(store == null ? '' : store).trim().toLowerCase();
@@ -317,7 +190,6 @@ function secondaryFranchiseFrom(doc, { store, slug, qid } = {}) {
   return null;
 }
 
-/** One cache entry from a WDQS hit (or an honest «no P179» answer). */
 function secondaryFranchiseEntry(hit, { store = null, slug = null, fetchedAt } = {}) {
   const franchise =
     hit && hit.franchise && hit.franchise.qid
@@ -343,10 +215,6 @@ function secondaryFranchiseEntry(hit, { store = null, slug = null, fetchedAt } =
     fetchedAt,
   };
 }
-
-/* ------------------------------------------------------------------ */
-/* State (resumable journal)                                           */
-/* ------------------------------------------------------------------ */
 
 function emptyState() {
   return { schemaVersion: 1, updatedAt: null, profiles: {}, runs: [] };
@@ -389,12 +257,10 @@ function recordRun(profileKey, report) {
     wdSkipped: report.wdSkipped || null,
     wdDisabledUntil: report.wdDisabledUntil || null,
     releaseYearsFilled: report.releaseYearsFilled || 0,
-    // B6: the base-version bridge (second batch) and its store step.
     bridgeCandidates: report.bridgeCandidates || 0,
     bridgeQueries: report.bridgeQueries || 0,
     bridged: report.bridged || 0,
     bridgeMisses: report.bridgeMisses || 0,
-    // Secondary-only works (GOG/Epic): P179 by QID in the same pass.
     secondaryTargets: report.secondaryTargets || 0,
     secondaryCandidates: report.secondaryCandidates || 0,
     secondaryUpdated: report.secondaryUpdated || 0,
@@ -408,10 +274,6 @@ function recordRun(profileKey, report) {
   return saveFranchiseState(state);
 }
 
-/* ------------------------------------------------------------------ */
-/* SPARQL                                                              */
-/* ------------------------------------------------------------------ */
-
 function appidValues(appids) {
   return appids
     .map((appid) => String(appid == null ? '' : appid).trim())
@@ -420,12 +282,6 @@ function appidValues(appids) {
     .join(' ');
 }
 
-/**
- * One query: appid → game QID (P1733), series (P179 + en/ru labels) and the
- * publication date with its statement precision (P577). `OPTIONAL` keeps a
- * game in the answer when it has no series/date, so the negative cache is an
- * honest "WD answered nothing".
- */
 function franchiseQuery(appids) {
   return `SELECT ?appid ?game ?franchise ?franchiseEn ?franchiseRu ?franchiseMul ?date ?precision WHERE {
   VALUES ?appid { ${appidValues(appids)} }
@@ -456,7 +312,6 @@ function precisionOf(raw) {
   return PRECISION_BY_WD[value] || 'coarse';
 }
 
-/** `+2015-05-19T00:00:00Z` + precision → `{year, month, day, precision, iso, time}`. */
 function parseWbDate(value, precisionRaw) {
   const match = /^([+-]?)(\d{4,6})-(\d{2})-(\d{2})T/.exec(String(value == null ? '' : value));
   if (!match) return null;
@@ -486,12 +341,6 @@ function wdRows(data) {
   return data && data.results && Array.isArray(data.results.bindings) ? data.results.bindings : [];
 }
 
-/**
- * Tally one P179 row into a `Map<QID, {qid, labelEn, labelRu, labelMul}>`.
- * Some series items carry only the multilingual (`mul`) label — Q752241
- * «Half-Life», Q7231475 «Portal». Without that fallback the franchise would
- * exist but show a bare QID.
- */
 function tallySeries(seriesMap, row) {
   const franchiseQid = row.franchise ? lastSegment(row.franchise.value) : null;
   if (!franchiseQid || !/^Q\d+$/.test(franchiseQid)) return;
@@ -515,7 +364,6 @@ function tallySeries(seriesMap, row) {
   }
 }
 
-/** Tally one P577 row into the deduplicated date list of an item. */
 function tallyDate(dates, row) {
   if (!row.date || !row.date.value) return;
   const date = parseWbDate(row.date.value, row.precision && row.precision.value);
@@ -524,18 +372,6 @@ function tallyDate(dates, row) {
   }
 }
 
-/**
- * Turn a WDQS answer into `Map<appidString, {qid, franchise, releaseYear,
- * releasePrecision, releaseDate}>`.
- *
- * Several P179 values and several regional P577 dates are common; the choice
- * is deterministic and documented:
- *   - one game QID per appid — prefer the item that carries a series and/or a
- *     date, then the lowest QID (never merge two QIDs into one franchise);
- *   - one series per game — the lowest QID that has a label (en, else ru);
- *   - one date — the earliest year; inside a year the most precise statement
- *     (day > month > year > coarse), then the earliest date.
- */
 function parseFranchiseResponse(data) {
   const rows = wdRows(data);
   const byAppid = new Map();
@@ -586,10 +422,6 @@ function parseFranchiseResponse(data) {
   return result;
 }
 
-/* ------------------------------------------------------------------ */
-/* Secondary-only works: P179 by QID                                   */
-/* ------------------------------------------------------------------ */
-
 function qidValues(qids) {
   return qids
     .map((qid) => String(qid == null ? '' : qid).trim())
@@ -598,12 +430,6 @@ function qidValues(qids) {
     .join(' ');
 }
 
-/**
- * One query for the Wikidata items of secondary-only works: the item is known
- * (from `links/secondary.json`), only P179 + labels are missing. `OPTIONAL`
- * keeps an item without a series in the answer, so «no franchise» is an honest
- * settled negative instead of a retry loop.
- */
 function qidFranchiseQuery(qids) {
   return `SELECT ?game ?franchise ?franchiseEn ?franchiseRu ?franchiseMul WHERE {
   VALUES ?game { ${qidValues(qids)} }
@@ -616,11 +442,6 @@ function qidFranchiseQuery(qids) {
 }`;
 }
 
-/**
- * `qidFranchiseQuery` answer → `Map<QID, {qid, franchise}>`. Several P179
- * values are reduced by the same deterministic rule as the Steam pass (lowest
- * labelled series QID); two QIDs are never merged.
- */
 function parseFranchiseByQid(data) {
   const rows = wdRows(data);
   const byQid = new Map();
@@ -649,16 +470,6 @@ function parseFranchiseByQid(data) {
   return result;
 }
 
-/* ------------------------------------------------------------------ */
-/* B6: base-version bridge (second WDQS batch by label)                */
-/* ------------------------------------------------------------------ */
-
-/**
- * Words that are an edition wrapper **only when they are the last token**
- * (`East India Company Gold`, `Stronghold Crusader Extreme HD`). They are not
- * in `editions.EDITION_WORDS` on purpose: `Gold`/`Platinum` in the middle of a
- * title is a real word, and a merge heuristic must not eat it.
- */
 const TRAILING_EDITION_WORDS = new Set([
   ...editions.EDITION_WORDS,
   'gold',
@@ -679,7 +490,6 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** `"Dishonored"` → `"Dishonored"` (SPARQL literal, no language tag). */
 function escapeSparqlLiteral(value) {
   return String(value == null ? '' : value)
     .replace(/\\/g, '\\\\')
@@ -687,7 +497,6 @@ function escapeSparqlLiteral(value) {
     .replace(/[\r\n\t]+/g, ' ');
 }
 
-/** Drop `(RU)`, `(Special Edition)` — parenthesized region/edition wrappers. */
 function stripParenWrappers(raw) {
   return normalizeSpaces(
     raw.replace(/\s*\(([^)]*)\)/g, (match, inner) => {
@@ -700,7 +509,6 @@ function stripParenWrappers(raw) {
   );
 }
 
-/** Drop multi-word wrappers (`Game of the Year`, `Director's Cut`) anywhere. */
 function stripEditionPhrases(raw) {
   let value = normalizeSpaces(raw);
   for (const phrase of editions.EDITION_PHRASES) {
@@ -711,7 +519,6 @@ function stripEditionPhrases(raw) {
   return normalizeSpaces(value.replace(/[\s\-–—:,]+$/g, ''));
 }
 
-/** Drop trailing region/edition tokens, preserving the original casing. */
 function stripTrailingWrappers(raw) {
   const tokens = normalizeSpaces(raw).split(' ').filter(Boolean);
   const out = [...tokens];
@@ -736,18 +543,6 @@ function stripTrailingWrappers(raw) {
   return normalizeSpaces(out.join(' '));
 }
 
-/**
- * Candidate WD labels for one Steam title, case preserved (the lookup is an
- * exact `rdfs:label` match — a regex scan over labels would time out).
- *
- *   "Dishonored RHCP"                    → ["Dishonored RHCP", "Dishonored"]
- *   "Max Payne (RU)"                     → ["Max Payne (RU)", "Max Payne"]
- *   "Fallout: New Vegas PCR"             → [..., "Fallout: New Vegas"]
- *   "Metro: Last Light Complete Edition" → [..., "Metro: Last Light"]
- *
- * Over-generating is harmless: the *decision* is `coreTitle` equality in
- * `matchBaseFor`, so a wrong variant only costs one VALUES entry.
- */
 function labelVariants(name) {
   const raw = normalizeSpaces(String(name == null ? '' : name).replace(/[™®©]/g, ' '));
   if (!raw) return [];
@@ -765,10 +560,6 @@ function labelVariants(name) {
   return out;
 }
 
-/**
- * Language tags to try for one candidate label. English is the default for
- * video-game items; a Cyrillic title is looked up in `ru` as well.
- */
 function labelLanguages(text) {
   return /[А-Яа-яЁё]/.test(text) ? ['ru', 'en'] : ['en'];
 }
@@ -787,15 +578,6 @@ function baseLabelValues(entries) {
   return values;
 }
 
-/**
- * Second batch: exact-label lookup among items that carry `P1733`.
- *
- * `VALUES ?label { "Dishonored"@en … }` + `?item rdfs:label ?label` is an
- * index lookup (unlike a `FILTER(REGEX(…))` scan, which times out on WDQS).
- * `skos:altLabel` is a UNION branch: some regional items only exist there.
- * Series (P179) and date (P577) are fetched for the *base* item, because that
- * is the metadata the regional SKU is missing.
- */
 function baseLabelQuery(entries) {
   const values = baseLabelValues(entries);
   return `SELECT ?label ?item ?appid ?franchise ?franchiseEn ?franchiseRu ?franchiseMul ?date ?precision WHERE {
@@ -817,7 +599,6 @@ function baseLabelQuery(entries) {
 }`;
 }
 
-/** Lowest QID that has a label; `mul` is a label too (Q752241 «Half-Life»). */
 function pickSeries(franchises) {
   return (
     [...franchises.values()].sort((a, b) => {
@@ -829,7 +610,6 @@ function pickSeries(franchises) {
   );
 }
 
-/** Earliest year; inside a year the most precise statement, then the earliest. */
 function pickDate(dates) {
   return (
     dates
@@ -843,12 +623,6 @@ function pickDate(dates) {
   );
 }
 
-/**
- * WDQS answer of `baseLabelQuery` → `Map<QID, {qid, labels[], appids[],
- * franchise, date}>`. Keyed by the **base item**, not by appid: one item can
- * carry several P1733 values (regional re-releases), and one label can match
- * several items (that is what the guards in `matchBaseFor` are for).
- */
 function parseBaseLabelResponse(data) {
   const rows = wdRows(data);
   const byQid = new Map();
@@ -898,20 +672,6 @@ function parseBaseLabelResponse(data) {
   return result;
 }
 
-/**
- * The actual bridge decision for one SKU.
- *
- * Guards, in order (a merge is a data change, so all of them are hard):
- *   1. **exact normalized title** — `coreTitle(wdLabel) === coreTitle(steamName)`
- *      (`Dishonored` ↔ `Dishonored RHCP`, but not `Dishonored 2`, not
- *      `Fallout` vs `Fallout: New Vegas`);
- *   2. **numeric signature** — `Gothic 1` never bridges to `Gothic 2`;
- *   3. the item must carry `P1733` (it is a Steam game, not a novel/film);
- *   4. if the SKU already knows its series (another provider), the base item
- *      must agree — a different franchise means a different work.
- *
- * @returns {{qid,appid,label,franchise,date}|null}
- */
 function matchBaseFor(name, items, options = {}) {
   const key = editions.coreTitle(name);
   if (!key) return null;
@@ -954,7 +714,6 @@ function matchBaseFor(name, items, options = {}) {
   return best;
 }
 
-/** Does this links document need the bridge (no P1733 answer, no base yet)? */
 function needsBaseBridge(doc, ttlMs, nowMs) {
   if (!doc) return false;
   const wdDoc = doc.wikidata && typeof doc.wikidata === 'object' ? doc.wikidata : null;
@@ -966,10 +725,6 @@ function needsBaseBridge(doc, ttlMs, nowMs) {
   return true;
 }
 
-/* ------------------------------------------------------------------ */
-/* The pass                                                            */
-/* ------------------------------------------------------------------ */
-
 function budgetFromEnv() {
   return budgetLimitFromEnv('GAMES_FRANCHISE_BUDGET', DEFAULT_BUDGET);
 }
@@ -978,7 +733,6 @@ function ttlMsFromEnv() {
   return sources.ttlMs('wikidataFranchise');
 }
 
-/** Is this appid already answered inside the TTL window? */
 function isLinksFresh(doc, ttlMs, nowMs) {
   if (!doc || !doc.wikidata || typeof doc.wikidata !== 'object') return false;
   if (doc.wikidata.resolved !== true) return false;
@@ -987,15 +741,6 @@ function isLinksFresh(doc, ttlMs, nowMs) {
   return nowMs - at >= 0 && nowMs - at < ttlMs;
 }
 
-/**
- * B6 second batch: for every considered appid whose links document has no
- * `P1733` answer and no base identity yet, look the base version up by exact
- * label and write `baseQid`/`baseAppid` next to the SKU's own (absent) QID.
- *
- * Politeness is inherited: the same `runBatched` dispatcher (≤450 values per
- * query, pause, persisted breaker, shared lock in `franchise-jobs.js`), one
- * extra query for the whole library.
- */
 async function runBaseBridge(context) {
   const { considered, provider, options, now, ttlMs, budget } = context;
   const report = {
@@ -1048,9 +793,6 @@ async function runBaseBridge(context) {
   report.skipped = result.skipped || null;
   report.errors = [...(result.errors || [])];
 
-  // Same rule as the first pass: a positive hit is real data and is written
-  // even after a partial failure; a "nothing found" marker is written only
-  // when Wikidata actually answered everything.
   const cleanAnswer = !result.skipped && !(result.errors || []).length;
   const fetchedAt = new Date(now()).toISOString();
   for (const appid of appids) {
@@ -1089,16 +831,6 @@ async function runBaseBridge(context) {
   return report;
 }
 
-/**
- * Ask Wikidata about the library of one cached profile and write
- * `links/<appid>.json`. Resumable: `links/` is the progress, `force` re-asks
- * everything. The caller (`franchise-jobs.js`) owns the cross-process lock.
- *
- * @param {{profileKey:string, limit?:number, force?:boolean,
- *          fetchImpl?:Function, stateStore?:object, now?:Function,
- *          sleep?:Function, pauseMs?:number, ttlMs?:number,
- *          bridge?:boolean}} options
- */
 async function enrichFranchises(options = {}) {
   const parsed = gameCache.parseProfileToken(options.profileKey);
   if (!parsed) {
@@ -1116,8 +848,6 @@ async function enrichFranchises(options = {}) {
   }
   const now = typeof options.now === 'function' ? options.now : () => Date.now();
   const ttlMs = Number.isFinite(Number(options.ttlMs)) ? Math.max(0, Number(options.ttlMs)) : ttlMsFromEnv();
-  // NOTE: 0 → 1 request (pre-existing; `Math.max(1, …)` predates the «0 =
-  // off» convention and is intentionally not changed here).
   const budget = Math.max(1, Number(options.limit) || budgetFromEnv());
   const force = Boolean(options.force);
 
@@ -1143,8 +873,6 @@ async function enrichFranchises(options = {}) {
     const appid = Number(game.appid);
     if (!Number.isInteger(appid) || appid <= 0) continue;
     const details = gameCache.getDetails(appid);
-    // DLC/demo/software/video are not games: their franchise is the base
-    // game's, and counting them would inflate every franchise (§5.1).
     if (details && details.success !== false && details.type && details.type !== 'game') continue;
     if (details && details.success === false) report.unavailableDetails++;
     considered.push({
@@ -1166,7 +894,6 @@ async function enrichFranchises(options = {}) {
   const selected = candidates.slice(0, budget);
   report.candidates = selected.length;
 
-  // The dispatcher (personnel/wikidata.js) owns the batches/pause/breaker.
   const provider = options.wikidata && typeof options.wikidata.runBatched === 'function'
     ? options.wikidata
     : wd;
@@ -1185,8 +912,6 @@ async function enrichFranchises(options = {}) {
     report.errors = [...(result.errors || [])];
     if (result.skipped) report.skipped = result.skipped;
 
-    // A skipped/erroring answer is not an answer: positive hits may still be
-    // written (they are real data), misses are not cached.
     const cleanAnswer = !result.skipped && !(result.errors || []).length;
     const fetchedAt = new Date(now()).toISOString();
     for (const game of selected) {
@@ -1205,8 +930,6 @@ async function enrichFranchises(options = {}) {
           releaseDate: hit ? hit.releaseDate : null,
           resolved: true,
           fetchedAt,
-          // A fresh P1733 miss invalidates the previous bridge answer: the
-          // base version must be re-checked against this new answer.
           ...(hit && hit.qid ? {} : { baseCheckedAt: null }),
         },
       });
@@ -1217,7 +940,6 @@ async function enrichFranchises(options = {}) {
     report.skipped = 'nothing_to_ask';
   }
 
-  // B6: the base-version bridge runs in the same pass (same budget/lock).
   if (options.bridge === false) {
     report.bridge = { skipped: 'disabled_by_option' };
   } else {
@@ -1234,10 +956,6 @@ async function enrichFranchises(options = {}) {
     if (!selected.length && bridge.asked) report.skipped = null;
   }
 
-  // Secondary-only works (GOG/Epic exclusives): P179 by their already-known
-  // QID. Runs in the same pass/lock with the same dispatcher, pause and
-  // breaker; the store-slug/QID cache is the progress, so a second run costs
-  // nothing unless something is missing or `force` is set.
   if (options.secondary === false) {
     report.secondary = { skipped: 'disabled_by_option' };
   } else {
@@ -1272,32 +990,10 @@ async function enrichFranchises(options = {}) {
   return report;
 }
 
-/* ------------------------------------------------------------------ */
-/* B6: canonical metadata of the base version (store appdetails)       */
-/* ------------------------------------------------------------------ */
-
 function baseDetailsBudgetFromEnv() {
   return budgetLimitFromEnv('GAMES_BASE_DETAILS_BUDGET', DEFAULT_BASE_DETAILS_BUDGET);
 }
 
-/**
- * Fetch `appdetails` for the base versions the bridge discovered, into
- * `details-base/<baseAppid>.json`.
- *
- * Why a separate pass (and not part of the WD batch):
- *   - it is a *store* request (1.7 s pause, 30-minute store breaker), not a
- *     WDQS one — mixing them would hold the WD lock for a minute;
- *   - it is deliberately tiny: `GAMES_BASE_DETAILS_BUDGET` (default **20**)
- *     appids per run, because only the `qid: null` regionals need it;
- *   - `details/` is untouched: the owner does not own the base card, and that
- *     directory's file count is the enrich job's progress counter.
- *
- * A `success:false` answer is an honest "no store page" and is cached (the
- * store client owns that decision); a network/429 failure is NOT written.
- *
- * @param {{profileKey:string, limit?:number, storeClient?:object,
- *          now?:Function}} options
- */
 async function enrichBaseDetails(options = {}) {
   const parsed = gameCache.parseProfileToken(options.profileKey);
   if (!parsed) {
@@ -1353,38 +1049,20 @@ async function enrichBaseDetails(options = {}) {
   for (const baseAppid of selected) {
     try {
       const doc = await client.getAppDetails(baseAppid);
-      // `fetchedAt` drives `store.detailsFresh()` on the next run — the store
-      // parser does not stamp the clock (the caller owns it, same as enrich.js).
       const payload = { ...doc, fetchedAt: new Date(now()).toISOString() };
       await gameCache.saveDetailsBase(baseAppid, payload);
       if (payload.success === false) report.unavailable++;
       else report.fetched++;
     } catch (err) {
-      // A breaker/network answer is deferred: nothing is written, the next
-      // run retries (AGENTS §1: no negative cache for an outage).
       report.errors.push((err && err.code) || 'store_error');
     }
   }
   return report;
 }
 
-/* ------------------------------------------------------------------ */
-/* Secondary-only works: franchise pass                                */
-/* ------------------------------------------------------------------ */
-
-/**
- * Works of one owner that exist **only** outside Steam, with the Wikidata QID
- * the secondary bridge already resolved for their store slug. A slug without
- * a QID is not a candidate: there is nothing to ask (and the store details
- * pass may still resolve the identity later).
- *
- * @returns {Array<{store:'gog'|'epic', slug:string, qid:string, title:string|null}>}
- */
 function secondaryFranchiseTargets(ownerKey, options = {}) {
   const key = String(ownerKey == null ? '' : ownerKey).trim();
   if (!key) return [];
-  // Lazy requires: `secondary-details` → `secondary` → `franchise` is a cycle
-  // at module-load time, but not at call time.
   const { targetsForOwner } = require('./secondary-details');
   const { readSecondaryLinks, readSecondaryTitleLinks, normalizeSlug } = require('./secondary');
   const links = options.links && typeof options.links === 'object'
@@ -1421,21 +1099,6 @@ function secondaryFranchiseTargets(ownerKey, options = {}) {
   return out;
 }
 
-/**
- * Ask P179 for the secondary-only works of one owner and write
- * `links/secondary-franchise.json`.
- *
- * Same dispatcher as the Steam pass (`runBatched`: ≤450 QIDs, pause, shared
- * WD breaker), same budget knob (`GAMES_FRANCHISE_BUDGET`, counted in QIDs /
- * batches) and the same 90-day TTL. A skipped/erroring answer writes nothing
- * for misses; a positive hit is real data and is written anyway.
- *
- * @param {{ownerKey?:string, profileKey?:string, targets?:Array,
- *          limit?:number, force?:boolean, ttlMs?:number, now?:Function,
- *          wikidata?:object, links?:object, titleLinks?:object,
- *          fetchImpl?:Function, stateStore?:object, sleep?:Function,
- *          pauseMs?:number}} [options]
- */
 async function enrichSecondaryFranchises(options = {}) {
   const now = typeof options.now === 'function' ? options.now : () => Date.now();
   const ttlMs = Number.isFinite(Number(options.ttlMs))
@@ -1516,8 +1179,6 @@ async function enrichSecondaryFranchises(options = {}) {
       fetchedAt,
     });
     patch[`${target.store}:${target.slug}`] = entry;
-    // The QID key is the identity-level answer: another slug of the same item
-    // (GOG + Epic) reads it without a second query.
     patch[`qid:${target.qid}`] = { ...entry, store: null, slug: null };
     report.updated++;
   }

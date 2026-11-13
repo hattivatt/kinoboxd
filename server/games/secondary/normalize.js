@@ -1,46 +1,5 @@
 'use strict';
 
-/**
- * One normalized shape for the store metadata of a **secondary-only** work.
- *
- * A GOG/Epic game that has no Steam twin has no `details/<appid>.json`, so the
- * genre wall / year chart / decade chart had nothing to draw for it and the
- * «Вне Steam» card had no vertical poster. This module is the pure part of
- * that pipeline: it turns a public GOG v2 product page or an Epic CMS product
- * page into the same document
- *
- *   { source, id, title, slug, genres[], tags[], releaseDate, releaseYear,
- *     releaseDateSource, verticalCover, image, logo, developers[], publishers[],
- *     series, platforms[], fetchedAt }
- *
- * and answers the catalog-completion questions about such a document (which
- * field is still missing, can a cached catalog item fill it, how to merge it).
- *
- * Nothing here touches the network, the filesystem or the clock beyond
- * `fetchedAt` — that is why the fixtures are enough to test it.
- *
- * Contract of the two sources (verified live 01.11.2026):
- *
- *   - **GOG** `api.gog.com/v2/games/{id}` (the endpoint the GOG web store uses;
- *     `api.gog.com/products/{id}` has no genre/tag fields and
- *     `catalog.gog.com/v1/catalog` cannot be filtered by product id). It
- *     carries `_embedded.tags[]` (genre line), `globalReleaseDate` (the
- *     **original** release) next to `gogReleaseDate` (the store listing date),
- *     `_links.boxArtImage` (vertical 171×241) and the developers/publishers.
- *   - **Epic** `store-content.ak.epicgames.com/api/en-US/content/products/
- *     {slug}` (public CMS page). The base page is `type === 'productHome'`;
- *     `data.meta` has `releaseDate`/`tags`/`developer`/`publisher`, and
- *     `data.hero.portraitBackgroundImageUrl` is the vertical 1200×1600 poster.
- *     `addon`/`offer` pages are skipped: their date belongs to a DLC or an
- *     edition, not to the base game.
- *
- * A stale CMS page can carry a poster but no `meta.releaseDate`/`meta.tags`
- * (Alan Wake 2). The Epic catalog bulk is then the only store-owned source;
- * `normalizeEpicProduct({ catalog })` merges its date/categories, and
- * `applyCatalogToDetail()` does the same for an already cached document.
- * Nothing is ever invented: an empty answer leaves the field empty.
- */
-
 const { SecondaryDetailsError } = require('./errors');
 
 const SCHEMA_VERSION = 1;
@@ -53,11 +12,6 @@ function isoOf(ms) {
   return new Date(ms).toISOString();
 }
 
-/* ------------------------------------------------------------------ */
-/* normalization                                                       */
-/* ------------------------------------------------------------------ */
-
-/** `2023-09-26` / `2023.09.26` / `2023` → 2023 (or null). */
 function yearOfDate(value) {
   const match = /^(\d{4})/.exec(String(value == null ? '' : value).trim());
   if (!match) return null;
@@ -65,7 +19,6 @@ function yearOfDate(value) {
   return Number.isFinite(year) && year > 1900 && year < 2200 ? year : null;
 }
 
-/** `//images.gog-statics.com/x.jpg` → `https://images.gog-statics.com/x.jpg`. */
 function absoluteUrl(value) {
   const text = String(value == null ? '' : value).trim();
   if (!text) return null;
@@ -83,11 +36,6 @@ function uniqueStrings(list) {
   return out;
 }
 
-/**
- * Epic tags are upper-snake codes (`RPG`, `OPEN_WORLD`). The store page shows
- * human names, so the common ones are mapped; an unknown code is prettified
- * (`TURN_BASED` → `Turn Based`) instead of being dropped.
- */
 const EPIC_TAG_NAMES = {
   RPG: 'Role-Playing',
   ACTION: 'Action',
@@ -147,11 +95,6 @@ const EPIC_TAG_NAMES = {
   GORE: 'Gore',
 };
 
-/**
- * Tags that are store **features**, not genres. They stay in `tags` (the raw
- * list) but never reach `genres` — otherwise the genre wall would grow a
- * «Single Player» bar next to «Action».
- */
 const EPIC_FEATURE_TAGS = new Set([
   'SINGLE_PLAYER',
   'MULTIPLAYER',
@@ -180,7 +123,6 @@ function epicTagName(code) {
   if (!raw) return null;
   const key = raw.toUpperCase().replace(/[\s-]+/g, '_');
   if (EPIC_TAG_NAMES[key]) return EPIC_TAG_NAMES[key];
-  // Prettify an unknown code: `SOME_NEW_TAG` → `Some New Tag`.
   return key
     .toLowerCase()
     .split('_')
@@ -193,19 +135,12 @@ function epicTagCodeOf(value) {
   return String(value == null ? '' : value).trim().toUpperCase().replace(/[\s-]+/g, '_');
 }
 
-/* ------------------------------- GOG ------------------------------- */
-
 function slugFromStoreLink(href) {
   const text = String(href == null ? '' : href);
   const match = /\/game\/([^/?#]+)/.exec(text);
   return match ? match[1] : null;
 }
 
-/**
- * `api.gog.com/v2/games/{id}` → the common shape. A response without
- * `_embedded.product` is not a product page (an error envelope, a redirect
- * body) and is treated as unparsable, never as an empty game.
- */
 function normalizeGogProduct(payload, options = {}) {
   const doc = payload && typeof payload === 'object' ? payload : null;
   const embedded = (doc && doc._embedded) || null;
@@ -253,14 +188,6 @@ function normalizeGogProduct(payload, options = {}) {
   };
 }
 
-/* ------------------------------- Epic ------------------------------ */
-
-/**
- * The base-game page of the Epic CMS. `productHome` first (its release date is
- * the game's own), then an `offer` page that has a date, then the first page
- * with `data.meta.releaseDate`. `addon` pages are never chosen while a base
- * page exists.
- */
 function pickEpicPage(payload) {
   const pages = Array.isArray(payload && payload.pages) ? payload.pages : [];
   const withMeta = pages.filter(
@@ -274,7 +201,6 @@ function pickEpicPage(payload) {
   return pages.find((page) => page && page.type === 'productHome') || pages[0] || null;
 }
 
-/** Tallest image from the page's `_images_` list (1200×1600 / 860×1148). */
 function epicPortraitFromImages(images) {
   const list = Array.isArray(images) ? images : [];
   const tall = list.find((url) => /-(?:1200x1600|860x1148|1080x1440)-/i.test(String(url)));
@@ -287,18 +213,7 @@ function epicLandscapeFromImages(images) {
   return wide ? absoluteUrl(wide) : null;
 }
 
-/**
- * Epic's catalog `categories` are product buckets (`games`, `freegames`, …) and
- * sometimes a genre segment (`games/action`, `games/horror`). Only the genre
- * segment is used, and only when the CMS page has no `meta.tags` at all — the
- * case of a **stale CMS page** (Alan Wake 2: `meta` has only
- * `customReleaseDate: "Coming Soon"`, no tags/releaseDate/developer).
- */
 const EPIC_NON_GENRE_CATEGORIES = new Set([
-  // Product buckets, not genres. Epic's bulk catalog returns them in the same
-  // `categories` array as the genre segments, and a bucket such as `public`
-  // used to become the genre «Public» (Alan Wake 2, 02.11.2026). Comparison is
-  // case-insensitive through `epicTagCodeOf()` below.
   'PUBLIC',
   'GAMES',
   'GAME',
@@ -351,13 +266,6 @@ function epicGenresFromCategories(categories) {
   return out;
 }
 
-/**
- * The same bucket filter applied to an already-normalized genre line. A detail
- * document written **before** a bucket entered `EPIC_NON_GENRE_CATEGORIES`
- * keeps it on disk for its 30-day TTL (`Alan Wake 2`, `genres: ["Public"]`).
- * Every read path passes the list through this helper, so the stale chip
- * disappears immediately without editing a cache file by hand.
- */
 function sanitizeEpicGenres(genres) {
   const out = [];
   for (const name of uniqueStrings(Array.isArray(genres) ? genres : [])) {
@@ -368,12 +276,6 @@ function sanitizeEpicGenres(genres) {
   return out;
 }
 
-/**
- * Read-time sanitizer for a cached detail document. Pure: the same object is
- * returned when nothing was filtered, so a heal/write decision (`next !== data`)
- * still works. Only Epic documents are filtered — a GOG genre line never
- * contained store buckets.
- */
 function sanitizeDetailGenres(data) {
   if (!data || data.source !== 'epic' || !Array.isArray(data.genres)) return data;
   const genres = sanitizeEpicGenres(data.genres);
@@ -407,8 +309,6 @@ function normalizeEpicProduct(payload, options = {}) {
     .map(epicTagName)
     .filter(Boolean);
   let genresSource = genres.length ? 'epic-store' : null;
-  // Stale CMS page: no tag line at all → the catalog's own category buckets are
-  // the only store-owned genre hint left. Never invented from the title.
   if (!genres.length && catalog) {
     const fromCatalog = epicGenresFromCategories(catalog.categories);
     if (fromCatalog.length) {
@@ -429,8 +329,6 @@ function normalizeEpicProduct(payload, options = {}) {
     about.title ||
     (catalog && catalog.title) ||
     null;
-  // `about.*Attribution` is present on pages whose `meta.developer` is empty
-  // (Alan Wake 2: Remedy Entertainment / Epic Games Publishing).
   const developers = uniqueStrings(Array.isArray(meta.developer) ? meta.developer : []);
   const publishers = uniqueStrings(Array.isArray(meta.publisher) ? meta.publisher : []);
   if (!developers.length && about.developerAttribution) {
@@ -471,11 +369,6 @@ function normalizeEpicProduct(payload, options = {}) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* catalog completion (which field is missing, what can fill it)       */
-/* ------------------------------------------------------------------ */
-
-/** Does the CMS page carry the fields the catalog could complete? */
 function epicPageNeedsCatalog(payload) {
   const page = pickEpicPage(payload);
   const meta = (page && page.data && page.data.meta) || {};
@@ -483,24 +376,11 @@ function epicPageNeedsCatalog(payload) {
   return !meta.releaseDate && !hasTags;
 }
 
-/**
- * A cached detail that is not **complete** is a candidate for the catalog
- * step: neither genres nor a year (the original Alan Wake 2 case), or only one
- * of the two (partial). `shouldAttemptCatalog` still keeps a settled partial
- * from being re-asked on every poll — the attempt ledger/`catalogChecked`
- * marker decides whether another request is due.
- */
 function detailNeedsCatalog(data) {
   if (!data || data.source !== 'epic') return false;
   return catalogMetaFlags(data).metaStatus !== 'complete';
 }
 
-/**
- * A detail written **before** the catalog fallback existed has neither genres
- * nor a year and no `catalogChecked` marker. It is retried once; every outcome
- * (filled, definitive negative, not connected) writes the marker, so a polled
- * `/stats` cannot kick the same work forever.
- */
 function needsCatalogCompletion(data) {
   if (!detailNeedsCatalog(data)) return false;
   if (data.catalogChecked === true) return false;
@@ -514,22 +394,6 @@ function catalogHasMeta(catalog) {
     (Array.isArray(catalog.categories) && catalog.categories.length > 0);
 }
 
-/**
- * Can this cached catalog document actually supply the fact the detail is
- * missing? (fix 02.11.2026 — the silent skip that kept AW2 «partial» forever)
- *
- * `epic-import.js` writes `catalog/<id>.json` from the same bulk endpoint the
- * details phase uses, but **without** a per-owner attempt in the ledger. The
- * document can carry a release date and only bucket categories («games»), so
- * `catalogHasMeta` was true while the detail still had no genre. The phase then
- * returned the cached document before `getCatalogBulk` forever: the kick ran,
- * the job finished in a second, `catalogAttempts.total` stayed 0 and nothing
- * was recorded as an error.
- *
- * A cached document is a reason to skip the request only when it fills every
- * missing axis. `detail == null` (a CMS page with no meta at all) means *both*
- * axes are missing, so a date-only document is not enough either.
- */
 function catalogAnswersMissing(detail, catalog) {
   if (!catalogHasMeta(catalog)) return false;
   const flags = catalogMetaFlags(detail);
@@ -538,12 +402,6 @@ function catalogAnswersMissing(detail, catalog) {
   return true;
 }
 
-/**
- * Merge a catalog document into an already cached detail (the cached document
- * has no raw CMS payload to re-normalize). Additive only: a field that is
- * already set is never replaced, and an empty catalog never produces a fake
- * genre or date.
- */
 function applyCatalogToDetail(data, catalog) {
   if (!data || !catalog) return data;
   const next = { ...data };
@@ -569,7 +427,6 @@ function applyCatalogToDetail(data, catalog) {
   return next;
 }
 
-/** `{ yearHas, genresOk, metaStatus }` for a normalized detail document. */
 function catalogMetaFlags(data) {
   const yearHas = Boolean(data && data.releaseYear != null);
   const genresOk = Boolean(data && Array.isArray(data.genres) && data.genres.length);
@@ -580,14 +437,6 @@ function catalogMetaFlags(data) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* title helpers                                                       */
-/* ------------------------------------------------------------------ */
-
-/**
- * `"Alan Wake 2"` → `"alan-wake-2"`. ASCII-only on purpose: a title that cannot
- * be represented is not guessed (the CMS slug is English in practice).
- */
 function slugFromTitle(title) {
   return String(title == null ? '' : title)
     .normalize('NFKD')

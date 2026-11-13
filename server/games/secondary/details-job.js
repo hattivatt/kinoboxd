@@ -19,11 +19,7 @@ function emptyPhase() {
     cached: 0,
     failed: 0,
     deferred: 0,
-    // Works whose catalog step exited without asking (token binding, probe,
-    // budget, no client). Visible so a «done in 1 s» job can explain itself.
     catalogSkipped: 0,
-    // Works with no store slug at all: «library-only» (title + hours), never a
-    // silent drop and never a fake `not_found`.
     missingSlug: 0,
   };
 }
@@ -47,12 +43,10 @@ function publicJob(job) {
   };
 }
 
-/** Running job for an owner (for `meta.secondaryDetails.running`). */
 function runningFor(ownerKey) {
   return jobs.isRunning(String(ownerKey == null ? '' : ownerKey));
 }
 
-/** Latest remembered job of an owner (running, finished or failed). */
 function jobFor(ownerKey) {
   const key = String(ownerKey == null ? '' : ownerKey);
   let latest = null;
@@ -62,10 +56,6 @@ function jobFor(ownerKey) {
   return publicJob(latest);
 }
 
-/**
- * Start (or coalesce into) a details job. Returns the public job immediately;
- * the loop runs in the background and never rejects into the caller.
- */
 function startSecondaryDetails(options = {}) {
   const ownerKey = String(options.ownerKey == null ? '' : options.ownerKey).trim();
   const gog = Array.isArray(options.gog) ? options.gog : [];
@@ -81,8 +71,6 @@ function startSecondaryDetails(options = {}) {
     options.budget != null && Number.isFinite(Number(options.budget))
       ? Math.max(0, Math.floor(Number(options.budget)))
       : budgetDefault();
-  // One client per job: its `client_credentials` token and throttle state are
-  // reused across catalog refetches instead of fetched per product.
   const epicClient =
     options.epicClient || options.catalogClient || (epic.length ? createCatalogClient(options) : null);
   const job = jobs.createJob({
@@ -97,8 +85,6 @@ function startSecondaryDetails(options = {}) {
     budgetExceeded: false,
     force: Boolean(options.force),
     client: options.client,
-    // Owner-token catalog refetch (stale Epic CMS): injected in tests, created
-    // once per job from the token store in production.
     epicClient: epicClient,
     tokenStore: options.tokenStore || null,
     epicAccountId: options.epicAccountId || null,
@@ -108,7 +94,6 @@ function startSecondaryDetails(options = {}) {
     warnings: [],
     cancelled: false,
   });
-  // Counters are visible in the immediate response, before the first await.
   job.gog.total = gog.filter((entry) => entry && entry.id).length;
   job.epic.total = epic.filter((entry) => entry && (entry.slug || entry.title)).length;
   job.epic.missingSlug = epic.filter((entry) => entry && !entry.slug).length;
@@ -117,10 +102,6 @@ function startSecondaryDetails(options = {}) {
 
   const run = async () => {
     try {
-      // A store-exclusive with no date (Alan Wake 2) can get its P577 from a
-      // unique exact-title Wikidata match. One cache-backed request per run,
-      // skipped for inert clients and on the shared `KINOBOXD_GAMES_WD=off`
-      // kill switch (checked inside `refreshForJob`).
       const titleCards = titleCandidatesFor(epic);
       if (!job.client && titleCards.length) {
         try {

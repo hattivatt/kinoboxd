@@ -1,19 +1,5 @@
 'use strict';
 
-/**
- * String/number primitives of the edition matcher (ИГРЫ-АРХИТЕКТУРА §4.1, M5-B).
- *
- * Pure functions only: every helper here turns a raw Steam/Wikidata string into
- * tokens, or compares two already-normalized values. Nothing in this module
- * touches disk, the network or another file of the package.
- *
- * False-positive guards start here: the numeric signature (`2`, `III`, `IV`)
- * is the part that must never differ between editions, and edition/region
- * wrappers are stripped once, by `coreTokens`. The guards built on top of it
- * (type, developers, franchise key, release year) live in `match.js`.
- */
-
-/** Words that are an edition wrapper wherever they appear in a title. */
 const EDITION_WORDS = new Set([
   'edition',
   'remastered',
@@ -32,7 +18,6 @@ const EDITION_WORDS = new Set([
   'goty',
 ]);
 
-/** Multi-word wrappers, removed before the single words above. */
 const EDITION_PHRASES = [
   ['game', 'of', 'the', 'year'],
   ['director', 's', 'cut'],
@@ -44,7 +29,6 @@ const EDITION_PHRASES = [
   ['reloaded', 'edition'],
 ];
 
-/** Region wrappers: only stripped when trailing or parenthesized. */
 const REGION_WORDS = new Set([
   'ru',
   'rhcp',
@@ -79,7 +63,6 @@ function isRomanNumber(token) {
   return /^[ivxlcdm]+$/.test(token) && token.length <= 6;
 }
 
-/** `2`, `III`, `IV` — the part that must never differ between editions. */
 function numericSignature(tokens) {
   return tokens
     .filter((token) => /^\d+$/.test(token) || isRomanNumber(token))
@@ -127,18 +110,8 @@ function hasEditionMarker(raw) {
     );
 }
 
-/**
- * Normalized title tokens: edition/region wrappers removed, punctuation gone.
- * The numeric part is kept, because it is the main false-positive guard.
- *
- * Region wrappers are only dropped when they are unambiguously wrappers:
- * `(RU)`, or a trailing ALL-CAPS token (`Max Payne RU`, `… PCR`). A trailing
- * lowercase word is part of the title — otherwise `The Last of Us` would
- * become `the last of`.
- */
 function coreTokens(name) {
   const raw = String(name == null ? '' : name);
-  // Parenthesized wrappers: `(Classic)`, `(RU)` — but never `(2016)`, `(Obsolete)`.
   const parenWrappers = [];
   raw.replace(/\(([^)]*)\)/g, (match, inner) => {
     const text = String(inner || '').trim();
@@ -159,7 +132,6 @@ function coreTokens(name) {
   }
   let tokens = value.split(' ').filter(Boolean);
 
-  // Trailing region token, only when the original spelled it in caps.
   const trailing = raw.match(/([A-Za-z]{2,5})\s*\)?\s*$/);
   if (trailing && trailing[1] === trailing[1].toUpperCase()) {
     const region = trailing[1].toLowerCase();
@@ -170,7 +142,6 @@ function coreTokens(name) {
 
   tokens = dropPhrases(tokens);
   tokens = tokens.filter((token) => !EDITION_WORDS.has(token));
-  // `Legacy` is a real word (`Legacy of Kain`), so only a trailing one is a wrapper.
   while (tokens.length && tokens[tokens.length - 1] === 'legacy') tokens.pop();
   return tokens;
 }

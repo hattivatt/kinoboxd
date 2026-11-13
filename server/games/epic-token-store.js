@@ -1,31 +1,5 @@
 'use strict';
 
-/**
- * Epic token store (M6b).
- *
- * `cache-games/tokens/epic-<accountId>.json`, directory `0700`, file `0600`.
- * The token is **equivalent to a password** (ИГРЫ-АРХИТЕКТУРА §14.5): a
- * refresh token / device-auth secret grants access to the account, not just to
- * the library. The atomic 0600 write itself lives in `core/fs-store.js`
- * (`writeSecretAtomicSync`, one implementation for every secret cache):
- *
- *   - the temp file is created with `O_CREAT|O_EXCL|O_NOFOLLOW` and mode 0600,
- *     so there is no window where the secret is world-readable (TOCTOU);
- *   - the final rename replaces a symlink instead of following it, and the
- *     resulting inode is verified to be a regular file with mode 0600;
- *   - a token file that was chmod-ed to 0644 by an operator is repaired on the
- *     next read (and the repair is logged without the value);
- *   - a symlink at the token path is never read (lstat + regular-file check).
- *
- * This module still owns the Epic-specific guards: the account-id gate, the
- * `tokens/` directory check (a symlinked leaf is refused) and the stable
- * `epic_token_store_error` without a token value in the message.
- *
- * The value of a token is never logged, never returned from a public view and
- * never put into an error message. `redactTokens()` is the only shape allowed
- * outside this module (routes/status/UI).
- */
-
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -52,11 +26,6 @@ function tokenPath(accountId) {
   return path.join(TOKENS_DIR, `epic-${value}.json`);
 }
 
-/**
- * Create/verify the token directory. A symlinked directory is refused: the
- * games cache may itself be a symlink (worktree layout), but the `tokens/`
- * leaf must be a real directory owned by this process.
- */
 async function ensureTokensDir() {
   await fsp.mkdir(TOKENS_DIR, { recursive: true, mode: DIR_MODE });
   const stat = await fsp.lstat(TOKENS_DIR);
@@ -81,15 +50,6 @@ function ensureTokensDirSync() {
   if ((stat.mode & 0o077) !== 0) fs.chmodSync(TOKENS_DIR, DIR_MODE);
 }
 
-/**
- * Atomic secret write. Never throws with a token value in the message; the
- * caller gets a stable `epic_token_store_error`.
- *
- * The 0600 file / 0700 directory mechanics are `core/fs-store`
- * (`writeSecretAtomicSync`); this wrapper only adds the Epic directory guard
- * and the stable error code. `ensureTokensDir()` stays async because its
- * symlink refusal runs before the write.
- */
 async function writeSecretAtomic(filePath, data) {
   await ensureTokensDir();
   try {
@@ -102,7 +62,6 @@ async function writeSecretAtomic(filePath, data) {
   }
 }
 
-/** Read a token document; symlinks and non-regular files are refused. */
 async function readTokenDoc(accountId) {
   const filePath = tokenPath(accountId);
   let stat;
@@ -116,7 +75,6 @@ async function readTokenDoc(accountId) {
     return null;
   }
   if ((stat.mode & 0o077) !== 0) {
-    // Repair an operator mistake without ever printing the content.
     try {
       await fsp.chmod(filePath, TOKEN_MODE);
       console.warn('[epic-tokens] token file mode repaired to 0600');
@@ -188,15 +146,6 @@ async function getTokens(accountId) {
   return readTokenDoc(accountId);
 }
 
-/**
- * Synchronous **summary** of a token document for read-only paths that cannot
- * await (the `/stats` builder is synchronous and polled by the UI). Returns the
- * same redacted shape as `redactTokens()` — presence booleans and dates, never
- * a token value. A symlink or a non-regular file is refused, exactly like the
- * async reader; the file mode is NOT repaired here (a read-only stats call must
- * not mutate the cache), so an operator mistake is still fixed on the next
- * async read.
- */
 function readTokenSummarySync(accountId) {
   let filePath;
   try {
@@ -222,12 +171,6 @@ function readTokenSummarySync(accountId) {
   return redactTokens(doc);
 }
 
-/**
- * Synchronous, redacted list of every token document. Read-only paths (the
- * owner-binding scan behind `/secondary-details/status` and the kick rule)
- * cannot await, and must never see a token value. Broken/symlinked files are
- * simply absent.
- */
 function listTokenSummariesSync() {
   let names = [];
   try {
@@ -245,7 +188,6 @@ function listTokenSummariesSync() {
   return out;
 }
 
-/** All token documents, newest first. Internal use only (refresh/import). */
 async function listTokenDocs() {
   let names = [];
   try {
@@ -277,10 +219,6 @@ async function deleteTokens(accountId) {
   }
 }
 
-/**
- * The only public shape of a token document: presence booleans and expiry
- * timestamps. Never the values, not even masked fragments.
- */
 function redactTokens(doc) {
   if (!doc) return null;
   return {
@@ -288,9 +226,6 @@ function redactTokens(doc) {
     accountId: doc.accountId || null,
     displayName: doc.displayName || null,
     ownerKey: doc.ownerKey || null,
-    // Old-format binding (pre-«ownerKey»): kept so the owner-binding self-heal
-    // can recognise a token that was adopted by the GOG-style `ownerProfile`
-    // field instead of silently treating it as unbound.
     ownerProfile: doc.ownerProfile || null,
     authMethod: doc.authMethod || null,
     hasAccessToken: Boolean(doc.accessToken),

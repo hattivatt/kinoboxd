@@ -16,21 +16,11 @@ const {
   emptyOverrides,
 } = require('./identity');
 
-/**
- * Group raw credit entries into entities.
- *
- * @param {Array<object>} entries every (game, entity, role) occurrence
- * @param {'person'|'studio'} kind
- * @param {object} overrides normalized overrides document
- */
 function groupEntries(entries, kind, overrides) {
   const union = createUnion();
   const keys = new Set(entries.map(strongKey));
   for (const key of keys) union.find(key);
 
-  // 1. Strong ids are already in the key: nothing to do.
-  // 2. Same name, no strong ids → same entity. Same name, several strong ids →
-  //    separate entities (never merge two QIDs, §4.3).
   const byName = new Map();
   for (const entry of entries) {
     const nameKey = normalizeName(entry.name);
@@ -48,7 +38,6 @@ function groupEntries(entries, kind, overrides) {
     const list = [...keySet];
     const strong = list.filter((key) => !key.startsWith('name:'));
     if (strong.length > 1) {
-      // Two people with the same name: keep them apart and say so.
       ambiguousNames.add(nameKey);
       continue;
     }
@@ -59,13 +48,6 @@ function groupEntries(entries, kind, overrides) {
     for (let i = 1; i < list.length; i++) union.union(list[0], list[i]);
   }
 
-  // 2b. Studios: the same company reaches us twice — as a Wikidata entity with
-  //     a QID and as the Steam `developers[]` string — with spellings that
-  //     differ only by a legal form («Valve Corporation» vs «Valve»,
-  //     «FromSoftware, Inc.» vs «FromSoftware»). That pair is one company when
-  //     exactly ONE strong id claims the core name: two QIDs are never merged
-  //     (§4.3), and a core name that no id claims is left alone (no fuzzy
-  //     matching without a QID, §4.2).
   if (kind === 'studio') {
     const byCore = new Map();
     for (const [nameKey, keySet] of byName) {
@@ -82,8 +64,6 @@ function groupEntries(entries, kind, overrides) {
     }
   }
 
-  // 3. Manual merges: `from` spelling joins the `to` entity (only when the
-  //    override explicitly asks for it — a manual decision beats the rule).
   for (const merge of overrides.manual.merges) {
     if (merge.type !== kind) continue;
     const fromKey = normalizeName(merge.from);
@@ -156,9 +136,6 @@ function applyManualNames(group, kind, overrides) {
       if (value) extraAliases.push(value);
     }
   }
-  // Every known spelling (EN, RU, alternate) stays reachable as an alias; the
-  // display name is filtered out below. A manual display only changes which
-  // spelling is primary, never hides the others.
   for (const name of [group.nameEn, group.nameRu, ...group.names]) {
     if (name) extraAliases.push(name);
   }
@@ -174,11 +151,6 @@ function itemId(group) {
   return `name:${normalizeName(group.names[0] || '')}`;
 }
 
-/**
- * Studios of a secondary-only work from its store detail document
- * (`developers[]`/`publishers[]`). Provenance is the store, never Wikidata:
- * the store page names the company, Wikidata credits are a separate source.
- */
 function studiosFromSecondaryWork(work) {
   const sources = Array.isArray(work && work.sources) ? work.sources : [];
   const source = sources.includes('gog') ? 'gog-store' : 'epic-store';
@@ -210,17 +182,8 @@ function studiosFromSecondaryWork(work) {
   return [...map.values()];
 }
 
-/** Sources whose credits come from a store document (not from Wikidata). */
 const STORE_STUDIO_SOURCES = new Set(['steam-store', 'gog-store', 'epic-store']);
 
-/**
- * Stable signature of the **store-derived** studios of a secondary work
- * (normalized name + sorted roles). It is written into
- * `personnel/work-<key>.json` so a document whose store list changed is
- * re-written even while it is still «fresh»: a 90-day TTL would otherwise keep
- * a wrong credit («Epic Games Publishing» as the developer of Alan Wake 2)
- * alive for three months after the union was fixed.
- */
 function storeStudiosSignature(studios) {
   return (Array.isArray(studios) ? studios : [])
     .map((entry) => {
@@ -233,15 +196,6 @@ function storeStudiosSignature(studios) {
     .join('|');
 }
 
-/**
- * Store credits of a secondary work for the aggregate: the **live union is the
- * authority** (it is rebuilt from the store documents on every `/stats` call),
- * the persisted document only adds what the union cannot supply — Wikidata
- * credits, or a store list when the detail document is gone. A persisted
- * *store* entry whose company is already named by the live list is dropped: its
- * roles were computed from an older union, so keeping it would resurrect
- * «Epic Games Publishing» as a developer (Alan Wake 2, 04.11.2026).
- */
 function studiosOfSecondaryWork(work, doc) {
   const live = studiosFromSecondaryWork(work);
   const persisted = Array.isArray(doc && doc.studios) ? doc.studios : [];
@@ -251,9 +205,6 @@ function studiosOfSecondaryWork(work, doc) {
     const name = normalizeName(entry && entry.name);
     if (!name) continue;
     if (STORE_STUDIO_SOURCES.has(entry.source) && liveByName.has(name)) {
-      // The live union re-derived the company (and its roles) from the current
-      // store document; keep only the identity the document added (Wikidata
-      // QID/Moby id), so grouping with the Steam/Wikidata record survives.
       const liveEntry = liveByName.get(name);
       if (liveEntry && !liveEntry.qid && entry.qid) liveEntry.qid = entry.qid;
       if (liveEntry && liveEntry.mobyId == null && entry.mobyId != null) {
@@ -266,23 +217,12 @@ function studiosOfSecondaryWork(work, doc) {
   return out;
 }
 
-/**
- * Store studios to persist: the live list when the union has one, otherwise the
- * store entries already cached (a detail document that is missing or stale must
- * not erase the credit).
- */
 function carriedStoreStudios(live, existing) {
   if (live.length) return live;
   const persisted = Array.isArray(existing && existing.studios) ? existing.studios : [];
   return persisted.filter((entry) => STORE_STUDIO_SOURCES.has(entry && entry.source));
 }
 
-/**
- * Merge studios of a secondary work without losing their store provenance.
- * `dedupeStudios` maps any non-Wikidata source to `steam-store` (its fallback),
- * which would mislabel a GOG/Epic credit; here the store source is preserved
- * and two entries merge only by QID or by normalized name.
- */
 function mergeSecondaryStudios(list) {
   const map = new Map();
   for (const entry of list || []) {
@@ -302,7 +242,6 @@ function mergeSecondaryStudios(list) {
   return [...map.values()];
 }
 
-/** Cached secondary works of one owner (lazy: heavy union read on first use). */
 function secondaryWorksFor(profileKey, provided) {
   if (Array.isArray(provided)) return provided;
   try {
@@ -312,7 +251,6 @@ function secondaryWorksFor(profileKey, provided) {
   }
 }
 
-/** Studios credited by Steam appdetails (the base of the first block, §7.1). */
 function studiosFromDetails(details) {
   if (!details) return [];
   const out = [];
@@ -349,11 +287,6 @@ function strongestRoleSource(entries) {
   return 'steam-store';
 }
 
-/**
- * Merge credits inside one game's document. Reuses `groupEntries`, so the same
- * identity rules apply: a Steam studio without a QID is unified with its
- * Wikidata record by normalized name, while two different QIDs never merge.
- */
 function dedupeWithinGame(list, kind) {
   const entries = (list || [])
     .map((entry) => ({ ...entry, game: { appid: 0, name: '', hours: 0 } }))
@@ -400,10 +333,6 @@ function buildItems(games, options) {
   const { groups } = groupEntries(entries, kind, overrides);
   const items = [];
   for (const group of groups) {
-    // Studio entities are grouped across both studio roles (one company =
-    // one card), but `count`/`hours` only over the games where this entity
-    // actually holds the requested role (§7.2: developer and publisher are
-    // separate answers, not one "studio" bucket).
     const relevant = group.entries.filter((entry) => (entry.roles || []).includes(role));
     if (!relevant.length) continue;
     const gamesById = new Map();

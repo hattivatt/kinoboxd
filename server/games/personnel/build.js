@@ -40,18 +40,6 @@ const PERSONNEL_DIR = path.join(gameCache.GAMES_CACHE_DIR, 'personnel');
 
 const PERSONNEL_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
-/**
- * Version of the rule that turns Wikidata labels into a credit name (§4.2).
- *
- * v1 (no field in the document): the display name was the raw English
- * `rdfs:label`. v2 (round 01.11.2026): the language-neutral `mul` label wins
- * when the English one is only a word-fragment of it (`wikidata.canonicalLabel`
- * — Q3539040 is «Development Studio» in English but «Paradox Development
- * Studio» in `mul`). A document written under an older rule keeps the
- * truncated name for its whole 90-day TTL, which is exactly the «две
- * одинаковые студии» bug the user saw, so such a document is re-fetched once
- * (`labelsStale` below) instead of waiting three months.
- */
 const LABEL_RULE_VERSION = 2;
 
 function detailsPath(appid) {
@@ -66,24 +54,10 @@ function personnelPath(appid) {
   return path.join(PERSONNEL_DIR, `${gameCache.safeKey(appid)}.json`);
 }
 
-/**
- * Credits of a secondary-only work (`gog:<id>` / `epic:<id>`). A separate
- * `work-` prefix keeps the Steam per-appid namespace untouched: the file count
- * of `personnel/` is still the Steam pass's progress counter, and an appid can
- * never collide with a work key.
- */
 function secondaryPersonnelPath(workKey) {
   return path.join(PERSONNEL_DIR, `work-${gameCache.safeKey(workKey)}.json`);
 }
 
-/**
- * Details document (M2 contract, ИГРЫ §3.6). `success: false` (region-locked
- * store answer) is not details; the game is honestly pending.
- *
- * `developers`/`publishers` are the documented names; `developirts` is accepted
- * because the M2 brief used that spelling — tolerance is cheap, a silent
- * missing studio block is not.
- */
 function readDetails(appid) {
   const doc = readJson(detailsPath(appid));
   if (!doc) return null;
@@ -91,14 +65,8 @@ function readDetails(appid) {
   return doc;
 }
 
-/** External ids of one game: `{ qid, mobyId, mobyPlatformId, igdbId }`. */
 function readLinks(appid) {
   const doc = readJson(linksPath(appid)) || {};
-  // `links/<appid>.json` carries two shapes: the legacy string
-  // (`wikidata: "Q…"`) and the M4 object written by the franchise pass
-  // (`wikidata: { qid, franchise, releaseYear, … }`). Both must resolve to the
-  // same QID, otherwise the franchise pass would silently disable the
-  // «resolve once» reuse in the personnel pass.
   const wikidataRaw = doc.wikidata && typeof doc.wikidata === 'object'
     ? doc.wikidata.qid
     : doc.wikidata;
@@ -143,7 +111,6 @@ async function savePersonnelDoc(appid, doc) {
   return { data: payload, fingerprint };
 }
 
-/** Read `personnel/work-<safeKey>.json` (secondary-only work credits). */
 function readSecondaryPersonnelDoc(workKey) {
   if (!workKey) return null;
   const doc = readJson(secondaryPersonnelPath(workKey));
@@ -170,13 +137,6 @@ async function saveSecondaryPersonnelDoc(workKey, doc) {
   return { data: payload, fingerprint };
 }
 
-/**
- * «WD: …» coverage badge (ИГРЫ §8.3). The state is derived from the persisted
- * breaker document, so the answer is honest even when the widget was opened
- * long after the last run: `never_run` means Wikidata was never asked for this
- * cache, `unavailable` carries the provider's own error code, `cooldown` says
- * until when. `ok` has no badge (nothing to warn about).
- */
 const WIKIDATA_BADGES = {
   ok: null,
   never_run: 'WD: не запущено',
@@ -217,10 +177,6 @@ function collectGames(context) {
   const { library, profileKey, parsed, wdEnabled, secondaryWorks: providedWorks } = context;
   const games = [];
   let excludedNonGame = 0;
-  // Credits written under an older label rule (§4.2): they are still inside
-  // their TTL, so only a re-fetch repairs a truncated name. Counted in this
-  // loop because it already reads every document; the route turns the number
-  // into the lazy kick (`pending.staleLabels`).
   let staleLabels = 0;
   for (const game of library.games || []) {
     const appid = Number(game.appid);
@@ -283,11 +239,6 @@ function collectGames(context) {
       people,
     });
   }
-  // M6 follow-up (03.11.2026): works that exist only outside Steam. Alan Wake 2
-  // (Epic) must appear under Remedy Entertainment with its Epic hours. Hours
-  // are the union's display hours of that work (Steam side is absent by
-  // definition: only `secondaryOnly` works get here, so nothing is summed
-  // twice).
   const secondaryWorks = secondaryWorksFor(profileKey, providedWorks);
   for (const work of secondaryWorks) {
     if (!work || !work.workKey) continue;
@@ -325,14 +276,6 @@ function collectGames(context) {
   return { games, excludedNonGame, staleLabels };
 }
 
-/**
- * Build the personnel payload for one profile (ИГРЫ §5.3).
- *
- * @param {string} profileKey `steam-<steamid64>`
- * @param {{role?:string, sort?:string, gamesLimit?:number,
- *          overrides?:object, now?:number, running?:boolean}} [options]
- * @returns {object|null} null when the profile/library is unknown
- */
 function requestScope(profileKey, options) {
   const parsed = gameCache.parseProfileToken(profileKey);
   if (!parsed) {
@@ -415,10 +358,6 @@ function buildPersonnel(profileKey, options = {}) {
     overrides,
   });
 
-  // Steam rows and secondary-only rows are counted separately where the
-  // number is Steam-specific (appdetails coverage, people credits). Studio
-  // coverage and the headline `games` count include the union: «игры Remedy»
-  // is a cross-store answer.
   const {
     secondaryGames,
     detailsResolved,
@@ -448,12 +387,9 @@ function buildPersonnel(profileKey, options = {}) {
   return {
     profile: parsed.key,
     role,
-    // Alias transparency: a cached frontend asking `role=studio` gets the
-    // developer answer but can see what it asked for.
     roleRequested: resolvedRole.requested,
     roleAlias: resolvedRole.alias,
     sort,
-    // Contract for the frontend role select (default = developer, §7.2).
     roles: {
       accepted: [...ROLES],
       default: DEFAULT_ROLE,
@@ -464,9 +400,6 @@ function buildPersonnel(profileKey, options = {}) {
     items,
     totals: {
       games: gamesTotal,
-      // M6 follow-up: GOG/Epic-only works inside `games` (their hours are part
-      // of `hours`; nothing is summed twice because only `secondaryOnly`
-      // works are appended).
       secondaryWorks: secondaryGames.length,
       hours: totalHours,
       excludedNonGame,
@@ -478,8 +411,6 @@ function buildPersonnel(profileKey, options = {}) {
       detailsPercent: steamTotal ? Math.round((detailsResolved / steamTotal) * 100) : 0,
       gamesWithCredits,
       percent,
-      // Secondary-only works: store details give the studios, Wikidata the
-      // people (when the bridge resolved a QID).
       secondaryWorks: secondaryGames.length,
       secondaryWithCredits,
       gamesWithStudios: studiosResolved,
@@ -490,23 +421,13 @@ function buildPersonnel(profileKey, options = {}) {
       publisherPercent,
       byRole,
       byStudioRole,
-      // «WD: не запущено» / «WD: недоступно» (reason) — the badge the widget
-      // can print next to «Кредиты: N%» without another request.
       wikidata: wdStatus,
     },
     pending: {
       details: steamTotal - detailsResolved,
       credits: pendingCredits,
-      // Secondary-only works without a credits document yet (a deploy after
-      // the last import: the lazy kick fills them from the store details and,
-      // when a QID exists, from Wikidata).
       secondary: pendingSecondary,
-      // Documents whose labels were written under an older rule (§4.2): the
-      // route re-fetches them once, so a truncated name («Development Studio»)
-      // does not survive the 90-day TTL.
       staleLabels,
-      // Filled by the route/job layer: is an enrichment pass in flight right
-      // now, and why credits are still missing when it is not.
       running: Boolean(options.running),
       jobId: null,
       reason: pendingReason,
@@ -529,7 +450,6 @@ function buildPersonnel(profileKey, options = {}) {
   };
 }
 
-/** Per-game personnel block for `/api/games/game/:appid` (§5.2). */
 function personnelForGame(appid, options = {}) {
   const id = Number(appid);
   const details = readDetails(id);

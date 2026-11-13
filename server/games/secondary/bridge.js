@@ -7,10 +7,6 @@ const gameCache = require('../game-cache');
 const { normalizeSlug, uniqueSlugs } = require('./identity');
 const { readCache, writeCache, emptyEntry, isSettledEntry, ttlMs } = require('./cache');
 
-/* ------------------------------------------------------------------ */
-/* identity bridge                                                      */
-/* ------------------------------------------------------------------ */
-
 const WDQS = 'https://query.wikidata.org/sparql';
 const USER_AGENT = 'kinoboxd/1.0 (games secondary identity; https://github.com/hattivatt/kinoboxd)';
 const BATCH_SIZE = 450;
@@ -33,12 +29,6 @@ function escapeLiteral(value) {
     .replace(/[\r\n\t]/g, ' ');
 }
 
-/**
- * One SPARQL query for both stores. GOG values are written as `game/<slug>`
- * (the P2725 literal form), Epic values as the bare slug (P6278). The
- * publication date is `OPTIONAL` so a QID without P577 still answers identity
- * (and is cached as a settled «no date», not as a failure).
- */
 function buildBridgeQuery({ gogSlugs = [], epicSlugs = [] } = {}) {
   const gog = gogSlugs.map((slug) => `"game/${escapeLiteral(slug)}"`);
   const epic = epicSlugs.map((slug) => `"${escapeLiteral(slug)}"`);
@@ -65,13 +55,6 @@ ${branches.join('\n  UNION\n')}
 }`;
 }
 
-/**
- * One entry per `store:slug`. A date is only ever *added*: several P577
- * statements (regional releases) are reduced by the shared `pickDate` rule
- * (earliest year, then the most precise statement). `releaseDate` stays `null`
- * unless the statement is day-precision — a month/year precision must not
- * become a fake day.
- */
 function parseBridgeResponse(data) {
   const bindings =
     data && data.results && Array.isArray(data.results.bindings) ? data.results.bindings : [];
@@ -89,7 +72,6 @@ function parseBridgeResponse(data) {
       acc[key] = entry;
     }
     const appid = row.appid && row.appid.value ? String(row.appid.value) : null;
-    // Several rows per item (base + expansion pass): keep the one with an appid.
     if (appid && !entry.appid) entry.appid = appid;
     if (row.date && row.date.value) {
       const date = parseWbDate(row.date.value, row.precision && row.precision.value);
@@ -150,18 +132,7 @@ function chunk(list, size) {
   return out;
 }
 
-/**
- * Resolve GOG/Epic slugs to Wikidata items and Steam appids, merging into the
- * cached document.
- *
- * @param {object} input `{ gogSlugs: string[], epicSlugs: string[] }`
- * @param {object} [options] `{ fetchImpl, endpoint, ttlMs, force, timeoutMs }`
- * @returns {Promise<{entries, queries, resolved, cached, skipped, errors}>}
- */
 async function fetchSecondaryLinks(input = {}, options = {}) {
-  // The **raw** slug is what Wikidata stores (`P6278 the-witcher-3-wild-hunt`,
-  // `P2725 game/the_witcher_3_wild_hunt`); the normalised form is only the
-  // cache key, because the two stores spell the same game differently.
   const rawGog = uniqueSlugs(input.gogSlugs);
   const rawEpic = uniqueSlugs(input.epicSlugs);
   const cached = readCache();
@@ -204,7 +175,6 @@ async function fetchSecondaryLinks(input = {}, options = {}) {
     } catch (err) {
       result.errors.push(`wd_network:${(err && err.code) || 'failed'}`);
       result.skipped = 'network';
-      // Deferred, not negative: nothing is written for this batch.
       continue;
     }
     if (!response || !response.ok) {
@@ -222,7 +192,6 @@ async function fetchSecondaryLinks(input = {}, options = {}) {
       continue;
     }
     const parsed = parseBridgeResponse(data);
-    // A slug the query did not answer is a real miss for the cached document.
     for (const slug of batch.gogSlugs) {
       const key = `gog:${normalizeSlug(slug)}`;
       if (parsed[key]) result.entries[key] = parsed[key];
@@ -240,8 +209,6 @@ async function fetchSecondaryLinks(input = {}, options = {}) {
     result.resolved += Object.values(parsed).filter((entry) => entry.qid).length;
   }
 
-  // Only a batch that was actually answered may extend the TTL: a failed pass
-  // keeps the previous `fetchedAt` so the next run retries.
   if (!result.skipped || result.resolved > 0) {
     writeCache(result.entries, {
       stats: { gogSlugs: rawGog.length, epicSlugs: rawEpic.length, queries: result.queries },

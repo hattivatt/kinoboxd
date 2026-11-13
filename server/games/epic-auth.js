@@ -1,20 +1,5 @@
 'use strict';
 
-/**
- * Epic device-code auth sessions (M6b).
- *
- * The browser never sees `device_code` (it is the secret that grants the
- * token) — only the short `user_code` and the activation URL. The backend
- * polls the account service, stores the resulting token with 0600
- * (`epic-token-store.js`) and binds the Epic account to the same owner
- * (`steam-<steamid64>`) as the primary library.
- *
- * Session states: `pending` → `authorized` | `expired` | `failed`.
- * `slow_down` from Epic increases the polling interval; `authorization_pending`
- * keeps the session alive until `expires_in`. A network error during polling
- * is retried until the device code expires (it is not a failed login).
- */
-
 const crypto = require('crypto');
 
 const epic = require('./epic');
@@ -64,7 +49,6 @@ function publicSession(session) {
     importError: session.importError || null,
     polls: session.polls,
     authorizedAt: session.authorizedAt || null,
-    // Never: deviceCode, access/refresh tokens.
   };
 }
 
@@ -79,11 +63,6 @@ function cleanupSessions() {
   }
 }
 
-/**
- * Refuse to attach an Epic account to a different owner. The games model is
- * one owner → one Epic secondary library; a second account is an explicit
- * `owner_mismatch`, never a silent sum (§14.4 rule 1).
- */
 function assertOwnerBinding(accountId, ownerKey) {
   if (!ownerKey) return;
   const existing = epicCache.getEpicProfile(accountId);
@@ -147,8 +126,6 @@ async function persistAuth({
     disconnectedAt: null,
   });
 
-  // The user just granted access: start the library import automatically so
-  // the «Подключения» card can show counts/hours without a second click.
   let importJobId = null;
   let importError = null;
   if (!autoImport) return { importJobId, importError };
@@ -195,11 +172,6 @@ async function completeAuth(session, tokens) {
   }
 }
 
-/**
- * Authorization-code login (the working flow since Epic closed device-code
- * for public clients): exchange the pasted one-time `code` for tokens, bind
- * the account to the same Steam owner and start the import.
- */
 async function connectWithCode(options = {}) {
   const ownerKey = normalizeOwnerKey(options.ownerKey);
   const store = options.tokenStore || tokenStore;
@@ -244,8 +216,6 @@ async function pollSession(authId) {
     }
     return publicSession(session);
   }
-  // The UI polls GET /epic/auth/:authId, the background loop polls too; one
-  // network poll per `intervalMs` regardless of how many callers ask.
   if (session.lastPollAt && Date.now() - session.lastPollAt < session.intervalMs) {
     return publicSession(session);
   }
@@ -256,7 +226,6 @@ async function pollSession(authId) {
   try {
     result = await session.client.exchangeDeviceCode(session.deviceCode);
   } catch (err) {
-    // Network/5xx/breaker: the code is still valid, retry until it expires.
     session.error = epic.maskSecrets(err && err.message ? err.message : 'poll failed');
     session.code = (err && err.code) || 'epic_poll_failed';
     return publicSession(session);
@@ -309,10 +278,6 @@ function schedulePoll(session) {
   if (session.timer.unref) session.timer.unref();
 }
 
-/**
- * Start a device-code login. Returns the public session (user code + URL);
- * `device_code` stays in memory and is deleted as soon as the token arrives.
- */
 async function startDeviceAuth(options = {}) {
   cleanupSessions();
   const ownerKey = normalizeOwnerKey(options.ownerKey);
@@ -365,7 +330,6 @@ function cancelSession(authId) {
   return true;
 }
 
-/** Tests only: drop every in-memory session. */
 function _reset() {
   for (const session of sessions.values()) {
     if (session.timer) clearTimeout(session.timer);

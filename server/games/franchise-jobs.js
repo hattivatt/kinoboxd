@@ -1,35 +1,5 @@
 'use strict';
 
-/**
- * On-demand Wikidata franchise pass (M4-B), modelled on the M3 personnel job
- * (`personnel/jobs.js`) — same health/coalescing contract, different payload.
- *
- *   POST /api/games/franchise-enrich { profile, force? } → job
- *   GET  /api/games/franchise-enrich/status?id=…         → job
- *
- * Why a job and not a route call: one SPARQL query is ~1–5 s (and a cold WDQS
- * can be much slower), the route must answer from the cache immediately, and
- * two page views must not spend the WDQS budget twice. Hence:
- *
- *   - `kickQuietly(profile)` — fire-and-forget, never throws into the caller,
- *     used by import/refresh (`import.js`) and the lazy `GET /franchises`;
- *   - one pass per process (`chain`) and one per host: it takes the **same**
- *     `personnel.lock` file as the M3 credits pass (`personnel/lock.js`,
- *     owner `games-franchise`). Franchise and personnel both walk WDQS; sharing
- *     the lock means the two passes queue instead of hitting query.wikidata.org
- *     at the same time (AGENTS §1 politeness, brief item 4);
- *   - the WD breaker state is shared too (`personnel/wikidata.js`
- *     `defaultStateStore()`), so a 429 in one pass backs off both;
- *   - `franchise-state.json` keeps the last run per profile (resume/force);
- *     `links/<appid>.json` is the real progress;
- *   - the pass waits for a running store enrich (`enrichJobs.whenIdle()`)
- *     before taking the lock: otherwise it would hold the WDQS lock while the
- *     library details are still arriving and starve the personnel pass.
- *
- * Nothing here is owner-agnostic: `links/` is metadata, but the pass is scoped
- * to the library of exactly one cached profile.
- */
-
 const gameCache = require('./game-cache');
 const { createJobs } = require('../core/jobs');
 const enrichJobs = require('./enrich');
@@ -43,12 +13,6 @@ const DEFAULT_LOCK_WAIT_MS = 30 * 1000;
 const DEFAULT_WAIT_FOR_ENRICH_MS = 20 * 60 * 1000;
 const DEFAULT_KICK_COOLDOWN_MS = 10 * 60 * 1000;
 
-/**
- * Job registry (core/jobs): single-flight per profile, one pass chain, the
- * 20-job ring and the lazy re-kick window. The window ignores a failed pass
- * (the WD breaker already protects WDQS) and a `lock_busy` skip, so a single
- * import race cannot hide franchises for the whole cooldown.
- */
 const jobs = createJobs({
   name: 'games-franchise',
   idPrefix: 'games-franchise',
@@ -78,7 +42,6 @@ function codedError(message, code, status = 400) {
   return err;
 }
 
-/** Public job view — WD has no secrets, and none are added here. */
 function publicStatus(job) {
   if (!job) return null;
   return {
@@ -105,12 +68,10 @@ function publicStatus(job) {
     wdAnswered: job.wdAnswered,
     wdSkipped: job.wdSkipped,
     wdDisabledUntil: job.wdDisabledUntil,
-    // B6: base-version bridge + its store step.
     bridgeCandidates: job.bridgeCandidates == null ? null : job.bridgeCandidates,
     bridgeQueries: job.bridgeQueries || 0,
     bridged: job.bridged || 0,
     bridgeMisses: job.bridgeMisses || 0,
-    // M6 follow-up: P179 of GOG/Epic-only works in the same pass.
     secondaryTargets: job.secondaryTargets || 0,
     secondaryCandidates: job.secondaryCandidates || 0,
     secondaryUpdated: job.secondaryUpdated || 0,
@@ -157,13 +118,6 @@ function wikidataStatus(options = {}) {
   return { state: 'ready', enabled: true, disabledUntil: null };
 }
 
-/**
- * Why a lazy kick would be pointless right now (`null` = go ahead).
- *
- * @returns {string|null} `invalid_profile` | `profile_not_imported` |
- *          `library_partial` | `sources_disabled` | `wikidata_cooldown` |
- *          `recent_cooldown`
- */
 function kickGate(profileKey, options = {}) {
   const parsed = gameCache.parseProfileToken(profileKey);
   if (!parsed) return 'invalid_profile';
@@ -176,9 +130,6 @@ function kickGate(profileKey, options = {}) {
   const cooldownMs = Number.isFinite(Number(options.kickCooldownMs))
     ? Math.max(0, Number(options.kickCooldownMs))
     : DEFAULT_KICK_COOLDOWN_MS;
-  // A failed pass is not throttled (the WD breaker already protects WDQS); a
-  // pass that skipped on a busy lock must also be retryable soon — otherwise a
-  // single import race would hide franchises for the whole cooldown.
   if (
     options.forceKick !== true &&
     jobs.cooldownRemaining(parsed.key, {
@@ -279,9 +230,6 @@ async function runPass(job, parsed, options) {
     lock.releaseLock(held.token);
   }
 
-  // B6: the store step runs AFTER the WD lock is released — it is a different
-  // host with its own 1.7 s pause and 30-minute breaker, and holding the WD
-  // lock for a minute of store requests would starve the personnel pass.
   if (ran && options.baseDetails !== false) {
     job.stage = 'base_details';
     try {
@@ -321,14 +269,6 @@ function enqueue(job, task) {
   });
 }
 
-/**
- * Start (or coalesce into) one franchise pass for a cached profile.
- *
- * @param {string} profileToken `steam-<steamid64>`
- * @param {{force?:boolean, limit?:number, waitForEnrich?:boolean,
- *          waitForEnrichMs?:number, lockWaitMs?:number, lockPollMs?:number,
- *          fetchImpl?:Function, stateStore?:object}} [options]
- */
 function startFranchise(profileToken, options = {}) {
   const parsed = gameCache.parseProfileToken(profileToken);
   if (!parsed) {
@@ -387,11 +327,6 @@ function startFranchise(profileToken, options = {}) {
   return publicStatus(job);
 }
 
-/**
- * Fire-and-forget start used by import/refresh and the lazy route. Never
- * throws; returns a status-shaped object with `skipped` set when the gate
- * refused (so the caller can put the reason into its own payload).
- */
 function kickQuietly(profileToken, options = {}) {
   try {
     const parsed = gameCache.parseProfileToken(profileToken);
@@ -433,12 +368,10 @@ function kickQuietly(profileToken, options = {}) {
   }
 }
 
-/** Wait for the current franchise chain to settle (tests / shutdown). */
 function whenIdle() {
   return jobs.whenIdle();
 }
 
-/** Test helper: forget the re-kick guard between cases. */
 function resetCooldown() {
   jobs.resetCooldown();
 }

@@ -1,26 +1,5 @@
 'use strict';
 
-/**
- * `/api/games/franchises` + `/api/games/franchise-enrich` (M4-B, ИГРЫ §2.5/§4.4).
- *
- *   GET  /api/games/franchises?profile=steam-<steamid64>
- *   POST /api/games/franchise-enrich { profile, force? }
- *   GET  /api/games/franchise-enrich/status?id=…
- *   GET  /api/games/franchise-enrich/:jobId
- *
- * Same contract style as every other games route: exactly one profile token,
- * unknown query parameters are a 400 `unexpected_parameter`, and the GET never
- * waits for WDQS — it answers from `links/`, `details/` and the library, then
- * starts the franchise pass fire-and-forget when something is pending
- * (`pending.running` / `pending.reason`), exactly like the M3 personnel route.
- *
- * The payload is bottom-up and stays in this route (the big `stats.js` merge
- * is a separate integration step): franchises are grouped by `franchiseKey`
- * (`wd:Q…` from P179, `title:<slug>` for the low-confidence heuristic) and
- * carry `gamesCount`, `hoursSum`, `yearsSpread`, `appids[]`, plus honest
- * coverage (`coverage.links`, `coverage.releaseYears`) and pending counters.
- */
-
 const express = require('express');
 
 const { HttpError, mapDomainError } = require('../core/errors');
@@ -43,9 +22,6 @@ const FRANCHISE_ERROR_PROFILE = {
   fallback: { code: 'games_franchise_error' },
 };
 
-
-
-/** Exactly one cached games profile (same contract as `/api/games/stats`). */
 function resolveProfileOrThrow(raw) {
   const value = raw == null ? '' : String(raw).trim();
   const available = gameCache.listProfiles().map((entry) => entry.key);
@@ -85,10 +61,6 @@ function resolveProfileOrThrow(raw) {
   return { parsed, profile, library };
 }
 
-/**
- * Fill `pending.running`/`pending.reason` and start the lazy pass when it can
- * help. Never throws: a failed kick only changes the reported reason.
- */
 function annotatePending(payload, scope, deps = {}) {
   const jobs = deps.jobs || franchiseJobs;
   const key = scope.parsed.key;

@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * Epic client transport: option/host resolution, the politeness pause, the
- * per-host breaker and the three request helpers (`requestRaw`,
- * `requestJson`, `requestAccountJson`).
- *
- * Everything here is stateful per client instance; `createRequestPipeline`
- * closes over one breaker store and one `lastRequestAt`, exactly like the
- * original single-factory module did. No endpoint body lives here.
- */
-
 const gameCache = require('../game-cache');
 const { createSourceGate } = require('../../core/source-client');
 const { nodeRequest } = require('../../core/http');
@@ -49,7 +39,6 @@ function networkError(err, target) {
   try {
     host = new URL(target).hostname;
   } catch (_) {
-    /* ignore */
   }
   return new EpicError(
     `Epic недоступен (${host || 'epic'}, ${code}): сеть/DNS/TLS не пускает к источнику. ` +
@@ -154,7 +143,6 @@ function createRequestPipeline(context) {
     return headers;
   }
 
-  /** Raw HTTP response; throttle + breaker, but no status classification. */
   async function requestRaw({ method = 'GET', url, host, token, basic, contentType, body }) {
     const response = await gate.request(
       host,
@@ -222,7 +210,6 @@ function createRequestPipeline(context) {
     return json;
   }
 
-  /** Try the account hosts in order on network/5xx failures (host drift). */
   async function requestAccountJson(pathAndQuery, opts = {}) {
     let lastError = null;
     for (const host of accountHosts) {

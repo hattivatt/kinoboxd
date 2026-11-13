@@ -1,35 +1,5 @@
 'use strict';
 
-/**
- * MobyGames credit provider for games (ИГРЫ-АРХИТЕКТУРА §2.4, §7.2).
- *
- * MobyGames is the *primary* source of structured people credits (Composer,
- * Game Design, Writing, Art/Graphics, Programming, Production, Voice …), but it
- * needs an API key and the docs are blocked from the dev network (§2.4: «docs
- * 403»). No key was provided for this round, so the provider is implemented as
- * a **graceful no-key skeleton**:
- *
- *   - `mobyKeyInfo()` / `mobyStatus()` report `{configured: false, source: null}`
- *     and never make a request; the personnel payload shows
- *     `sources.mobygames = { enabled: false, reason: 'key_missing' }`;
- *   - the key is resolved like every other token in this project:
- *     env `MOBYGAMES_API_KEY` (alias `MOBY_API_KEY`) → `config/moby-token`
- *     (0600, gitignored, dev fallback). The value is never logged, returned or
- *     put into a payload — only the source name (`env`/`file`);
- *   - tests inject `fetchImpl` and a fake key; live requests are never made
- *     from `npm test` (ИГРЫ §10.3).
- *
- * Politeness (§3.9): 1.1 s pause between requests, `GAMES_MOBY_BUDGET`
- * (default 100 games per run), 30-minute breaker on `403`/`429`, network/5xx is
- * `deferred` (not a negative cache). Credits are cached by `personnel.js` in
- * `cache-games/personnel/<appid>.json` for 90 days, including «no credits»
- * (negative cache), so a game is asked once per quarter.
- *
- * Test hook: `KINOBOXD_MOBY_KEY_FILE` points the file fallback at a non-existent
- * path so a dev token in the main tree cannot change a test result; a
- * `KINOBOXD_GAMES_MOBY=off` kill switch disables the provider entirely.
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -50,11 +20,6 @@ const DEFAULT_BUDGET = sources.budgetLimit('moby');
 const BREAKER_MS = sources.breakerMs('moby');
 const DEFAULT_TIMEOUT_MS = sources.timeoutMs('moby');
 
-/**
- * Moby role string → local role. Order matters: «Audio/Graphics» must land in
- * `artist` before the generic `audio` rule, QA is explicitly dropped (ИГРЫ
- * §7.2: QA is never shown).
- */
 const ROLE_PATTERNS = [
   [/quality assurance|\bqa\b|testing/i, null],
   [/voice/i, 'voice'],
@@ -86,10 +51,6 @@ let cachedKey = null;
 let cachedSource = null;
 let keyLoaded = false;
 
-/**
- * Resolve the MobyGames key once: env → local file. Returns null when absent.
- * Never log the returned value: report `mobyKeyInfo().source` instead.
- */
 function loadMobyKey() {
   if (keyLoaded) return cachedKey;
   let found = null;
@@ -105,7 +66,6 @@ function loadMobyKey() {
       const value = fs.readFileSync(keyFilePath(), 'utf8').trim();
       if (value) found = { token: value, source: 'file' };
     } catch (err) {
-      /* no local fallback: a missing key is a normal condition */
     }
   }
   cachedKey = found ? found.token : null;
@@ -114,7 +74,6 @@ function loadMobyKey() {
   return cachedKey;
 }
 
-/** `{ configured, source }` — the source is a name, never the key value. */
 function mobyKeyInfo() {
   loadMobyKey();
   return { configured: Boolean(cachedKey), source: cachedSource };
@@ -126,18 +85,12 @@ function mobyEnabled() {
   return mobyKeyInfo().configured;
 }
 
-/** Test helper: forget the cached key so the next call re-reads env/file. */
 function resetMobyKeyCache() {
   keyLoaded = false;
   cachedKey = null;
   cachedSource = null;
 }
 
-/* ------------------------------------------------------------------ */
-/* Parsing                                                             */
-/* ------------------------------------------------------------------ */
-
-/** Map one Moby role string to our role (or null when the role is not shown). */
 function mapRole(rawRole) {
   const text = String(rawRole == null ? '' : rawRole).trim();
   if (!text) return null;
@@ -147,15 +100,6 @@ function mapRole(rawRole) {
   return null;
 }
 
-/**
- * Normalise a MobyGames credits answer.
- *
- * The documented shape is `{ credits: { "<role>": [{person_id, name}, …] } }`;
- * an array form `[{ role, person_id, name }]` is accepted defensively because
- * the docs themselves are unreachable from this network (§2.4).
- *
- * @returns {{source: 'mobygames', people: Array, studios: Array, rolesSeen: string[]}}
- */
 function parseCreditsResponse(json) {
   const credits = json && typeof json === 'object' ? json.credits : null;
   const people = new Map();
@@ -206,10 +150,6 @@ function parseCreditsResponse(json) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Breaker                                                             */
-/* ------------------------------------------------------------------ */
-
 function defaultBreakerStore() {
   return {
     read() {
@@ -220,20 +160,11 @@ function defaultBreakerStore() {
       try {
         gameCache.writeJsonAtomicSync(BREAKER_PATH, state && typeof state === 'object' ? state : {});
       } catch (err) {
-        /* best-effort */
       }
     },
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Client                                                              */
-/* ------------------------------------------------------------------ */
-
-/**
- * @param {object} [options] `fetchImpl`, `keyProvider`, `now`, `sleep`,
- *        `pauseMs`, `budget`, `breakerStore` — every one injectable for tests.
- */
 function createClient(options = {}) {
   const fetchImpl = options.fetchImpl;
   const now = typeof options.now === 'function' ? options.now : () => Date.now();
@@ -311,7 +242,6 @@ function createClient(options = {}) {
         label: 'moby',
       });
     } catch (err) {
-      // Transport error: deferred, never a negative cache (§3.9).
       throw new MobyError(`MobyGames недоступен: ${err.message}`, 'moby_unreachable', {
         cause: err,
       });
@@ -345,7 +275,6 @@ function createClient(options = {}) {
 
   return {
     stats,
-    /** Status for the personnel payload: booleans and a source name, no key. */
     status() {
       const info = mobyKeyInfo();
       const enabled = mobyEnabled();
@@ -364,12 +293,6 @@ function createClient(options = {}) {
           : null,
       };
     },
-    /**
-     * Credits of one game platform. Requires a resolved Moby id (`links/`),
-     * which is the M2/M3 resolver's job (ИГРЫ §4.1).
-     *
-     * @param {{mobyId: number|string, platformId: number|string}} target
-     */
     async fetchGameCredits(target, opts = {}) {
       const mobyId = Number(target && target.mobyId);
       const platformId = Number(target && target.platformId);
@@ -385,7 +308,6 @@ function createClient(options = {}) {
       );
       return { ...parseCreditsResponse(json), mobyId, platformId, fetchedAt: new Date().toISOString() };
     },
-    /** Title search — used by the future resolver, not by the stats payload. */
     async searchGame(title, opts = {}) {
       const text = String(title == null ? '' : title).trim();
       if (!text) throw new MobyError('title is required', 'moby_invalid_target');

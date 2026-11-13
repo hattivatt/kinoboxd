@@ -5,11 +5,6 @@ const fs = require('fs');
 const { createJobs } = require('../../core/jobs');
 const { STATUS_PATH, readStatusState } = require('./store');
 
-// One registry for the secondary-details job (core/jobs): single-flight per
-// owner, 50-job ring. The ring is not the per-owner map this module used to
-// keep — `jobFor()` reads the latest remembered job for an owner, so the public
-// shape is unchanged, while the job lifecycle (status, single-flight, finalize)
-// lives in core/jobs like every other long-running process of the service.
 const jobs = createJobs({
   name: 'games-secondary-details',
   idPrefix: 'secondary-details',
@@ -18,11 +13,8 @@ const jobs = createJobs({
 });
 
 const lastKick = new Map();
-// `ownerKey → {at, pending}` — a *negative* coverage verdict, memoized because
-// `/stats` is polled (see `kickFromStats`).
 const coverageMemo = new Map();
 
-/** Latest kick of one owner, memory first, then the persisted ledger. */
 function lastKickAtFor(ownerKey) {
   const key = String(ownerKey == null ? '' : ownerKey);
   const memory = lastKick.get(key);
@@ -39,7 +31,6 @@ function lastKickAtFor(ownerKey) {
   return latest || null;
 }
 
-/** Test helper: forget job/cooldown state between cases. */
 function resetJobs() {
   jobs.clear();
   jobs.resetCooldown();
@@ -48,7 +39,6 @@ function resetJobs() {
   try {
     fs.rmSync(STATUS_PATH, { force: true });
   } catch (err) {
-    /* nothing to clean */
   }
 }
 

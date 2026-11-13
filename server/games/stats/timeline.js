@@ -1,23 +1,5 @@
 'use strict';
 
-/**
- * Achievement timeline of the games payload: days (UTC) with at least one
- * unlock, the month timeline, and current/best streaks. This is "achievement
- * activity", not "days played" — the UI must say so.
- *
- * S1 «распил god-функции»: `calendarFromAchievements` moved out of
- * `games/stats.js` unchanged; `buildTimeline(ctx)` is the section builder the
- * assembly line calls. It counts one identity per work (`canonicalOf`), so two
- * editions of one game are not counted twice.
- */
-
-/**
- * Days (UTC) with at least one achievement unlock, plus current/best streak.
- *
- * `keyOf(doc)` maps a document to the identity counted in `timeline.games`;
- * the stats builder passes the canonical work key so two editions of one game
- * are not counted twice. Defaults to the appid (the M1 behaviour).
- */
 function calendarFromAchievements(docs, keyOf) {
   const identityOf = typeof keyOf === 'function' ? keyOf : (doc) => doc.appid;
   const dayCounts = new Map();
@@ -55,7 +37,6 @@ function calendarFromAchievements(docs, keyOf) {
     .sort((a, b) => a.month.localeCompare(b.month))
     .map((entry) => ({ month: entry.month, unlocked: entry.unlocked, games: entry.games.size }));
 
-  // Streaks over consecutive calendar days with unlocks (UTC).
   let best = 0;
   let bestDates = [];
   let run = 0;
@@ -97,7 +78,6 @@ function calendarFromAchievements(docs, keyOf) {
   };
 }
 
-/** The three timeline payload keys, built from the cached achievement docs. */
 function buildTimeline(ctx) {
   const { achievementDocs, canonicalOf } = ctx;
   const calendar = calendarFromAchievements(

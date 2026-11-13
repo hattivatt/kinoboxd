@@ -16,9 +16,7 @@ const EDITION_SUFFIXES = [
   'remastered',
   'legacy',
 ];
-/** Bases that are too generic to be a franchise on their own. */
 const STOP_BASES = new Set(['the', 'a', 'an', 'game', 'games', 'collection', 'series']);
-/** False pairs from ИГРЫ §2.5/§4.4 — never merge even if a future fuzzy pass tries. */
 const BLACKLIST_PAIRS = [
   ['dark souls', 'darkest dungeon'],
   ['hitman', "hitman's bodyguard"],
@@ -45,21 +43,11 @@ function stripEdition(text) {
   return out;
 }
 
-/**
- * Normalised franchise head of a game title:
- *   "The Witcher 3: Wild Hunt"        → "the-witcher"
- *   "Fallout: New Vegas PCR"          → "fallout"
- *   "Sid Meier's Civilization V"      → "sid-meier-s-civilization"
- *   "Half-Life 2: Deathmatch"         → "half-life"
- * Returns null when the head is too short/generic to be a franchise.
- */
 function heuristicBase(name) {
   let text = normalizeTitle(name);
   if (!text) return null;
-  // Subtitle cut: ":" and spaced dashes. «Half-Life» keeps its hyphen.
   text = text.split(/\s*:\s*|\s+[\u2013\u2014]\s+|\s+-\s+/)[0].trim();
   text = stripEdition(text);
-  // Trailing sequence marker: "Civilization IV", "Fallout 4", "Grand Theft Auto V".
   const stripped = text.replace(/\s+(?:[ivxlcdm]+|\d{1,3})$/i, '').trim();
   if (stripped && stripped.length >= 3) text = stripped;
   if (!text || text.length < 3) return null;
@@ -101,7 +89,6 @@ function groupIsBlacklisted(members) {
 }
 
 function applyTitleHeuristic(games) {
-  // ---- minimal title heuristic (only for games Wikidata did not place) ----
   const groups = new Map();
   for (const game of games) {
     if (game.wdKey || !game.name) continue;

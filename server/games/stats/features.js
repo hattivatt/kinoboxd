@@ -1,13 +1,5 @@
 'use strict';
 
-/**
- * Feature aggregates of the games payload: DLC facts, Wikidata franchise
- * coverage and the M2 mode/early-access/F2P/platform blocks.
- *
- * S1 «распил god-функции»: split out of `aggregates.js` so every builder stays
- * under the 300-line target. Pure over the visible works and the details map.
- */
-
 const { DLC_TOP_LIMIT } = require('./constants');
 const { round1, round2, round3, minutesToHours } = require('./numeric');
 const { detailOf, linksOf } = require('./documents');
@@ -26,10 +18,6 @@ function buildFeatures(ctx) {
   } = ctx;
   const { workDlc, workModeFlags, workHasFlag } = ctx.workMeta;
 
-  /* ---------------- M4: DLC facts ---------------- */
-  // `dlcCount` already lives in the details document (`dlc[]` length); the
-  // widget only needs the facts, not the DLC appids. Editions share DLCs, so
-  // the work's count is the union of its editions' DLC appids.
   let dlcSummary = null;
   if (hasDetails) {
     const dlcGames = [];
@@ -58,11 +46,6 @@ function buildFeatures(ctx) {
     };
   }
 
-  /* ---------------- M4-B: Wikidata links (franchise / P577 year) ---------------- */
-  // Per-game assignment lives in `gamesIndex`; this block only counts what the
-  // WD pass answered so `summary` and `meta.pending` stay honest. The grouping
-  // (and the low-confidence title heuristic) belongs to `/api/games/franchises`
-  // — `summary.coverage.franchises` is therefore Wikidata-only on purpose.
   let gamesWithFranchiseLinks = 0;
   let linksResolved = 0;
   for (const work of visibleWorks) {

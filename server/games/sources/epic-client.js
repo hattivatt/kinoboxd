@@ -1,17 +1,5 @@
 'use strict';
 
-/**
- * Epic client endpoints: the OAuth grants (client token, device code,
- * authorization code, refresh, stored-token access) and the read endpoints
- * (account, entitlements, library items, playtime, catalog bulk,
- * productmapping, session kill).
- *
- * Every function takes the explicit `context` built by `resolveClientOptions`
- * and `createRequestPipeline`; nothing here reads `process.env` or the file
- * system. `epic.js` composes the three factories into the public client
- * object.
- */
-
 const {
   EpicError,
   extractAuthCode,
@@ -50,8 +38,6 @@ function createTokenGrants(context) {
         body: formEncode({ grant_type: 'client_credentials' }),
       });
     } catch (err) {
-      // 401 here is about the *client* credentials, not the owner's token:
-      // the message must say so (the values are never printed).
       if (err && err.code === 'epic_auth_expired') {
         throw new EpicError(
           'Epic отклонил client credentials лаунчера (значения не печатаются). ' +
@@ -76,12 +62,6 @@ function createTokenGrants(context) {
     return clientToken.token;
   }
 
-  /**
-   * Legacy device-code flow. Kept for completeness: Epic closed the grant for
-   * public clients (400 `unsupported_grant_type`, 1016), so this is expected
-   * to answer `epic_device_grant_unavailable` and the UI must use the
-   * authorization-code flow instead.
-   */
   async function deviceAuthorization() {
     const requestDevice = async (clientToken) => {
       const host = accountHosts[0];
@@ -117,19 +97,12 @@ function createTokenGrants(context) {
     try {
       return await requestDevice(client);
     } catch (err) {
-      // A client token can be revoked between the cache write and this call;
-      // retry exactly once with a fresh client_credentials token.
       if (!err || err.code !== 'epic_auth_expired') throw err;
       client = await getClientToken(true);
       return requestDevice(client);
     }
   }
 
-  /**
-   * Exchange the one-time `code` from `id/api/redirect` for a user token.
-   * Basic auth (client_id:client_secret) is mandatory here — the values are
-   * never echoed, only Epic's own error text is.
-   */
   async function exchangeAuthorizationCode(codeOrUrl) {
     const code = extractAuthCode(codeOrUrl);
     if (!code) {
@@ -151,8 +124,6 @@ function createTokenGrants(context) {
       body: formEncode({
         grant_type: 'authorization_code',
         code,
-        // `eg1` is what the launcher clients request; without it Epic may
-        // answer a legacy non-prefixed token.
         token_type: 'eg1',
       }),
     });
@@ -187,11 +158,6 @@ function createTokenGrants(context) {
     );
   }
 
-  /**
-   * One poll of the device-code grant. Returns a *status*, never throws for
-   * the normal pending/slow_down/expired states; authorized carries tokens
-   * (the caller stores them, this module does not write secrets).
-   */
   async function exchangeDeviceCode(deviceCode) {
     const client = await getClientToken();
     const response = await requestRaw({
@@ -307,15 +273,9 @@ function createTokenAccess(context, grants) {
         lastAuthErrorAt: new Date().toISOString(),
       });
     } catch (_) {
-      /* best-effort: the 401 is the primary signal */
     }
   }
 
-  /**
-   * Run a read call and record a 401 in the token file, so the status route
-   * says "требуется переподключение" instead of showing the old snapshot as
-   * if the connection were fine.
-   */
   async function readWithAuth(accountId, task) {
     try {
       return await task();
@@ -325,12 +285,6 @@ function createTokenAccess(context, grants) {
     }
   }
 
-  /**
-   * A usable access token for `accountId`, refreshed when it is within 2 min
-   * of expiry. A missing file is `epic_not_connected`; a rejected refresh is
-   * `epic_auth_expired` and is recorded in the token file (status, never the
-   * value) so `/epic/status` can say "переподключите".
-   */
   async function getAccessToken(accountId) {
     if (!tokenStore || typeof tokenStore.getTokens !== 'function') {
       throw new EpicError(
@@ -417,11 +371,6 @@ function createReadEndpoints(context, access) {
     }
   }
 
-  /**
-   * Entitlements (primary ownership). Pagination is `start`/`count`; the
-   * endpoint is on `entitlement-public-service-prod08` (the `…prod06` host
-   * does not resolve from this network, §14.2 research note).
-   */
   async function getEntitlements(accountId, opts = {}) {
     return readWithAuth(accountId, async () => {
       const token = await getAccessToken(accountId);
@@ -455,7 +404,6 @@ function createReadEndpoints(context, access) {
     });
   }
 
-  /** Library items with cursor pagination (fallback/merge for appName). */
   async function getLibraryItems(accountId, opts = {}) {
     return readWithAuth(accountId, async () => {
       const token = await getAccessToken(accountId);
@@ -504,12 +452,6 @@ function createReadEndpoints(context, access) {
     });
   }
 
-  /**
-   * Catalog metadata, batched by namespace. The endpoint requires the owner's
-   * token even though the host is called `…public-service` (§14.2). Returns
-   * `{ [catalogItemId]: normalized }`; chunk failures are collected so the
-   * importer can keep a partial coverage instead of failing the library.
-   */
   async function getCatalogBulk(namespace, catalogItemIds, opts = {}) {
     return readWithAuth(opts.accountId, async () => {
       const ids = unique((Array.isArray(catalogItemIds) ? catalogItemIds : []).map(String));
@@ -518,10 +460,6 @@ function createReadEndpoints(context, access) {
       const chunkSize = Math.max(1, Math.min(50, Number(opts.chunkSize) || CATALOG_CHUNK));
       const items = {};
       const failures = [];
-      // Per-chunk transport facts for the diagnostics ledger: status + exact
-      // response size. A success used to be invisible after normalization,
-      // which is why a silent «empty» catalog could not be told apart from a
-      // shape the parser ignored.
       const chunks = [];
       let requests = 0;
       for (let index = 0; index < ids.length; index += chunkSize) {
@@ -578,7 +516,6 @@ function createReadEndpoints(context, access) {
     });
   }
 
-  /** Public appName → slug mapping; no token, one request, 68 KB. */
   async function getProductMapping() {
     const json = await requestJson({
       url: `https://${storeContentHost}/api/content/productmapping`,
@@ -587,7 +524,6 @@ function createReadEndpoints(context, access) {
     return normalizeProductMapping(json);
   }
 
-  /** Best-effort session kill on disconnect (local token is deleted anyway). */
   async function killSession(accessToken) {
     if (!accessToken) return false;
     try {

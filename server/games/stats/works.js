@@ -1,25 +1,7 @@
 'use strict';
 
-/**
- * Canonical works (M5-B editions) of the games payload: the edition index, the
- * `appid → canonical` lookup and the one-row-per-work grouping every aggregate
- * iterates.
- *
- * S1 «распил god-функции»: pure over the already-filtered `keptGames`; the
- * persisted `editions.json` is used when it covers the library, otherwise the
- * index is rebuilt in memory (the builder stays pure).
- */
-
 const editions = require('../editions');
 
-/**
- * @param {object} input      raw `buildGamesStats` input (for `editions`)
- * @param {Array}  keptGames  library rows that survived type/free filters
- * @param {object} details    `{ [appid]: details/<appid>.json }`
- * @param {object} links      `{ [appid]: linkDoc }` (Wikidata)
- * @param {string} profileKey `steam-<steamid64>`
- * @param {object} library    library snapshot (`fingerprint` for the index)
- */
 function buildWorks({ input, keptGames, details, links, profileKey, library }) {
   const editionDoc =
     input.editions &&
@@ -78,8 +60,6 @@ function buildWorks({ input, keptGames, details, links, profileKey, library }) {
       if (right.appid === persistedPrimary) return 1;
       return Number(left.appid) - Number(right.appid);
     });
-    // Effective primary: the edition the owner actually played (the persisted
-    // primary can be an edition dropped by `includeFree=0`).
     work.primary = work.games[0];
     work.hours = work.minutes / 60;
   }

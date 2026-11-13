@@ -1,28 +1,5 @@
 'use strict';
 
-/**
- * `/api/games/personnel` + `POST /api/games/override` (M3, ИГРЫ §3.8/§5.3/§5.5).
- *
- *   GET  /api/games/personnel?profile=steam-<steamid64>&role=…&sort=…
- *   POST /api/games/override   { type, action, from, to }
- *
- * Query contract is strict, like every other games route: an unknown parameter
- * is a 400 `unexpected_parameter`, never a silent ignore.
- *
- * The payload is built from caches only — this route never *waits* for WDQS or
- * MobyGames. But it is also the only reader of `personnel/<appid>.json`, so it
- * owns the lazy trigger: when credits are still missing and no pass is in
- * flight, it starts the personnel job fire-and-forget and says so
- * (`pending.running`/`pending.reason`). Without that kick the cache had no
- * writer in production and composers/designers never arrived (fix 01.11.2026,
- * ИГРЫ §2.4). The answer is never blocked: the next request sees the credits.
- *
- * When details/credits are missing it reports honest `pending` counters and
- * `coverage.percent` (the «Кредиты: N%» badge), never fabricated zeros
- * (ИГРЫ §7.2). `coverage.wikidata` carries the «WD: не запущено / недоступно»
- * badge with its reason, so the UI never has to guess why a role is empty.
- */
-
 const express = require('express');
 
 const { HttpError, mapDomainError } = require('../../core/errors');
@@ -45,8 +22,6 @@ const PERSONNEL_ERROR_PROFILE = {
   fallback: { code: 'games_personnel_error' },
 };
 
-
-/** Exactly one cached games profile (same contract as `/api/games/stats`). */
 function resolveProfileOrThrow(raw) {
   const value = raw == null ? '' : String(raw).trim();
   const available = gameCache.listProfiles().map((entry) => entry.key);
@@ -86,10 +61,6 @@ function resolveProfileOrThrow(raw) {
   return { parsed, profile, library };
 }
 
-/**
- * Fill `pending.running`/`pending.reason` and start the lazy pass when it can
- * help. Never throws: a failed kick only changes the reported reason.
- */
 function annotatePending(payload, scope, deps = {}) {
   const jobs = deps.jobs || personnelJobs;
   const enrich = deps.enrichJobs || enrichJobs;
@@ -103,15 +74,10 @@ function annotatePending(payload, scope, deps = {}) {
     return payload;
   }
   if (typeof enrich.isRunning === 'function' && enrich.isRunning(key)) {
-    // The credits pass is started by the same import/enrich kick and waits for
-    // the details chain; say so instead of «нет данных».
     payload.pending.running = true;
     payload.pending.reason = 'waiting_details';
     return payload;
   }
-  // `staleLabels` is the second reason to run a pass: the credits are complete
-  // but their names were built by an older label rule (§4.2), and only a
-  // re-fetch repairs a truncated one. Nothing to do means no kick at all.
   if (
     !(payload.pending.credits > 0) &&
     !(payload.pending.staleLabels > 0) &&
@@ -126,8 +92,6 @@ function annotatePending(payload, scope, deps = {}) {
   }
   const gamesTotal = payload.totals ? payload.totals.games : 0;
   if (gamesTotal > 0 && payload.pending.details >= gamesTotal) {
-    // No details document at all: Wikidata is asked by appid only for games
-    // whose `details/<appid>.json` exists, so a pass now would write nothing.
     payload.pending.reason = 'details_pending';
     return payload;
   }
@@ -158,8 +122,6 @@ function createRouter(deps = {}) {
     try {
       assertOnlyParams(req, ['profile', 'role', 'sort', 'limit'], ENDPOINT);
       const scope = resolveProfileOrThrow(req.query.profile);
-      // `role` is validated here for a fast 400, then passed through raw so the
-      // payload can echo `roleRequested` (e.g. the old `studio` alias).
       personnel.normalizeRole(req.query.role);
       const sort = personnel.normalizeSort(req.query.sort);
       let gamesLimit = 5;
@@ -178,7 +140,6 @@ function createRouter(deps = {}) {
         role: req.query.role,
         sort,
         gamesLimit,
-        // Set from the in-process job registries (no extra cache read).
         running:
           (typeof (deps.jobs || personnelJobs).isRunning === 'function' &&
             (deps.jobs || personnelJobs).isRunning(scope.parsed.key)) ||

@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * Per-work metadata helpers of the games payload: release year (own edition →
- * Wikidata P577 → base version), genres, canonical name, developers/publishers,
- * SteamSpy tags, review summary, DLC facts, mode flags.
- *
- * S1 «распил god-функции»: one factory over the input maps and the visible-work
- * lookup. The helpers are pure reads; they never mutate the work rows. The
- * builder keeps the same precedence chain as before the split.
- */
-
 const {
   detailOf,
   spyOf,
@@ -21,11 +11,6 @@ const {
 } = require('./documents');
 
 function buildWorkMeta({ details, detailsBase, linkDocs, spyDocs, reviewDocs, unionOf, workByAppid }) {
-  /**
-   * B6: the base-version document of an owned row, or null. `links` carries
-   * `baseAppid` (written by the Wikidata label bridge); the document itself
-   * lives in `details-base/` because the owner does not own that card.
-   */
   const baseDetailOfAppid = (appid) => {
     const link = linksOf(linkDocs, appid);
     if (!link || !link.baseAppid) return null;
@@ -39,12 +24,6 @@ function buildWorkMeta({ details, detailsBase, linkDocs, spyDocs, reviewDocs, un
     }
     return null;
   };
-  /**
-   * The year of one owned row from **its own** metadata, strongest first:
-   *   1. store `appdetails.releaseYear` (the edition's own date);
-   *   2. Wikidata `P577` of the SKU (`links.releaseYear`, M4-B).
-   * Nothing else: a base-version year is not this row's year.
-   */
   const ownYearOfAppid = (appid) => {
     const detailYear = releaseYearOf(detailOf(details, appid));
     if (detailYear != null) return detailYear;
@@ -55,13 +34,6 @@ function buildWorkMeta({ details, detailsBase, linkDocs, spyDocs, reviewDocs, un
     }
     return null;
   };
-  /**
-   * B6 last resort: the year of the **base version** — a regional SKU has no
-   * item of its own, its work does (`links.baseReleaseYear`, then the base
-   * card's `appdetails` in `details-base/`). Used only when nothing else knows
-   * the year, so a re-release never moves a work that already has a year
-   * (`Grand Theft Auto III` stays 2008, not the 2001 original).
-   */
   const baseYearOfAppid = (appid) => {
     const link = linksOf(linkDocs, appid);
     if (link) {
@@ -84,17 +56,9 @@ function buildWorkMeta({ details, detailsBase, linkDocs, spyDocs, reviewDocs, un
       year = year == null ? value : Math.min(year, value);
     }
     if (year != null) return year;
-    // M6c: a work that exists only outside Steam has no `appdetails`; the
-    // store catalogue's own release date is the honest year (GOG
-    // `getFilteredProducts.releaseDate`, Epic catalog `releaseInfo.date`).
     const entry = work.union || unionOf(work);
     return entry && entry.releaseYear != null ? entry.releaseYear : null;
   };
-  /**
-   * Per-appid year for `gamesIndex`. A row with no year of its own inherits
-   * the work year, so the frontend's canonical recount (`min` over editions)
-   * lands on exactly the same number as `years[]`.
-   */
   const yearOfAppid = (appid) => {
     const own = ownYearOfAppid(appid);
     if (own != null) return own;
@@ -109,15 +73,11 @@ function buildWorkMeta({ details, detailsBase, linkDocs, spyDocs, reviewDocs, un
       }
     }
     if (!out.length) {
-      // B6: a regional SKU has no store page — the work still has genres.
       for (const name of genreNamesOf(baseDetailOfWork(work))) {
         if (!out.includes(name)) out.push(name);
       }
     }
     if (!out.length) {
-      // M6c: GOG/Epic catalogue genres when the snapshot carries them. A store
-      // that has no genre field contributes nothing (honest gap, no guessing
-      // from tags).
       const entry = work.union || unionOf(work);
       for (const name of (entry && Array.isArray(entry.genres) ? entry.genres : [])) {
         if (!out.includes(name)) out.push(name);
@@ -125,7 +85,6 @@ function buildWorkMeta({ details, detailsBase, linkDocs, spyDocs, reviewDocs, un
     }
     return out;
   };
-  /** B6: canonical (base-version) name of a work, when it differs. */
   const workCanonicalName = (work) => {
     const base = baseDetailOfWork(work);
     if (base && base.name) return String(base.name);
@@ -144,7 +103,6 @@ function buildWorkMeta({ details, detailsBase, linkDocs, spyDocs, reviewDocs, un
     if (base && Array.isArray(base.developers) && base.developers.length) {
       return [...base.developers];
     }
-    // M6c: a secondary-only work takes the store catalogue's developers.
     const entry = work.union || unionOf(work);
     return entry && Array.isArray(entry.developers) ? [...entry.developers] : [];
   };
@@ -188,8 +146,6 @@ function buildWorkMeta({ details, detailsBase, linkDocs, spyDocs, reviewDocs, un
     }
     return {
       hasDetails: work.games.some((game) => detailOf(details, game.appid)),
-      // Union of edition DLC appids; a document that only has `dlcCount`
-      // (no array) still contributes its count.
       count: Math.max(ids.size, maxCount),
     };
   };

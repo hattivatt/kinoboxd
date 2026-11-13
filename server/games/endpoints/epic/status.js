@@ -9,8 +9,6 @@ const { assertOnlyParams, parseAccountId, parseOwner } = require('./params');
 function register(router, ctx) {
   const { store, errorProfile } = ctx;
 
-  /* --------------------------- status --------------------------- */
-
   router.get('/epic/status', async (req, res, next) => {
     try {
       assertOnlyParams(req, ['owner', 'accountId'], 'GET /api/games/epic/status');
@@ -23,8 +21,6 @@ function register(router, ctx) {
         });
         return res.status(200).json({
           ...layer,
-          // The status endpoint is for the «Подключения» slot: per-game arrays
-          // belong to `/exported` and the integration payload.
           games: undefined,
           exportedGames: undefined,
           gameCount: layer.games.length,
@@ -56,7 +52,6 @@ function register(router, ctx) {
         configured: tokens.length > 0,
         status: tokens.length ? 'connected' : 'not_connected',
         accounts,
-        // Never a token value: only presence/expiry.
         tokens: tokenDocs.map((doc) => tokenStore.redactTokens(doc)),
         cacheDir: epicCache.CACHE_DIR,
         libraryTtlHours: Math.round(epicCache.epicLibraryTtlMs() / 3600000),

@@ -1,15 +1,5 @@
 'use strict';
 
-/**
- * Epic constants, the client error type and every pure parser/normalizer.
- *
- * This module owns the pieces that carry no I/O: token/entitlement/library/
- * playtime/catalog shapes, the secret masker and the merge of the two
- * ownership sources. `epic.js` re-exports all of it, so the public surface of
- * the client module is unchanged; `epic-requests.js` and `epic-client.js`
- * import the primitives directly and never require `epic.js` back (no cycle).
- */
-
 const { URL } = require('url');
 
 const sources = require('../../core/sources');
@@ -17,22 +7,9 @@ const { round1 } = require('../../core/stats');
 
 const VERIFY_URI = 'https://www.epicgames.com/id/activate';
 
-/** Authorization-code login: the page the user opens and the redirect it hits. */
 const AUTHORIZE_URI = 'https://www.epicgames.com/id/login';
 const REDIRECT_URI_BASE = 'https://www.epicgames.com/id/api/redirect';
 
-/**
- * Public launcher client credentials. They are hardcoded in Legendary,
- * Heroic and Playnite; they are not a user secret, but §14.5 still forbids
- * echoing the values. `EPIC_CLIENT_ID` / `EPIC_CLIENT_SECRET` (aliases
- * `GAMES_EPIC_*`) override them for a private deployment, then
- * `config/epic-client.json` (0600, gitignored).
- *
- * This is `launcherAppClient2` (Legendary). It is the client that is proven
- * for `grant_type=authorization_code` + `token_type=eg1`. The device-code
- * grant is **not** available to it (nor to any public client): Epic answers
- * 1016 `unsupported_grant_type`.
- */
 const DEFAULT_CLIENT_ID = '34a02cf8f4414e29b15921876da36f9a';
 const DEFAULT_CLIENT_SECRET = 'daafbccc737745039dffe53d94fc76cf';
 
@@ -45,7 +22,6 @@ const MAX_ENTITLEMENT_PAGES = 20;
 const CATALOG_CHUNK = 25;
 const ACCESS_REFRESH_SKEW_MS = 120000;
 
-/** Stable error codes; routes map them to HTTP statuses. */
 class EpicError extends Error {
   constructor(message, code, details = {}) {
     super(message);
@@ -58,17 +34,10 @@ class EpicError extends Error {
   }
 }
 
-/**
- * Remove every Epic secret shape from a string. User codes are deliberately
- * NOT masked (they are shown to the user); `user_code` does not match the
- * `code=`/`token=` patterns below because of the `user_` prefix.
- */
 function maskSecrets(value) {
   return String(value == null ? '' : value)
     .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1***')
     .replace(/(basic\s+)[A-Za-z0-9+/=]+/gi, '$1***')
-    // Epic tokens have the `eg1~` prefix; mask the shape even if a future
-    // payload puts it somewhere the key-based rules do not expect.
     .replace(/\beg1~[A-Za-z0-9._~+/=-]+/g, 'eg1~***')
     .replace(
       /((?:access_token|accessToken|refresh_token|refreshToken|device_code|deviceCode|client_secret|clientSecret|password|secret|authorization)["']?\s*[:=]\s*["']?)[^"'&\s,}]+/gi,
@@ -98,8 +67,6 @@ function numOrNull(value) {
 function toIso(value) {
   if (value == null || value === '') return null;
   if (typeof value === 'number') {
-    // Epic uses seconds in `expires_at` in some payloads, milliseconds in
-    // others; anything below 10^12 is treated as seconds.
     const ms = value < 1e12 ? value * 1000 : value;
     return new Date(ms).toISOString();
   }
@@ -128,12 +95,6 @@ function unique(list) {
   return [...new Set(list.filter(Boolean))];
 }
 
-/**
- * Epic login URL for the authorization-code flow (Legendary/Heroic pattern):
- * `https://www.epicgames.com/id/login?redirectUrl=<…/id/api/redirect?clientId=…&responseType=code>`.
- * After a successful login the browser lands on `id/api/redirect`, which shows
- * a one-time `code` the user pastes into the UI.
- */
 function authorizeUrl(clientId) {
   const redirect = `${REDIRECT_URI_BASE}?clientId=${encodeURIComponent(
     String(clientId || DEFAULT_CLIENT_ID)
@@ -141,17 +102,9 @@ function authorizeUrl(clientId) {
   return `${AUTHORIZE_URI}?redirectUrl=${encodeURIComponent(redirect)}`;
 }
 
-/**
- * Accept either the bare one-time `code` or any URL/string that carries it
- * (`https://www.epicgames.com/id/api/redirect?code=…`, a `#code=…` fragment,
- * or a pasted `code=…&…` fragment). Returns `null` when nothing looks like a
- * code — the caller answers `epic_code_required` instead of sending garbage
- * to Epic.
- */
 function extractAuthCode(input) {
   const raw = String(input == null ? '' : input).trim();
   if (!raw) return null;
-  // Whole URL or query fragment: let URL parse the query, then the fragment.
   if (/^https?:\/\//i.test(raw) || raw.includes('?') || raw.includes('#')) {
     try {
       const parsed = new URL(raw, 'https://www.epicgames.com');
@@ -161,10 +114,8 @@ function extractAuthCode(input) {
       const fromFragment = new URLSearchParams(fragment).get('code');
       if (fromFragment) return fromFragment.trim();
     } catch (err) {
-      /* fall through to the regex */
     }
   }
-  // A pasted `code=…&state=…` fragment or a URL URL() could not parse.
   const match = /(?:^|[?&#])code=([^&\s#]+)/.exec(raw);
   if (match) {
     try {
@@ -174,8 +125,6 @@ function extractAuthCode(input) {
     }
   }
   if (/^https?:\/\//i.test(raw)) return null;
-  // Bare value: Epic codes are 32 hex chars, but accept any token-shaped
-  // string so a future format is not rejected client-side.
   if (!/^[A-Za-z0-9._~+/=-]{8,256}$/.test(raw)) return null;
   return raw;
 }
@@ -313,12 +262,6 @@ function normalizeLibraryRecord(raw) {
 
 const MOBILE_PLATFORMS = new Set(['android', 'ios', 'iphone', 'ipad']);
 
-/**
- * Library item filter from the clients (§14.2): Unreal Engine marketplace
- * (`namespace === "ue"`), `sandboxType === "PRIVATE"`, and mobile-only records
- * (`platform` without Win32/Windows/Mac). An empty platform list is *unknown*
- * and kept — the rule is "Android-only", not "no platform field".
- */
 function isExcludedLibraryRecord(record) {
   if (String(record.namespace || '').toLowerCase() === 'ue') {
     return { excluded: true, reason: 'ue' };
@@ -364,12 +307,6 @@ function normalizePlaytimeItem(raw) {
   };
 }
 
-/**
- * `playtime/account/{id}/all` → normalized snapshot. The unit is **seconds**
- * (Playnite stores `totalTime` as seconds); there is no lastPlayed field, so
- * none is invented here. Duplicate artifactIds are collapsed (last wins) so a
- * total is never double-counted.
- */
 function normalizePlaytimeResponse(json) {
   const list = Array.isArray(json)
     ? json
@@ -461,12 +398,6 @@ function normalizeProductMapping(json) {
   return { byAppName, count: Object.keys(byAppName).length };
 }
 
-/**
- * Merge the two ownership sources. Entitlements are primary (they survive a
- * library-service change), library items add `appName`/`platform`/
- * `acquisitionDate`. Both sides are filtered first (UE/PRIVATE/mobile,
- * inactive/consumable) and the counts are reported honestly.
- */
 function mergeLibrary({ entitlements = [], libraryItems = [] } = {}) {
   const excluded = {
     ue: 0,
@@ -557,12 +488,7 @@ function mergeLibrary({ entitlements = [], libraryItems = [] } = {}) {
     ...entry,
     source: 'epic',
     sources: unique(entry.sources),
-    // `name` is filled by the catalog/productmapping step; `appName` is the
-    // launcher id and is never a human title.
     name: entry.appName || entry.entitlementName || null,
-    // The library-service record sometimes carries `productSlug`; when it does
-    // it is the same store slug as the catalog's `productSlug`. A later step
-    // (`mergeCatalogSlugs`) may fill this from the catalog/productmapping.
     slug: normalizeSlug(entry.productSlug),
   }));
 
