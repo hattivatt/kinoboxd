@@ -26,30 +26,30 @@
 
 | Method | Path | Строгий query (assertOnlyParams) | Ошибки (status:code) | Источник |
 | --- | --- | --- | --- | --- |
-| GET | `*` | — | — | `server/index.js:88` |
-| POST | `/api/attach/lbzip` | — | 400:file_required, 400:not_kinopoisk_import, 400:upload_id_required, 404:unknown_profile, 404:unknown_upload | `server/films/routes.js:221` |
-| POST | `/api/auth/login` | — | 401:wrong_password, 429:too_many_attempts | `server/auth.js:189` |
-| POST | `/api/auth/logout` | — | — | `server/auth.js:216` |
-| GET | `/api/auth/session` | — | — | `server/auth.js:222` |
+| GET | `*` | — | — | `server/index.js:68` |
+| POST | `/api/attach/lbzip` | — | 400:file_required, 400:not_kinopoisk_import, 400:upload_id_required, 404:unknown_profile, 404:unknown_upload | `server/films/routes.js:162` |
+| POST | `/api/auth/login` | — | 401:wrong_password, 429:too_many_attempts | `server/auth.js:158` |
+| POST | `/api/auth/logout` | — | — | `server/auth.js:184` |
+| GET | `/api/auth/session` | — | — | `server/auth.js:190` |
 | GET | `/api/books/audit` | `profile` | — | `server/books/routes-manual.js:193` |
-| POST | `/api/books/import/hardcover` | — | — | `server/books/routes.js:206` |
-| POST | `/api/books/import/livelib` | — | 400:username_required | `server/books/routes.js:181` |
-| POST | `/api/books/import/livelib-file` | — | 400:upload_failed, 413:file_too_large | `server/books/routes.js:329` |
-| DELETE | `/api/books/import/livelib/cookies` | — | 400:invalid_user_key, 400:user_key_required, 404:cookies_not_found, 409:livelib_import_running | `server/books/routes.js:514` |
-| GET | `/api/books/import/status` | — | 400:job_id_required, 404:unknown_job | `server/books/routes.js:559` |
+| POST | `/api/books/import/hardcover` | — | — | `server/books/routes.js:136` |
+| POST | `/api/books/import/livelib` | — | 400:username_required | `server/books/routes.js:113` |
+| POST | `/api/books/import/livelib-file` | — | 400:upload_failed, 413:file_too_large | `server/books/routes.js:189` |
+| DELETE | `/api/books/import/livelib/cookies` | — | 400:invalid_user_key, 400:user_key_required, 404:cookies_not_found, 409:livelib_import_running | `server/books/routes.js:341` |
+| GET | `/api/books/import/status` | — | 400:job_id_required, 404:unknown_job | `server/books/routes.js:385` |
 | DELETE | `/api/books/link` | — | 400:book_id_required, 400:invalid_book_id, 400:profile_required | `server/books/routes-manual.js:167` |
 | POST | `/api/books/link` | — | 400:book_id_required, 400:invalid_book_id, 400:invalid_work_id, 400:profile_required, 400:work_id_required, 404:unknown_book | `server/books/routes-manual.js:121` |
-| GET | `/api/books/profiles` | — | — | `server/books/routes.js:108` |
+| GET | `/api/books/profiles` | — | — | `server/books/routes.js:68` |
 | DELETE | `/api/books/series-override` | — | 400:invalid_work_id, 400:profile_required, 400:work_id_required | `server/books/routes-manual.js:95` |
 | POST | `/api/books/series-override` | — | 400:invalid_series, 400:invalid_work_id, 400:profile_required, 400:work_id_required | `server/books/routes-manual.js:20` |
 | GET | `/api/books/stats` | `includeMangaComics`, `profile` | 400:invalid_include_manga | `server/books/routes-stats.js:15` |
 | GET | `/api/books/unmatched` | `profile` | — | `server/books/routes-stats.js:37` |
-| DELETE | `/api/books/work/flag` | — | 400:work_id_required | `server/books/routes.js:602` |
-| POST | `/api/books/work/flag` | — | 400:manga_flag_required, 400:work_id_required | `server/books/routes.js:580` |
-| POST | `/api/books/year-override` | — | 400:invalid_year, 400:profile_required, 400:unknown_work, 400:work_id_required | `server/books/routes.js:633` |
-| GET | `/api/compare` | — | — | `server/films/routes.js:370` |
-| POST | `/api/enrich` | — | 400:upload_id_required, 404:unknown_upload | `server/films/routes.js:119` |
-| GET | `/api/enrich/status` | — | 400:upload_id_required, 404:unknown_upload | `server/films/routes.js:137` |
+| DELETE | `/api/books/work/flag` | — | 400:work_id_required | `server/books/routes.js:422` |
+| POST | `/api/books/work/flag` | — | 400:manga_flag_required, 400:work_id_required | `server/books/routes.js:401` |
+| POST | `/api/books/year-override` | — | 400:invalid_year, 400:profile_required, 400:unknown_work, 400:work_id_required | `server/books/routes.js:438` |
+| GET | `/api/compare` | — | — | `server/films/routes.js:277` |
+| POST | `/api/enrich` | — | 400:upload_id_required, 404:unknown_upload | `server/films/routes.js:83` |
+| GET | `/api/enrich/status` | — | 400:upload_id_required, 404:unknown_upload | `server/films/routes.js:101` |
 | GET | `/api/games/achievements` | `appid`, `profile`, `refresh` | 400:invalid_appid | `server/games/endpoints/achievements.js:17` |
 | POST | `/api/games/enrich` | — | 400:invalid_recheckDays | `server/games/endpoints/enrich.js:12` |
 | GET | `/api/games/enrich/:jobId` | — | 404:unknown_job | `server/games/endpoints/enrich.js:91` |
@@ -87,29 +87,29 @@
 | GET | `/api/games/personnel/status` | `id` | 400:job_id_required, 404:unknown_job | `server/games/personnel/routes-personnel.js:165` |
 | GET | `/api/games/profiles` | — | — | `server/games/endpoints/profiles.js:100` |
 | POST | `/api/games/refresh` | — | — | `server/games/endpoints/import.js:66` |
-| GET | `/api/games/secondary-details/status` | `profile` | — | `server/games/endpoints/stats.js:25` |
-| GET | `/api/games/stats` | `includeDlc`, `includeFree`, `minHours`, `profile` | 400:profile_not_imported | `server/games/endpoints/stats.js:39` |
+| GET | `/api/games/secondary-details/status` | `profile` | — | `server/games/endpoints/stats.js:12` |
+| GET | `/api/games/stats` | `includeDlc`, `includeFree`, `minHours`, `profile` | 400:profile_not_imported | `server/games/endpoints/stats.js:26` |
 | GET | `/api/games/steam-art/:type/:appid` | `h` | — | `server/games/endpoints/game.js:17` |
-| GET | `/api/health` | — | — | `server/index.js:69` |
-| POST | `/api/import/kinopoisk` | — | 400:url_required | `server/films/routes.js:157` |
-| GET | `/api/import/kinopoisk/status` | — | 400:upload_id_required, 404:unknown_kinopoisk_import, 404:unknown_upload | `server/films/routes.js:174` |
-| POST | `/api/match` | — | 400:enrichment_not_finished, 400:invalid_kind, 400:invalid_tmdb_id, 400:slug_required, 400:upload_id_required, 404:not_unmatched, 404:unknown_film, 404:unknown_upload, 409:already_matched | `server/films/routes.js:425` |
-| GET | `/api/profiles` | — | — | `server/films/routes.js:357` |
-| GET | `/api/stats` | — | 400:enrichment_not_finished, 400:upload_id_required, 404:unknown_upload | `server/films/routes.js:308` |
-| GET | `/api/tmdb/search` | — | 400:invalid_kind, 400:query_required | `server/films/routes.js:386` |
-| POST | `/api/upload` | — | 400:file_required | `server/films/routes.js:91` |
+| GET | `/api/health` | — | — | `server/index.js:51` |
+| POST | `/api/import/kinopoisk` | — | 400:url_required | `server/films/routes.js:117` |
+| GET | `/api/import/kinopoisk/status` | — | 400:upload_id_required, 404:unknown_kinopoisk_import, 404:unknown_upload | `server/films/routes.js:134` |
+| POST | `/api/match` | — | 400:enrichment_not_finished, 400:invalid_kind, 400:invalid_tmdb_id, 400:slug_required, 400:upload_id_required, 404:not_unmatched, 404:unknown_film, 404:unknown_upload, 409:already_matched | `server/films/routes.js:320` |
+| GET | `/api/profiles` | — | — | `server/films/routes.js:269` |
+| GET | `/api/stats` | — | 400:enrichment_not_finished, 400:upload_id_required, 404:unknown_upload | `server/films/routes.js:239` |
+| GET | `/api/tmdb/search` | — | 400:invalid_kind, 400:query_required | `server/films/routes.js:289` |
+| POST | `/api/upload` | — | 400:file_required | `server/films/routes.js:55` |
 
 ## Детали
 
 ### `GET *`
 
-- файл: `server/index.js:88`
+- файл: `server/index.js:68`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `POST /api/attach/lbzip`
 
-- файл: `server/films/routes.js:221`
+- файл: `server/films/routes.js:162`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `kpUserId`, `uploadId` — см. модуль
 - ошибка `400` `file_required`: 'No file received. Send the Letterboxd ZIP as multipart/form-data field "file".'
@@ -117,24 +117,23 @@
 - ошибка `400` `upload_id_required`: 'Body must contain "uploadId".'
 - ошибка `404` `unknown_profile`: 'No cached KinoPoisk profile for this kpUserId. Import the profile first.'
 - ошибка `404` `unknown_upload`: 'Unknown uploadId. Start the KinoPoisk import again.'
-- описание: Attach a Letterboxd export to the active KinoPoisk import. multipart/form-data: field `file` (ZIP), `uploadId` query or body field. The server resolves `kpUserId` from the KinoPoisk job, parses diary.csv / watched.csv /…
 
 ### `POST /api/auth/login`
 
-- файл: `server/auth.js:189`
+- файл: `server/auth.js:158`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `401` `wrong_password`: wrong_password
 - ошибка `429` `too_many_attempts`: too_many_attempts
 
 ### `POST /api/auth/logout`
 
-- файл: `server/auth.js:216`
+- файл: `server/auth.js:184`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `GET /api/auth/session`
 
-- файл: `server/auth.js:222`
+- файл: `server/auth.js:190`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
@@ -146,47 +145,42 @@
 
 ### `POST /api/books/import/hardcover`
 
-- файл: `server/books/routes.js:206`
+- файл: `server/books/routes.js:136`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `force` — см. модуль
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
-- описание: POST /api/books/import/hardcover { userId?, force? } — defaults to the token owner.
 
 ### `POST /api/books/import/livelib`
 
-- файл: `server/books/routes.js:181`
+- файл: `server/books/routes.js:113`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `deep`, `force` — см. модуль
 - ошибка `400` `username_required`: 'Body must contain "username" (LiveLib reader name or profile URL).'
-- описание: POST /api/books/import/livelib { username, force?, deep?, cookieHeader? } LEGACY scrape path. It is no longer reachable from the UI (28.10.2026): a LiveLib profile is created and refreshed from a `livelib-backup` export…
 
 ### `POST /api/books/import/livelib-file`
 
-- файл: `server/books/routes.js:329`
+- файл: `server/books/routes.js:189`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `upload_failed`: `Не удалось принять файл: ${uploadError.message}`
 - ошибка `413` `file_too_large`: `Файл больше ${Math.round(FILE_IMPORT_MAX_BYTES / (1024 * 1024))} МБ.`
-- описание: POST /api/books/import/livelib-file — multipart file required JSON (or CSV) export of livelib-backup username required when the profile is new; LiveLib reader name (aliases: `userKey`, `profileKey` = `livelib-<name>`) s…
 
 ### `DELETE /api/books/import/livelib/cookies`
 
-- файл: `server/books/routes.js:514`
+- файл: `server/books/routes.js:341`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `sourceUserKey`, `userKey` — см. модуль
 - ошибка `400` `invalid_user_key`: 'Query parameter "userKey" must be 1-120 chars of letters, digits, ".", "_" or "-".'
 - ошибка `400` `user_key_required`: 'Query parameter "userKey" is required (LiveLib reader name).'
 - ошибка `404` `cookies_not_found`: `No stored LiveLib cookies for "${userKey}".`
 - ошибка `409` `livelib_import_running`: 'A LiveLib import of this profile is running — wait for it to finish before removing the cookies.'
-- описание: DELETE /api/books/import/livelib/cookies?userKey=Margaret The counterpart of the cookie paste: the stored header is a secret the user handed us for one retry, so it must be removable without shell access to the cache di…
 
 ### `GET /api/books/import/status`
 
-- файл: `server/books/routes.js:559`
+- файл: `server/books/routes.js:385`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `id` — см. модуль
 - ошибка `400` `job_id_required`: 'Query parameter "id" is required.'
 - ошибка `404` `unknown_job`: 'Unknown import job id.'
-- описание: GET /api/books/import/status?id=...
 
 ### `DELETE /api/books/link`
 
@@ -209,10 +203,9 @@
 
 ### `GET /api/books/profiles`
 
-- файл: `server/books/routes.js:108`
+- файл: `server/books/routes.js:68`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
-- описание: GET /api/books/profiles — cached source profiles for the switcher/badges. Each entry carries: - `key` — the exact `?profile=` token (`livelib-Margaret`), - `sourceKey` — the minimal provider-qualified key for docs (`liv…
 
 ### `DELETE /api/books/series-override`
 
@@ -245,23 +238,21 @@
 
 ### `DELETE /api/books/work/flag`
 
-- файл: `server/books/routes.js:602`
+- файл: `server/books/routes.js:422`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `workId` — см. модуль
 - ошибка `400` `work_id_required`: 'Query parameter "workId" is required.'
-- описание: DELETE /api/books/work/flag?workId=… — remove the override (idempotent).
 
 ### `POST /api/books/work/flag`
 
-- файл: `server/books/routes.js:580`
+- файл: `server/books/routes.js:401`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `manga_flag_required`: 'Body must contain "mangaComics" as a boolean (true = hide, false = show).'
 - ошибка `400` `work_id_required`: 'Body must contain "workId".'
-- описание: POST /api/books/work/flag { workId, mangaComics } Upsert the per-work manual manga/comics override. The body is intentionally strict: `true` = hide as manga/comics, `false` = show again.
 
 ### `POST /api/books/year-override`
 
-- файл: `server/books/routes.js:633`
+- файл: `server/books/routes.js:438`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `invalid_year`: `Body field "year" must be an integer in ${YEAR_OVERRIDE_MIN}..${YEAR_OVERRIDE_MAX} ` + 'or null to remove the correction.'
 - ошибка `400` `profile_required`: 'Body must contain "profile".'
@@ -270,22 +261,21 @@
 
 ### `GET /api/compare`
 
-- файл: `server/films/routes.js:370`
+- файл: `server/films/routes.js:277`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `a`, `b` — см. модуль
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
-- описание: Read-only comparison of two cached KinoPoisk profiles. All numbers come from the persistent caches (profile + TMDB details + Letterboxd attachment); no live KinoPoisk request is made.
 
 ### `POST /api/enrich`
 
-- файл: `server/films/routes.js:119`
+- файл: `server/films/routes.js:83`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `upload_id_required`: 'Body must contain "uploadId".'
 - ошибка `404` `unknown_upload`: 'Unknown uploadId. Upload the ZIP again.'
 
 ### `GET /api/enrich/status`
 
-- файл: `server/films/routes.js:137`
+- файл: `server/films/routes.js:101`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `uploadId` — см. модуль
 - ошибка `400` `upload_id_required`: 'Query parameter "uploadId" is required.'
@@ -537,14 +527,13 @@
 
 ### `GET /api/games/secondary-details/status`
 
-- файл: `server/games/endpoints/stats.js:25`
+- файл: `server/games/endpoints/stats.js:12`
 - query (строгий список): `profile`
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
-- описание: `GET /api/games/secondary-details/status?profile=…` — the owner-facing diagnostic for «вне Steam» metadata (M6d). Answers only from the cache and the job/breaker state, never with a network request: { resolved, total, r…
 
 ### `GET /api/games/stats`
 
-- файл: `server/games/endpoints/stats.js:39`
+- файл: `server/games/endpoints/stats.js:26`
 - query (строгий список): `includeDlc`, `includeFree`, `minHours`, `profile`
 - ошибка `400` `profile_not_imported`: `"profile": no library snapshot for ${scope.parsed.key}; run the import first.`
 
@@ -557,20 +546,19 @@
 
 ### `GET /api/health`
 
-- файл: `server/index.js:69`
+- файл: `server/index.js:51`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
 
 ### `POST /api/import/kinopoisk`
 
-- файл: `server/films/routes.js:157`
+- файл: `server/films/routes.js:117`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `url_required`: 'Body must contain "url" (a KinoPoisk user profile or votes URL).'
-- описание: KinoPoisk import
 
 ### `GET /api/import/kinopoisk/status`
 
-- файл: `server/films/routes.js:174`
+- файл: `server/films/routes.js:134`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `uploadId` — см. модуль
 - ошибка `400` `upload_id_required`: 'Query parameter "uploadId" is required.'
@@ -579,7 +567,7 @@
 
 ### `POST /api/match`
 
-- файл: `server/films/routes.js:425`
+- файл: `server/films/routes.js:320`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `enrichment_not_finished`: 'Enrichment is not finished yet. Poll /api/enrich/status.'
 - ошибка `400` `invalid_kind`: 'Body field "kind" must be "movie" or "tv".'
@@ -590,38 +578,33 @@
 - ошибка `404` `unknown_film`: 'Unknown film slug for this upload.'
 - ошибка `404` `unknown_upload`: 'Unknown uploadId. Upload the ZIP again.'
 - ошибка `409` `already_matched`: 'This film is already matched to another TMDB entry.'
-- описание: Attach a TMDB id chosen by the user to a film. - Unmatched film: creates the match. - Matched film with the same id/kind: idempotent 200 `alreadyMatched`. - Matched film with a different id/kind: re-match (details are f…
 
 ### `GET /api/profiles`
 
-- файл: `server/films/routes.js:357`
+- файл: `server/films/routes.js:269`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибки: только общие (400 `unexpected_parameter`, 500 `internal_error`)
-- описание: Cached KinoPoisk profiles (one per cache/kp/{userId}.json). The list is independent of the browser registry and survives server restarts, so the comparison screen can always use it. The payload stays a flat array (the c…
 
 ### `GET /api/stats`
 
-- файл: `server/films/routes.js:308`
+- файл: `server/films/routes.js:239`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `kpUserId`, `uploadId` — см. модуль
 - ошибка `400` `enrichment_not_finished`
 - ошибка `400` `upload_id_required`: 'Query parameter "uploadId" is required.'
 - ошибка `404` `unknown_upload`: 'Unknown uploadId. Upload the ZIP again.'
-- описание: Dashboard payload
 
 ### `GET /api/tmdb/search`
 
-- файл: `server/films/routes.js:386`
+- файл: `server/films/routes.js:289`
 - query: — (строгого `assertOnlyParams` нет)
 - query, читаемый без строгой проверки: `kind`, `q` — см. модуль
 - ошибка `400` `invalid_kind`: 'Query parameter "kind" must be "movie", "tv" or "all".'
 - ошибка `400` `query_required`: 'Query parameter "q" is required.'
-- описание: Manual TMDB matching
 
 ### `POST /api/upload`
 
-- файл: `server/films/routes.js:91`
+- файл: `server/films/routes.js:55`
 - query: — (строгого `assertOnlyParams` нет)
 - ошибка `400` `file_required`: 'No file received. Send the Letterboxd export as multipart/form-data field "file".'
-- описание: Letterboxd upload + enrichment
 
