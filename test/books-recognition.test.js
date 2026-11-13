@@ -26,7 +26,7 @@ const { staleLinkKeys } = require('../server/books/resolve-stages/link-health');
 const wikidata = require('../server/books/providers/wikidata');
 const openlibrary = require('../server/books/providers/openlibrary');
 const { isChallengeableClaim, storedFirstClaim } = require('../server/books/providers/claim');
-const { needsYearQuestion, storedPrintClaim } = require('../server/books/backfill-queue');
+const { needsYearQuestion, storedPrintClaim, selectCandidates } = require('../server/books/backfill-queue');
 
 const noSleep = async () => {};
 
@@ -721,6 +721,24 @@ describe('books-recognition', () => {
       } finally {
         process.env.KINOBOXD_BOOKS_FANTLAB = '0';
       }
+    });
+  });
+
+  describe('year queue order', () => {
+    test('no claim first, then print-run claims, manga last', () => {
+      const docs = [
+        { key: 'm', doc: { workId: 'hc:1', title: 'Akira, Vol. 5', mangaComics: true, firstPublishedYear: 1984, publicationYear: 1984 } },
+        { key: 'o', doc: { workId: 'hc:2', title: 'Агнес Грей', firstPublishedYear: 1847, publicationYear: 1998, firstPublishedYearSource: 'litres' } },
+        { key: 'r', doc: { workId: 'hc:3', title: 'Евгений Онегин', firstPublishedYear: 2023, publicationYear: 2023 } },
+        { key: 'n', doc: { workId: 'hc:4', title: 'Оно', publicationYear: 2015 } },
+      ];
+      const { candidates } = selectCandidates(docs, {
+        needsYear: needsYearQuestion,
+        needsSeries: () => false,
+        checked: () => false,
+        covers: () => false,
+      });
+      assert.deepEqual(candidates.map((entry) => entry.key), ['n', 'r', 'o', 'm']);
     });
   });
 });

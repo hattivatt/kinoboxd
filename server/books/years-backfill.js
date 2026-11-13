@@ -453,6 +453,28 @@ async function backfill(options = {}) {
     runsLeft: 0,
   };
 
+  const wikidataBudget =
+    options.wikidataBudget === undefined ? wikidata.budgetFromEnv() : options.wikidataBudget;
+  const fantlabBudget =
+    options.fantlabBudget === undefined ? fantlab.budgetFromEnv() : options.fantlabBudget;
+  report.unlinked = ids || options.unlinked === false
+    ? null
+    : await backfillUnlinkedYears({
+        wikidataProvider: options.wikidataProvider,
+        budget: wikidataBudget,
+        fantlabProvider: options.fantlabProvider,
+        fantlabBudget,
+        fantlabPauseMs: options.fantlabPauseMs,
+        sleep: options.sleep,
+        fetchImpl: options.fetchImpl,
+        pauseMs: options.wikidataPauseMs,
+        batchSize: options.wikidataBatchSize,
+        now: checkedAt,
+        recheckDays,
+        dryRun,
+        log,
+      });
+
   let hardcoverLookup = null;
   if (!options.hardcoverProvider && !options.dryRun) {
     hardcoverLookup = await prefetchHardcover(
@@ -469,16 +491,16 @@ async function backfill(options = {}) {
 
   const profileTitleIndex =
     options.profileTitles instanceof Map ? options.profileTitles : profileTitles();
-  const wikidataBudget =
-    options.wikidataBudget === undefined ? wikidata.budgetFromEnv() : options.wikidataBudget;
   const { yearClaims, yearClaimsError } = await askWikidata(selected, { ...options, wikidataBudget }, {
     profileTitleIndex,
     report,
   });
-  const fantlabBudget =
-    options.fantlabBudget === undefined ? fantlab.budgetFromEnv() : options.fantlabBudget;
   const fantlabClaims = await prefetchFantlab(
-    selected.filter((entry) => Boolean(ids) || force === true || needsYearQuestion(entry.doc)),
+    selected.filter(
+      (entry) =>
+        entry.doc.mangaComics !== true &&
+        (Boolean(ids) || force === true || needsYearQuestion(entry.doc))
+    ),
     { ...options, fantlabBudget, profileTitles: profileTitleIndex }
   );
   report.fantlabRequests = fantlabClaims.requests;
@@ -616,24 +638,6 @@ async function backfill(options = {}) {
   }
   report.litresBudgetExhausted = report.litresBudgetRemaining === 0;
 
-  report.unlinked = ids || options.unlinked === false
-    ? null
-    : await backfillUnlinkedYears({
-        wikidataProvider: options.wikidataProvider,
-        budget: wikidataBudget,
-        fantlabProvider: options.fantlabProvider,
-        fantlabBudget,
-        fantlabPauseMs: options.fantlabPauseMs,
-        sleep: options.sleep,
-        fetchImpl: options.fetchImpl,
-        pauseMs: options.wikidataPauseMs,
-        batchSize: options.wikidataBatchSize,
-        now: checkedAt,
-        recheckDays,
-        dryRun,
-        log,
-      });
-
   const pending = countPending(detailDocs(), queueOptions);
   report.pending = pending;
   const perRun = limit > 0 ? limit : Math.max(pending, 1);
@@ -719,6 +723,9 @@ if (require.main === module) {
         wikidataClaimed: report.wikidataClaimed,
         wikidataSkipped: report.wikidataSkipped,
         wikidataError: report.wikidataError,
+        fantlabRequests: report.fantlabRequests,
+        fantlabSkipped: report.fantlabSkipped,
+        unlinked: report.unlinked,
         litresBudgetUsed: report.litresBudgetUsed,
         litresBudgetLimit: report.litresBudgetLimit,
         litresBudgetRemaining: report.litresBudgetRemaining,

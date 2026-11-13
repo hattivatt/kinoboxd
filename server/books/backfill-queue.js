@@ -18,6 +18,15 @@ function needsYearQuestion(doc) {
   return storedFirstClaim(doc) == null || storedPrintClaim(doc) != null;
 }
 
+function yearQuestionRank(doc) {
+  const claim = storedFirstClaim(doc);
+  if (!claim) return 0;
+  const edition = Number(doc && doc.publicationYear);
+  const printRun = Number.isFinite(edition) && claim.year >= edition - 1;
+  const manga = doc.mangaComics === true ? 2 : 0;
+  return (printRun ? 1 : 2) + manga;
+}
+
 function recentlyChecked(doc, now, recheckDays) {
   const stamp = doc && doc.firstPublishedYearCheckedAt;
   if (!stamp) return false;
@@ -53,7 +62,11 @@ function selectCandidates(docs, options = {}) {
     if (needsYear(doc)) yearFirst.push(entry);
     else seriesOnly.push(entry);
   }
-  return { candidates: yearFirst.concat(seriesOnly), skippedChecked };
+  const ranked = yearFirst
+    .map((entry, index) => ({ entry, index, rank: yearQuestionRank(entry.doc) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((item) => item.entry);
+  return { candidates: ranked.concat(seriesOnly), skippedChecked };
 }
 
 function countPending(docs, options = {}) {
@@ -74,6 +87,7 @@ module.exports = {
   workIdOf,
   storedPrintClaim,
   needsYearQuestion,
+  yearQuestionRank,
   recentlyChecked,
   matchesId,
   selectCandidates,
