@@ -1,53 +1,5 @@
 'use strict';
 
-/**
- * In-memory job registry: one implementation for every `start*` / `getStatus`
- * pair in the server (P3, U3).
- *
- * Before this module nine registries repeated the same five things: an id
- * generator, a `MAX_JOBS` ring, a `findRunning` scan, a serialization chain
- * and a `done`/`finishedAt` finalizer. They differed only in the domain fields
- * they carry and in the public shape their `getStatus` returns. Here the
- * mechanics live once; the domain keeps its own public mapping (a facade), so
- * every legacy field of every job response stays byte-identical.
- *
- * Contract:
- *
- *   const jobs = createJobs({ name, idPrefix, maxJobs, cooldownMs, now, keyOf,
- *                             maskError, errorCode });
- *
- *   jobs.createJob(fields)         -> job object (NOT remembered yet)
- *   jobs.newId(seed, prefix?)      -> `<prefix>-<safeKey(seed)>-<ts36>-<hex>`
- *   jobs.remember(job)             -> ring retention (oldest evicted)
- *   jobs.get(id)                   -> job | undefined
- *   jobs.list() / jobs.values()    -> jobs in insertion order
- *   jobs.clear()                   -> forget every remembered job
- *   jobs.findRunning(key, pred?)   -> live job for `key` | null
- *   jobs.isRunning(key, pred?)     -> boolean
- *   jobs.start(key, task, opts)    -> single-flight create + remember + run
- *   jobs.run(job, task, opts)      -> serialized execution + finalize
- *   jobs.finish(job, result?)      -> default finalizer (status/done/finishedAt)
- *   jobs.fail(job, err)            -> default error snapshot
- *   jobs.snapshot(job)             -> unified status view
- *   jobs.status(id)                -> snapshot | null
- *   jobs.lastFinish(key)           -> { at, status, skipped } | null
- *   jobs.cooldownRemaining(key, { ignore }) -> ms left in the re-run window
- *   jobs.resetCooldown()           -> forget every re-run window
- *   jobs.whenIdle()                -> wait for every chain to settle
- *
- * What stays in the domain (deliberately):
- *
- *   - persistent phase state (`state/games/enrich-state.json`, franchise-state,
- *     resume cursors) — jobs are process-local and vanish on restart, exactly
- *     like the nine maps they replace;
- *   - the meaning of "done": a domain may set `job.status`/`job.stage` itself
- *     before the finalizer runs (`skipped`, `deferred`, `failed` are all
- *     domain verdicts, not registry ones);
- *   - the public status shape and its masking rules.
- *
- * `now` is injectable so the cooldown window is testable without sleeping.
- */
-
 const { createCooldown } = require('./jobs/cooldown');
 const { createJobShape } = require('./jobs/job');
 const { createLifecycle } = require('./jobs/lifecycle');
@@ -61,17 +13,6 @@ function defaultMaskError(err) {
   return 'unknown error';
 }
 
-/**
- * @param {object} [options]
- * @param {string} [options.name] log/label name, e.g. `games-import`
- * @param {string} [options.idPrefix] id prefix (default: `name`)
- * @param {number} [options.maxJobs] retention ring, 0 = unlimited
- * @param {number} [options.cooldownMs] re-run window between finishes (0 = off)
- * @param {() => number} [options.now] clock injection for tests
- * @param {(job: object) => string|null} [options.keyOf] single-flight key
- * @param {(err: Error) => string} [options.maskError] message masker
- * @param {string} [options.errorCode] default `code` on an uncaught throw
- */
 function createJobs(options = {}) {
   const name = String(options.name || 'jobs');
   const ctx = {

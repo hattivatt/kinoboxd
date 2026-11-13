@@ -4,10 +4,6 @@ const crypto = require('crypto');
 
 const { safeKey } = require('../fs-store');
 
-/* ---------------------------------------------------------------- */
-/* Ids and retention                                                */
-/* ---------------------------------------------------------------- */
-
 function createRegistry(ctx) {
   const { idPrefix, maxJobs, now } = ctx;
 
@@ -39,7 +35,6 @@ function createRegistry(ctx) {
     return [...byId.values()];
   }
 
-  /** Forget every remembered job (test isolation; process state only). */
   function clear() {
     byId.clear();
     order.length = 0;

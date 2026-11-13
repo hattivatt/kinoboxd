@@ -1,21 +1,5 @@
 'use strict';
 
-/**
- * Job methods (non-enumerable, attached at creation):
- *
- *   job.setStage(name, current?, total?)  — stage + progress in one call
- *   job.setProgress(current, total)
- *   job.set(fields)                       — Object.assign into the job
- *   job.finish(result?) / job.fail(err)   — early finalize from the task
- *
- * Naming note. The plan sketch spells the stage setter `job.stage(name, …)`,
- * but `job.stage` is the legacy string every registry writes (`job.stage =
- * 'library'`) and every public status returns (`stage: job.stage`); turning it
- * into a function would change nine payloads and their tests. The string stays
- * and the setter is `job.setStage`. The same applies to `job.done`: it is the
- * boolean the payload exposes, so the "job finished" call is `job.finish()`.
- */
-
 function normalizeProgress(value, total) {
   return {
     current: value == null ? null : value,
@@ -59,10 +43,6 @@ function createJobShape(ctx) {
     return job;
   }
 
-  /**
-   * Build a job. `seed` names the id; `fields` are the domain's own fields
-   * (status/stage/startedAt included — a domain may override every default).
-   */
   function createJob(fields = {}) {
     const { seed, ...rest } = fields;
     const job = {
@@ -82,7 +62,6 @@ function createJobShape(ctx) {
     return attachMethods(job);
   }
 
-  /** The unified view every domain facade can spread into its own shape. */
   function snapshot(job) {
     if (!job) return null;
     return {

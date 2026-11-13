@@ -1,49 +1,5 @@
 'use strict';
 
-/**
- * Declarative source table: the single place that says how politely each
- * external endpoint may be asked.
- *
- * The values are TRANSCRIBED from the constants the modules carried before
- * this phase — nothing is "improved" here. `AGENTS.md` §1 remains the prose
- * reference; `contracts/limits.md` (P9) is meant to be generated from this
- * file.
- *
- * **Env convention (shared with `core/env.js`): `0` means «off», an unset /
- * empty variable means the value in this table.**
- *
- *   pause 0    -> no pause            budget 0  -> zero requests
- *   TTL 0      -> always stale        breaker 0 -> no cooldown
- *   timeout 0  -> no deadline
- *
- * The only known deviation is `GAMES_FRANCHISE_BUDGET=0`: `franchise.js`
- * applies `Math.max(1, …)`, so it still asks one question (pre-existing, kept
- * on purpose and marked at the call site).
- *
- * Entry shape:
- *
- *   id            stable key used by callers
- *   host          the host the breaker is keyed by (or a descriptive label)
- *   pauseMs       default spacing between requests (0 = no pause)
- *   pauseMaxMs    upper bound when the source wants a random pause
- *   pauseEnv      env override for `pauseMs`
- *   timeoutMs     request timeout
- *   timeoutEnv    env override for `timeoutMs`
- *   budgetEnv     per-run budget env (absent = the source has no budget)
- *   budgetDefault default when the env is unset
- *   breakerMs     breaker window (null = the source has no breaker)
- *   breakerEnv    env override for `breakerMs`
- *   ttlMs         freshness window (null = owned elsewhere / no TTL)
- *   ttlEnv        env override for `ttlMs`
- *   userAgent     the UA string the source sends
- *   note          why a value is what it is / who still owns the runtime
- *
- * TTL caveat (P5/P6 scope): for the games domain the runtime TTL still lives
- * in `games/game-cache.js` and the secondary-details module. The values below
- * mirror those constants so the table is complete; this phase does not move
- * the runtime owner.
- */
-
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BREAKER_30M = 30 * MINUTE_MS;
@@ -53,15 +9,12 @@ const BROWSER_UA =
   '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 const SOURCES = Object.freeze({
-  /* ---------------------------- films ---------------------------- */
   tmdb: {
     id: 'tmdb',
     host: 'api.themoviedb.org',
     pauseMs: 0,
     timeoutMs: 20000,
     concurrency: 12,
-    // 4 transport retries are implied by `retryDelaysMs.length`; no separate
-    // field, so P9 does not generate a phantom knob.
     retryDelaysMs: [1000, 2000, 4000, 8000],
     rateLimitRetries: 5,
     budgetEnv: null,
@@ -126,9 +79,6 @@ const SOURCES = Object.freeze({
     breakerMs: BREAKER_30M,
     ttlMs: null,
     userAgent: 'kinoboxd/1.0 (games personnel; https://github.com/hattivatt/kinoboxd)',
-    // Not yet wired: `games/personnel/wikidata.js` still owns these constants.
-    // Kept here as the transcription for P9; do not treat it as a runtime
-    // override until that module reads this entry.
     note: 'Games personnel WDQS client (own persisted cooldown in personnel-wikidata.json); NOT YET WIRED.',
   },
   wikidataFranchise: {
@@ -146,14 +96,11 @@ const SOURCES = Object.freeze({
     note: 'Franchise bridge uses the personnel WDQS client; budget is one batch (450).',
   },
 
-  /* ---------------------------- books ---------------------------- */
   livelib: {
     id: 'livelib',
     host: 'www.livelib.ru',
     pauseMs: 1500,
     pauseMaxMs: 2500,
-    // The card provider always used a fixed 2 s (pre-P2 `livelib-card.js`);
-    // the 1.5-2.5 s random range belongs to the bulk import.
     cardPauseMs: 2000,
     timeoutMs: 45000,
     maxRedirects: 5,
@@ -218,9 +165,6 @@ const SOURCES = Object.freeze({
     id: 'wikidataBooks',
     host: 'query.wikidata.org',
     pauseMs: 1200,
-    // WDQS answers 504 after ~60 s on a query it cannot plan; a 30 s client
-    // deadline plus 3 attempts bounds one bad batch to ~1.5 min, after which
-    // the breaker stops the rest of the pass.
     timeoutMs: 30000,
     batchSize: 12,
     maxAttempts: 3,
@@ -234,13 +178,9 @@ const SOURCES = Object.freeze({
     note: 'WDQS label batch: one query covers up to `batchSize` titles, budget counts books, 429/504 -> 30 min breaker.',
   },
 
-  /* ---------------------------- games ---------------------------- */
   steam: {
     id: 'steam',
     host: 'api.steampowered.com',
-    // Declarative only: the Web API path never awaits a pause, so no module
-    // reads `pauseMs('steam')` today (the community path reads
-    // `steamCommunity.pauseMs`). Not yet wired.
     pauseMs: 0,
     timeoutEnv: 'GAMES_STEAM_TIMEOUT_MS',
     timeoutMs: 20000,
@@ -317,9 +257,6 @@ const SOURCES = Object.freeze({
   steamBrowse: {
     id: 'steamBrowse',
     host: 'api.steampowered.com',
-    // The per-asset hash of the new-schema vertical capsule is published only
-    // by the store-frontend method `IStoreBrowseService/GetItems` (no key).
-    // One request per appid per 180-day resolve, 150 ms apart.
     pauseEnv: 'GAMES_BROWSE_PAUSE_MS',
     pauseMs: 150,
     timeoutEnv: 'GAMES_BROWSE_TIMEOUT_MS',
@@ -336,8 +273,6 @@ const SOURCES = Object.freeze({
   steamGridDb: {
     id: 'steamGridDb',
     host: 'www.steamgriddb.com',
-    // Optional community grids for SKUs Steam publishes no vertical capsule
-    // for. Without `STEAMGRIDDB_API_KEY` the provider is skipped silently.
     pauseEnv: 'GAMES_SGDB_PAUSE_MS',
     pauseMs: 1000,
     timeoutEnv: 'GAMES_SGDB_TIMEOUT_MS',
@@ -422,10 +357,6 @@ function getSource(id) {
   return entry;
 }
 
-/**
- * Finite non-negative env number, else fallback. Zero is a real value
- * («off»); an unset or empty variable is the fallback.
- */
 function envNonNegative(name, fallback) {
   const value = process.env[name];
   if (value == null || String(value).trim() === '') return fallback;
@@ -433,7 +364,6 @@ function envNonNegative(name, fallback) {
   return Number.isFinite(raw) && raw >= 0 ? raw : fallback;
 }
 
-/** Finite positive env number, else fallback (moby-style knobs). */
 function envPositive(name, fallback) {
   const value = process.env[name];
   if (value == null || String(value).trim() === '') return fallback;

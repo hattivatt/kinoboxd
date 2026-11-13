@@ -1,25 +1,5 @@
 'use strict';
 
-/**
- * Numeric primitives shared by every domain payload (R15).
- *
- * The domains never shared one rounding policy — the golden hash is
- * byte-sensitive — so the policy is an explicit third argument instead of a
- * silent default:
- *   - `plain`   — `Math.round(value * factor) / factor`; NaN/Infinity pass
- *                 through, `null` rounds to 0 (`*` coerces);
- *   - `finite`  — anything non-finite is `null`, and a numeric *string* counts
- *                 as non-finite (books);
- *   - `numeric` — `Number(value)` is applied first, so `null` rounds to 0 and
- *                 `undefined` stays NaN (games personnel).
- *
- * `mean` is the books average (finite values only, `null` for an empty list);
- * `dayNumber` accepts only `YYYY-MM-DD` — a month-only event is not a day;
- * `computeStreaks` sorts dates as strings and counts consecutive UTC days,
- * with the last-date field name chosen by the domain (`lastWatchDate` for the
- * film calendar, `lastReadDate` for the reading calendar).
- */
-
 function round(value, digits, mode) {
   const factor = 10 ** digits;
   if (mode === 'numeric') return Math.round(Number(value) * factor) / factor;
@@ -59,13 +39,6 @@ function dayNumber(date) {
   );
 }
 
-/**
- * `current` is the run that ends at the most recent entry, regardless of
- * today's date: "3 days in a row" from 23→25 Oct stays valid on the 26th.
- * The UI is responsible for the softer "last watch was N days ago" hint.
- * Dates are UTC strings; watching at 00:30 MSK is stored as the previous UTC
- * day by the KinoPoisk scraped `ratedAt` and Letterboxd diary dates alike.
- */
 function computeStreaks(days, lastDateField) {
   const field = lastDateField || 'lastWatchDate';
   const dates = (Array.isArray(days) ? days : [])

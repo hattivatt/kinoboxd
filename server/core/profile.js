@@ -1,81 +1,15 @@
 'use strict';
 
-/**
- * Owner (profile) registry shared by the three domains (U8).
- *
- * Dependency direction is one-way: a domain registers here, this module never
- * imports a domain. The only import is `core/errors`, so the registry cannot
- * grow a require cycle and a domain router stays testable on its own.
- *
- * Contract
- * --------
- *   registerDomainProfiles(domain, listFn)
- *     `listFn()` is called on EVERY read — never at registration time. The
- *     switcher has to see the cache as it is right now, not as it was when the
- *     router module happened to be first required (a finished import must show
- *     up on the next GET, without a server restart).
- *
- *     It returns `{ profiles: Owner[], sources: Source[] }`. A bare array is
- *     accepted as "profiles only" and the sources are then derived from the
- *     owner records (see `deriveSources`).
- *
- *   Owner = {
- *     id,        // stable token, the `?profile=` value (`steam-7656…`)
- *     label,     // name typed by the owner; null when the domain has none
- *     primary: { source, userKey, status, updatedAt },
- *     enrichers: [{ source, userKey, status, updatedAt }],
- *     metrics,   // domain counters (the same object the legacy field carries)
- *     ...extras  // every legacy per-profile field, passed through untouched
- *   }
- *
- *   Source = { id, role: 'primary' | 'enricher', connected, state }
- *     state: 'ready' | 'expired' | 'missing'
- *
- *     `role` is not a guess: a source is `primary` when at least one owner has
- *     it as `primary`, otherwise `enricher`. Domains that want to advertise a
- *     source that is not connected yet send the list explicitly.
- *
- *   resolveOwnerOrThrow(domain, token, opts) -> Owner
- *     `profile_required`  — no token (missing or empty `?profile=`),
- *     `invalid_profile`   — repeated, CSV, whitespace or malformed token,
- *     `unknown_profile`   — a well-formed token that names no cached owner.
- *     The three codes are the ones `books/routes.js` and `games/routes.js`
- *     already answer with, so a route can adopt the helper without changing
- *     what the client (and its tests) see.
- *
- * `opts`:
- *   label     — the human name of the parameter in messages
- *               (`Query parameter "profile"` by default).
- *   pattern   — RegExp the token must match after the generic grammar check
- *               (`/^steam-\d{17}$/i`); a miss is `invalid_profile`.
- *   aliases   — `{ token: id }`, a `Map` or `(token) => id | null`; applied
- *               after the generic check, before the lookup.
- *   require   — `(owner) => boolean`; a false answer is `unknown_profile`
- *               (a cached document that cannot serve the request, e.g. a
- *               Steam profile without a library snapshot).
- *
- * Nothing here touches the caches, the network or the clock: the registry is a
- * pure lookup over what the domains hand it.
- */
-
 const { HttpError } = require('./errors');
 
-/** `source-userKey` grammar. No `/`, no `\`, no `..` — a token is not a path. */
 const TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/;
 
-/**
- * Owner ids come from the domain, not from a request: they are accepted as
- * long as they are a single line without path separators. A legacy profile
- * whose userKey is outside the import grammar must still be LISTED (dropping
- * it would hide data the user has); only `resolveOwnerOrThrow` is strict.
- */
 const ID_RE = /^[^\s/\\\u0000-\u001f]{1,200}$/;
 
 const STATUSES = Object.freeze(['connected', 'expired']);
 const ROLES = Object.freeze(['primary', 'enricher']);
 const STATES = Object.freeze(['ready', 'expired', 'missing']);
 
-/** domain -> listFn. Registration order is preserved (diagnostics/tests). */
 const registry = new Map();
 
 function domainName(domain) {
@@ -96,11 +30,6 @@ function optionalString(value, where) {
   return value;
 }
 
-/**
- * Validate one `primary`/`enrichers[]` binding. A missing `status` means the
- * domain asserts a live connection (`connected`); anything else must be one of
- * the two known values, so a typo cannot leak an unknown status to the client.
- */
 function normalizeBinding(binding, where) {
   if (!isPlainObject(binding)) {
     throw new TypeError(`[core/profile] ${where} must be an object`);
@@ -119,11 +48,6 @@ function normalizeBinding(binding, where) {
   };
 }
 
-/**
- * Validate one owner record. Extra keys (the legacy per-profile fields) are
- * copied through untouched — this is what makes the unified form additive
- * instead of a second, parallel payload.
- */
 function normalizeOwner(domain, owner) {
   if (!isPlainObject(owner)) {
     throw new TypeError(`[core/profile] ${domain}: an owner record must be an object`);
@@ -155,11 +79,6 @@ function normalizeOwner(domain, owner) {
   };
 }
 
-/**
- * Default `sources` when a domain sends only owners: one entry per source that
- * actually appears, `primary` winning over `enricher`, `expired` only when
- * every binding of that source is expired.
- */
 function deriveSources(profiles) {
   const byId = new Map();
   const touch = (source, role, status) => {
@@ -210,7 +129,6 @@ function normalizeSource(domain, source) {
   };
 }
 
-/** Normalize whatever the domain returned into `{ profiles, sources }`. */
 function normalizeSnapshot(domain, raw) {
   const input = Array.isArray(raw) ? { profiles: raw } : raw;
   if (!isPlainObject(input)) {
@@ -240,11 +158,6 @@ function normalizeSnapshot(domain, raw) {
   return { profiles, sources };
 }
 
-/**
- * Register a domain's lazy lister. Throws on a duplicate registration: two
- * modules claiming one domain is a wiring bug, not a fallback. Tests that need
- * to re-register call `unregisterDomainProfiles(domain)` first.
- */
 function registerDomainProfiles(domain, listFn) {
   const name = domainName(domain);
   if (typeof listFn !== 'function') {
@@ -257,7 +170,6 @@ function registerDomainProfiles(domain, listFn) {
   return listFn;
 }
 
-/** Test/diagnostic helper: forget one domain (or every domain). */
 function unregisterDomainProfiles(domain) {
   if (domain == null) {
     registry.clear();
@@ -282,7 +194,6 @@ function lister(domain) {
   return listFn;
 }
 
-/** One read: a single `listFn()` call feeds both `profiles` and `sources`. */
 function snapshot(domain) {
   const name = domainName(domain);
   return normalizeSnapshot(name, lister(name)());
@@ -296,12 +207,6 @@ function listSources(domain) {
   return snapshot(domain).sources;
 }
 
-/**
- * Split the raw query value into candidate tokens. A repeated parameter
- * (`?profile=a&profile=b`) arrives as an array; a CSV arrives as one string.
- * Empty parts are ignored, exactly like `books/stats.parseProfileParam`, so
- * `?profile=a&profile=` still counts as one token.
- */
 function readToken(raw) {
   const values = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
   const parts = [];
@@ -324,14 +229,6 @@ function aliasOf(aliases, token) {
   return null;
 }
 
-/**
- * Resolve `?profile=` to exactly one registered owner.
- *
- * @param {string} domain
- * @param {string|string[]|undefined} token  raw `req.query.profile`
- * @param {object} [opts]  see the module contract
- * @returns {object} the owner record (with the legacy fields)
- */
 function resolveOwnerOrThrow(domain, token, opts = {}) {
   const { profiles } = snapshot(domain);
   const label = opts.label || 'Query parameter "profile"';
@@ -394,6 +291,5 @@ module.exports = {
   listOwners,
   listSources,
   resolveOwnerOrThrow,
-  // exported for domains that only have owners to report
   deriveSources,
 };

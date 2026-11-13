@@ -3,12 +3,7 @@
 function createCooldown(ctx) {
   const { now, cooldownMs, keyOf } = ctx;
 
-  /** key -> { at, status, skipped }: the re-run window (personnel, franchise). */
   const finishes = new Map();
-
-  /* ---------------------------------------------------------------- */
-  /* Cooldown window                                                  */
-  /* ---------------------------------------------------------------- */
 
   function noteFinish(job) {
     const key = keyOf(job);
@@ -24,12 +19,6 @@ function createCooldown(ctx) {
     return finishes.get(String(key)) || null;
   }
 
-  /**
-   * Milliseconds left before `key` may be kicked again; 0 when the window is
-   * off, the key never finished, or `ignore(record)` says the last pass does
-   * not count (a failed pass is never throttled; franchise also ignores a
-   * `lock_busy` skip).
-   */
   function cooldownRemaining(key, opts = {}) {
     const windowMs = opts.windowMs == null
       ? cooldownMs
