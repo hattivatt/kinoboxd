@@ -15,7 +15,7 @@
 
 buildNpmPackage (finalAttrs: {
   pname = "kinoboxd";
-  version = "1.5.1";
+  version = "1.5.2";
 
   src = source;
 
