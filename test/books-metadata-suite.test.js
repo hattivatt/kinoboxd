@@ -1353,32 +1353,20 @@ describe('books-series-blacklist', () => {
   });
 
   test('exact match only: real series with these words are not touched', () => {
-    // Short, generic tags («Классика», «Pocket book») are the dangerous ones.
-    // Matching is the whole normalized key, so a longer name that *contains* a
-    // tag is a different series and must survive.
     for (const legit of [
-      'Моэм — автор на все времена',
-      'Зарубежная классика. XX век',
-      'Иностранная литература. Современная классика',
-      'Антиутопии. Классика',
-      'Классика детектива',
-      'Классика в школе',
-      'Лениздат-классика',
-      'Новые краски классики',
-      'Всемирная детская классика',
-      'Лучшая мировая классика',
-      'Исторический роман. Классика',
-      'Мировая классика',
       'Pocket Book of Horror',
       'The Big Book of Fantasy',
-      'Золотая библиотека фантастики',
-      'Школьная библиотека',
-      'Библиотека всемирной литературы',
       'Хроники Амбера',
+      'Проклятые короли Франции',
+      'Книга для души и тела',
+      'Шарм удачи',
+      'Библиотека приключений для взрослых',
+      'Спорт и здоровье',
+      'Мировая классика ужасов',
+      'Внеклассное чтение в семье',
     ]) {
       assert.equal(isBlacklistedSeries(legit), false, legit);
     }
-    // A tag glued to a subtitle is no longer the tag either (exact-match rule).
     assert.equal(isBlacklistedSeries('Классика. Подарочное издание'), false);
     assert.equal(isBlacklistedSeries('Шорт-лист 2024'), false);
   });
@@ -1465,9 +1453,6 @@ describe('books-series-blacklist', () => {
   });
 
   test('the whole confirmed list is dropped from the payload, look-alikes stay', async () => {
-    // One work per kind of evidence: a Литрес tag that even carries an order, three
-    // file-column tags (the column is the authority for a value), and three real
-    // series whose names merely *contain* a short tag.
     await details('hc:9101', {
       schemaVersion: 2,
       hcWorkId: 9101,
@@ -1486,7 +1471,7 @@ describe('books-series-blacklist', () => {
       series: [{ hcId: 616, name: 'Pocket Book of Horror', position: 1 }],
       metadataSources: ['hardcover'],
     });
-    for (const id of ['9101', '9102', '9103', '9104', '9105', '9106', '9107']) {
+    for (const id of ['9101', '9102', '9103', '9104', '9105', '9106', '9107', '9108', '9109']) {
       await bookCache.saveLink(id, {
         schemaVersion: 2,
         livelibBookId: id,
@@ -1527,25 +1512,33 @@ describe('books-series-blacklist', () => {
           fileSeries: 'Зарубежная классика. XX век',
           genres: ['Проза'],
         }),
+        event('ll:9108', 'Книга 8', {
+          raw: { sourceBookId: '9108' },
+          fileSeries: 'Книга для души и тела',
+          genres: ['Проза'],
+        }),
+        event('ll:9109', 'Книга 9', {
+          raw: { sourceBookId: '9109' },
+          fileSeries: 'Шарм удачи',
+          genres: ['Проза'],
+        }),
       ])
     );
 
     const stats = buildBooksStats({ profile: 'livelib-Tags', includeMangaComics: true });
     const names = stats.series.map((entry) => entry.name).sort();
-    assert.deepEqual(names, [
-      'Pocket Book of Horror',
+    assert.deepEqual(names, ['Pocket Book of Horror', 'Книга для души и тела', 'Шарм удачи']);
+    assert.equal(stats.summary.seriesCount, 3);
+    assert.equal(stats.summary.seriesTagsFiltered, 6);
+    assert.equal(stats.summary.bookCount, 9);
+    for (const tag of [
+      'Азбука-классика',
+      'Классика',
+      'Pocket Book',
+      'Моэм — автор на все времена',
       'Антиутопии. Классика',
       'Зарубежная классика. XX век',
-      'Моэм — автор на все времена',
-    ]);
-    assert.equal(stats.summary.seriesCount, 4);
-    // Three works lost a tag: the Литрес shelf, «Классика» and «Pocket Book».
-    assert.equal(stats.summary.seriesTagsFiltered, 3);
-    // No book is hidden by the filter.
-    assert.equal(stats.summary.bookCount, 7);
-    // No widget entry leaks a tag name (series list only: a genre could legally
-    // be called «Классика» and is not what this filter governs).
-    for (const tag of ['Азбука-классика', 'Классика', 'Pocket Book']) {
+    ]) {
       assert.ok(!names.includes(tag), tag);
     }
   });
