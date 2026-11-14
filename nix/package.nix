@@ -8,8 +8,8 @@
   source ? fetchFromGitHub {
     owner = "hattivatt";
     repo = "kinoboxd";
-    rev = "v1.5.0";
-    hash = "sha256-CYWMHGGXfLfjECjGg9scH7ejo9pa5HVuG1aT6YPMrrU=";
+    rev = "v1.5.1";
+    hash = "sha256-rjDjabOTb/Re/SCyJOmp6Y4MLomEMwnHB9bBmn6e9RI=";
   },
 }:
 
