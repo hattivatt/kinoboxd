@@ -68,7 +68,7 @@ function titleTokens(value) {
     .replace(/ё/g, 'е')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .split(' ')
-    .filter((word) => word.length > 1 && !STOP_WORDS.has(word))
+    .filter((word) => word && !STOP_WORDS.has(word))
     .map(stem);
 }
 

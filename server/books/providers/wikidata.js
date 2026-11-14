@@ -262,12 +262,19 @@ function swappedPair(left, right) {
   );
 }
 
+function catalogueOrders(name) {
+  const parts = String(name).split(/\s*,\s*/).filter(Boolean);
+  return parts.length === 2 ? [name, `${parts[1]} ${parts[0]}`] : [name];
+}
+
 function authorHit(candidateAuthor, authors) {
   if (!candidateAuthor) return false;
-  return authors.some(
-    (name) =>
-      swappedPair(name, candidateAuthor) ||
-      nameOrders(name).some((form) => orderedAuthorHit(form, candidateAuthor))
+  return catalogueOrders(candidateAuthor).some((candidate) =>
+    authors.some(
+      (name) =>
+        swappedPair(name, candidate) ||
+        nameOrders(name).some((form) => orderedAuthorHit(form, candidate))
+    )
   );
 }
 

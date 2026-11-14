@@ -199,6 +199,11 @@ describe('books-recognition', () => {
       assert.equal(wikidata.authorHit('Eiichiro Oda', ['Oda Eiichiro']), true);
     });
 
+    test('a catalogue label "Surname, Given names" matches', () => {
+      assert.equal(wikidata.authorHit('Соловьёв, Леонид Васильевич', ['Леонид Соловьев']), true);
+      assert.equal(wikidata.authorHit('Соловьёв, Леонид Васильевич', ['Соловьев Л.В.']), true);
+    });
+
     test('a shared given name is not an author match', () => {
       assert.equal(wikidata.authorHit('О. Генри', ['Генри Хаггард']), false);
       assert.equal(wikidata.authorHit('Иван Тургенев', ['Юлия Яковлева']), false);
@@ -486,6 +491,12 @@ describe('books-recognition', () => {
       assert.equal(authorWorks.titleSimilarity('Багдадская встреча', 'Багдадские встречи'), 1);
       assert.equal(authorWorks.titleSimilarity('Тринадцать сотрапезников', 'Тринадцать Сотрапезников'), 1);
       assert.ok(authorWorks.titleSimilarity('Коробка шоколада', 'Коробка конфет') < 0.75);
+    });
+
+    test('a one-letter suffix makes a different work', () => {
+      assert.ok(authorWorks.titleSimilarity('Gantz', 'Gantz:E') < 0.75);
+      assert.ok(authorWorks.titleSimilarity('Gantz', 'Gantz:G') < 0.75);
+      assert.equal(authorWorks.titleSimilarity('Повесть о Ходже Насреддине', 'Повесть о Ходже Насреддине'), 1);
     });
 
     test('a label miss is found among the author works, fuzzy and fill-only', async () => {
